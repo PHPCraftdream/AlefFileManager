@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "jsx-a11y", "oxc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "env": { "browser": true, "node": true },
+  "ignorePatterns": ["node_modules", "frontend/dist", "backend/target", "backend/patches"],
+  "rules": {
+    "eslint/no-unused-vars": "error",
+    "react/rules-of-hooks": "error",
+    "react/react-in-jsx-scope": "off"
+  }
+}

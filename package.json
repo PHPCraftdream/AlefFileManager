@@ -1,0 +1,38 @@
+{
+  "name": "alef-file-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "rsbuild dev",
+    "typecheck": "tsc --noEmit",
+    "build:frontend": "npm run typecheck && rsbuild build",
+    "build:rust": "node scripts/cargo.mjs build --locked --workspace",
+    "build": "npm run build:frontend && npm run build:rust",
+    "start": "node scripts/start.mjs",
+    "test:rust": "node scripts/cargo.mjs test --locked --workspace",
+    "lint": "oxlint --config .oxlintrc.json frontend/src scripts rsbuild.config.ts --max-warnings 0",
+    "check": "npm run lint && npm run typecheck && node scripts/cargo.mjs clippy --locked --workspace --all-targets -- -D warnings"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "i18next": "26.4.2",
+    "react-i18next": "17.0.15"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "2.2.9",
+    "@rsbuild/plugin-react": "2.1.0",
+    "@rsbuild/plugin-tailwindcss": "2.0.3",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/node": "24.13.6",
+    "oxlint": "1.85.0"
+  }
+}
