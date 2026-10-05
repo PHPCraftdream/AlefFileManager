@@ -18,11 +18,13 @@ pub async fn commands(root: &Path, storage: Storage) -> io::Result<Commands> {
         ));
     }
     let mut commands = Commands::new();
-    commands.register("hello", |(): ()| async {
-        Ok(json!({"message": "Hello from Rust!", "process_id": std::process::id(), "engine": "Servo 0.6.0"}))
+    commands.register("hello", |(): (), context| async move {
+        let hello = json!({"message": "Hello from Rust!", "process_id": std::process::id(), "engine": "Servo 0.6.0"});
+        context.emit("backend.greeting", &hello).await?;
+        Ok(hello)
     })?;
     let preferences = storage.clone();
-    commands.register("preferences.get", move |(): ()| {
+    commands.register("preferences.get", move |(): (), _context| {
         let storage = preferences.clone();
         async move {
             Ok(Preferences {
@@ -30,14 +32,17 @@ pub async fn commands(root: &Path, storage: Storage) -> io::Result<Commands> {
             })
         }
     })?;
-    commands.register("preferences.set", move |preferences: Preferences| {
-        let storage = storage.clone();
-        async move {
-            storage.set_language(preferences.language).await?;
-            Ok(preferences)
-        }
-    })?;
-    commands.register("directory.list", move |query: DirectoryQuery| {
+    commands.register(
+        "preferences.set",
+        move |preferences: Preferences, _context| {
+            let storage = storage.clone();
+            async move {
+                storage.set_language(preferences.language).await?;
+                Ok(preferences)
+            }
+        },
+    )?;
+    commands.register("directory.list", move |query: DirectoryQuery, _context| {
         let root = root.clone();
         async move {
             let requested = query.path.unwrap_or_else(|| root.as_ref().clone());
@@ -180,12 +185,24 @@ mod tests {
         let database = directory.path().join("database");
         let storage = Storage::open(&database).await.expect("open");
         let commands = commands(directory.path(), storage).await.expect("commands");
+        let bridge = alef_runtime::Bridge::new(Commands::new(), None, None)
+            .await
+            .expect("runtime");
+        let context = bridge.handle();
         commands
-            .invoke("preferences.set", json!({"language": "he"}))
+            .invoke(
+                "preferences.set",
+                json!({"language": "he"}),
+                context.clone(),
+            )
             .await
             .expect("Hebrew");
         let invalid = commands
-            .invoke("preferences.set", json!({"language": "invalid"}))
+            .invoke(
+                "preferences.set",
+                json!({"language": "invalid"}),
+                context.clone(),
+            )
             .await;
         assert_eq!(
             invalid.expect_err("invalid language rejected").kind(),
@@ -193,7 +210,7 @@ mod tests {
         );
         assert_eq!(
             commands
-                .invoke("preferences.get", serde_json::Value::Null)
+                .invoke("preferences.get", serde_json::Value::Null, context)
                 .await
                 .expect("preferences"),
             json!({"language": "he"})
@@ -201,6 +218,7 @@ mod tests {
         tokio::task::spawn_blocking(move || drop(commands))
             .await
             .expect("close handles");
+        bridge.shutdown().await.expect("runtime shutdown");
         let reopened = Storage::open(&database).await.expect("reopen");
         assert_eq!(
             reopened.language().await.expect("persisted language"),

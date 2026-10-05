@@ -8,6 +8,7 @@ publish = false
 
 [workspace]
 members = ["runtime"]
+exclude = ["patches/winit"]
 resolver = "2"
 
 [dependencies]
@@ -28,3 +29,4 @@ debug = 0
 
 [patch.crates-io]
 servo-paint-api = { path = "patches/servo-paint-api" }
+winit = { path = "patches/winit" }

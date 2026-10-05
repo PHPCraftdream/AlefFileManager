@@ -102,10 +102,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = alef_runtime::run(
         &mut bridge,
         alef_runtime::WindowOptions {
-            title: "Alef File Manager".into(),
-            width: 1200.0,
-            height: 800.0,
-            icon_png: include_bytes!("../../frontend/public/logo-32x32.png").to_vec(),
+            decorations: false,
+            ..alef_runtime::WindowOptions::new(
+                "Alef File Manager",
+                include_bytes!("../../frontend/public/logo-32x32.png").to_vec(),
+            )
         },
     );
     bridge.shutdown().await?;

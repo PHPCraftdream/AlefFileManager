@@ -1,4 +1,5 @@
 /node_modules/
 /frontend/dist/
 /backend/target/
+/backend/patches/winit/Cargo.lock
 *.tsbuildinfo

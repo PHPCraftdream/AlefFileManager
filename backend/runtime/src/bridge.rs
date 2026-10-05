@@ -17,11 +17,12 @@ use servo::protocol_handler::{
     ResourceFetchTiming, Response, ResponseBody,
 };
 use subtle::ConstantTimeEq;
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
 use url::Url;
 
-use crate::Commands;
+use crate::ui::UiRequest;
+use crate::{Commands, RuntimeHandle, WindowAction};
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 
@@ -29,6 +30,8 @@ pub struct Bridge {
     pub entry_url: Url,
     registry: Option<ProtocolRegistry>,
     commands: Arc<Commands>,
+    ui: RuntimeHandle,
+    requests: Option<mpsc::Receiver<UiRequest>>,
 }
 
 impl Bridge {
@@ -65,10 +68,12 @@ impl Bridge {
             .finish();
         entry_url.set_fragment(Some(&fragment));
         let commands = Arc::new(commands);
+        let (ui, requests) = RuntimeHandle::channel();
         let handler = MemoryProtocol {
             assets,
             token,
             commands: commands.clone(),
+            ui: ui.clone(),
             handle: tokio::runtime::Handle::current(),
             admission: Arc::new(Semaphore::new(32)),
         };
@@ -80,7 +85,19 @@ impl Bridge {
             entry_url,
             registry: Some(registry),
             commands,
+            ui,
+            requests: Some(requests),
         })
+    }
+
+    pub fn handle(&self) -> RuntimeHandle {
+        self.ui.clone()
+    }
+
+    pub(crate) fn take_requests(&mut self) -> io::Result<mpsc::Receiver<UiRequest>> {
+        self.requests
+            .take()
+            .ok_or_else(|| io::Error::other("Native window already attached"))
     }
 
     pub(crate) fn take_registry(&mut self) -> io::Result<ProtocolRegistry> {
@@ -91,6 +108,7 @@ impl Bridge {
 
     /// Call after the Servo window has closed. Fjall owners are dropped off the UI thread.
     pub async fn shutdown(self) -> io::Result<()> {
+        self.ui.detach();
         tokio::task::spawn_blocking(move || drop((self.registry, self.commands)))
             .await
             .map_err(io::Error::other)
@@ -101,6 +119,7 @@ struct MemoryProtocol {
     assets: Option<PathBuf>,
     token: String,
     commands: Arc<Commands>,
+    ui: RuntimeHandle,
     handle: tokio::runtime::Handle,
     admission: Arc<Semaphore>,
 }
@@ -231,6 +250,7 @@ impl MemoryProtocol {
             io::Error::new(io::ErrorKind::InvalidInput, "Missing invocation body")
         })?;
         let commands = self.commands.clone();
+        let ui = self.ui.clone();
         let mut task = OwnedTask(self.handle.spawn(async move {
             let _permit = permit;
             let bytes = tokio::time::timeout(Duration::from_secs(10), read_body(body))
@@ -240,9 +260,15 @@ impl MemoryProtocol {
                 })??;
             let invocation: Invocation = serde_json::from_slice(&bytes)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            commands
-                .invoke(&invocation.command, invocation.arguments)
-                .await
+            if invocation.command == "runtime.window" {
+                let action: WindowAction = serde_json::from_value(invocation.arguments)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+                ui.window(action).await
+            } else {
+                commands
+                    .invoke(&invocation.command, invocation.arguments, ui)
+                    .await
+            }
         }));
         (&mut task.0).await.map_err(io::Error::other)?
     }

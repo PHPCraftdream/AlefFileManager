@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { nativeApi, type HelloResponse } from './api';
 import i18n, { languages, type Language } from './i18n';
+import { listen, nativeWindow, type Unlisten, type WindowState } from './runtime';
+import TitleBar from './TitleBar';
 
 export default function App() {
   const { t } = useTranslation();
@@ -9,6 +11,37 @@ export default function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [windowState, setWindowState] = useState<WindowState | null>(null);
+  const [windowError, setWindowError] = useState('');
+  const [eventsEnabled, setEventsEnabled] = useState(true);
+  const [receivedEvents, setReceivedEvents] = useState(0);
+  const [lastEvent, setLastEvent] = useState<HelloResponse | null>(null);
+
+  const reportWindowError = useCallback((failure: unknown) => {
+    setWindowError(failure instanceof Error ? failure.message : String(failure));
+  }, []);
+
+  useEffect(() => {
+    if (!eventsEnabled) return;
+    return listen<HelloResponse>('backend.greeting', payload => {
+      setLastEvent(payload);
+      setReceivedEvents(count => count + 1);
+    });
+  }, [eventsEnabled]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let unsubscribe: Unlisten | undefined;
+    void nativeWindow.watch(setWindowState, controller.signal)
+      .then(release => {
+        if (controller.signal.aborted) release();
+        else unsubscribe = release;
+      })
+      .catch(failure => {
+        if (!controller.signal.aborted) reportWindowError(failure);
+      });
+    return () => { controller.abort(); unsubscribe?.(); };
+  }, [reportWindowError]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -52,7 +85,9 @@ export default function App() {
   }, []);
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#11202b] px-6 py-12 text-[#e8f2f7]">
+    <div className="flex h-screen flex-col overflow-hidden bg-[#11202b] text-[#e8f2f7]">
+      <TitleBar state={windowState} onError={reportWindowError} />
+      <main className="flex min-h-0 flex-1 items-start justify-center overflow-auto px-6 py-8">
       <section className="w-full max-w-xl rounded-2xl border border-[#294455] bg-[#172d3c] p-8 shadow-xl">
         <div className="mb-6 flex items-center gap-4">
           <img src="/logo-32x32.png" alt="Alef" className="h-12 w-12 rounded-lg" />
@@ -103,7 +138,39 @@ export default function App() {
           </div>
         </fieldset>
         <p className="mt-3 text-sm text-[#a3bac9]" aria-live="polite">{t(saving ? 'saving' : 'saved')}</p>
+        <div className="mt-6 border-t border-[#294455] pt-4 text-sm text-[#a3bac9]">
+          <p aria-live="polite">{t('eventsReceived', { count: receivedEvents })}</p>
+          {lastEvent && <p className="mt-1">{lastEvent.message}</p>}
+          <button type="button" onClick={() => setEventsEnabled(enabled => !enabled)}
+            className="mt-2 rounded-md border border-[#294455] px-3 py-2">
+            {t(eventsEnabled ? 'unsubscribeEvents' : 'subscribeEvents')}
+          </button>
+          {windowState && (
+            <p className="mt-4" aria-live="polite">
+              {t('windowState', { width: windowState.width, height: windowState.height,
+                mode: t(windowState.maximized ? 'windowMaximized' : 'windowNormal') })}
+            </p>
+          )}
+          <button type="button" aria-pressed={windowState?.decorated ?? false} disabled={!windowState}
+            className="mt-3 rounded-md border border-[#294455] px-3 py-2"
+            onClick={() => {
+              setWindowError('');
+              void nativeWindow.setDecorations(!windowState?.decorated).catch(reportWindowError);
+            }}>
+            {t('nativeTitlebar')}
+          </button>
+          <button type="button" aria-pressed={windowState?.resizable ?? true} disabled={!windowState}
+            className="ms-2 mt-3 rounded-md border border-[#294455] px-3 py-2"
+            onClick={() => {
+              setWindowError('');
+              void nativeWindow.setResizable(!windowState?.resizable).catch(reportWindowError);
+            }}>
+            {t(windowState?.resizable ? 'disableResize' : 'enableResize')}
+          </button>
+          {windowError && <p role="alert" className="mt-2 text-[#ffb4a7]">{windowError}</p>}
+        </div>
       </section>
-    </main>
+      </main>
+    </div>
   );
 }
