@@ -8,6 +8,8 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { assertQuiet, quiet } from './lib.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..');
 const args = process.argv.slice(2);
@@ -25,9 +27,10 @@ const REQUIRED = [
 ];
 const SETTLE_MS = 3000;
 
+assertQuiet(exe);
 mkdirSync(scratch, { recursive: true });
 const child = spawn(exe, ['--frontend-dir', frontend, '--data-dir', scratch, '--root', root], {
-  env: { ...process.env, ALEF_LOG_CALLS: '1' },
+  env: { ...process.env, ALEF_LOG_CALLS: '1', ...(quiet ? { ALEF_E2E: '1', ALEF_E2E_QUIET: '1' } : {}) },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 

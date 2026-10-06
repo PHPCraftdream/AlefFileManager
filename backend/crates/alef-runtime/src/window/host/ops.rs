@@ -98,12 +98,50 @@ impl State {
         Ok(value)
     }
 
+    /// Quiet mode: the operations that would show or focus the system window only change what the
+    /// document is told. `true` when `op` was one of them.
+    fn pretend(&mut self, op: &WindowOp) -> bool {
+        let Some(pretended) = self.quiet.as_mut() else {
+            return false;
+        };
+        match op {
+            WindowOp::Minimize => pretended.minimized = true,
+            WindowOp::Maximize => {
+                pretended.maximized = true;
+                pretended.minimized = false;
+            }
+            WindowOp::Restore => {
+                pretended.maximized = false;
+                pretended.minimized = false;
+            }
+            WindowOp::ToggleMaximize => pretended.maximized = !pretended.maximized,
+            WindowOp::SetFullscreen { enabled } => pretended.fullscreen = *enabled,
+            WindowOp::Show => {
+                pretended.visible = true;
+                self.revealed = true;
+            }
+            WindowOp::Hide => {
+                pretended.visible = false;
+                self.revealed = true;
+            }
+            WindowOp::Focus => pretended.focused = true,
+            _ => return false,
+        }
+        true
+    }
+
     fn apply_to_window(&mut self, op: WindowOp) -> io::Result<Value> {
+        if self.pretend(&op) {
+            return Ok(Value::Null);
+        }
         match op {
             WindowOp::State => {
                 return serde_json::to_value(self.fresh_snapshot()?).map_err(io::Error::other)
             }
-            WindowOp::SetTitle { title } => self.window.set_title(&title),
+            WindowOp::SetTitle { title } => {
+                self.window.set_title(&title);
+                self.title = title;
+            }
             WindowOp::SetSize { width, height } => {
                 let (infos, index) = self.display();
                 let monitor = index.and_then(|index| infos.get(index));

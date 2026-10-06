@@ -25,7 +25,19 @@ impl App {
             state.servo.spin_event_loop();
         }
         for state in &mut self.windows {
-            if let Err(error) = state.try_reveal().and_then(|()| state.publish_snapshot()) {
+            // A window that is never shown gets no redraw requests from the system.
+            let paint = |state: &mut super::state::State| {
+                if state.quiet.is_some() && state.revealed && state.frame_ready.get() {
+                    state.redraw()
+                } else {
+                    Ok(())
+                }
+            };
+            if let Err(error) = state
+                .try_reveal()
+                .and_then(|()| paint(state))
+                .and_then(|()| state.publish_snapshot())
+            {
                 self.error.get_or_insert(error);
                 event_loop.exit();
             }

@@ -28,7 +28,7 @@ use super::ops::io_error;
 use crate::ui::{event_json, UiRequest};
 use crate::window::delegate::Delegate;
 use crate::window::platform;
-use crate::window::state::{capture_info, PendingClose, State};
+use crate::window::state::{capture_info, PendingClose, Pretended, State};
 use crate::window::App;
 
 /// How long a document may take to answer `window.close-requested` before the window closes anyway.
@@ -219,7 +219,15 @@ impl App {
         if first {
             crate::spikes::integration::activate(&window, self.waker.0.clone());
         }
-        let snapshot = capture_info(&definition.label, &window, &webview, false);
+        let quiet = self.quiet.then(Pretended::default);
+        let snapshot = capture_info(
+            &definition.label,
+            &title,
+            &window,
+            &webview,
+            false,
+            quiet.as_ref(),
+        );
         self.windows.push(State {
             webview,
             servo,
@@ -229,6 +237,7 @@ impl App {
             events: self.handle.events().clone(),
             window_id,
             label: definition.label.clone(),
+            title,
             cursor: DevicePoint::zero(),
             modifiers: Modifiers::empty(),
             composing: false,
@@ -248,6 +257,7 @@ impl App {
             native_resize_active: false,
             wake_gen: self.waker.1.clone(),
             always_on_top: false,
+            quiet,
             min_size: placement.min_size,
             max_size: placement.max_size,
             intercept: None,

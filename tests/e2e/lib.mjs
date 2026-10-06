@@ -13,6 +13,13 @@ export const root = resolve(here, '..', '..');
 export const scratch = join(root, 'backend', 'target', `e2e-${process.pid}`);
 export const exeName = process.platform === 'win32' ? '.exe' : '';
 
+/**
+ * Nobody should have to watch a test: the runtime never shows its windows (`ALEF_E2E_QUIET=1`:
+ * geometry, events and the rest are real, visibility and focus are the runtime's own bookkeeping).
+ * Linux runs on a virtual display (`xvfb`) with real windows. `ALEF_E2E_VISIBLE=1` shows them.
+ */
+export const quiet = process.platform !== 'linux' && process.env.ALEF_E2E_VISIBLE !== '1';
+
 let transpiled;
 
 /** Emits @alef-tron/api as plain ES modules (`src/`, `types/`); done once per run. */
@@ -50,10 +57,25 @@ export function prepareSite(name, app, { replacements = {}, targets = {} } = {})
   return site;
 }
 
+const quietBinaries = new Map();
+
+/**
+ * A runtime that does not know the quiet mode would show its windows to the user and take the
+ * focus: such a binary is not started. `ALEF_E2E_VISIBLE=1` accepts visible windows.
+ */
+export function assertQuiet(exe) {
+  if (!quiet) return;
+  if (!quietBinaries.has(exe)) quietBinaries.set(exe, readFileSync(exe).includes('ALEF_E2E_QUIET'));
+  if (!quietBinaries.get(exe)) {
+    throw new Error(`${exe} has no quiet mode, its windows would appear on your screen: build the current sources, or set ALEF_E2E_VISIBLE=1 to accept visible windows`);
+  }
+}
+
 /** Starts the runtime; its stderr and stdout are kept line by line and can be awaited. */
 export function startApp({ exe, args, env = {}, verbose = false }) {
+  assertQuiet(exe);
   const child = spawn(exe, args, {
-    env: { ...process.env, ALEF_E2E: '1', ...env },
+    env: { ...process.env, ALEF_E2E: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const lines = [];

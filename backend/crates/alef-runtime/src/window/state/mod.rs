@@ -17,6 +17,18 @@ use servo::{
 };
 use winit::window::{CursorIcon, ResizeDirection, Window};
 
+/// Quiet mode (end-to-end runs, `ALEF_E2E_QUIET=1`): the system window is never shown or focused, so
+/// nobody is disturbed by a test; what the document is told about visibility, focus, maximizing,
+/// minimizing and fullscreen is kept here instead. Geometry, title, zoom and events stay real.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Pretended {
+    pub(super) visible: bool,
+    pub(super) focused: bool,
+    pub(super) maximized: bool,
+    pub(super) minimized: bool,
+    pub(super) fullscreen: bool,
+}
+
 /// A close request the document has been asked about (`window.close-requested`).
 pub(super) struct PendingClose {
     pub(super) id: u64,
@@ -33,6 +45,8 @@ pub(super) struct State {
     pub(super) events: crate::bridge::EventBus,
     pub(super) window_id: u64,
     pub(super) label: String,
+    /// The title as the application set it: winit cannot read it back on X11 and Wayland.
+    pub(super) title: String,
     pub(super) cursor: DevicePoint,
     pub(super) modifiers: Modifiers,
     pub(super) composing: bool,
@@ -54,6 +68,8 @@ pub(super) struct State {
     pub(super) native_resize_active: bool,
     pub(super) wake_gen: WakeGeneration,
     pub(super) always_on_top: bool,
+    /// `Some` in quiet mode.
+    pub(super) quiet: Option<Pretended>,
     /// Limits of the inner size, logical pixels: the system holds the user to them, the runtime
     /// holds `window.setSize` to them (Windows ignores them for programmatic resizing).
     pub(super) min_size: Option<(f64, f64)>,
@@ -142,8 +158,13 @@ impl State {
         } else {
             return Ok(());
         }
-        self.window.set_visible(true);
-        self.window.focus_window();
+        match self.quiet.as_mut() {
+            Some(pretended) => pretended.visible = true,
+            None => {
+                self.window.set_visible(true);
+                self.window.focus_window();
+            }
+        }
         self.revealed = true;
         self.snapshot_dirty = true;
         Ok(())
@@ -240,7 +261,14 @@ impl State {
 
     /// The window as it is now; sizes and positions in logical pixels.
     pub(super) fn capture(&self) -> WindowInfo {
-        capture_info(&self.label, &self.window, &self.webview, self.always_on_top)
+        capture_info(
+            &self.label,
+            &self.title,
+            &self.window,
+            &self.webview,
+            self.always_on_top,
+            self.quiet.as_ref(),
+        )
     }
 
     /// Re-reads the window when something may have changed.
@@ -296,9 +324,11 @@ impl State {
 /// The window as it is now; sizes and positions in logical pixels.
 pub(super) fn capture_info(
     label: &str,
+    title: &str,
     window: &Window,
     webview: &WebView,
     always_on_top: bool,
+    pretended: Option<&Pretended>,
 ) -> WindowInfo {
     let scale = window.scale_factor();
     let size = window.inner_size();
@@ -306,19 +336,19 @@ pub(super) fn capture_info(
     WindowInfo {
         label: label.to_owned(),
         revision: 0,
-        title: window.title(),
+        title: title.to_owned(),
         width: f64::from(size.width) / scale,
         height: f64::from(size.height) / scale,
         x: position.map(|position| f64::from(position.x) / scale),
         y: position.map(|position| f64::from(position.y) / scale),
         scale_factor: scale,
-        focused: window.has_focus(),
-        maximized: window.is_maximized(),
-        minimized: window.is_minimized(),
-        visible: window.is_visible(),
+        focused: pretended.map_or_else(|| window.has_focus(), |p| p.focused),
+        maximized: pretended.map_or_else(|| window.is_maximized(), |p| p.maximized),
+        minimized: pretended.map_or_else(|| window.is_minimized(), |p| Some(p.minimized)),
+        visible: pretended.map_or_else(|| window.is_visible(), |p| Some(p.visible)),
         decorated: window.is_decorated(),
         resizable: window.is_resizable(),
-        fullscreen: window.fullscreen().is_some(),
+        fullscreen: pretended.map_or_else(|| window.fullscreen().is_some(), |p| p.fullscreen),
         always_on_top,
         zoom: f64::from(webview.page_zoom()),
         supports_drag_resize: super::platform::SUPPORTS_NATIVE_RESIZE,

@@ -82,6 +82,8 @@ struct App {
     windows: Vec<State>,
     /// The first window has been opened (and Servo started).
     started: bool,
+    /// End-to-end runs of `ALEF_E2E_QUIET=1`: windows are never shown (see `state::Pretended`).
+    quiet: bool,
     /// Last id given to a close request.
     next_close: u64,
     error: Option<io::Error>,
@@ -101,6 +103,11 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
     state::resize_wait::set_resize_trace(
         std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"),
     );
+    let flag = |name: &str| std::env::var(name).is_ok_and(|value| value == "1");
+    let quiet = flag("ALEF_E2E") && flag("ALEF_E2E_QUIET");
+    if quiet {
+        eprintln!("ALEF_E2E quiet: the windows of this run are never shown");
+    }
     let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     let handle = bridge.handle();
     handle.attach(event_loop.create_proxy());
@@ -117,6 +124,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         ),
         windows: Vec::new(),
         started: false,
+        quiet,
         next_close: 0,
         error: None,
         handle,

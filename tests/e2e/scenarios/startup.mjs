@@ -5,13 +5,17 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
-import { here, prepareSite, scratch } from '../lib.mjs';
+import { here, prepareSite, quiet, scratch } from '../lib.mjs';
 
 export function startupScenarios({ exe }) {
   return {
     async startup() {
       if (process.platform !== 'win32') {
         console.log('    skipped: the probe watches Win32 windows');
+        return { problems: [], lines: [] };
+      }
+      if (quiet) {
+        console.log('    skipped: it watches real windows, which appear on screen; ALEF_E2E_VISIBLE=1 runs it');
         return { problems: [], lines: [] };
       }
       const site = prepareSite('startup', 'startup');
