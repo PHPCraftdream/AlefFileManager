@@ -52,6 +52,20 @@ const ARGS = {
   'nativeWindow.startDrag': [],
   'nativeWindow.startResize': ['north'],
   'nativeWindow.watch': [() => {}],
+  'app.info': [],
+  'app.quit': [],
+  'app.relaunch': [],
+  'app.args': [],
+  'app.env': [],
+  'app.cwd': [],
+  ...Object.fromEntries(['appData', 'appConfig', 'appCache', 'temp', 'home', 'documents', 'downloads', 'desktop', 'executable'].map(name => [`path.${name}`, []])),
+  'path.join': ['a'],
+  'path.normalize': ['a'],
+  'path.dirname': ['a'],
+  'path.basename': ['a'],
+  'os.info': [],
+  'os.theme': [],
+  'os.on': ['theme-changed', () => {}],
 };
 
 installRuntime({
@@ -64,7 +78,7 @@ installRuntime({
 
 test('every function exported by @alef-tron/api is asynchronous', async () => {
   const functions = functionsOf(api);
-  assert.ok(functions.length >= 15, `the walk must see the whole surface, saw ${functions.length}`);
+  assert.ok(functions.length >= 38, `the walk must see the whole surface, saw ${functions.length}`);
   const unlisted = functions.map(([name]) => name).filter(name => !(name in ARGS));
   assert.deepEqual(unlisted, [], 'add the new export to ARGS so its asynchrony is checked');
   for (const [name, fn] of functions) {
@@ -89,5 +103,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'call', 'connect', 'nativeWindow', 'on', 'openReadable', 'openWritable']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'app', 'call', 'connect', 'nativeWindow', 'on', 'openReadable', 'openWritable', 'os', 'path']);
 });

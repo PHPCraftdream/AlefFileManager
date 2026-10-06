@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use std::io;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 
+use alef_core::registry::host::{Host, Theme};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
@@ -10,11 +12,20 @@ use winit::event_loop::EventLoopProxy;
 use crate::bridge::EventBus;
 
 pub(crate) const WINDOW_STATE_EVENT: &str = "runtime.window.state";
+const THEME_EVENT: &str = "os.theme-changed";
 const UI_CAPACITY: usize = 64;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
+/// `HostState::quit` before anyone asked to quit.
+const NO_QUIT: i64 = -1;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Wake;
+
+/// What modules ask of the process: the exit request and the theme the window reported.
+struct HostState {
+    quit: AtomicI64,
+    dark: AtomicBool,
+}
 
 #[derive(Clone)]
 pub struct RuntimeHandle {
@@ -22,6 +33,7 @@ pub struct RuntimeHandle {
     events: EventBus,
     proxy: watch::Sender<Option<EventLoopProxy<Wake>>>,
     admission: Arc<Semaphore>,
+    host: Arc<HostState>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -103,9 +115,42 @@ impl RuntimeHandle {
                 events: EventBus::default(),
                 proxy,
                 admission: Arc::new(Semaphore::new(UI_CAPACITY)),
+                host: Arc::new(HostState {
+                    quit: AtomicI64::new(NO_QUIT),
+                    dark: AtomicBool::new(false),
+                }),
             },
             receiver,
         )
+    }
+
+    /// The exit code the application asked for (`app.quit`); 0 when it did not ask.
+    pub fn exit_code(&self) -> i32 {
+        match self.host.quit.load(Ordering::SeqCst) {
+            NO_QUIT => 0,
+            code => i32::try_from(code).unwrap_or(0),
+        }
+    }
+
+    pub(crate) fn quit_requested(&self) -> bool {
+        self.host.quit.load(Ordering::SeqCst) != NO_QUIT
+    }
+
+    /// Records the theme the window reported; `true` when it differs from the previous one.
+    pub(crate) fn set_theme(&self, theme: winit::window::Theme) -> bool {
+        let dark = theme == winit::window::Theme::Dark;
+        self.host.dark.swap(dark, Ordering::SeqCst) != dark
+    }
+
+    /// The window reported another theme: remember it and tell the documents.
+    pub(crate) fn theme_changed(&self, theme: winit::window::Theme) {
+        if !self.set_theme(theme) {
+            return;
+        }
+        let payload = serde_json::json!({ "theme": self.theme() });
+        if let Ok(json) = event_json(THEME_EVENT, &payload) {
+            self.events.publish(None, &json);
+        }
     }
 
     /// Document event streams (`runtime.events.subscribe`).
@@ -183,6 +228,23 @@ impl RuntimeHandle {
                 "Native window closed before completion",
             )
         })?
+    }
+}
+
+impl Host for RuntimeHandle {
+    fn quit(&self, code: i32) {
+        self.host.quit.store(i64::from(code), Ordering::SeqCst);
+        if let Some(proxy) = self.proxy.borrow().as_ref() {
+            let _ = proxy.send_event(Wake);
+        }
+    }
+
+    fn theme(&self) -> Theme {
+        if self.host.dark.load(Ordering::SeqCst) {
+            Theme::Dark
+        } else {
+            Theme::Light
+        }
     }
 }
 
@@ -289,6 +351,67 @@ mod tests {
             let error = handle.emit(reserved, &1).await.expect_err("reserved");
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{reserved}");
         }
+    }
+
+    #[test]
+    fn quit_is_remembered_with_its_code_even_before_a_window_exists() {
+        let (handle, _receiver) = RuntimeHandle::channel();
+        assert!(!handle.quit_requested());
+        assert_eq!(handle.exit_code(), 0);
+        handle.quit(7);
+        assert!(handle.quit_requested());
+        assert_eq!(handle.exit_code(), 7);
+        handle.quit(0);
+        assert!(
+            handle.quit_requested(),
+            "an explicit zero is still a request"
+        );
+        assert_eq!(handle.exit_code(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_theme_change_is_stored_and_announced_once() {
+        use alef_core::{
+            protocol::{call::Limits, frame::Frame},
+            session::{session::SessionManager, TokenSource},
+        };
+        use winit::window::Theme as Winit;
+        let (handle, _receiver) = RuntimeHandle::channel();
+        assert_eq!(handle.theme(), Theme::Light);
+        assert!(!handle.set_theme(Winit::Light), "no change");
+        let source: TokenSource = Arc::new(|| "token".to_owned());
+        let sessions = SessionManager::new(source, Limits::default());
+        let session = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sessions.begin_document(1),
+        )
+        .await
+        .expect("session");
+        let (writer, id) = session.streams().open_outgoing();
+        handle.events().attach(1, writer);
+        let mut reader = session.streams().reader(id).expect("reader");
+
+        handle.theme_changed(Winit::Dark);
+        handle.theme_changed(Winit::Dark);
+        assert_eq!(handle.theme(), Theme::Dark);
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), reader.next_frame())
+            .await
+            .expect("event in time");
+        match frame {
+            Some(Frame::Json(value)) => assert_eq!(
+                value,
+                serde_json::json!({"name": "os.theme-changed", "payload": {"theme": "dark"}})
+            ),
+            other => panic!("expected the theme event, got {other:?}"),
+        }
+        handle.theme_changed(Winit::Light);
+        let second = tokio::time::timeout(std::time::Duration::from_secs(10), reader.next_frame())
+            .await
+            .expect("event in time");
+        assert!(
+            matches!(second, Some(Frame::Json(ref v)) if v["payload"]["theme"] == "light"),
+            "the repeated dark did not produce a second event: {second:?}"
+        );
     }
 
     #[test]

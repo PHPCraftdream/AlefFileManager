@@ -55,6 +55,9 @@ impl App {
         let attributes = super::platform::apply_window_icon(attributes, icon);
         let window = Rc::new(event_loop.create_window(attributes)?);
         window.set_ime_allowed(true);
+        if let Some(theme) = window.theme() {
+            self.handle.set_theme(theme);
+        }
         let rendering = Rc::new(
             WindowRenderingContext::new(
                 event_loop.display_handle()?,
@@ -137,6 +140,10 @@ impl App {
     }
 
     fn process_requests(&mut self, event_loop: &ActiveEventLoop) {
+        if self.handle.quit_requested() {
+            event_loop.exit();
+            return;
+        }
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -300,6 +307,7 @@ impl ApplicationHandler<Wake> for App {
                     event_loop.exit();
                 }
             }
+            WindowEvent::ThemeChanged(theme) => self.handle.theme_changed(theme),
             WindowEvent::Focused(focused) => {
                 if focused {
                     state.webview.focus();

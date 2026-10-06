@@ -1,0 +1,60 @@
+id: org.example.modules
+name: Modules
+version:: 2.3.4
+windows: [
+    {
+        label: main
+        url: /
+        width: 800
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: [ PATH, ALEF_MODULES_TEST_UNSET ]
+    }
+}
+arguments: {
+    options: [
+        {
+            name: port
+            short: p
+            type: number
+        }
+    ]
+    positional: {
+        name: files
+    }
+}

@@ -38,6 +38,11 @@ struct Report {
     line: String,
 }
 
+#[derive(Deserialize)]
+struct Once {
+    path: String,
+}
+
 /// Registers `e2e.*` when the end-to-end mode is on.
 pub(super) fn register(registry: &mut Registry, _ui: &RuntimeHandle) -> Result<(), AlefError> {
     if !enabled() {
@@ -100,6 +105,17 @@ pub(super) fn register(registry: &mut Registry, _ui: &RuntimeHandle) -> Result<(
             .permission(permission, |args| Some(args.target.clone()))
             .handler(|_, _| async { Ok(Reply::Json(serde_json::json!({ "allowed": true }))) })?;
     }
+    // True for the first caller only: creates the file, so a restarted program can tell it apart.
+    registry
+        .command::<Once>("e2e.once")?
+        .handler(|_, once| async move {
+            let created = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&once.path)
+                .is_ok();
+            Ok(Reply::Json(Value::Bool(created)))
+        })?;
     registry
         .command::<Report>("e2e.report")?
         .handler(|_, report| async move {

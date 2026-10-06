@@ -7,6 +7,10 @@ use alef_launch::{
     args::{parse_args, Command, Launch, USAGE},
     plan::{load_manifest, make_plan, path_vars},
 };
+use alef_modules::{
+    desktop::args::{parse, Parsed},
+    register_all, AppInfo, ModuleContext,
+};
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 
 surfman::declare_surfman!();
@@ -36,7 +40,7 @@ impl From<std::io::Error> for Failure {
 async fn main() -> ExitCode {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match launch(arguments).await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(Failure::Usage(message)) => {
             eprintln!("alef: {message}");
             ExitCode::from(2)
@@ -48,18 +52,47 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn launch(arguments: Vec<OsString>) -> Result<(), Failure> {
+/// Runs the application; the result is the exit code the application asked for.
+async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
+    let process_args = arguments.clone();
     let launch = match parse_args(arguments).map_err(Failure::Usage)? {
         Command::Help => {
             println!("{USAGE}");
-            return Ok(());
+            return Ok(0);
         }
         Command::Run(launch) => launch,
     };
-    let Launch { app_dir, dev_url } = launch;
+    let Launch {
+        app_dir,
+        dev_url,
+        app_args,
+    } = launch;
     let manifest = load_manifest(&app_dir)?;
     let vars = path_vars(&app_dir, &manifest.id)?;
     let plan = make_plan(&app_dir, manifest, &vars)?;
+    let args = match parse(
+        plan.manifest.arguments.as_ref(),
+        &plan.manifest.name,
+        &plan.manifest.version,
+        &app_args,
+    )? {
+        Parsed::Run(args) => args,
+        Parsed::Help(text) | Parsed::Version(text) => {
+            println!("{text}");
+            return Ok(0);
+        }
+    };
+    let context = ModuleContext {
+        app: AppInfo {
+            id: plan.manifest.id.clone(),
+            name: plan.manifest.name.clone(),
+            version: plan.manifest.version.clone(),
+            runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+        },
+        paths: vars,
+        args,
+        process_args,
+    };
 
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
@@ -75,6 +108,9 @@ async fn launch(arguments: Vec<OsString>) -> Result<(), Failure> {
         assets,
         dev_url,
         BridgeOptions {
+            modules: Some(Box::new(move |registry, host| {
+                register_all(registry, host, &context)
+            })),
             allowed_origins,
             csp: Some(plan.csp),
             permissions: Some(plan.permissions),
@@ -88,6 +124,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<(), Failure> {
         plan.manifest.id,
         std::process::id()
     );
+    let handle = bridge.handle();
     let result = alef_runtime::run(
         &mut bridge,
         WindowOptions {
@@ -99,5 +136,6 @@ async fn launch(arguments: Vec<OsString>) -> Result<(), Failure> {
         },
     );
     bridge.shutdown().await?;
-    result.map_err(|error| Failure::Runtime(error.to_string()))
+    result.map_err(|error| Failure::Runtime(error.to_string()))?;
+    Ok(u8::try_from(handle.exit_code()).unwrap_or(1))
 }

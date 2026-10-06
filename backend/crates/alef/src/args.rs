@@ -4,16 +4,21 @@ use std::{ffi::OsString, path::PathBuf};
 
 use url::Url;
 
-pub const USAGE: &str = "alef --app <DIRECTORY> [--dev-url <http://127.0.0.1:PORT>]\n\
+pub const USAGE: &str =
+    "alef --app <DIRECTORY> [--dev-url <http://127.0.0.1:PORT>] [-- <APPLICATION ARGUMENTS>...]\n\
 Runs the application in DIRECTORY: its alef.ktav manifest and assets, in embedded Servo.\n\
   --app DIRECTORY   application directory containing alef.ktav\n\
-  --dev-url URL     load the document from a development server on 127.0.0.1 instead of the files";
+  --dev-url URL     load the document from a development server on 127.0.0.1 instead of the files\n\
+  --                everything after it is the command line of the application\n\
+                    (parsed by the `arguments` of its manifest; `-- --help` prints its usage)";
 
 /// A validated launch request.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Launch {
     pub app_dir: PathBuf,
     pub dev_url: Option<Url>,
+    /// The command line of the application: everything after `--`.
+    pub app_args: Vec<OsString>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,8 +50,13 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
     let mut arguments = arguments.into_iter();
     let mut app_dir = None;
     let mut dev = None;
+    let mut app_args = Vec::new();
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
+            Some("--") => {
+                app_args.extend(arguments.by_ref());
+                break;
+            }
             Some("--app") => app_dir = Some(PathBuf::from(value(&mut arguments, "--app")?)),
             Some("--dev-url") => {
                 let text = value(&mut arguments, "--dev-url")?;
@@ -60,6 +70,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
     Ok(Command::Run(Launch {
         app_dir,
         dev_url: dev,
+        app_args,
     }))
 }
 
@@ -79,15 +90,32 @@ mod tests {
             Command::Run(Launch {
                 app_dir: PathBuf::from("site"),
                 dev_url: Some(Url::parse("http://127.0.0.1:3000/").unwrap()),
+                app_args: Vec::new(),
             })
         );
         assert_eq!(
             parse(&["--app", "site"]).unwrap(),
             Command::Run(Launch {
                 app_dir: PathBuf::from("site"),
-                dev_url: None
+                dev_url: None,
+                app_args: Vec::new(),
             })
         );
+    }
+
+    #[test]
+    fn everything_after_the_double_dash_belongs_to_the_application() {
+        let command = parse(&["--app", "site", "--", "--help", "--app", "x", "-h", "--"]).unwrap();
+        let Command::Run(launch) = command else {
+            panic!("a run, not the launcher help");
+        };
+        assert_eq!(launch.app_dir, PathBuf::from("site"));
+        let expected: Vec<OsString> = ["--help", "--app", "x", "-h", "--"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+        assert_eq!(launch.app_args, expected);
+        assert!(parse(&["--", "--app", "x"]).unwrap_err().contains("--app"));
     }
 
     #[test]

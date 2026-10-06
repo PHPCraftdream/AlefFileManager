@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { here } from './lib.mjs';
+import { here } from '../lib.mjs';
 
 const base = readFileSync(join(here, 'apps', 'core', 'alef.ktav'), 'utf8').replaceAll('\r\n', '\n');
 const WINDOW = /windows: \[\n    \{\n[\s\S]*?\n    \}\n\]\n/;

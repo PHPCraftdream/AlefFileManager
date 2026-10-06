@@ -18,6 +18,7 @@ use alef_core::{
         call::Limits,
         transport::{Transport, TransportConfig},
     },
+    registry::{dispatch::Registry, host::Host},
     security::{
         manifest::{
             AppPermissions, CliPermissions, ClipboardPermissions, FsPermissions, NetPermissions,
@@ -44,9 +45,16 @@ pub(crate) use windows::WindowRegistry;
 /// Content-Security-Policy of `native://app` documents unless the embedder supplies its own.
 const DEFAULT_CSP: &str = "default-src native:; connect-src native:; img-src native: data:; style-src native: 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'";
 
+/// Registers the command modules (`alef-modules`) in the registry of the bridge; it receives the
+/// hosting process (exit request, theme) for the modules to keep.
+pub type ModuleInstaller =
+    Box<dyn FnOnce(&mut Registry, Arc<dyn Host>) -> Result<(), AlefError> + Send>;
+
 /// Embedder-supplied policy of the bridge; the default suits the File Manager.
 #[derive(Default)]
 pub struct BridgeOptions {
+    /// Installs the framework modules; `None` serves only the commands of the embedder.
+    pub modules: Option<ModuleInstaller>,
     /// Allowed `Origin` values for transport requests; empty means any (the bootstrap token is
     /// then the only secret).
     pub allowed_origins: Vec<String>,
@@ -202,6 +210,9 @@ impl Bridge {
         let mut registry = commands.to_registry(&ui).map_err(startup)?;
         ui.events().register(&mut registry).map_err(startup)?;
         e2e::register(&mut registry, &ui).map_err(startup)?;
+        if let Some(install) = options.modules {
+            install(&mut registry, Arc::new(ui.clone())).map_err(startup)?;
+        }
         let tokens: TokenSource =
             Arc::new(|| random_token().expect("the system must provide randomness"));
         let sessions = Arc::new(SessionManager::new(tokens, options.limits));

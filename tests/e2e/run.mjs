@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,permissions,csp,dev,manifest,induced]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,quit,relaunch,system,arguments]
 //                          [--timeout-s 150] [--verbose]
 // Exit code 0 = every selected scenario passed.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { countingServer, exeName, interesting, prepareSite, root, scratch, staticServer, startApp } from './lib.mjs';
-import { manifestCases } from './manifests.mjs';
+import { countingServer, exeName, field, interesting, makeDriver, root, scratch, staticServer, startApp } from './lib.mjs';
+import { manifestCases } from './scenarios/manifests.mjs';
+import { moduleScenarios } from './scenarios/modules.mjs';
 
 const args = process.argv.slice(2);
 const option = name => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
@@ -19,33 +20,7 @@ const only = option('--only')?.split(',');
 const MAX_ABORT_MS = 250;
 const WINDOW_BYTES = 1024 * 1024;
 
-const field = (text, key) => Number(new RegExp(`${key}=(\\d+)`).exec(text)?.[1]);
-const okNames = lines => new Set(lines.map(line => /check (\S+) ok /.exec(line)?.[1]).filter(Boolean));
-const verdictOf = lines => /ALEF_E2E RESULT (PASS|FAIL)\s*(.*)$/.exec(lines.find(line => line.includes('ALEF_E2E RESULT')) ?? '');
-const missing = (lines, expected) => expected.filter(name => !okNames(lines).has(name));
-
-/** Runs the page-driven scenario and returns the problems found (empty = pass). */
-async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, judge, appArgs }) {
-  const site = prepareSite(name, app, { replacements, targets });
-  const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose });
-  const problems = [];
-  try {
-    await running.waitFor(line => line.includes('ALEF_E2E RESULT'), timeoutMs, 'the verdict of the page');
-    const result = verdictOf(running.lines);
-    if (!result) problems.push('no verdict line');
-    else if (!env?.ALEF_E2E_BREAK) {
-      if (result[1] !== 'PASS') problems.push(`verdict ${result[1]}: ${result[2]}`);
-      const absent = missing(running.lines, expectedChecks);
-      if (absent.length > 0) problems.push(`checks without an ok line: ${absent}`);
-    }
-    problems.push(...(await judge?.(running.lines, result) ?? []));
-  } catch (error) {
-    problems.push(error.message);
-  } finally {
-    running.stop();
-  }
-  return { problems, lines: running.lines };
-}
+const drive = makeDriver({ exe, verbose, timeoutMs });
 
 const CORE_CHECKS = [
   'hello', 'denials', 'json-echo', 'binary-echo-16MiB', 'unknown-command-is-not-found', 'legacy-invoke-route-is-gone',
@@ -88,6 +63,7 @@ function judgeCore(lines) {
 const INDUCED = ['binary-echo-16MiB', 'lib-binary-roundtrip-4MiB'];
 
 const scenarios = {
+  ...moduleScenarios({ drive, exe, verbose }),
   core: () => drive({ name: 'core', app: 'core', expectedChecks: CORE_CHECKS, judge: judgeCore }),
 
   // The echo is corrupted on purpose: the runner must see exactly the two binary checks fail.

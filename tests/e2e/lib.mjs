@@ -50,34 +50,40 @@ export function prepareSite(name, app, { replacements = {}, targets = {} } = {})
   return site;
 }
 
-/** Starts the runtime; its stderr is kept line by line and can be awaited. */
+/** Starts the runtime; its stderr and stdout are kept line by line and can be awaited. */
 export function startApp({ exe, args, env = {}, verbose = false }) {
   const child = spawn(exe, args, {
     env: { ...process.env, ALEF_E2E: '1', ...env },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
   const lines = [];
   const watchers = new Set();
   let exit = null;
-  let buffer = '';
   const wake = () => [...watchers].forEach(watcher => watcher());
-  child.stderr.on('data', chunk => {
-    buffer += chunk;
-    const parts = buffer.split('\n');
-    buffer = parts.pop();
-    for (const raw of parts) {
-      const line = raw.trim();
-      if (!line) continue;
-      lines.push(line);
-      if (verbose) console.log(`    | ${line}`);
-    }
-    wake();
-  });
+  const collect = stream => {
+    let buffer = '';
+    stream.on('data', chunk => {
+      buffer += chunk;
+      const parts = buffer.split('\n');
+      buffer = parts.pop();
+      for (const raw of parts) {
+        const line = raw.trim();
+        if (!line) continue;
+        lines.push(line);
+        if (verbose) console.log(`    | ${line}`);
+      }
+      wake();
+    });
+  };
+  collect(child.stderr);
+  collect(child.stdout);
   child.on('exit', code => {
     exit = { code };
     wake();
   });
-  const waitFor = (predicate, ms, what) => new Promise((resolvePromise, reject) => {
+  // Every holder of the pipe is gone: a program the runtime started again has finished as well.
+  const closed = new Promise(resolvePromise => child.stderr.on('close', resolvePromise));
+  const waitFor = (predicate, ms, what, { survivesExit = false } = {}) => new Promise((resolvePromise, reject) => {
     const timer = setTimeout(() => {
       watchers.delete(look);
       reject(new Error(`timed out waiting for ${what}`));
@@ -88,7 +94,7 @@ export function startApp({ exe, args, env = {}, verbose = false }) {
         clearTimeout(timer);
         watchers.delete(look);
         resolvePromise(found);
-      } else if (exit) {
+      } else if (exit && !survivesExit) {
         clearTimeout(timer);
         watchers.delete(look);
         reject(new Error(`the runtime exited (${exit.code}) while waiting for ${what}`));
@@ -101,6 +107,8 @@ export function startApp({ exe, args, env = {}, verbose = false }) {
     lines,
     waitFor,
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
+    /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
+    waitForClosed: ms => Promise.race([closed.then(() => true), new Promise(resolvePromise => setTimeout(resolvePromise, ms, false))]),
     stop: () => child.kill(),
     get exit() { return exit; },
   };
@@ -160,3 +168,37 @@ export async function staticServer(directory) {
 
 /** Lines worth showing when a scenario fails. */
 export const interesting = lines => lines.filter(line => /FAILED|PROBLEM|fatal|Servo Error|panicked|error/i.test(line));
+
+export const field = (line, key) => Number(new RegExp(`${key}=(\\d+)`).exec(line)?.[1]);
+const okNames = lines => new Set(lines.map(line => /check (\S+) ok /.exec(line)?.[1]).filter(Boolean));
+export const verdictOf = lines => /ALEF_E2E RESULT (PASS|FAIL)\s*(.*)$/.exec(lines.find(line => line.includes('ALEF_E2E RESULT')) ?? '');
+const missing = (lines, expected) => expected.filter(name => !okNames(lines).has(name));
+
+/**
+ * The page-driven scenario runner bound to one runtime binary: builds the site, starts the runtime,
+ * waits for the page's verdict and returns the problems found (empty = pass). `judge(lines, result,
+ * running)` adds scenario-specific checks and may wait for the runtime to exit.
+ */
+export function makeDriver({ exe, verbose, timeoutMs }) {
+  return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, judge, appArgs }) {
+    const site = prepareSite(name, app, { replacements, targets });
+    const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose });
+    const problems = [];
+    try {
+      await running.waitFor(line => line.includes('ALEF_E2E RESULT'), timeoutMs, 'the verdict of the page');
+      const result = verdictOf(running.lines);
+      if (!result) problems.push('no verdict line');
+      else if (!env?.ALEF_E2E_BREAK) {
+        if (result[1] !== 'PASS') problems.push(`verdict ${result[1]}: ${result[2]}`);
+        const absent = missing(running.lines, expectedChecks);
+        if (absent.length > 0) problems.push(`checks without an ok line: ${absent}`);
+      }
+      problems.push(...(await judge?.(running.lines, result, running) ?? []));
+    } catch (error) {
+      problems.push(error.message);
+    } finally {
+      running.stop();
+    }
+    return { problems, lines: running.lines, site };
+  };
+}

@@ -71,6 +71,7 @@ name = "alef"
 version = "0.1.0"
 dependencies = [
  "alef-core",
+ "alef-modules",
  "alef-runtime",
  "dirs",
  "rustls",
@@ -113,6 +114,12 @@ name = "alef-modules"
 version = "0.1.0"
 dependencies = [
  "alef-core",
+ "gethostname",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "tokio",
+ "ts-rs",
 ]
 
 [[package]]

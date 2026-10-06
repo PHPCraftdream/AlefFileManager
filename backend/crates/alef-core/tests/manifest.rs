@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use alef_core::{
     security::{
-        manifest::Manifest,
+        manifest::{ArgKind, Manifest},
         window::{Length, LengthUnit, Monitor, WindowPosition},
     },
     ErrorCode,
@@ -320,4 +320,132 @@ fn generated_manifest_types_include_window_schema() {
     }
     assert!(types.contains("openExternal"));
     assert!(types.contains("minWidth"));
+}
+
+const ARGUMENTS: &str = "arguments: {
+    options: [
+        {
+            name: port
+            short: p
+            type: number
+            description: Port to listen on
+        }
+        {
+            name: verbose
+            type: boolean
+        }
+    ]
+    positional: {
+        name: files
+    }
+}
+";
+
+fn with_arguments(arguments: &str) -> String {
+    format!("{}{arguments}", MINIMAL.replace('\r', ""))
+}
+
+#[test]
+fn arguments_section_is_optional_and_parses_options_and_positionals() {
+    assert_eq!(Manifest::from_ktav_str(MINIMAL).unwrap().arguments, None);
+    let manifest = Manifest::from_ktav_str(&with_arguments(ARGUMENTS)).unwrap();
+    let arguments = manifest.arguments.expect("arguments");
+    assert_eq!(arguments.options.len(), 2);
+    assert_eq!(arguments.options[0].name, "port");
+    assert_eq!(arguments.options[0].short.as_deref(), Some("p"));
+    assert_eq!(arguments.options[0].kind, ArgKind::Number);
+    assert_eq!(
+        arguments.options[0].description.as_deref(),
+        Some("Port to listen on")
+    );
+    assert_eq!(arguments.options[1].kind, ArgKind::Boolean);
+    assert_eq!(arguments.options[1].short, None);
+    assert_eq!(arguments.positional.expect("positional").name, "files");
+}
+
+#[test]
+fn malformed_arguments_are_rejected_with_the_path_of_the_error() {
+    let option = |body: &str| {
+        format!("arguments: {{\n    options: [\n        {{\n{body}        }}\n    ]\n}}\n")
+    };
+    for (name, source, path) in [
+        (
+            "bad name",
+            option("            name: Port\n            type: string\n"),
+            "arguments.options[0].name",
+        ),
+        (
+            "trailing hyphen",
+            option("            name: port-\n            type: string\n"),
+            "arguments.options[0].name",
+        ),
+        (
+            "double hyphen",
+            option("            name: a--b\n            type: string\n"),
+            "arguments.options[0].name",
+        ),
+        (
+            "generated help",
+            option("            name: help\n            type: boolean\n"),
+            "arguments.options[0].name",
+        ),
+        (
+            "generated version",
+            option("            name: version\n            type: boolean\n"),
+            "arguments.options[0].name",
+        ),
+        (
+            "long short name",
+            option("            name: port\n            short: pp\n            type: string\n"),
+            "arguments.options[0].short",
+        ),
+        (
+            "generated -h",
+            option("            name: port\n            short: h\n            type: string\n"),
+            "arguments.options[0].short",
+        ),
+        (
+            "generated -V",
+            option("            name: port\n            short: V\n            type: string\n"),
+            "arguments.options[0].short",
+        ),
+        (
+            "non-alphanumeric short",
+            option("            name: port\n            short: -\n            type: string\n"),
+            "arguments.options[0].short",
+        ),
+        (
+            "unknown type",
+            option("            name: port\n            type: integer\n"),
+            "unknown variant `integer`",
+        ),
+    ] {
+        let error = error(&with_arguments(&source));
+        assert!(
+            error.message.contains(path),
+            "{name}: expected {path} in {:?}",
+            error.message
+        );
+    }
+    let duplicate_name = "arguments: {\n    options: [\n        {\n            name: port\n            type: string\n        }\n        {\n            name: port\n            type: string\n        }\n    ]\n}\n";
+    assert!(error(&with_arguments(duplicate_name))
+        .message
+        .contains("arguments.options[1].name"));
+    let duplicate_short = "arguments: {\n    options: [\n        {\n            name: a\n            short: x\n            type: string\n        }\n        {\n            name: b\n            short: x\n            type: string\n        }\n    ]\n}\n";
+    assert!(error(&with_arguments(duplicate_short))
+        .message
+        .contains("arguments.options[1].short"));
+    let bad_positional =
+        "arguments: {\n    options: []\n    positional: {\n        name: Files\n    }\n}\n";
+    assert!(error(&with_arguments(bad_positional))
+        .message
+        .contains("arguments.positional.name"));
+    let unknown_field = "arguments: {\n    options: []\n    bogus: 1\n}\n";
+    assert!(error(&with_arguments(unknown_field))
+        .message
+        .contains("bogus"));
+    let missing_options = "arguments: {\n    positional: {\n        name: files\n    }\n}\n";
+    assert!(error(&with_arguments(missing_options))
+        .message
+        .contains("options"));
 }

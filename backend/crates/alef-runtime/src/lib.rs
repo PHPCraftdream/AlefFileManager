@@ -6,7 +6,7 @@ mod ui;
 mod window;
 
 pub use bridge::commands::Commands;
-pub use bridge::{Bridge, BridgeOptions};
+pub use bridge::{Bridge, BridgeOptions, ModuleInstaller};
 pub use store::Store;
 pub use ui::{ResizeEdge, RuntimeHandle, WindowAction, WindowState};
 pub use window::{run, WindowOptions};

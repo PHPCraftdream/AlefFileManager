@@ -190,6 +190,13 @@ impl PermissionSet {
         })
     }
 
+    /// Names of the environment variables the manifest exposes (`permissions.app.env`), sorted.
+    pub fn env_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.env.iter().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Allows runtime window creation (not expressible in the manifest).
     pub fn with_window_create(mut self) -> Self {
         self.window = true;

@@ -7,5 +7,8 @@ export { call, type CallOptions } from './core/transport.ts';
 export { openReadable, openWritable, type Readable, type StreamFrame, type Writable } from './core/stream.ts';
 export { on } from './core/events.ts';
 export { nativeWindow, type ResizeEdge, type Unlisten, type WindowState } from './desktop/window.ts';
+export { app, type Cancelable } from './desktop/app.ts';
+export { path } from './system/path.ts';
+export { os, type OsEvent } from './system/os.ts';
 // The DTO `AlefError` of the generated types is the shape of the `AlefError` class above.
-export type { ErrorCode, ResourceId, SessionId, StreamId } from '../types/index.ts';
+export type { AppInfo, ArgValue, ErrorCode, OsInfo, ParsedArgs, ResourceId, SessionId, StreamId, Theme } from '../types/index.ts';
