@@ -2,7 +2,7 @@
 
 ## Сделано
 
-- `.github/workflows/ci.yml`: матрица `windows-latest` (x64), `macos-14` (arm64), `macos-13` (x64), `ubuntu-24.04` (x64), `fail-fast: false`; артефакты — бинарник (все ОС) и `frontend/dist` (отдельно, из Linux-джоба); Linux e2e под `xvfb-run`.
+- `.github/workflows/ci.yml`: матрица `windows-latest` (x64), `macos-14` (arm64), `macos-15-intel` (x64), `ubuntu-24.04` (x64), `fail-fast: false`; артефакты — бинарник (все ОС) и `frontend/dist` (отдельно, из Linux-джоба); Linux e2e под `xvfb-run`.
 - Typecheck выполняется ровно один раз: полный `npm run build` (tsc + rsbuild + cargo) — только на Linux; на остальных ОС — `npm run build:rust`.
 
 ## Дизайн workflow
@@ -107,5 +107,5 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 ## Дополнение оркестратора
 
-- Образ `macos-13` (x64) может быть выведен из эксплуатации GitHub; проверить при первом запуске, при отсутствии заменить на актуальный Intel-образ macOS (не проверено).
+- Образ `macos-13` (x64) выведен из эксплуатации GitHub: задание стояло в очереди без раннера (в двух запусках подряд более двух часов, пока его не отменял следующий пуш). Заменён на `macos-15-intel`; результат на Intel-macOS появится с первым запуском после замены.
 - Строки таблицы про freetype/harfbuzz/fontconfig исправлены по `build.rs` крейтов: bundled-режим включён Servo, системные dev-пакеты для них не нужны (оставлены как precaution); поведение `yeslogic-fontconfig-sys` не проверено (исходники не скачаны на Windows-машине).

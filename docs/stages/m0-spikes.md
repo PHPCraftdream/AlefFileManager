@@ -74,7 +74,7 @@
 
 **Шаги.**
 
-1. Workflow GitHub Actions, матрица: `windows-latest` (x64), `macos-14` (arm64), `macos-13` (x64), `ubuntu-24.04` (x64).
+1. Workflow GitHub Actions, матрица: `windows-latest` (x64), `macos-14` (arm64), `macos-15-intel` (x64), `ubuntu-24.04` (x64).
 2. Зависимости сборки Servo по платформам (Linux: пакеты из руководства Servo — clang, cmake, ninja, gstreamer dev не нужен при dummy media, X11/Wayland dev-библиотеки; macOS: Xcode CLT, cmake, ninja; Windows: MSVC, LLVM, cmake, ninja).
 3. Кэш: sccache + `actions/cache` для `target` и cargo registry; цель — повторная сборка без изменений Servo < 15 минут.
 4. Шаги: `npm ci` → `npm run check` → `npm run test:rust` → `npm run build`; артефакт — бинарник.
