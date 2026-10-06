@@ -2,6 +2,7 @@
 //! Command registry, call context and dispatch (M1.3).
 pub mod command;
 pub mod context;
+pub mod dialog;
 pub mod dispatch;
 pub mod host;
 pub mod window;

@@ -466,6 +466,8 @@ impl App {
                 })?;
                 to_json(&point)
             }
+            // The answer comes when the user is done: `process_requests` hands it to `dialogs`.
+            UiCall::Dialog(_) => Err(io::Error::other("A dialog is answered later")),
         }
     }
 
@@ -486,6 +488,15 @@ impl App {
                 reply,
             } = request;
             if reply.canceled() {
+                continue;
+            }
+            if let UiCall::Dialog(dialog) = call {
+                let parent = self
+                    .find(caller, None)
+                    .ok()
+                    .map(|index| self.windows[index].window.as_ref());
+                self.dialogs
+                    .show(&self.runtime, &self.title, parent, dialog, reply);
                 continue;
             }
             let result = self.handle_request(event_loop, caller, call);

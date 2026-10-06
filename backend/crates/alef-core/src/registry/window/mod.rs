@@ -3,6 +3,7 @@
 //! windows (`Host::ui`), what it answers, and how a window definition becomes a placement.
 use serde::{Deserialize, Serialize};
 
+use super::dialog::DialogCall;
 use crate::security::window::{Length, WindowDef};
 
 pub mod geometry;
@@ -245,6 +246,8 @@ pub enum UiCall {
     Monitors,
     /// `screen.cursorPosition`.
     CursorPosition,
+    /// `dialog.*`: a native dialog on top of the window of the caller; the options are checked.
+    Dialog(DialogCall),
 }
 
 #[cfg(test)]

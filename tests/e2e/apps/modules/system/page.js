@@ -73,6 +73,18 @@ async function main() {
     const open = await api.window.all();
     if (open.length !== 1) throw new Error(`${open.length} windows are open`);
   });
+  await check('clipboard-read-and-shell-are-denied-without-the-rights', async () => {
+    const denied = async (what, promise) => {
+      const error = await rejection(promise);
+      if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${what}: ${error?.code ?? 'it succeeded'}`);
+    };
+    for (const read of ['readText', 'readHtml', 'readImage']) await denied(`clipboard.${read}`, api.clipboard[read]());
+    await api.clipboard.writeText('written without a right'); // writing needs none
+    await denied('clipboard.readText after a write', api.clipboard.readText());
+    await denied('shell.openExternal', api.shell.openExternal('https://example.com/'));
+    const file = await api.path.join(await api.path.temp(), 'anything.txt');
+    for (const command of ['openPath', 'showInFolder', 'trash']) await denied(`shell.${command}`, api.shell[command](file));
+  });
 
   await verdict(failed());
 }

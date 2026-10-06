@@ -27,16 +27,16 @@ servo-net-traits = "=0.6.0"
 servo-net = "=0.6.0"
 servo-embedder-traits = "=0.6.0"
 servo-base = "=0.6.0"
+rfd = "=0.17.2"
 
 # M0.3 spike (docs/stages/m0-spikes.md): off by default, enabled with --features spike-integration.
 tray-icon = { version = "=0.24.2", optional = true }
 muda = { version = "=0.19.3", optional = true }
 global-hotkey = { version = "=0.8.0", optional = true }
-rfd = { version = "=0.17.2", optional = true }
 crossbeam-channel = { version = "=0.5.17", optional = true }
 
 [features]
-spike-integration = ["dep:tray-icon", "dep:muda", "dep:global-hotkey", "dep:rfd", "dep:crossbeam-channel"]
+spike-integration = ["dep:tray-icon", "dep:muda", "dep:global-hotkey", "dep:crossbeam-channel"]
 
 [dev-dependencies]
 tempfile = "=3.27.0"

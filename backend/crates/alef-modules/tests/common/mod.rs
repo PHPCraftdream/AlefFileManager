@@ -23,10 +23,18 @@ use alef_core::{
     session::{session::SessionManager, Session, TokenSource},
     AlefError,
 };
-use alef_modules::{desktop::args, register_all, AppInfo, ModuleContext};
+use alef_modules::{
+    desktop::args, register_all, AppInfo, Backends, MemoryClipboard, ModuleContext, PretendShell,
+};
+use bytes::Bytes;
 use serde_json::Value;
 
 const MANIFEST: &str = include_str!("../fixtures/app.ktav");
+
+/// The tests that change the desktop of the user (clipboard, trash) run only when asked.
+pub fn desktop_asked() -> bool {
+    std::env::var("ALEF_TEST_DESKTOP").is_ok_and(|value| value == "1")
+}
 
 pub struct FakeHost {
     pub quits: Mutex<Vec<i32>>,
@@ -59,7 +67,11 @@ impl Host for FakeHost {
 pub struct Fixture {
     pub registry: Registry,
     pub host: Arc<FakeHost>,
+    /// The clipboard and the shell behind the modules: in memory, and doing nothing.
+    pub clipboard: Arc<MemoryClipboard>,
+    pub shell: Arc<PretendShell>,
     pub context: ModuleContext,
+    manager: SessionManager,
     session: Arc<Session>,
     permissions: Arc<PermissionSet>,
 }
@@ -94,6 +106,8 @@ impl Fixture {
             PermissionSet::from_manifest(&manifest.permissions, &vars).expect("permissions"),
         );
         let raw: Vec<OsString> = command_line.iter().map(OsString::from).collect();
+        let clipboard = Arc::new(MemoryClipboard::default());
+        let shell = Arc::new(PretendShell::default());
         let args = match args::parse(
             manifest.arguments.as_ref(),
             &manifest.name,
@@ -115,6 +129,10 @@ impl Fixture {
             paths: vars,
             args,
             process_args: raw,
+            backends: Backends {
+                clipboard: clipboard.clone(),
+                shell: shell.clone(),
+            },
         };
         let host = Arc::new(FakeHost {
             quits: Mutex::new(Vec::new()),
@@ -125,21 +143,45 @@ impl Fixture {
         let mut registry = Registry::default();
         register_all(&mut registry, host.clone(), &context).expect("register");
         let tokens: TokenSource = Arc::new(|| "token".to_owned());
-        let session = SessionManager::new(tokens, Limits::default())
-            .begin_document(1)
-            .await;
+        let manager = SessionManager::new(tokens, Limits::default());
+        let session = manager.begin_document(1).await;
         Self {
             registry,
             host,
+            clipboard,
+            shell,
             context,
+            manager,
             session,
             permissions,
         }
     }
 
+    pub fn session(&self) -> Arc<Session> {
+        self.session.clone()
+    }
+
+    pub fn permissions(&self) -> Arc<PermissionSet> {
+        self.permissions.clone()
+    }
+
+    /// The document of the window loads again: a new session replaces the old one, grants and all.
+    pub async fn reload_document(&mut self) {
+        self.session = self.manager.begin_document(1).await;
+    }
+
+    pub async fn call_reply(
+        &self,
+        command: &str,
+        args: Value,
+        body: Option<Bytes>,
+    ) -> Result<Reply, AlefError> {
+        let ctx = CallContext::new(self.session.clone(), self.permissions.clone()).with_body(body);
+        self.registry.dispatch(command, ctx, args).await
+    }
+
     pub async fn call(&self, command: &str, args: Value) -> Result<Value, AlefError> {
-        let ctx = CallContext::new(self.session.clone(), self.permissions.clone());
-        match self.registry.dispatch(command, ctx, args).await? {
+        match self.call_reply(command, args, None).await? {
             Reply::Json(value) => Ok(value),
             other => panic!("expected JSON, got {other:?}"),
         }

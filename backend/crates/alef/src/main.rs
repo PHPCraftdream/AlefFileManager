@@ -9,7 +9,7 @@ use alef_launch::{
 };
 use alef_modules::{
     desktop::args::{parse, Parsed},
-    register_all, AppInfo, ModuleContext,
+    register_all, AppInfo, Backends, ModuleContext,
 };
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 
@@ -92,6 +92,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         paths: vars,
         args,
         process_args,
+        backends: Backends::from_environment(),
     };
 
     rustls::crypto::aws_lc_rs::default_provider()

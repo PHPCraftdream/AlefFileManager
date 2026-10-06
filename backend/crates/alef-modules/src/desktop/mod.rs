@@ -2,6 +2,8 @@
 //! Desktop modules.
 pub mod app;
 pub mod args;
+pub mod dialog;
+pub mod shell;
 pub mod window;
 
 use std::sync::Arc;
@@ -19,5 +21,7 @@ pub(crate) fn register(
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
     app::register(registry, host.clone(), context)?;
+    dialog::register(registry, host.clone())?;
+    shell::register(registry, context.backends.shell.clone())?;
     window::register(registry, host)
 }

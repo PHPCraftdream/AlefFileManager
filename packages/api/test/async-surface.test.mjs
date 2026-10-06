@@ -71,6 +71,20 @@ const ARGS = {
   'window.create': [{ label: 'probe', url: '/', width: 100, height: 100 }],
   'screen.monitors': [],
   'screen.cursorPosition': [],
+  'dialog.open': [],
+  'dialog.save': [],
+  'dialog.message': [{ message: 'probe' }],
+  'dialog.confirm': [{ message: 'probe' }],
+  'shell.openExternal': ['https://example.com/'],
+  'shell.openPath': ['/probe'],
+  'shell.showInFolder': ['/probe'],
+  'shell.trash': ['/probe'],
+  'clipboard.readText': [],
+  'clipboard.writeText': ['probe'],
+  'clipboard.readHtml': [],
+  'clipboard.writeHtml': ['probe'],
+  'clipboard.readImage': [],
+  'clipboard.writeImage': [new Uint8Array(1)],
 };
 
 installRuntime({
@@ -78,13 +92,14 @@ installRuntime({
     if (request.url === 'native://call/runtime.events.subscribe') return { json: { stream: 5 } };
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/window.all') return { json: [] };
+    if (/^native:\/\/call\/clipboard\.read(Text|Html)$/.test(request.url)) return { bytes: new Uint8Array(0) };
     return { json: { revision: 1 } };
   },
 });
 
 test('every function exported by @alef-tron/api is asynchronous', async () => {
   const functions = functionsOf(api);
-  assert.ok(functions.length >= 43, `the walk must see the whole surface, saw ${functions.length}`);
+  assert.ok(functions.length >= 57, `the walk must see the whole surface, saw ${functions.length}`);
   const unlisted = functions.map(([name]) => name).filter(name => !(name in ARGS));
   assert.deepEqual(unlisted, [], 'add the new export to ARGS so its asynchrony is checked');
   for (const [name, fn] of functions) {
@@ -109,5 +124,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'app', 'call', 'connect', 'nativeWindow', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'app', 'call', 'clipboard', 'connect', 'dialog', 'nativeWindow', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'window']);
 });

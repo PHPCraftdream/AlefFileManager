@@ -137,6 +137,16 @@ jobs:
       - name: Rust tests
         run: npm run test:rust
 
+      # The system clipboard and trash against the real desktop of the clean runner. They change what
+      # a user has, so the tests run only on request (ALEF_TEST_DESKTOP=1); Linux needs a display.
+      - name: Desktop backends (clipboard, trash)
+        shell: bash
+        env:
+          ALEF_TEST_DESKTOP: "1"
+        run: |
+          cmd="node scripts/cargo.mjs test --locked -p alef-modules --test clipboard --test shell -- --ignored --nocapture"
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a sh -c "$cmd"; else sh -c "$cmd"; fi
+
       - name: Generated TypeScript types
         run: |
           npm run check:types

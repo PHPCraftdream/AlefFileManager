@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Scenarios of the framework modules (docs/stages/m2-desktop.md, "Приёмка"): `app` (+ `quit`, `relaunch`,
-// the generated usage text) and the system modules `path` and `os`.
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+// the generated usage text), the system modules `path` and `os`, `window` and `desktop` (`dialog`, `shell`, `clipboard`).
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { prepareSite, scratch, startApp, verdictOf } from '../lib.mjs';
+import { prepareSite, root, scratch, startApp, verdictOf } from '../lib.mjs';
 
 const APP_CHECKS = [
   'app-info-matches-the-manifest', 'app-args-are-parsed-by-the-manifest-schema',
@@ -18,7 +18,26 @@ const SYSTEM_CHECKS = [
   'path-directories-are-absolute-and-the-app-ones-end-with-the-id', 'path-join-normalize-dirname-basename',
   'os-info-describes-this-machine', 'os-theme-is-light-or-dark', 'os-theme-changed-subscription-can-be-made-and-undone',
   'screen-agrees-with-the-state-of-the-window', 'window-create-is-denied-without-the-permission',
+  'clipboard-read-and-shell-are-denied-without-the-rights',
 ];
+
+const DESKTOP_CHECKS = [
+  'dialog-options-are-refused-before-a-dialog-is-shown', 'dialog-open-returns-the-chosen-files',
+  'dialog-open-cancelled-is-an-empty-list', 'dialog-open-folder-returns-the-folder',
+  'dialog-save-returns-the-path-and-null-when-cancelled', 'dialog-message-and-confirm-answer-plainly',
+  'dialog-answer-of-the-wrong-kind-is-an-error', 'a-dialog-without-a-scripted-answer-fails-instead-of-waiting',
+  'shell-open-external-inside-the-scope-is-opened', 'shell-open-external-outside-the-scope-is-denied',
+  'shell-paths-in-the-scope-are-opened-shown-and-trashed', 'shell-paths-outside-the-scope-are-denied',
+  'shell-open-path-does-not-start-a-program', 'shell-a-path-that-is-not-there-is-not-found',
+  'clipboard-text-passes-whatever-its-size', 'clipboard-html-passes-and-text-replaces-it',
+  'clipboard-image-passes-as-png-and-text-replaces-it', 'clipboard-refuses-what-is-not-an-image-or-not-text',
+];
+
+/** The same file whatever the spelling: links resolved, and the case of Windows ignored. */
+const real = path => {
+  const resolved = realpathSync.native(path);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+};
 
 const WINDOW_CHECKS = [
   'declared-windows-are-open', 'screen-describes-the-displays', 'size-in-percent-of-the-work-area',
@@ -105,6 +124,49 @@ export function moduleScenarios({ drive, exe, verbose }) {
         rmSync(directory, { recursive: true, force: true });
       }
       return { problems, lines: running.lines };
+    },
+
+    // Dialogs answered from a script, a shell that only logs, a clipboard in memory: the run shows nothing
+    // and touches nothing of the user, and the runner reads what the shell was asked.
+    async desktop() {
+      const directory = mkdtempSync(join(os.tmpdir(), 'alef-e2e-desktop-'));
+      const at = name => join(directory, name);
+      const folder = at('picked');
+      mkdirSync(folder);
+      for (const name of ['chosen.txt', 'other.txt', 'note.txt', 'old.txt', 'setup.exe']) writeFileSync(at(name), name);
+      const log = at('shell.log');
+      const script = [
+        { open: [at('chosen.txt')] }, { open: [at('chosen.txt'), at('other.txt')] }, { open: [] }, { open: [folder] },
+        { save: at('report.txt') }, { save: null }, { message: null }, { confirm: true }, { confirm: false },
+        { save: at('report.txt') }, // the page asks for `open` here: a script of the wrong kind is an error
+      ];
+      try {
+        return await drive({
+          name: 'desktop', app: 'modules/desktop',
+          targets: {
+            directory, chosen: at('chosen.txt'), other: at('other.txt'), folder, saved: at('report.txt'),
+            note: at('note.txt'), old: at('old.txt'), tool: at('setup.exe'), gone: at('never-was.txt'),
+            outside: join(root, 'package.json'),
+          },
+          env: { ALEF_E2E_DIALOGS: JSON.stringify(script), ALEF_E2E_SHELL_LOG: log },
+          expectedChecks: DESKTOP_CHECKS,
+          judge: () => {
+            const asked = existsSync(log)
+              ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
+              : [];
+            const expected = [
+              ['openExternal', 'https://example.com/docs/guide?page=2'],
+              ['openPath', real(at('note.txt'))], ['showInFolder', real(at('note.txt'))], ['trash', real(at('old.txt'))],
+            ];
+            const seen = asked.map(({ operation, target }) => [operation, operation === 'openExternal' ? target : real(target)]);
+            return JSON.stringify(seen) === JSON.stringify(expected)
+              ? []
+              : [`the shell was asked ${JSON.stringify(seen)}, expected exactly ${JSON.stringify(expected)}`];
+          },
+        });
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
     },
 
     system: () => drive({

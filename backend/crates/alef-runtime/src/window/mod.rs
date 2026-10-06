@@ -92,6 +92,7 @@ struct App {
     sessions: Arc<SessionManager>,
     ids: WindowRegistry,
     runtime: tokio::runtime::Handle,
+    dialogs: host::dialogs::Dialogs,
 }
 
 pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -132,6 +133,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         sessions: bridge.sessions(),
         ids: bridge.windows(),
         runtime: tokio::runtime::Handle::current(),
+        dialogs: host::dialogs::Dialogs::new(),
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {

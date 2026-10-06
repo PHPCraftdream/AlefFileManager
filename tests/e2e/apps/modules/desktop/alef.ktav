@@ -1,0 +1,48 @@
+id: org.alef.e2e.modules.desktop
+name: Alef e2e desktop
+version:: 4.5.6
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 900
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: [ $TEMP/** ]
+        write: [ $TEMP/** ]
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: [ https://example.com/docs/* ]
+    }
+    clipboard: {
+        read: true
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}
