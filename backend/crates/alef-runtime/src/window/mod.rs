@@ -29,6 +29,10 @@ pub struct WindowOptions {
     pub icon_png: Vec<u8>,
     pub decorations: bool,
     pub resizable: bool,
+    /// Smallest inner size in logical pixels.
+    pub min_size: Option<(f64, f64)>,
+    /// Largest inner size in logical pixels.
+    pub max_size: Option<(f64, f64)>,
 }
 
 impl WindowOptions {
@@ -40,6 +44,8 @@ impl WindowOptions {
             height: 800.0,
             decorations: true,
             resizable: true,
+            min_size: None,
+            max_size: None,
         }
     }
 }

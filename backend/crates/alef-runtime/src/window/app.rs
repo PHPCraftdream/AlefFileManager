@@ -40,6 +40,18 @@ impl App {
             ))
             .with_decorations(self.options.decorations)
             .with_resizable(self.options.resizable);
+        let attributes = match self.options.min_size {
+            Some((width, height)) => {
+                attributes.with_min_inner_size(winit::dpi::LogicalSize::new(width, height))
+            }
+            None => attributes,
+        };
+        let attributes = match self.options.max_size {
+            Some((width, height)) => {
+                attributes.with_max_inner_size(winit::dpi::LogicalSize::new(width, height))
+            }
+            None => attributes,
+        };
         let attributes = super::platform::apply_window_icon(attributes, icon);
         let window = Rc::new(event_loop.create_window(attributes)?);
         window.set_ime_allowed(true);

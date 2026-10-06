@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const MAX_ENTRIES = 7;
 const MAX_LINES = 700;
-const SOURCE_ROOTS = ['frontend/src', 'backend/src', 'backend/crates', 'scripts', 'packages', 'experiments'];
+const SOURCE_ROOTS = ['frontend/src', 'backend/src', 'backend/crates', 'scripts', 'packages', 'tests', 'experiments'];
 const IGNORED = new Set(['node_modules', 'dist', 'target']);
 const CODE = /\.(rs|ts|tsx|js|jsx|mjs|cjs|css|html)$/;
 

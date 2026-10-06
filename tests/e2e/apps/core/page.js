@@ -1,18 +1,11 @@
-// M1 transport smoke (docs/stages/m1-core.md): drives native://call and native://stream inside
-// Servo, both with raw fetch (the protocol) and through the real @alef-tron/api (transpiled by
-// run.mjs next to this page), and reports to the runtime stderr through `smoke.report`; run.mjs
-// reads the verdict.
-import * as api from './src/index.js';
+// Core transport scenario (docs/stages/m1-core.md acceptance): the raw protocol and the real
+// @alef-tron/api inside Servo, then a navigation and a reload that must end the session.
+import { MIB, api, guard, pattern, report, same, sleep, suite, until, verdict } from './harness.js';
 
 const bootstrap = new URLSearchParams(location.hash.slice(1)).get('capability') ?? '';
-const logElement = document.getElementById('log');
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const MIB = 1024 * 1024;
-
+const { check, failed: failedNow } = suite();
 let token = '';
-const results = [];
 
-const log = line => { logElement.textContent += `${line}\n`; };
 const bearer = value => ({ Authorization: `Bearer ${value}` });
 
 async function call(name, args = {}, { body, signal, as = token } = {}) {
@@ -36,21 +29,12 @@ async function callJson(name, args, options) {
   return value;
 }
 
-async function report(line) {
-  await fetch('native://call/smoke.report', {
-    method: 'POST',
-    headers: { ...bearer(token || bootstrap), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ line }),
-  }).catch(() => {});
-}
-
 // Frame stream: [kind u8][len u32 LE][payload]; 1 json, 2 binary, 3 end, 4 error.
 class FrameStream {
   constructor(response) {
     this.reader = response.body.getReader();
     this.buffer = new Uint8Array(0);
     this.pending = null;
-    this.finished = false;
   }
 
   async #frame() {
@@ -90,66 +74,38 @@ async function openStream(id, options = {}) {
   return new FrameStream(response);
 }
 
-async function check(name, body) {
-  const started = performance.now();
-  try {
-    const detail = await body();
-    results.push({ name, ok: true });
-    await report(`check ${name} ok ${Math.round(performance.now() - started)}ms ${detail ?? ''}`);
-  } catch (error) {
-    results.push({ name, ok: false });
-    console.error(`M1_SMOKE-page check ${name} FAILED ${error?.message ?? error}`);
-    await report(`check ${name} FAILED ${error?.message ?? error}`);
-  }
-}
-
-function pattern(size) {
-  const bytes = new Uint8Array(size);
-  for (let i = 0; i < size; i += 1) bytes[i] = (i * 31 + (i >> 8)) & 255;
-  return bytes;
-}
-
-const same = (left, right) => left.length === right.length && left.every((byte, index) => byte === right[index]);
-
-async function until(predicate, ms, what) {
-  const deadline = performance.now() + ms;
-  while (!predicate()) {
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await sleep(25);
-  }
-}
-
 async function rawChecks() {
   await check('hello', async () => {
     const response = await fetch('native://call/runtime.hello', { method: 'POST', headers: { ...bearer(bootstrap), 'Content-Type': 'application/json' }, body: '{}' });
     const info = await response.json();
     if (!response.ok || info.protocol !== 1 || typeof info.token !== 'string' || info.token.length !== 64) throw new Error(`bad hello ${response.status}`);
-    for (const module of ['app', 'window', 'runtime', 'smoke']) if (!info.modules.includes(module)) throw new Error(`module ${module} missing`);
+    for (const module of ['window', 'runtime', 'e2e']) if (!info.modules.includes(module)) throw new Error(`module ${module} missing`);
     token = info.token;
     return `modules=${info.modules}`;
   });
   await check('denials', async () => {
-    const none = await fetch('native://call/smoke.echo', { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
-    const wrong = await call('smoke.echo', {}, { as: 'wrong-token' });
-    const asBootstrap = await call('smoke.echo', {}, { as: bootstrap });
+    const none = await fetch('native://call/e2e.echo', { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
+    const wrong = await call('e2e.echo', {}, { as: 'wrong-token' });
+    const asBootstrap = await call('e2e.echo', {}, { as: bootstrap });
     if (none.status !== 403 || wrong.status !== 403 || asBootstrap.status !== 403) throw new Error(`${none.status}/${wrong.status}/${asBootstrap.status}`);
   });
   await check('json-echo', async () => {
     const args = { a: [1, 2, 3], s: 'привет', n: null };
-    const value = await callJson('smoke.echo', args);
+    const value = await callJson('e2e.echo', args);
     if (JSON.stringify(value) !== JSON.stringify(args)) throw new Error('mismatch');
   });
   await check('binary-echo-16MiB', async () => {
     const data = pattern(16 * MIB);
-    const response = await call('smoke.echo', { name: 'ключ' }, { body: data });
+    const response = await call('e2e.echo', { name: 'ключ' }, { body: data });
     const back = new Uint8Array(await response.arrayBuffer());
     if (back.length !== data.length) throw new Error(`length ${back.length}`);
     for (let i = 0; i < data.length; i += 1) if (back[i] !== data[i]) throw new Error(`byte ${i}`);
     return `${back.length} bytes intact`;
   });
-  await check('app-command-on-registry', async () => {
-    const hello = await callJson('app.hello', null);
-    if (hello.engine !== 'Servo 0.6.0') throw new Error('unexpected reply');
+  await check('unknown-command-is-not-found', async () => {
+    const response = await call('e2e.nope', {});
+    const body = await response.json();
+    if (response.status !== 404 || body.code !== 'NOT_FOUND') throw new Error(`${response.status} ${JSON.stringify(body)}`);
   });
   await check('legacy-invoke-route-is-gone', async () => {
     const legacy = await fetch('native://invoke/', { method: 'POST', headers: { ...bearer(bootstrap), 'Content-Type': 'application/json' }, body: JSON.stringify({ command: 'hello', arguments: null }) });
@@ -157,7 +113,7 @@ async function rawChecks() {
   });
   await check('credit-window', async () => {
     const total = 4 * MIB;
-    const { stream } = await callJson('smoke.flood', { total, piece: 64 * 1024 });
+    const { stream } = await callJson('e2e.flood', { total, piece: 64 * 1024 });
     const frames = await openStream(stream);
     let received = 0;
     let acked = 0;
@@ -183,7 +139,7 @@ async function rawChecks() {
     return `stalls=${stalls}`;
   });
   await check('abort-closes-the-source', async () => {
-    const { stream } = await callJson('smoke.flood', { total: 256 * MIB, piece: 64 * 1024 });
+    const { stream } = await callJson('e2e.flood', { total: 256 * MIB, piece: 64 * 1024 });
     const controller = new AbortController();
     const frames = await openStream(stream, { signal: controller.signal });
     const first = await frames.next(2000);
@@ -196,17 +152,16 @@ async function rawChecks() {
   await check('events-stream', async () => {
     const { stream } = await callJson('runtime.events.subscribe', {});
     const frames = await openStream(stream);
-    await callJson('app.hello', null); // emits `backend.greeting`
     const seen = new Set();
     const deadline = performance.now() + 8000;
     await call('window.apply', { action: 'maximize' });
-    while (performance.now() < deadline && !(seen.has('backend.greeting') && seen.has('runtime.window.state'))) {
+    while (performance.now() < deadline && !seen.has('runtime.window.state')) {
       const frame = await frames.next(500);
       if (frame && frame.kind === 1) seen.add(frames.json(frame).name);
     }
     await call('window.apply', { action: 'restore' });
     await frames.cancel();
-    if (!seen.has('backend.greeting') || !seen.has('runtime.window.state')) throw new Error(`events seen: ${[...seen]}`);
+    if (!seen.has('runtime.window.state')) throw new Error(`events seen: ${[...seen]}`);
     return `events=${[...seen]}`;
   });
 }
@@ -215,27 +170,27 @@ async function rawChecks() {
 async function libraryChecks() {
   await check('lib-connect', async () => {
     const info = await api.connect();
-    if (info.protocol !== 1 || 'token' in info || !info.modules.includes('smoke')) throw new Error(JSON.stringify(info));
+    if (info.protocol !== 1 || 'token' in info || !info.modules.includes('e2e')) throw new Error(JSON.stringify(info));
     return `runtime=${info.runtime}`;
   });
   await check('lib-call-json', async () => {
     const args = { a: [1, 2, 3], s: 'привет', n: null };
-    const value = await api.call('smoke.echo', args);
+    const value = await api.call('e2e.echo', args);
     if (JSON.stringify(value) !== JSON.stringify(args)) throw new Error('mismatch');
   });
   await check('lib-binary-roundtrip-4MiB', async () => {
     const data = pattern(4 * MIB);
-    const back = await api.call('smoke.echo', { name: 'ключ' }, { body: data });
+    const back = await api.call('e2e.echo', { name: 'ключ' }, { body: data });
     if (!(back instanceof Uint8Array) || !same(back, data)) throw new Error('bytes differ');
     return `${back.length} bytes intact`;
   });
   await check('lib-error-mapping', async () => {
-    const error = await api.call('smoke.nope').then(() => null, reason => reason);
+    const error = await api.call('e2e.nope').then(() => null, reason => reason);
     if (!(error instanceof api.AlefError) || error.code !== 'NOT_FOUND' || error.status !== 404) throw new Error(String(error));
   });
   await check('lib-readable-acks-by-itself', async () => {
     const total = 8 * MIB;
-    const { stream } = await api.call('smoke.flood', { total, piece: 64 * 1024 });
+    const { stream } = await api.call('e2e.flood', { total, piece: 64 * 1024 });
     const readable = await api.openReadable(stream);
     let received = 0;
     for await (const frame of readable) {
@@ -246,7 +201,7 @@ async function libraryChecks() {
     return `${received} bytes`;
   });
   await check('lib-close-stops-the-source', async () => {
-    const { stream } = await api.call('smoke.flood', { total: 256 * MIB, piece: 64 * 1024 });
+    const { stream } = await api.call('e2e.flood', { total: 256 * MIB, piece: 64 * 1024 });
     const readable = await api.openReadable(stream);
     const first = await readable[Symbol.asyncIterator]().next();
     if (first.done || first.value.kind !== 'binary') throw new Error('no data');
@@ -256,11 +211,12 @@ async function libraryChecks() {
   });
   await check('lib-events', async () => {
     const seen = [];
-    const off = await api.on('backend.greeting', payload => seen.push(payload));
-    await api.call('app.hello', null);
-    await until(() => seen.length > 0, 5000, 'backend.greeting');
+    const off = await api.on('runtime.window.state', payload => seen.push(payload));
+    await api.nativeWindow.maximize();
+    await until(() => seen.length > 0, 8000, 'a window state event');
+    await api.nativeWindow.restore();
     off();
-    return `payload engine=${seen[0].engine}`;
+    return `revision=${seen[0].revision}`;
   });
   await check('lib-window-watch', async () => {
     const states = [];
@@ -284,13 +240,13 @@ async function newDocumentChecks(previous, how) {
     token = info.token;
   });
   await check(`${how}-old-token-denied`, async () => {
-    const old = await call('smoke.echo', {}, { as: previous.token });
+    const old = await call('e2e.echo', {}, { as: previous.token });
     if (old.status !== 403) throw new Error(`old token status ${old.status}`);
-    const fresh = await call('smoke.echo', { ok: true });
+    const fresh = await call('e2e.echo', { ok: true });
     if (!fresh.ok) throw new Error(`new token status ${fresh.status}`);
   });
   await check(`${how}-library-reconnects`, async () => {
-    const echoed = await api.call('smoke.echo', { after: how });
+    const echoed = await api.call('e2e.echo', { after: how });
     if (echoed.after !== how) throw new Error('library call failed in the new document');
   });
 }
@@ -307,13 +263,17 @@ function readState() {
   };
 }
 
-const failedNow = () => results.filter(item => !item.ok).map(item => item.name);
-
 async function main() {
   const state = readState();
   if (state.phase === 1) {
     await rawChecks();
     await libraryChecks();
+    // A stream nobody finishes: the runtime must close its source when this document goes away.
+    const { stream } = await callJson('e2e.flood', { total: 256 * MIB, piece: 64 * 1024 });
+    const frames = await openStream(stream);
+    const first = await frames.next(2000);
+    if (!first || first.kind !== 2) throw new Error('the abandoned stream produced no data');
+    await report(`stream-left-open stream=${stream}`);
     await report('navigating');
     location.search = `?${new URLSearchParams({ phase: '2', token, failed: failedNow().join(',') })}`;
     return;
@@ -327,12 +287,7 @@ async function main() {
     location.reload();
     return;
   }
-  log(failed.length === 0 ? 'PASS' : `FAIL ${failed}`);
-  await report(`RESULT ${failed.length === 0 ? 'PASS' : 'FAIL'} ${failed.join(',')}`);
+  await verdict(failed);
 }
 
-setTimeout(() => report('RESULT FAIL timeout'), 120000);
-main().catch(error => {
-  console.error(`M1_SMOKE-page fatal ${error?.message ?? error}`);
-  return report(`RESULT FAIL ${error?.message ?? error}`);
-});
+guard(main);

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `native://` protocol: application assets and the transport routes `call`/`stream`.
 pub(crate) mod commands;
+mod e2e;
 mod events;
-mod smoke;
-mod spike;
 mod transport;
 mod windows;
 
@@ -34,7 +33,6 @@ use servo::protocol_handler::{
     DoneChannel, FetchContext, HttpStatus, ProtocolHandler, ProtocolRegistry, Request,
     ResourceFetchTiming, Response, ResponseBody,
 };
-use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use url::Url;
 
@@ -58,6 +56,8 @@ pub struct BridgeOptions {
     pub permissions: Option<Arc<PermissionSet>>,
     /// Per-session transport limits.
     pub limits: Limits,
+    /// Root-relative entry document (`/app.html`); `None` opens the root, served as `index.html`.
+    pub entry: Option<String>,
 }
 
 pub struct Bridge {
@@ -69,6 +69,26 @@ pub struct Bridge {
     sessions: Arc<SessionManager>,
     windows: WindowRegistry,
     transport: Arc<Transport>,
+}
+
+/// A root-relative path (`/` or `/dir/app.html?x=1`); anything that could name another host or
+/// scheme is refused.
+fn entry_path(entry: Option<&str>) -> io::Result<String> {
+    let entry = entry.unwrap_or("/");
+    let valid = entry.starts_with('/')
+        && !entry.starts_with("//")
+        && !entry.contains('\\')
+        && Url::parse("native://app/")
+            .and_then(|base| base.join(entry))
+            .is_ok_and(|url| url.host_str() == Some("app") && url.scheme() == "native");
+    if valid {
+        Ok(entry.to_owned())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "The entry document must be a root-relative path",
+        ))
+    }
 }
 
 fn random_token() -> io::Result<String> {
@@ -139,13 +159,20 @@ impl Bridge {
         development_url: Option<Url>,
         options: BridgeOptions,
     ) -> io::Result<Self> {
+        let entry = entry_path(options.entry.as_deref())?;
         let assets = match assets {
             Some(path) => {
                 let path = tokio::fs::canonicalize(path).await?;
-                if !tokio::fs::try_exists(path.join("index.html")).await? {
+                let document = match entry.trim_matches('/') {
+                    "" => "index.html",
+                    other => other,
+                };
+                if !tokio::fs::try_exists(path.join(document)).await? {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
-                        "Build the frontend before starting",
+                        format!(
+                            "The entry document {document} is missing in the application assets"
+                        ),
                     ));
                 }
                 if crate::spikes::origin::enabled() {
@@ -156,10 +183,16 @@ impl Bridge {
             None => None,
         };
         let token = random_token()?;
-        let mut entry_url = development_url.unwrap_or_else(|| {
-            crate::spikes::origin::entry_url()
-                .unwrap_or_else(|| Url::parse("native://app/").expect("constant URL"))
-        });
+        let mut entry_url = match development_url {
+            Some(base) => base
+                .join(&entry)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
+            None => crate::spikes::origin::entry_url().unwrap_or_else(|| {
+                Url::parse("native://app/")
+                    .and_then(|base| base.join(&entry))
+                    .expect("a validated root-relative entry")
+            }),
+        };
         let fragment = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("capability", &token)
             .finish();
@@ -168,7 +201,7 @@ impl Bridge {
         let (ui, requests) = RuntimeHandle::channel();
         let mut registry = commands.to_registry(&ui).map_err(startup)?;
         ui.events().register(&mut registry).map_err(startup)?;
-        smoke::register(&mut registry, &ui).map_err(startup)?;
+        e2e::register(&mut registry, &ui).map_err(startup)?;
         let tokens: TokenSource =
             Arc::new(|| random_token().expect("the system must provide randomness"));
         let sessions = Arc::new(SessionManager::new(tokens, options.limits));
@@ -188,7 +221,6 @@ impl Bridge {
         let windows = WindowRegistry::default();
         let handler = MemoryProtocol {
             assets,
-            token,
             handle: tokio::runtime::Handle::current(),
             transport: transport.clone(),
             windows: windows.clone(),
@@ -253,7 +285,6 @@ impl Bridge {
 
 pub(super) struct MemoryProtocol {
     pub(super) assets: Option<PathBuf>,
-    pub(super) token: String,
     pub(super) handle: tokio::runtime::Handle,
     pub(super) transport: Arc<Transport>,
     pub(super) windows: WindowRegistry,
@@ -282,14 +313,9 @@ impl ProtocolHandler for MemoryProtocol {
         // is installed the fetch reads the body ONLY from it.
         let url = request.current_url();
         let transport_path = transport::transport_path(url.as_url());
-        let transport_sender = transport_path.as_ref().map(|_| spike::install(done_chan));
-        let spike_stream = (transport_path.is_none()
-            && url.host_str() == Some("spike")
-            && url.path() == "/stream"
-            && request.method == http::Method::GET
-            && spike::enabled()
-            && authorize(&self.token, &request.headers).is_ok())
-        .then(|| spike::install(done_chan));
+        let transport_sender = transport_path
+            .as_ref()
+            .map(|_| transport::install(done_chan));
         Box::pin(async move {
             if let (Some(path), Some(sender)) = (transport_path, transport_sender) {
                 return self.transport(request, path, sender).await;
@@ -299,11 +325,6 @@ impl ProtocolHandler for MemoryProtocol {
                 ResourceFetchTiming::new(request.timing_type()),
             );
             let url = request.current_url().clone();
-            if url.host_str() == Some("spike") && spike::enabled() {
-                return self
-                    .spike(request, spike_stream, response, url.as_url())
-                    .await;
-            }
             let result = if url.host_str() == Some("app") && request.method == http::Method::GET {
                 let assets = self.assets.clone();
                 let path = url.path().trim_start_matches('/').to_owned();
@@ -401,21 +422,6 @@ fn apply_headers(response: &mut Response, content_type: &str, csp: Option<&str>)
     }
 }
 
-fn authorize(token: &str, headers: &http::HeaderMap) -> io::Result<()> {
-    let provided = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .unwrap_or("");
-    if !bool::from(provided.as_bytes().ct_eq(token.as_bytes())) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Private bridge capability required",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
@@ -444,31 +450,6 @@ mod tests {
     use alef_core::protocol::transport::{Method, ResponseBody as Body, TransportRequest};
     use bytes::Bytes;
     use serde_json::Value;
-
-    #[test]
-    fn rejects_missing_foreign_and_malformed_capabilities() {
-        let token = "process-private-capability";
-        for value in [
-            None,
-            Some("Bearer foreign-capability"),
-            Some("process-private-capability"),
-        ] {
-            let mut headers = http::HeaderMap::new();
-            if let Some(value) = value {
-                headers.insert(header::AUTHORIZATION, HeaderValue::from_static(value));
-            }
-            assert_eq!(
-                authorize(token, &headers).expect_err("denied").kind(),
-                io::ErrorKind::PermissionDenied
-            );
-        }
-        let mut headers = http::HeaderMap::new();
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Bearer process-private-capability"),
-        );
-        assert!(authorize(token, &headers).is_ok());
-    }
 
     #[tokio::test]
     async fn refuses_asset_parent_traversal() {

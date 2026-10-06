@@ -8,10 +8,12 @@ use crate::{AlefError, ErrorCode};
 
 /// Build the Content-Security-Policy value for an app document from its manifest `external` section.
 ///
-/// Schemes and hosts are normalized to lowercase. `app_origin` is validated as an HTTPS origin but
-/// is not emitted because `'self'` already covers it.
+/// Schemes and hosts are normalized to lowercase. `app_origin` is either an HTTPS origin, which
+/// `'self'` already covers (validated, not emitted), or `native://<host>`: the origin of such a
+/// document is opaque for CSP matching, so `'self'` matches nothing and the source is emitted
+/// explicitly in every load directive.
 pub fn build_csp(external: &External, app_origin: &str) -> Result<String, AlefError> {
-    parse_origin(app_origin, "app_origin", true)?;
+    let own = app_source(app_origin)?;
     let mut directives = vec!["default-src 'none'".to_owned()];
     for (directive, entries) in [
         ("script-src", &external.load.scripts),
@@ -24,12 +26,12 @@ pub fn build_csp(external: &External, app_origin: &str) -> Result<String, AlefEr
         directives.push(format!(
             "{} {}",
             directive,
-            sources(entries, directive, false)?
+            sources(entries, directive, false, own.as_deref())?
         ));
     }
     directives.push(format!(
         "connect-src {}",
-        sources(&external.connect, "connect-src", true)?
+        sources(&external.connect, "connect-src", true, None)?
     ));
     directives.extend([
         "base-uri 'none'".into(),
@@ -39,8 +41,34 @@ pub fn build_csp(external: &External, app_origin: &str) -> Result<String, AlefEr
     Ok(directives.join("; "))
 }
 
-fn sources(entries: &[String], directive: &str, connect: bool) -> Result<String, AlefError> {
+/// The explicit source of the app's own documents, when `'self'` cannot express it.
+fn app_source(app_origin: &str) -> Result<Option<String>, AlefError> {
+    let Some(host) = app_origin.strip_prefix("native://") else {
+        parse_origin(app_origin, "app_origin", true)?;
+        return Ok(None);
+    };
+    let plain = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if plain {
+        Ok(Some(format!("native://{host}")))
+    } else {
+        Err(AlefError::new(
+            ErrorCode::ManifestInvalid,
+            format!("Invalid entry '{app_origin}' in app_origin"),
+        ))
+    }
+}
+
+fn sources(
+    entries: &[String],
+    directive: &str,
+    connect: bool,
+    own: Option<&str>,
+) -> Result<String, AlefError> {
     let mut values = vec!["'self'".to_owned()];
+    values.extend(own.map(str::to_owned));
     if connect {
         values.push("native:".into());
     }

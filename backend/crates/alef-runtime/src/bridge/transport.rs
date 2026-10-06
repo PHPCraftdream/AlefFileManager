@@ -12,12 +12,15 @@ use futures_util::StreamExt;
 use http::{HeaderName, HeaderValue};
 use ipc_channel::ipc;
 use net::fetch::methods::Data;
-use net_traits::request::{BodyChunkRequest, BodyChunkResponse, RequestBody};
+use net_traits::request::{BodyChunkRequest, BodyChunkResponse, Origin, RequestBody};
 use servo::protocol_handler::{
-    HttpStatus, Request, ResourceFetchTiming, Response, ResponseBody as ServoBody,
+    DoneChannel, HttpStatus, Request, ResourceFetchTiming, Response, ResponseBody as ServoBody,
 };
 use servo_base::id::PipelineId;
-use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
+use tokio::{
+    sync::mpsc::{unbounded_channel, UnboundedSender},
+    task::JoinHandle,
+};
 use url::Url;
 
 use super::MemoryProtocol;
@@ -51,6 +54,35 @@ fn collect_headers(headers: &http::HeaderMap) -> Vec<(String, String)> {
             Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
         })
         .collect()
+}
+
+/// Installs the streaming body channel of this fetch; once installed the fetch reads the body ONLY
+/// from it, so every outcome (also errors) must travel through it.
+pub(super) fn install(done_chan: &mut DoneChannel) -> UnboundedSender<Data> {
+    let (sender, receiver) = unbounded_channel();
+    *done_chan = Some((sender.clone(), receiver));
+    sender
+}
+
+/// Servo gives a protocol handler the headers the page's fetch set; the browser adds `Origin` only
+/// on its way to the network, which a custom scheme never takes. The document's origin is the
+/// request's origin, and a page cannot forge it, so it stands in for the header.
+fn add_origin(headers: &mut Vec<(String, String)>, origin: &Origin) {
+    if headers.iter().any(|(name, _)| name == "origin") {
+        return;
+    }
+    if let Origin::Origin(origin) = origin {
+        headers.push((
+            "origin".to_owned(),
+            origin.ascii_serialization().into_owned(),
+        ));
+    }
+}
+
+fn request_headers(request: &Request) -> Vec<(String, String)> {
+    let mut headers = collect_headers(&request.headers);
+    add_origin(&mut headers, &request.origin);
+    headers
 }
 
 /// Guarantees a terminal message on the fetch body channel: Servo panics when the channel closes
@@ -151,18 +183,25 @@ impl MemoryProtocol {
                     ),
                     Ok(body) => {
                         let window = self.windows.resolve(request.target_webview_id);
-                        let route = self.log_calls.then(|| path.clone());
+                        let headers = request_headers(request);
+                        let route = self.log_calls.then(|| {
+                            let origin = headers
+                                .iter()
+                                .find(|(name, _)| name == "origin")
+                                .map_or("-", |(_, value)| value.as_str());
+                            (path.clone(), origin.to_owned())
+                        });
                         let request = TransportRequest {
                             method,
                             path,
-                            headers: collect_headers(&request.headers),
+                            headers,
                             body,
                             window,
                             document: request.pipeline_id.map(document_of),
                         };
                         let reply = self.transport.handle(request).await;
-                        if let Some(route) = route {
-                            eprintln!("ALEF_CALL {route} {}", reply.status);
+                        if let Some((route, origin)) = route {
+                            eprintln!("ALEF_CALL {route} {} origin={origin}", reply.status);
                         }
                         reply
                     }
@@ -312,6 +351,47 @@ mod tests {
         assert!(document_of(pipeline(1, 1)) < document_of(pipeline(1, 2)));
         assert!(document_of(pipeline(1, 2)) < document_of(pipeline(1, 30)));
         assert_ne!(document_of(pipeline(1, 2)), document_of(pipeline(2, 2)));
+    }
+
+    #[test]
+    fn the_document_origin_stands_in_for_the_missing_origin_header() {
+        use servo::ServoUrl;
+        let origin_of = |text: &str| Origin::Origin(ServoUrl::parse(text).expect("url").origin());
+        let header = |origin: &Origin, existing: &[(&str, &str)]| {
+            let mut headers: Vec<(String, String)> = existing
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect();
+            add_origin(&mut headers, origin);
+            headers
+                .into_iter()
+                .find(|(name, _)| name == "origin")
+                .map(|(_, value)| value)
+        };
+        assert_eq!(
+            header(&origin_of("http://127.0.0.1:3000/index.html"), &[]).as_deref(),
+            Some("http://127.0.0.1:3000"),
+            "a page served over http"
+        );
+        assert_eq!(
+            header(&origin_of("native://app/index.html"), &[]).as_deref(),
+            Some("null"),
+            "the origin of a native:// document is opaque"
+        );
+        assert_eq!(
+            header(&Origin::Client, &[]),
+            None,
+            "unknown origin: no header"
+        );
+        assert_eq!(
+            header(
+                &origin_of("http://127.0.0.1:3000/"),
+                &[("origin", "https://given.example")]
+            )
+            .as_deref(),
+            Some("https://given.example"),
+            "a header that is already there is kept"
+        );
     }
 
     #[test]

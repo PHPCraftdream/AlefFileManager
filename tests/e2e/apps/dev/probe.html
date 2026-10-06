@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Alef e2e: foreign origin probe</title>
+<script>
+  // A page on another origin that holds the bootstrap capability (its parent hands it over).
+  const capability = new URLSearchParams(location.hash.slice(1)).get('capability') ?? '';
+  fetch('native://call/runtime.hello', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${capability}`, 'Content-Type': 'application/json' },
+    body: '{}',
+  }).then(
+    response => parent.postMessage({ status: response.status }, '*'),
+    error => parent.postMessage({ status: 'refused', message: String(error) }, '*'),
+  );
+</script>

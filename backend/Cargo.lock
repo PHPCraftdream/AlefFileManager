@@ -69,6 +69,16 @@ dependencies = [
 [[package]]
 name = "alef"
 version = "0.1.0"
+dependencies = [
+ "alef-core",
+ "alef-runtime",
+ "dirs",
+ "rustls",
+ "surfman",
+ "tempfile",
+ "tokio",
+ "url",
+]
 
 [[package]]
 name = "alef-core"
@@ -130,7 +140,6 @@ dependencies = [
  "servo-embedder-traits",
  "servo-net",
  "servo-net-traits",
- "subtle",
  "tempfile",
  "tokio",
  "tray-icon",

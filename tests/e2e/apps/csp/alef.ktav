@@ -1,0 +1,48 @@
+id: org.alef.e2e.csp
+name: Alef e2e csp
+version:: 0.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 700
+        height: 500
+    }
+]
+external: {
+    connect: {{CONNECT}}
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}

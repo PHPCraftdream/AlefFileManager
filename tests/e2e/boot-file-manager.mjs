@@ -2,7 +2,7 @@
 // Boot check of the real File Manager: starts the binary with the built frontend (frontend/dist) and
 // ALEF_LOG_CALLS=1, then requires the startup traffic of the new API to succeed: handshake, app.hello,
 // preferences.get, the window snapshot and the event stream, with no failed request and no page error.
-//   node experiments/m1-smoke/boot.mjs --exe <binary> [--frontend-dir <dir>] [--timeout-s 60] [--verbose]
+//   node tests/e2e/boot-file-manager.mjs --exe <alef-file-manager binary> [--frontend-dir <dir>] [--timeout-s 60] [--verbose]
 import { spawn } from 'node:child_process';
 import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -63,7 +63,7 @@ child.stderr.on('data', chunk => {
   pending = complete.pop();
   for (const raw of complete) {
     const line = raw.trim();
-    const call = /^ALEF_CALL (\S+) (\d+)$/.exec(line);
+    const call = /^ALEF_CALL (\S+) (\d+)(?: origin=\S*)?$/.exec(line);
     if (call) {
       console.log(line);
       const status = Number(call[2]);
