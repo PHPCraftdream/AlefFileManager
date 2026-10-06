@@ -278,7 +278,7 @@ fn the_system_clipboard_keeps_text_html_and_pictures() {
         eprintln!("skipped: ALEF_TEST_DESKTOP=1 allows the test to use the clipboard");
         return;
     }
-    let clipboard = SystemClipboard;
+    let clipboard = SystemClipboard::default();
     if clipboard.read_image().ok().flatten().is_some() {
         eprintln!("skipped: the clipboard holds a picture, which this test would lose");
         return;

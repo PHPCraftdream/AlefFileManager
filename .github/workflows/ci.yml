@@ -139,13 +139,18 @@ jobs:
 
       # The system clipboard and trash against the real desktop of the clean runner. They change what
       # a user has, so the tests run only on request (ALEF_TEST_DESKTOP=1); Linux needs a display.
+      # The default shell stays: Git Bash on Windows puts its own link.exe before the MSVC one.
       - name: Desktop backends (clipboard, trash)
-        shell: bash
+        if: runner.os != 'Linux'
         env:
           ALEF_TEST_DESKTOP: "1"
-        run: |
-          cmd="node scripts/cargo.mjs test --locked -p alef-modules --test clipboard --test shell -- --ignored --nocapture"
-          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a sh -c "$cmd"; else sh -c "$cmd"; fi
+        run: node scripts/cargo.mjs test --locked -p alef-modules --test clipboard --test shell -- --ignored --nocapture
+
+      - name: Desktop backends (clipboard, trash; virtual display)
+        if: runner.os == 'Linux'
+        env:
+          ALEF_TEST_DESKTOP: "1"
+        run: xvfb-run -a node scripts/cargo.mjs test --locked -p alef-modules --test clipboard --test shell -- --ignored --nocapture
 
       - name: Generated TypeScript types
         run: |

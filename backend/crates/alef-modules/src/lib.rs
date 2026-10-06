@@ -35,7 +35,7 @@ impl Backends {
     /// The clipboard and the shell of the desktop.
     pub fn system() -> Self {
         Self {
-            clipboard: Arc::new(SystemClipboard),
+            clipboard: Arc::new(SystemClipboard::default()),
             shell: Arc::new(SystemShell),
         }
     }

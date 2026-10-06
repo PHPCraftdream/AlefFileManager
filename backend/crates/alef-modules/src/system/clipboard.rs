@@ -41,9 +41,21 @@ pub trait ClipboardBackend: Send + Sync + Debug {
     fn write_image(&self, image: Image) -> Result<(), AlefError>;
 }
 
-/// The clipboard of the desktop.
-#[derive(Debug, Default)]
-pub struct SystemClipboard;
+/// The clipboard of the desktop. One handle lives as long as the backend: on X11 whoever wrote the
+/// content serves it, so a handle dropped after each call would take the content along when no
+/// clipboard manager keeps a copy.
+#[derive(Default)]
+pub struct SystemClipboard {
+    handle: Mutex<Option<arboard::Clipboard>>,
+}
+
+impl Debug for SystemClipboard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SystemClipboard")
+            .finish_non_exhaustive()
+    }
+}
 
 fn failed(error: arboard::Error) -> AlefError {
     let code = match error {
@@ -55,45 +67,62 @@ fn failed(error: arboard::Error) -> AlefError {
     AlefError::new(code, format!("clipboard: {error}"))
 }
 
-fn open() -> Result<arboard::Clipboard, AlefError> {
-    arboard::Clipboard::new().map_err(failed)
-}
-
 /// A format the clipboard does not hold reads as nothing.
-fn or_nothing<T: Default>(result: Result<T, arboard::Error>) -> Result<T, AlefError> {
+fn or_nothing<T: Default>(result: Result<T, arboard::Error>) -> Result<T, arboard::Error> {
     match result {
         Err(arboard::Error::ContentNotAvailable) => Ok(T::default()),
-        other => other.map_err(failed),
+        other => other,
+    }
+}
+
+impl SystemClipboard {
+    /// Runs `work` on the handle, opening it the first time.
+    fn with<T>(
+        &self,
+        work: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
+    ) -> Result<T, AlefError> {
+        let mut handle = self.handle.lock().unwrap_or_else(|e| e.into_inner());
+        if handle.is_none() {
+            *handle = Some(arboard::Clipboard::new().map_err(failed)?);
+        }
+        let clipboard = handle
+            .as_mut()
+            .ok_or_else(|| AlefError::new(ErrorCode::Internal, "clipboard: the handle is gone"))?;
+        work(clipboard).map_err(failed)
     }
 }
 
 impl ClipboardBackend for SystemClipboard {
     fn read_text(&self) -> Result<String, AlefError> {
-        or_nothing(open()?.get_text())
+        self.with(|clipboard| or_nothing(clipboard.get_text()))
     }
 
     fn write_text(&self, text: &str) -> Result<(), AlefError> {
-        open()?.set_text(text).map_err(failed)
+        self.with(|clipboard| clipboard.set_text(text))
     }
 
     fn read_html(&self) -> Result<String, AlefError> {
-        or_nothing(open()?.get().html())
+        self.with(|clipboard| or_nothing(clipboard.get().html()))
     }
 
     fn write_html(&self, html: &str) -> Result<(), AlefError> {
-        open()?.set_html(html, None::<&str>).map_err(failed)
+        self.with(|clipboard| clipboard.set_html(html, None::<&str>))
     }
 
     fn read_image(&self) -> Result<Option<Image>, AlefError> {
-        match open()?.get_image() {
-            Ok(data) => Ok(Some(Image {
+        let data = self.with(|clipboard| match clipboard.get_image() {
+            Ok(data) => Ok(Some(data)),
+            Err(arboard::Error::ContentNotAvailable) => Ok(None),
+            Err(error) => Err(error),
+        })?;
+        data.map(|data| {
+            Ok(Image {
                 width: u32::try_from(data.width).map_err(|_| too_big())?,
                 height: u32::try_from(data.height).map_err(|_| too_big())?,
                 rgba: data.bytes.into_owned(),
-            })),
-            Err(arboard::Error::ContentNotAvailable) => Ok(None),
-            Err(error) => Err(failed(error)),
-        }
+            })
+        })
+        .transpose()
     }
 
     fn write_image(&self, image: Image) -> Result<(), AlefError> {
@@ -102,7 +131,7 @@ impl ClipboardBackend for SystemClipboard {
             height: image.height as usize,
             bytes: image.rgba.into(),
         };
-        open()?.set_image(data).map_err(failed)
+        self.with(|clipboard| clipboard.set_image(data))
     }
 }
 
