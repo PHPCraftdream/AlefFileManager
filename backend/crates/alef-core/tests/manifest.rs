@@ -18,6 +18,13 @@ fn error(src: &str) -> alef_core::AlefError {
 }
 
 #[test]
+fn crlf_manifest_parses_like_lf() {
+    let lf = Manifest::from_ktav_str(MINIMAL).unwrap();
+    let crlf = Manifest::from_ktav_str(&MINIMAL.replace('\n', "\r\n")).unwrap();
+    assert_eq!(crlf, lf);
+}
+
+#[test]
 fn minimal_fixture_asserts_closed_schema_exactly() {
     let m = Manifest::from_ktav_str(MINIMAL).unwrap();
     assert_eq!(m.id, "org.example.app");

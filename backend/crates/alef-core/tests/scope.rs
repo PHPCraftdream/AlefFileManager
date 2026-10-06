@@ -363,10 +363,9 @@ fn exec_absolute_path_matches_only_the_same_normalized_path() {
     let set = exec(&[pattern]);
     let c = Permission::CliExec;
     assert!(ok(&set, c, pattern));
-    assert_eq!(
+    assert!(
         ok(&set, c, same),
-        cfg!(windows),
-        "separator style and case on Windows"
+        "{same:?}: the same path (separator style and case on Windows)"
     );
     let root = if cfg!(windows) {
         r"C:\tools"

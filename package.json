@@ -19,7 +19,7 @@
     "build:rust": "node scripts/cargo.mjs build --locked --workspace",
     "build": "npm run build:frontend && npm run build:rust",
     "start": "node scripts/start.mjs",
-    "test:rust": "node scripts/cargo.mjs test --locked --workspace",
+    "test:rust": "node scripts/cargo.mjs test --locked --workspace --no-fail-fast",
     "lint": "oxlint --config .oxlintrc.json frontend/src packages scripts experiments/m1-smoke rsbuild.config.ts --max-warnings 0",
     "lint:structure": "node scripts/check-structure.mjs",
     "check": "npm run lint && npm run lint:structure && npm run typecheck &&node scripts/cargo.mjs clippy --locked --workspace --all-targets -- -D warnings"
