@@ -404,9 +404,10 @@ fn exec_absolute_path_matches_only_the_same_normalized_path() {
             assert!(!ok(&set, c, no), "{no:?}");
         }
     } else {
-        assert!(
-            !ok(&set, c, "/usr/bin/NODE"),
-            "Unix is case-sensitive (macOS excepted)"
+        assert_eq!(
+            ok(&set, c, "/usr/bin/NODE"),
+            cfg!(target_os = "macos"),
+            "case is ignored where the file system ignores it (macOS), nowhere else on Unix"
         );
     }
 }

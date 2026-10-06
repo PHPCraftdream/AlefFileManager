@@ -154,39 +154,13 @@ jobs:
         if: runner.os == 'Linux'
         run: npm run build
 
-      - name: e2e smoke (spike-страница, headless X11)
+      # tests/e2e: the real alef binary on scenario applications; Servo renders through Mesa software GL.
+      - name: e2e (alef on Servo, headless X11)
         if: runner.os == 'Linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
-          set -u
-          log="$RUNNER_TEMP/spike.log"
-          if ALEF_TRANSPORT_SPIKE=1 LIBGL_ALWAYS_SOFTWARE=1 \
-             timeout 180 xvfb-run -a -s "-screen 0 1280x1024x24" \
-             backend/target/debug/alef-file-manager --frontend-dir experiments/transport-spike \
-             >"$log" 2>&1
-          then
-            echo "spike exit code: 0"
-          else
-            code=$?
-            echo "spike exit code: $code"
-            tail -n 80 "$log"
-            exit 1
-          fi
-          if grep -qF 'panicked at' "$log"; then
-            echo "assertion failed: panic in log"
-            grep -F 'panicked at' "$log" | head -n 5
-            exit 1
-          fi
-          line="$(grep -F 'spike report: {"phase":"main"' "$log" | tail -n 1)"
-          if [ -z "$line" ]; then
-            echo "assertion failed: no spike report line"
-            tail -n 80 "$log"
-            exit 1
-          fi
-          node -e "const report = JSON.parse(process.argv[1].replace(/^.*spike report: /, ''));
-            if ('error' in report) { console.error('spike main report top-level error:', report.error); process.exit(1); }
-            const echo = report.results && report.results.echo;
-            if (!Array.isArray(echo) || echo.length === 0) { console.error('spike main report lacks results.echo'); process.exit(1); }
-            console.log('spike main report OK: echo entries=' + echo.length);" "$line"
+          xvfb-run -a -s "-screen 0 1280x1024x24" node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
