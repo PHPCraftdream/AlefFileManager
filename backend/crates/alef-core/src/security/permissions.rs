@@ -44,7 +44,7 @@ pub enum Permission {
     Secrets,
     /// Read an environment variable listed in `app.env`.
     AppEnv,
-    /// Create windows at runtime (runtime opt-in, not a manifest section).
+    /// Create windows at runtime (`permissions.window.create` in the manifest, or the embedder).
     WindowCreate,
 }
 
@@ -186,7 +186,7 @@ impl PermissionSet {
             clipboard: policy.clipboard.read,
             shortcut: policy.shortcut.global,
             secrets: policy.secrets,
-            window: false,
+            window: policy.window.as_ref().is_some_and(|window| window.create),
         })
     }
 
@@ -197,7 +197,7 @@ impl PermissionSet {
         names
     }
 
-    /// Allows runtime window creation (not expressible in the manifest).
+    /// Allows runtime window creation regardless of the manifest (for an embedding host).
     pub fn with_window_create(mut self) -> Self {
         self.window = true;
         self

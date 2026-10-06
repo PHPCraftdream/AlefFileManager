@@ -213,6 +213,10 @@ permissions: {
     app: {
         env: []
     }
+    ## Необязательный раздел. Нет раздела = окна в рантайме создавать нельзя (`window.create` — PERMISSION_DENIED).
+    window: {
+        create: true
+    }
 }
 
 ## Необязательный раздел. Нет раздела = приложение не принимает аргументов.
@@ -278,7 +282,10 @@ permissions: {
 | `minWidth`, `minHeight`, `maxWidth`, `maxHeight` | те же единицы |
 | `monitor` | `primary` (по умолчанию) или `cursor` — монитор под курсором; от него считаются проценты |
 | `position` | `center` (по умолчанию — по центру рабочей области) или явные `x`, `y` в тех же единицах |
-| `restore` | `true` — запомнить размер, положение и maximize между запусками; если сохранённое положение вне доступных мониторов, окно открывается по правилам выше |
+| `restore` | `true` — запомнить размер, положение и maximize между запусками; если сохранённое положение вне доступных мониторов, окно открывается по правилам выше (M2.4; пока манифест с `restore: true` отклоняется) |
+| `title`, `decorations`, `resizable` | необязательные: заголовок (по умолчанию имя приложения), рамка и кнопки ОС (по умолчанию да), изменение размера пользователем (по умолчанию да) |
+
+Размеры окна — размеры клиентской области. `x`, `y`: пиксели — координаты рабочего стола, проценты отсчитываются от начала выбранного дисплея (`%screen`) или его рабочей области (`%work`); `center` — по центру рабочей области выбранного дисплея с учётом рамки. Логические пиксели дисплея — физические, делённые на его масштаб: на рабочем столе с дисплеями разного масштаба прямоугольники дисплеев состыкованы неточно, а положение, переданное в пикселях, приблизительно. Размер и положение, которые окно получило, читаются через `state()` (`WindowInfo`, те же единицы).
 
 Проценты вычисляются при создании окна и при вызове `setSize`/`setPosition`, а не отслеживаются постоянно. TS-тип: `` number | `${number}%screen` | `${number}%work` ``.
 
@@ -291,7 +298,7 @@ permissions: {
 | Группа | Модуль | Ключевой API | Реализация | Право | Размер |
 |---|---|---|---|---|---|
 | desktop | `app` | `info()`, `quit()`, `relaunch()`, `requestSingleInstance()`, события `ready/before-quit/second-instance`; аргументы запуска (`args()` с разбором по схеме манифеста, `--help`/`--version`), env, cwd, аргументы второго экземпляра; stdin/stdout/stderr приложения потоками, `exit(code)`, режим без окна (консольные утилиты на Alef) | winit, named mutex, std::env, tokio stdio, `AttachConsole` на Windows | — | M |
-| desktop | `window` | `create(opts)` с размерами в px/`%screen`/`%work`, `monitor`, `position: center`, `restore` (§6.2), `current()`, `all()`, bounds, min/max size, center, fullscreen, always-on-top, focus, show/hide, title, icon, decorations, resizable, drag/resize, zoom; события move/resize/focus/close-requested (отменяемое), drop файлов | runtime/window, мультиоконность | `window.create` | L |
+| desktop | `window` | `create(opts)` с размерами в px/`%screen`/`%work`, `monitor`, `position: center`, `restore` (§6.2), `current()`, `all()`, bounds, min/max size, center, fullscreen, always-on-top, focus, show/hide, title, icon, decorations, resizable, drag/resize, zoom; события moved/resized/focus/blur/close-requested (отменяемое), drop файлов | runtime/window, мультиоконность | `window.create` (`permissions.window.create`) | L |
 | desktop | `dialog` | `open`, `save`, `pickFolder`, `message`, `confirm` | `rfd` (async), родитель — HWND окна | — (выдаёт гранты) | S |
 | desktop | `shell` | `openExternal(url)`, `openPath`, `showInFolder`, `trash` | `opener`, `trash` | `shell.*` + scope | S |
 | desktop | `menu` | меню окна/приложения, контекстное меню, accelerators, события | `muda` (UI) | — | M |

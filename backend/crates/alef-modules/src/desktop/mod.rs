@@ -2,6 +2,7 @@
 //! Desktop modules.
 pub mod app;
 pub mod args;
+pub mod window;
 
 use std::sync::Arc;
 
@@ -17,5 +18,6 @@ pub(crate) fn register(
     host: Arc<dyn Host>,
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
-    app::register(registry, host, context)
+    app::register(registry, host.clone(), context)?;
+    window::register(registry, host)
 }

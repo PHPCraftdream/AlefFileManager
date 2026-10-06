@@ -17,6 +17,17 @@ const APP_CHECKS = [
 const SYSTEM_CHECKS = [
   'path-directories-are-absolute-and-the-app-ones-end-with-the-id', 'path-join-normalize-dirname-basename',
   'os-info-describes-this-machine', 'os-theme-is-light-or-dark', 'os-theme-changed-subscription-can-be-made-and-undone',
+  'screen-agrees-with-the-state-of-the-window', 'window-create-is-denied-without-the-permission',
+];
+
+const WINDOW_CHECKS = [
+  'declared-windows-are-open', 'screen-describes-the-displays', 'size-in-percent-of-the-work-area',
+  'the-window-is-centred-in-the-work-area', 'the-size-and-position-of-a-declared-window',
+  'create-opens-a-window-with-percent-size-and-an-explicit-position', 'set-size-and-set-position-accept-percentages',
+  'minimum-and-maximum-size-are-enforced', 'maximize-and-restore-change-the-state',
+  'events-moved-and-resized-name-their-window', 'title-zoom-hide-and-show', 'label-and-url-rules-are-enforced',
+  'close-requested-can-be-prevented', 'a-document-can-refuse-and-then-allow-the-close-of-its-window',
+  'an-unanswered-close-request-closes-the-window-after-the-limit', 'destroy-does-not-wait-for-the-document',
 ];
 
 const sameFile = (left, right) => {
@@ -55,6 +66,16 @@ export function moduleScenarios({ drive, exe, verbose }) {
       judge: async (_lines, _result, running) => {
         const exit = await running.waitForExit(20000);
         return exit?.code === 7 ? [] : [`app.quit(7) ended the process with ${exit ? `code ${exit.code}` : 'no exit within 20 s'}`];
+      },
+    }),
+
+    // Two declared windows, a created one, geometry, events, the close request; the process ends with its last window.
+    window: () => drive({
+      name: 'window', app: 'modules/window',
+      expectedChecks: WINDOW_CHECKS,
+      judge: async (_lines, _result, running) => {
+        const exit = await running.waitForExit(30000);
+        return exit?.code === 0 ? [] : [`closing the last window ended the process with ${exit ? `code ${exit.code}` : 'no exit within 30 s'}`];
       },
     }),
 

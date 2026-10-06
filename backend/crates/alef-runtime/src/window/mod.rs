@@ -2,9 +2,9 @@
 // Event-loop integration follows Servo 0.6's MPL-2.0 winit example.
 mod app;
 mod delegate;
+mod host;
 mod input;
 mod platform;
-pub(crate) mod resize_wait;
 mod state;
 
 use std::cell::RefCell;
@@ -14,76 +14,116 @@ use std::sync::Arc;
 use crate::bridge::WindowRegistry;
 use crate::ui::{UiRequest, Wake};
 use crate::{Bridge, RuntimeHandle};
-use alef_core::session::session::SessionManager;
+use alef_core::{
+    security::window::{Length, Monitor, WindowDef, WindowPosition},
+    session::session::SessionManager,
+};
 use delegate::Waker;
 use servo::protocol_handler::ProtocolRegistry;
 use state::State;
 use tokio::sync::mpsc;
 use url::Url;
 use winit::event_loop::EventLoop;
+use winit::window::Icon;
 
+/// What the application opens at start.
 pub struct WindowOptions {
+    /// Title of a window that has none of its own (the application name).
     pub title: String,
-    pub width: f64,
-    pub height: f64,
     pub icon_png: Vec<u8>,
-    pub decorations: bool,
-    pub resizable: bool,
-    /// Smallest inner size in logical pixels.
-    pub min_size: Option<(f64, f64)>,
-    /// Largest inner size in logical pixels.
-    pub max_size: Option<(f64, f64)>,
+    /// The windows opened at start. The first is the main one and opens the entry document of the
+    /// bridge, whatever its `url` says. Never empty.
+    pub windows: Vec<WindowDef>,
 }
 
 impl WindowOptions {
+    /// One window, 1200x800, centred, with the native frame.
     pub fn new(title: impl Into<String>, icon_png: Vec<u8>) -> Self {
         Self {
             title: title.into(),
             icon_png,
-            width: 1200.0,
-            height: 800.0,
-            decorations: true,
-            resizable: true,
-            min_size: None,
-            max_size: None,
+            windows: vec![WindowDef {
+                label: "main".to_owned(),
+                url: "/".to_owned(),
+                width: Length::Px(1200.0),
+                height: Length::Px(800.0),
+                min_width: None,
+                min_height: None,
+                max_width: None,
+                max_height: None,
+                monitor: Monitor::default(),
+                position: WindowPosition::default(),
+                restore: false,
+                title: None,
+                decorations: None,
+                resizable: None,
+            }],
         }
+    }
+
+    /// Whether the main window has the native frame.
+    pub fn decorations(mut self, enabled: bool) -> Self {
+        if let Some(main) = self.windows.first_mut() {
+            main.decorations = Some(enabled);
+        }
+        self
     }
 }
 
 struct App {
     url: Url,
-    options: WindowOptions,
+    title: String,
+    icon_png: Vec<u8>,
+    icon: Option<Icon>,
+    definitions: Vec<WindowDef>,
     registry: RefCell<Option<ProtocolRegistry>>,
     waker: Waker,
-    state: Option<State>,
+    /// Every open window, in the order they were opened.
+    windows: Vec<State>,
+    /// The first window has been opened (and Servo started).
+    started: bool,
+    /// Last id given to a close request.
+    next_close: u64,
     error: Option<io::Error>,
     handle: RuntimeHandle,
     requests: mpsc::Receiver<UiRequest>,
     sessions: Arc<SessionManager>,
-    windows: WindowRegistry,
+    ids: WindowRegistry,
     runtime: tokio::runtime::Handle,
-    // M0.2 multiwindow spike (docs/stages/m0-spikes.md); inert unless ALEF_SPIKE_MULTIWINDOW=1.
-    spike: crate::spikes::multiwindow::Spike,
 }
 
 pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn std::error::Error>> {
-    resize_wait::set_resize_trace(std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"));
+    if options.windows.is_empty() {
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidInput, "There is no window to open").into(),
+        );
+    }
+    state::resize_wait::set_resize_trace(
+        std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"),
+    );
     let event_loop = EventLoop::<Wake>::with_user_event().build()?;
     let handle = bridge.handle();
     handle.attach(event_loop.create_proxy());
     let mut app = App {
         url: bridge.entry_url.clone(),
-        options,
+        title: options.title,
+        icon_png: options.icon_png,
+        icon: None,
+        definitions: options.windows,
         registry: RefCell::new(Some(bridge.take_registry()?)),
-        waker: Waker(event_loop.create_proxy(), resize_wait::new_generation()),
-        state: None,
+        waker: Waker(
+            event_loop.create_proxy(),
+            state::resize_wait::new_generation(),
+        ),
+        windows: Vec::new(),
+        started: false,
+        next_close: 0,
         error: None,
         handle,
         requests: bridge.take_requests()?,
         sessions: bridge.sessions(),
-        windows: bridge.windows(),
+        ids: bridge.windows(),
         runtime: tokio::runtime::Handle::current(),
-        spike: crate::spikes::multiwindow::Spike::new(),
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {

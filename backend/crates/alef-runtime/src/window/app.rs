@@ -1,226 +1,88 @@
 // SPDX-License-Identifier: MPL-2.0
 // Event-loop integration follows Servo 0.6's MPL-2.0 winit example.
-use std::cell::Cell;
 use std::io;
-use std::rc::Rc;
-use std::time::{Duration, Instant};
 
-use super::delegate::Delegate;
-use super::state::{capture_window_state, State, REVEAL_POLL};
 use super::App;
-use crate::ui::{UiRequest, Wake};
-use crate::WindowAction;
+use crate::ui::Wake;
 use euclid::Scale;
 use servo::{
     Code, CompositionEvent, CompositionState, DevicePoint, ImeEvent, InputEvent, Key, KeyState,
     KeyboardEvent, Location, Modifiers, MouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseLeftViewportEvent, MouseMoveEvent, NamedKey, Opts, RenderingContext, ServoBuilder,
-    WebViewBuilder, WheelEvent, WindowRenderingContext,
+    MouseLeftViewportEvent, MouseMoveEvent, NamedKey, WheelEvent,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, Ime, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key as WinitKey, KeyLocation, PhysicalKey};
-use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-use winit::window::{CursorIcon, Icon, Window, WindowId};
+use winit::window::{CursorIcon, Icon, WindowId};
 
 impl App {
-    fn initialize(
-        &self,
-        event_loop: &ActiveEventLoop,
-    ) -> Result<State, Box<dyn std::error::Error>> {
-        let icon = image::load_from_memory(&self.options.icon_png)?.to_rgba8();
-        let (width, height) = icon.dimensions();
-        let icon = Icon::from_rgba(icon.into_raw(), width, height)?;
-        let attributes = Window::default_attributes()
-            .with_title(&self.options.title)
-            .with_inner_size(winit::dpi::LogicalSize::new(
-                self.options.width,
-                self.options.height,
-            ))
-            .with_decorations(self.options.decorations)
-            .with_resizable(self.options.resizable)
-            // Shown by `State::try_reveal` once there is a first picture; until then the window
-            // would be an unpainted rectangle.
-            .with_visible(false);
-        let attributes = match self.options.min_size {
-            Some((width, height)) => {
-                attributes.with_min_inner_size(winit::dpi::LogicalSize::new(width, height))
-            }
-            None => attributes,
-        };
-        let attributes = match self.options.max_size {
-            Some((width, height)) => {
-                attributes.with_max_inner_size(winit::dpi::LogicalSize::new(width, height))
-            }
-            None => attributes,
-        };
-        let attributes = super::platform::apply_window_icon(attributes, icon);
-        let window = Rc::new(event_loop.create_window(attributes)?);
-        window.set_ime_allowed(true);
-        if let Some(theme) = window.theme() {
-            self.handle.set_theme(theme);
+    /// One pass of work on every window: requests of the documents, Servo, the first picture,
+    /// what changed, close requests that were not answered.
+    fn tick(&mut self, event_loop: &ActiveEventLoop) {
+        self.process_requests(event_loop);
+        if let Some(state) = self.windows.first() {
+            state.servo.spin_event_loop();
         }
-        let rendering = Rc::new(
-            WindowRenderingContext::new(
-                event_loop.display_handle()?,
-                window.window_handle()?,
-                window.inner_size(),
-            )
-            .map_err(|error| {
-                io::Error::other(format!("Cannot create Servo graphics context: {error:?}"))
-            })?,
-        );
-        rendering.make_current().map_err(|error| {
-            io::Error::other(format!("Cannot activate Servo graphics context: {error:?}"))
-        })?;
-        let servo = ServoBuilder::default()
-            .opts(Opts {
-                multiprocess: false,
-                temporary_storage: true,
-                ..Opts::default()
-            })
-            .preferences(crate::spikes::origin::preferences())
-            .protocol_registry(
-                self.registry
-                    .borrow_mut()
-                    .take()
-                    .ok_or_else(|| io::Error::other("Protocol registry already consumed"))?,
-            )
-            .event_loop_waker(Box::new(self.waker.clone()))
-            .build();
-        servo.setup_logging();
-        let animating = Rc::new(Cell::new(false));
-        let page_ready = Rc::new(Cell::new(false));
-        let frame_ready = Rc::new(Cell::new(false));
-        let content_frame = Rc::new(Cell::new(false));
-        let window_id = self.windows.allocate();
-        let delegate = Rc::new(Delegate {
-            window: Rc::downgrade(&window),
-            entry_url: self.url.clone(),
-            title: self.options.title.clone(),
-            animating: animating.clone(),
-            page_ready: page_ready.clone(),
-            frame_ready: frame_ready.clone(),
-            content_frame: content_frame.clone(),
-        });
-        let webview = WebViewBuilder::new(&servo, rendering.clone())
-            .url(self.url.clone())
-            .hidpi_scale_factor(Scale::new(window.scale_factor() as f32))
-            .delegate(delegate)
-            .build();
-        self.windows.bind(webview.id(), window_id);
-        webview.show();
-        webview.focus();
-        servo.spin_event_loop();
-        #[cfg(feature = "spike-integration")]
-        crate::spikes::integration::activate(&window, self.waker.0.clone());
-        let snapshot = capture_window_state(&window);
-        Ok(State {
-            webview,
-            servo,
-            rendering,
-            window,
-            animating,
-            events: self.handle.events().clone(),
-            window_id,
-            cursor: DevicePoint::zero(),
-            modifiers: Modifiers::empty(),
-            composing: false,
-            next_frame: Instant::now() + Duration::from_millis(16),
-            primary_pressed: false,
-            snapshot,
-            snapshot_dirty: true,
-            published_revision: None,
-            page_ready,
-            resize_hover: None,
-            frame_ready,
-            content_frame,
-            revealed: false,
-            created: Instant::now(),
-            ready_since: None,
-            // BEGIN M0.2 multiwindow spike
-            presents: Rc::new(Cell::new(0)),
-            // END M0.2 multiwindow spike
-            resize_pending: false,
-            native_resize_active: false,
-            wake_gen: self.waker.1.clone(),
-        })
-    }
-
-    fn process_requests(&mut self, event_loop: &ActiveEventLoop) {
-        if self.handle.quit_requested() {
-            event_loop.exit();
-            return;
-        }
-        let Some(state) = self.state.as_mut() else {
-            return;
-        };
-        #[cfg(feature = "spike-integration")]
-        crate::spikes::integration::poll(state.window.as_ref());
-        while let Ok(request) = self.requests.try_recv() {
-            match request {
-                UiRequest::Window { action, reply } => {
-                    if reply.canceled() {
-                        continue;
-                    }
-                    let closing = matches!(&action, WindowAction::Close);
-                    reply.finish(state.window_action(action));
-                    if closing {
-                        event_loop.exit();
-                        break;
-                    }
-                }
+        for state in &mut self.windows {
+            if let Err(error) = state.try_reveal().and_then(|()| state.publish_snapshot()) {
+                self.error.get_or_insert(error);
+                event_loop.exit();
             }
         }
+        self.expire_close_requests(event_loop);
     }
 
     fn detach(&mut self) {
-        if let Some(state) = &self.state {
+        for state in &self.windows {
             let (sessions, window) = (self.sessions.clone(), state.window_id);
-            self.windows.unbind(window);
+            self.ids.unbind(window);
             self.runtime
                 .spawn(async move { sessions.close_window(window).await });
         }
         self.handle.detach();
         self.requests.close();
         while self.requests.try_recv().is_ok() {}
-        self.state.take();
+        self.windows.clear();
     }
 }
 
 impl ApplicationHandler<Wake> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() {
+        if self.started {
             return;
         }
-        match self.initialize(event_loop) {
-            Ok(state) => self.state = Some(state),
+        match image::load_from_memory(&self.icon_png)
+            .map_err(io::Error::other)
+            .and_then(|icon| {
+                let icon = icon.to_rgba8();
+                let (width, height) = icon.dimensions();
+                Icon::from_rgba(icon.into_raw(), width, height).map_err(io::Error::other)
+            }) {
+            Ok(icon) => self.icon = Some(icon),
             Err(error) => {
-                self.error = Some(io::Error::other(error.to_string()));
+                self.error = Some(error);
                 event_loop.exit();
+                return;
+            }
+        }
+        for definition in self.definitions.clone() {
+            if let Err(error) = self.open(event_loop, &definition) {
+                self.error = Some(error);
+                event_loop.exit();
+                return;
             }
         }
         self.process_requests(event_loop);
-        // BEGIN M0.2 multiwindow spike (docs/stages/m0-spikes.md)
-        self.spike.resumed(self.url.clone());
-        // END M0.2 multiwindow spike
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _: Wake) {
-        self.process_requests(event_loop);
-        if let Some(state) = self.state.as_mut() {
-            state.servo.spin_event_loop();
-            if let Err(error) = state.try_reveal().and_then(|()| state.publish_snapshot()) {
-                self.error = Some(error);
-                event_loop.exit();
-            }
-        }
+        self.tick(event_loop);
     }
 
     fn new_events(&mut self, _: &ActiveEventLoop, cause: StartCause) {
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
-            if let Some(state) = &self.state {
+            for state in &self.windows {
                 if state.animating.get() {
                     state.window.request_redraw();
                 }
@@ -229,31 +91,11 @@ impl ApplicationHandler<Wake> for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.process_requests(event_loop);
-        if let Some(state) = self.state.as_mut() {
-            state.servo.spin_event_loop();
-            if let Err(error) = state.try_reveal().and_then(|()| state.publish_snapshot()) {
-                eprintln!("Window state capture failed: {error}");
-                event_loop.exit();
-            }
-            if state.animating.get() {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(state.next_frame));
-            } else if !state.revealed {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + REVEAL_POLL));
-            } else {
-                event_loop.set_control_flow(ControlFlow::Wait);
-            }
+        self.tick(event_loop);
+        match self.next_wake() {
+            Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
-        // BEGIN M0.2 multiwindow spike: drive the automated multiwindow scenario
-        if self.spike.enabled() {
-            self.spike
-                .tick(event_loop, self.state.as_ref().map(State::spike_view));
-            if let Some(reason) = self.spike.exit_error() {
-                self.error = Some(io::Error::other(reason));
-                event_loop.exit();
-            }
-        }
-        // END M0.2 multiwindow spike
     }
 
     fn window_event(
@@ -262,23 +104,18 @@ impl ApplicationHandler<Wake> for App {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        // BEGIN M0.2 multiwindow spike: events of spike-owned windows never reach the single-window path
-        if self.spike.window_event(window_id, &event) {
-            return;
-        }
-        // END M0.2 multiwindow spike
-        if matches!(event, WindowEvent::CloseRequested) {
-            #[cfg(feature = "spike-integration")]
-            if let Some(error) = crate::spikes::integration::deactivate() {
-                self.error.get_or_insert(error);
-            }
-            self.detach();
-            event_loop.exit();
-            return;
-        }
-        let Some(state) = self.state.as_mut() else {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|state| state.window.id() == window_id)
+        else {
             return;
         };
+        if matches!(event, WindowEvent::CloseRequested) {
+            self.request_close(event_loop, index);
+            return;
+        }
+        let state = &mut self.windows[index];
         if matches!(
             &event,
             WindowEvent::Moved(_)
@@ -511,24 +348,5 @@ impl ApplicationHandler<Wake> for App {
             self.error.get_or_insert(error);
         }
         self.detach();
-        // BEGIN M0.2 multiwindow spike: drop spike windows while the event loop is alive
-        self.spike.shutdown();
-        // END M0.2 multiwindow spike
     }
 }
-
-// BEGIN M0.2 multiwindow spike (docs/stages/m0-spikes.md)
-impl State {
-    fn spike_view(&self) -> crate::spikes::multiwindow::PrimaryView {
-        crate::spikes::multiwindow::PrimaryView {
-            servo: self.servo.clone(),
-            webview: self.webview.clone(),
-            rendering: Rc::clone(&self.rendering),
-            window: Rc::clone(&self.window),
-            page_ready: Rc::clone(&self.page_ready),
-            presents: Rc::clone(&self.presents),
-            wake_gen: std::sync::Arc::clone(&self.wake_gen),
-        }
-    }
-}
-// END M0.2 multiwindow spike

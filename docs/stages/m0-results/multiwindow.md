@@ -1,5 +1,7 @@
 # M0.2 — Мультиоконность: результаты
 
+> **Spike удалён в M2.2** (`spikes/multiwindow`, хуки в `window/`, `experiments/multiwindow-spike`): мультиоконность — штатный путь `alef-runtime` (`window/manage.rs`), проверяется e2e-сценарием `window`. Ниже — результаты и дизайн того времени; ссылки на удалённые файлы и `run.sh` исторические. Нестабильность оракула (раздел в конце) закрыта вместе с ним.
+
 Spike: `backend/crates/alef-runtime/src/spikes/multiwindow/` (+ минимальные хуки в `window/app.rs`, `window/mod.rs`), страница `experiments/multiwindow-spike/`. Включение: `ALEF_SPIKE_MULTIWINDOW=1` (+ `ALEF_RESIZE_TRACE=1` для трейсов, `ALEF_TRANSPORT_SPIKE=1` для отчётов страницы). Бюджеты: загрузка второго окна — 140 с; подтверждение resize — 2000 мс (обычный режим), 1 мс (`ALEF_SPIKE_MW_STRICT=1`); ожидание resize-кадра — 100 мс. Запуск:
 
 ```

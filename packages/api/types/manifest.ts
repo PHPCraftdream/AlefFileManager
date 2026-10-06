@@ -190,7 +190,7 @@ export type NetPermissions = {
   socket: Array<string>, };
 
 /**
- * Complete permission policy. Every subsection is required.
+ * Complete permission policy. Every subsection is required except `window`.
  */
 export type Permissions = {
   /**
@@ -224,7 +224,11 @@ export type Permissions = {
   /**
    * Application environment access.
    */
-  app: AppPermissions, };
+  app: AppPermissions,
+  /**
+   * Runtime window creation; denied when the section is absent.
+   */
+  window?: WindowPermissions, };
 
 /**
  * External shell permissions.
@@ -291,7 +295,28 @@ export type WindowDef = {
   /**
    * Restore the window.
    */
-  restore: boolean, };
+  restore: boolean,
+  /**
+   * Title; the application name when omitted.
+   */
+  title?: string,
+  /**
+   * Native frame with title bar and buttons; on when omitted.
+   */
+  decorations?: boolean,
+  /**
+   * Whether the user can resize the window; on when omitted.
+   */
+  resizable?: boolean, };
+
+/**
+ * Window permissions.
+ */
+export type WindowPermissions = {
+  /**
+   * Whether the application may open windows at runtime (`window.create`).
+   */
+  create: boolean, };
 
 /**
  * The string `center` or explicit coordinates.

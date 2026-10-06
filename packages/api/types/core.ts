@@ -4,6 +4,39 @@ export type AlefError = { code: ErrorCode, message: string, details?: unknown, }
 export type ErrorCode = "NOT_FOUND" | "ALREADY_EXISTS" | "PERMISSION_DENIED" | "INVALID_ARGUMENT" | "TIMEOUT" | "CLOSED" | "BUSY" | "NOT_AVAILABLE" | "MANIFEST_INVALID" | "INTERNAL";
 
 /**
+ * A display. Logical pixels are physical ones divided by the scale factor of this display, so the
+ * rectangles of displays with different scale factors do not tile exactly.
+ */
+export type MonitorInfo = {
+  /**
+   * Name reported by the system, when there is one.
+   */
+  name: string | null,
+  /**
+   * The whole display.
+   */
+  bounds: Rect,
+  /**
+   * The part of the display that is not taken by the task bar, Dock or panels.
+   */
+  workArea: Rect, scaleFactor: number, primary: boolean, };
+
+/**
+ * A point in logical pixels.
+ */
+export type Point = { x: number, y: number, };
+
+/**
+ * A rectangle in logical pixels.
+ */
+export type Rect = { x: number, y: number, width: number, height: number, };
+
+/**
+ * Edge or corner a drag-resize starts from.
+ */
+export type ResizeEdge = "north" | "northEast" | "east" | "southEast" | "south" | "southWest" | "west" | "northWest";
+
+/**
  * A resource (file, socket, database, process...) owned by a session.
  */
 export type ResourceId = number;
@@ -22,3 +55,25 @@ export type StreamId = number;
  * The colour scheme of the desktop.
  */
 export type Theme = "light" | "dark";
+
+/**
+ * State of a window (`window.state`, event `runtime.window.state`). Sizes and positions are
+ * logical pixels: the inner size and the position of the outer frame.
+ */
+export type WindowInfo = { label: string,
+  /**
+   * Grows with every change, so a stale snapshot can be told from a newer one.
+   */
+  revision: number, title: string, width: number, height: number, x: number | null, y: number | null, scaleFactor: number, focused: boolean, maximized: boolean,
+  /**
+   * `None` when the platform cannot tell.
+   */
+  minimized: boolean | null,
+  /**
+   * `None` when the platform cannot tell.
+   */
+  visible: boolean | null, decorated: boolean, resizable: boolean, fullscreen: boolean, alwaysOnTop: boolean,
+  /**
+   * Page zoom of the document (1 = 100 %).
+   */
+  zoom: number, supportsDragResize: boolean, };

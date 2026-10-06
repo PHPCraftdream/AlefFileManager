@@ -1,19 +1,27 @@
 // SPDX-License-Identifier: MPL-2.0
 // Event-loop integration follows Servo 0.6's MPL-2.0 winit example.
+pub(super) mod resize_wait;
+
 use std::cell::Cell;
 use std::io;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use super::resize_wait::{self, WakeGeneration};
+use super::host::events;
 use crate::ui::{event_json, WINDOW_STATE_EVENT};
-use crate::{WindowAction, WindowState};
-use serde_json::Value;
+use alef_core::{registry::window::WindowInfo, SessionId};
+use resize_wait::WakeGeneration;
 use servo::{
     DeviceIntRect, DeviceIntSize, DevicePoint, Modifiers, RenderingContext, Servo, WebView,
     WindowRenderingContext,
 };
 use winit::window::{CursorIcon, ResizeDirection, Window};
+
+/// A close request the document has been asked about (`window.close-requested`).
+pub(super) struct PendingClose {
+    pub(super) id: u64,
+    pub(super) deadline: Instant,
+}
 
 // The engine and GL context must be dropped before their window.
 pub(super) struct State {
@@ -24,14 +32,16 @@ pub(super) struct State {
     pub(super) animating: Rc<Cell<bool>>,
     pub(super) events: crate::bridge::EventBus,
     pub(super) window_id: u64,
+    pub(super) label: String,
     pub(super) cursor: DevicePoint,
     pub(super) modifiers: Modifiers,
     pub(super) composing: bool,
     pub(super) next_frame: Instant,
     pub(super) primary_pressed: bool,
-    pub(super) snapshot: WindowState,
+    pub(super) snapshot: WindowInfo,
     pub(super) snapshot_dirty: bool,
-    pub(super) published_revision: Option<u32>,
+    /// What the documents were last told; the next events are the difference to it.
+    pub(super) published: Option<WindowInfo>,
     pub(super) page_ready: Rc<Cell<bool>>,
     pub(super) resize_hover: Option<ResizeDirection>,
     pub(super) frame_ready: Rc<Cell<bool>>,
@@ -40,12 +50,17 @@ pub(super) struct State {
     pub(super) revealed: bool,
     pub(super) created: Instant,
     pub(super) ready_since: Option<Instant>,
-    // BEGIN M0.2 multiwindow spike: present counter read by the spike oracle.
-    pub(super) presents: Rc<Cell<u32>>,
-    // END M0.2 multiwindow spike
     pub(super) resize_pending: bool,
     pub(super) native_resize_active: bool,
     pub(super) wake_gen: WakeGeneration,
+    pub(super) always_on_top: bool,
+    /// Limits of the inner size, logical pixels: the system holds the user to them, the runtime
+    /// holds `window.setSize` to them (Windows ignores them for programmatic resizing).
+    pub(super) min_size: Option<(f64, f64)>,
+    pub(super) max_size: Option<(f64, f64)>,
+    /// The session whose document answers close requests of this window.
+    pub(super) intercept: Option<SessionId>,
+    pub(super) pending_close: Option<PendingClose>,
 }
 
 const RESIZE_WAIT: Duration = Duration::from_millis(100);
@@ -154,9 +169,6 @@ impl State {
     pub(super) fn trace_present(&self, path: &str, waited: Option<Duration>, timed_out: bool) {
         #[cfg(feature = "spike-integration")]
         crate::spikes::integration::note_present(timed_out);
-        // BEGIN M0.2 multiwindow spike: present counter read by the spike oracle.
-        self.presents.set(self.presents.get() + 1);
-        // END M0.2 multiwindow spike
         if resize_wait::resize_trace_enabled() {
             let surface = self.rendering.size();
             let window = self.window.inner_size();
@@ -226,12 +238,18 @@ impl State {
             .set_cursor(edge.map(CursorIcon::from).unwrap_or(CursorIcon::Default));
     }
 
+    /// The window as it is now; sizes and positions in logical pixels.
+    pub(super) fn capture(&self) -> WindowInfo {
+        capture_info(&self.label, &self.window, &self.webview, self.always_on_top)
+    }
+
+    /// Re-reads the window when something may have changed.
     pub(super) fn refresh_snapshot(&mut self) -> io::Result<()> {
         if !self.snapshot_dirty {
             return Ok(());
         }
         self.snapshot_dirty = false;
-        let mut next = capture_window_state(&self.window);
+        let mut next = self.capture();
         next.revision = self.snapshot.revision;
         if next != self.snapshot {
             next.revision = next
@@ -243,80 +261,57 @@ impl State {
         Ok(())
     }
 
+    /// The window as it is now, read fresh.
+    pub(super) fn fresh_snapshot(&mut self) -> io::Result<WindowInfo> {
+        self.snapshot_dirty = true;
+        self.refresh_snapshot()?;
+        Ok(self.snapshot.clone())
+    }
+
+    /// Tells the documents what changed: the snapshot to the window's own document, and the
+    /// `window.moved`/`resized`/`focus`/`blur` events to every document.
     pub(super) fn publish_snapshot(&mut self) -> io::Result<()> {
         self.refresh_snapshot()?;
-        if !self.page_ready.get() || self.published_revision == Some(self.snapshot.revision) {
+        let current = self.snapshot.revision;
+        if !self.page_ready.get()
+            || self
+                .published
+                .as_ref()
+                .is_some_and(|p| p.revision == current)
+        {
             return Ok(());
+        }
+        if let Some(previous) = &self.published {
+            for (name, payload) in events::changes(previous, &self.snapshot) {
+                self.events.publish(None, &event_json(name, &payload)?);
+            }
         }
         let json = event_json(WINDOW_STATE_EVENT, &self.snapshot)?;
         self.events.publish(Some(self.window_id), &json);
-        self.published_revision = Some(self.snapshot.revision);
+        self.published = Some(self.snapshot.clone());
         Ok(())
-    }
-
-    pub(super) fn window_action(&mut self, action: WindowAction) -> io::Result<Value> {
-        match action {
-            WindowAction::GetState => {
-                self.snapshot_dirty = true;
-                self.refresh_snapshot()?;
-                return serde_json::to_value(&self.snapshot).map_err(io::Error::other);
-            }
-            WindowAction::Minimize => self.window.set_minimized(true),
-            WindowAction::Maximize => self.window.set_maximized(true),
-            WindowAction::Restore => {
-                if self.window.is_minimized() == Some(true) {
-                    self.window.set_minimized(false);
-                }
-                if self.window.is_maximized() {
-                    self.window.set_maximized(false);
-                }
-            }
-            WindowAction::ToggleMaximize => self.window.set_maximized(!self.window.is_maximized()),
-            WindowAction::SetDecorations { enabled } => self.window.set_decorations(enabled),
-            WindowAction::SetResizable { enabled } => self.window.set_resizable(enabled),
-            WindowAction::StartResize { .. } if !self.window.is_resizable() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "Window resizing is disabled",
-                ));
-            }
-            WindowAction::StartDrag | WindowAction::StartResize { .. } if !self.primary_pressed => {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "Drag requires a pressed primary mouse button",
-                ));
-            }
-            WindowAction::StartDrag => {
-                self.window.drag_window().map_err(io::Error::other)?;
-                self.primary_pressed = false;
-            }
-            WindowAction::StartResize { edge } => {
-                let edge: ResizeDirection = edge.into();
-                self.window
-                    .drag_resize_window(edge)
-                    .map_err(io::Error::other)?;
-                self.native_resize_active = true;
-                self.primary_pressed = false;
-            }
-            WindowAction::Close => {}
-        }
-        self.snapshot_dirty = true;
-        self.update_resize_cursor();
-        Ok(Value::Null)
     }
 }
 
-pub(super) fn capture_window_state(window: &Window) -> WindowState {
+/// The window as it is now; sizes and positions in logical pixels.
+pub(super) fn capture_info(
+    label: &str,
+    window: &Window,
+    webview: &WebView,
+    always_on_top: bool,
+) -> WindowInfo {
+    let scale = window.scale_factor();
     let size = window.inner_size();
     let position = window.outer_position().ok();
-    WindowState {
+    WindowInfo {
+        label: label.to_owned(),
         revision: 0,
         title: window.title(),
-        width: size.width,
-        height: size.height,
-        x: position.map(|position| position.x),
-        y: position.map(|position| position.y),
-        scale_factor: window.scale_factor(),
+        width: f64::from(size.width) / scale,
+        height: f64::from(size.height) / scale,
+        x: position.map(|position| f64::from(position.x) / scale),
+        y: position.map(|position| f64::from(position.y) / scale),
+        scale_factor: scale,
         focused: window.has_focus(),
         maximized: window.is_maximized(),
         minimized: window.is_minimized(),
@@ -324,6 +319,8 @@ pub(super) fn capture_window_state(window: &Window) -> WindowState {
         decorated: window.is_decorated(),
         resizable: window.is_resizable(),
         fullscreen: window.fullscreen().is_some(),
+        always_on_top,
+        zoom: f64::from(webview.page_zoom()),
         supports_drag_resize: super::platform::SUPPORTS_NATIVE_RESIZE,
     }
 }

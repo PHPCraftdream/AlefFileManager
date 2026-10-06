@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Framework modules: desktop (`app`), system (`path`, `os`); more arrive with M2 and later.
+//! Framework modules: desktop (`app`, `window`), system (`path`, `os`, `screen`); more arrive with M2 and later.
 //!
 //! A module registers its commands in the registry (`<module>.<command>`) with the permission and
 //! scope each one needs; the registry checks them before the handler runs. Everything the modules

@@ -115,7 +115,23 @@ fn app_env_matches_exact_names_only() {
 }
 
 #[test]
-fn window_create_is_a_runtime_opt_in_not_a_manifest_grant() {
+fn window_create_needs_the_manifest_section_or_the_embedder() {
+    use alef_core::security::manifest::WindowPermissions;
+    let mut policy = closed();
+    assert!(policy.window.is_none(), "the fixture has no window section");
+    for (window, expected) in [
+        (None, false),
+        (Some(WindowPermissions { create: false }), false),
+        (Some(WindowPermissions { create: true }), true),
+    ] {
+        policy.window = window;
+        let set = build(&policy);
+        assert_eq!(allowed(&set, Permission::WindowCreate, None), expected);
+        assert!(
+            !allowed(&set, Permission::Secrets, None),
+            "the window section opens nothing else"
+        );
+    }
     let set = build(&closed());
     assert!(!allowed(&set, Permission::WindowCreate, None));
     let opened = set.clone().with_window_create();

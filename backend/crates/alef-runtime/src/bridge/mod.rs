@@ -134,6 +134,7 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         shortcut: ShortcutPermissions { global: false },
         secrets: false,
         app: AppPermissions { env: Vec::new() },
+        window: None,
     };
     let root = std::env::temp_dir();
     let vars = PathVars {

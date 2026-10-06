@@ -275,4 +275,48 @@ pub struct WindowDef {
     /// Restore the window.
     #[serde(default)]
     pub restore: bool,
+    /// Title; the application name when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
+    /// Native frame with title bar and buttons; on when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub decorations: Option<bool>,
+    /// Whether the user can resize the window; on when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub resizable: Option<bool>,
+}
+
+impl WindowDef {
+    /// Checks what does not depend on a display: the label, the root-relative URL and limits that
+    /// are given in one unit. The error is the offending field and the reason.
+    pub fn check(&self) -> Result<(), (&'static str, &'static str)> {
+        if self.label.trim().is_empty() {
+            return Err(("label", "must not be empty"));
+        }
+        if !self.url.starts_with('/') {
+            return Err(("url", "must start with /"));
+        }
+        if self.url.starts_with("//") || self.url.contains('\\') {
+            return Err(("url", "must be a path of the application, not another host"));
+        }
+        for (minimum, maximum, field) in [
+            (self.min_width, self.max_width, "minwidth"),
+            (self.min_height, self.max_height, "minheight"),
+        ] {
+            let exceeds = match (minimum, maximum) {
+                (Some(Length::Px(a)), Some(Length::Px(b))) => a > b,
+                (Some(Length::Percent(a, unit_a)), Some(Length::Percent(b, unit_b))) => {
+                    unit_a == unit_b && a > b
+                }
+                _ => false,
+            };
+            if exceeds {
+                return Err((field, "exceeds maximum"));
+            }
+        }
+        Ok(())
+    }
 }

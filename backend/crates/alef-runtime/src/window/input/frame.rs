@@ -3,23 +3,6 @@ use servo::DevicePoint;
 use winit::dpi::PhysicalSize;
 use winit::window::ResizeDirection;
 
-use crate::ResizeEdge;
-
-impl From<ResizeEdge> for ResizeDirection {
-    fn from(edge: ResizeEdge) -> Self {
-        match edge {
-            ResizeEdge::North => Self::North,
-            ResizeEdge::NorthEast => Self::NorthEast,
-            ResizeEdge::East => Self::East,
-            ResizeEdge::SouthEast => Self::SouthEast,
-            ResizeEdge::South => Self::South,
-            ResizeEdge::SouthWest => Self::SouthWest,
-            ResizeEdge::West => Self::West,
-            ResizeEdge::NorthWest => Self::NorthWest,
-        }
-    }
-}
-
 pub(crate) fn resize_hit(
     point: DevicePoint,
     size: PhysicalSize<u32>,

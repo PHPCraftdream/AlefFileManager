@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A registry with every module registered, a fake host and a session, to call commands by name.
+#![allow(dead_code)] // each test binary uses a different part
 use std::{
+    collections::VecDeque,
     ffi::OsString,
     sync::{Arc, Mutex},
 };
@@ -11,7 +13,8 @@ use alef_core::{
         command::Reply,
         context::CallContext,
         dispatch::Registry,
-        host::{Host, Theme},
+        host::{Host, HostFuture, Theme},
+        window::UiCall,
     },
     security::{
         manifest::Manifest,
@@ -28,6 +31,10 @@ const MANIFEST: &str = include_str!("../fixtures/app.ktav");
 pub struct FakeHost {
     pub quits: Mutex<Vec<i32>>,
     pub theme: Mutex<Theme>,
+    /// What `Host::ui` was asked: the calling window and the call.
+    pub calls: Mutex<Vec<(u64, UiCall)>>,
+    /// Answers of `Host::ui`, first in first out; `null` when none is queued.
+    pub replies: Mutex<VecDeque<Result<Value, AlefError>>>,
 }
 
 impl Host for FakeHost {
@@ -36,6 +43,16 @@ impl Host for FakeHost {
     }
     fn theme(&self) -> Theme {
         *self.theme.lock().unwrap()
+    }
+    fn ui(&self, caller: u64, call: UiCall) -> HostFuture {
+        self.calls.lock().unwrap().push((caller, call));
+        let reply = self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(Ok(Value::Null));
+        Box::pin(async move { reply })
     }
 }
 
@@ -102,6 +119,8 @@ impl Fixture {
         let host = Arc::new(FakeHost {
             quits: Mutex::new(Vec::new()),
             theme: Mutex::new(Theme::Light),
+            calls: Mutex::new(Vec::new()),
+            replies: Mutex::new(VecDeque::new()),
         });
         let mut registry = Registry::default();
         register_all(&mut registry, host.clone(), &context).expect("register");

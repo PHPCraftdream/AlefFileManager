@@ -2,6 +2,7 @@
 //! System modules.
 pub mod os;
 pub mod path;
+pub mod screen;
 
 use std::sync::Arc;
 
@@ -18,5 +19,6 @@ pub(crate) fn register(
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
     path::register(registry, context)?;
-    os::register(registry, host)
+    os::register(registry, host.clone())?;
+    screen::register(registry, host)
 }

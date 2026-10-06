@@ -114,7 +114,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             allowed_origins,
             csp: Some(plan.csp),
             permissions: Some(plan.permissions),
-            entry: Some(plan.window.entry),
+            entry: Some(plan.manifest.windows[0].url.clone()),
             ..BridgeOptions::default()
         },
     )
@@ -128,10 +128,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     let result = alef_runtime::run(
         &mut bridge,
         WindowOptions {
-            width: plan.window.width,
-            height: plan.window.height,
-            min_size: plan.window.min_size,
-            max_size: plan.window.max_size,
+            windows: plan.manifest.windows.clone(),
             ..WindowOptions::new(plan.manifest.name.clone(), icon)
         },
     );

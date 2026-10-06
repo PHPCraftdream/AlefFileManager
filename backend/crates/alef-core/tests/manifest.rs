@@ -197,6 +197,11 @@ fn identifiers_are_validated() {
 
 #[test]
 fn url_must_be_root_relative() {
+    for other_host in ["url: //evil.example/x", "url: /a\\b"] {
+        assert!(error(&MINIMAL.replace("url: /", other_host))
+            .message
+            .contains("windows[0].url"));
+    }
     assert!(error(&MINIMAL.replace("url: /", "url: home"))
         .message
         .contains("windows[0].url"));
@@ -448,4 +453,49 @@ fn malformed_arguments_are_rejected_with_the_path_of_the_error() {
     assert!(error(&with_arguments(missing_options))
         .message
         .contains("options"));
+}
+
+#[test]
+fn window_options_and_the_window_permission_are_optional() {
+    let manifest = Manifest::from_ktav_str(MINIMAL).unwrap();
+    let window = &manifest.windows[0];
+    assert_eq!(
+        (&window.title, window.decorations, window.resizable),
+        (&None, None, None)
+    );
+    assert_eq!(manifest.permissions.window, None);
+
+    let source = MINIMAL
+        .replace('\r', "")
+        .replace(
+            "        height: 600\n",
+            "        height: 600\n        title: Notes\n        decorations: false\n        resizable: false\n",
+        )
+        .replace(
+            "    app: {\n        env: []\n    }\n",
+            "    app: {\n        env: []\n    }\n    window: {\n        create: true\n    }\n",
+        );
+    let manifest = Manifest::from_ktav_str(&source).unwrap();
+    let window = &manifest.windows[0];
+    assert_eq!(window.title.as_deref(), Some("Notes"));
+    assert_eq!(
+        (window.decorations, window.resizable),
+        (Some(false), Some(false))
+    );
+    assert!(manifest.permissions.window.expect("window section").create);
+}
+
+#[test]
+fn a_window_section_without_its_flag_or_with_another_field_is_rejected() {
+    for body in [
+        "",
+        "        other: true\n",
+        "        create: true\n        other: true\n",
+    ] {
+        let source = MINIMAL.replace('\r', "").replace(
+            "    app: {\n        env: []\n    }\n",
+            &format!("    app: {{\n        env: []\n    }}\n    window: {{\n{body}    }}\n"),
+        );
+        error(&source);
+    }
 }

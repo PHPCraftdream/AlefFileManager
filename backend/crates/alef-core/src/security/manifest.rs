@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::window::{Length, WindowDef};
+use super::window::WindowDef;
 use crate::{AlefError, ErrorCode};
 
 /// External-resource policy; all fields are required.
@@ -105,7 +105,16 @@ pub struct AppPermissions {
     pub env: Vec<String>,
 }
 
-/// Complete permission policy. Every subsection is required.
+/// Window permissions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "manifest.ts")]
+pub struct WindowPermissions {
+    /// Whether the application may open windows at runtime (`window.create`).
+    pub create: bool,
+}
+
+/// Complete permission policy. Every subsection is required except `window`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export, export_to = "manifest.ts")]
@@ -126,6 +135,10 @@ pub struct Permissions {
     pub secrets: bool,
     /// Application environment access.
     pub app: AppPermissions,
+    /// Runtime window creation; denied when the section is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub window: Option<WindowPermissions>,
 }
 
 /// Value type of a command-line option.
@@ -247,32 +260,9 @@ impl Manifest {
             return Err(invalid("version", "must not be empty"));
         }
         for (index, window) in manifest.windows.iter().enumerate() {
-            let path = format!("windows[{index}]");
-            if window.label.trim().is_empty() {
-                return Err(invalid(&format!("{path}.label"), "must not be empty"));
-            }
-            if !window.url.starts_with('/') {
-                return Err(invalid(&format!("{path}.url"), "must start with /"));
-            }
-            for (minimum, maximum, axis) in [
-                (window.min_width, window.max_width, "width"),
-                (window.min_height, window.max_height, "height"),
-            ] {
-                if let (Some(minimum), Some(maximum)) = (minimum, maximum) {
-                    let exceeds = match (minimum, maximum) {
-                        (Length::Px(a), Length::Px(b)) => Some(a > b),
-                        (Length::Percent(a, unit_a), Length::Percent(b, unit_b))
-                            if unit_a == unit_b =>
-                        {
-                            Some(a > b)
-                        }
-                        _ => None,
-                    };
-                    if exceeds == Some(true) {
-                        return Err(invalid(&format!("{path}.min{axis}"), "exceeds maximum"));
-                    }
-                }
-            }
+            window
+                .check()
+                .map_err(|(field, reason)| invalid(&format!("windows[{index}].{field}"), reason))?;
         }
         for index in 0..manifest.windows.len() {
             if manifest.windows[..index]

@@ -101,13 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("ALEF_READY private-bridge pid={}", std::process::id());
     let result = alef_runtime::run(
         &mut bridge,
-        alef_runtime::WindowOptions {
-            decorations: false,
-            ..alef_runtime::WindowOptions::new(
-                "Alef File Manager",
-                include_bytes!("../../frontend/public/logo-32x32.png").to_vec(),
-            )
-        },
+        alef_runtime::WindowOptions::new(
+            "Alef File Manager",
+            include_bytes!("../../frontend/public/logo-32x32.png").to_vec(),
+        )
+        .decorations(false),
     );
     bridge.shutdown().await?;
     result?;

@@ -16,7 +16,8 @@ use alef_core::{
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
-use crate::{RuntimeHandle, WindowAction};
+use crate::ui::WindowAction;
+use crate::RuntimeHandle;
 
 type CommandFuture = Pin<Box<dyn Future<Output = io::Result<Value>> + Send>>;
 type Command = Arc<dyn Fn(Value, RuntimeHandle) -> CommandFuture + Send + Sync>;
@@ -91,8 +92,8 @@ impl Commands {
     }
 
     /// Builds the registry behind `native://call`: every legacy command under its registry name,
-    /// plus the interim `window.apply` (same JSON as the legacy `runtime.window`; replaced by the
-    /// window module in M2.2).
+    /// plus `window.apply` of the File Manager (same JSON as the legacy `runtime.window`), which
+    /// stays until the File Manager uses the window module.
     pub(crate) fn to_registry(&self, ui: &RuntimeHandle) -> Result<Registry, AlefError> {
         let mut registry = Registry::default();
         for (name, handler) in &self.handlers {
@@ -111,9 +112,9 @@ impl Commands {
         let ui = ui.clone();
         registry
             .command::<WindowAction>("window.apply")?
-            .handler(move |_ctx, action| {
+            .handler(move |ctx, action| {
                 let ui = ui.clone();
-                async move { Ok(Reply::Json(ui.window(action).await?)) }
+                async move { Ok(Reply::Json(ui.window(ctx.session.window(), action).await?)) }
             })?;
         Ok(registry)
     }

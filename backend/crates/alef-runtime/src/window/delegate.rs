@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
-use super::resize_wait::{self, WakeGeneration};
+use super::state::resize_wait::{self, WakeGeneration};
 use crate::ui::Wake;
 use servo::{
     ConsoleLogLevel, EventLoopWaker, LoadStatus, NavigationRequest, WebResourceLoad, WebView,

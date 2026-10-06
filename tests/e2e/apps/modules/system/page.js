@@ -1,7 +1,7 @@
 // System modules scenario: `path` (well-known directories, lexical arithmetic) and `os` (facts of the
 // machine, theme). The directories are also reported to the runner (`path <name> <value>`), which
 // checks on the disk that the ones that must exist do.
-import { api, guard, report, suite, verdict } from './harness.js';
+import { api, guard, rejection, report, suite, verdict } from './harness.js';
 
 const PLATFORMS = { win32: 'windows', darwin: 'macos', linux: 'linux' };
 const ARCHES = { x64: 'x86_64', arm64: 'aarch64', ia32: 'x86' };
@@ -52,6 +52,26 @@ async function main() {
   await check('os-theme-changed-subscription-can-be-made-and-undone', async () => {
     const off = await api.os.on('theme-changed', () => {});
     off();
+  });
+  await check('screen-agrees-with-the-state-of-the-window', async () => {
+    const monitors = await api.screen.monitors();
+    const state = await (await api.window.current()).state();
+    if (monitors.length === 0) throw new Error('no display');
+    if (state.x === null || state.y === null) throw new Error('the window position is unknown');
+    const centre = { x: state.x + state.width / 2, y: state.y + state.height / 2 };
+    const on = monitors.some(({ bounds: b }) => centre.x >= b.x && centre.x < b.x + b.width && centre.y >= b.y && centre.y < b.y + b.height);
+    if (!on) throw new Error(`the centre of the window ${JSON.stringify(centre)} is on no display: ${JSON.stringify(monitors.map(monitor => monitor.bounds))}`);
+    const cursor = await rejection(api.screen.cursorPosition());
+    if (cursor !== null && cursor.code !== 'NOT_AVAILABLE') throw new Error(`cursorPosition failed: ${cursor.message}`);
+    const point = cursor === null ? await api.screen.cursorPosition() : null;
+    if (point !== null && !(Number.isFinite(point.x) && Number.isFinite(point.y))) throw new Error(`cursor ${JSON.stringify(point)}`);
+    return point === null ? 'cursor not available here' : `cursor ${point.x},${point.y}`;
+  });
+  await check('window-create-is-denied-without-the-permission', async () => {
+    const error = await rejection(api.window.create({ label: 'extra', url: '/index.html', width: 100, height: 100 }));
+    if (error?.code !== 'PERMISSION_DENIED') throw new Error(`window.create: ${error?.code ?? 'it succeeded'}`);
+    const open = await api.window.all();
+    if (open.length !== 1) throw new Error(`${open.length} windows are open`);
   });
 
   await verdict(failed());

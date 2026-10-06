@@ -3,7 +3,11 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 
-use alef_core::registry::host::{Host, Theme};
+use alef_core::registry::{
+    host::{Host, HostFuture, Theme},
+    window::{ResizeEdge, UiCall, WindowCall, WindowOp},
+};
+use alef_core::AlefError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
@@ -36,22 +40,10 @@ pub struct RuntimeHandle {
     host: Arc<HostState>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum ResizeEdge {
-    North,
-    NorthEast,
-    East,
-    SouthEast,
-    South,
-    SouthWest,
-    West,
-    NorthWest,
-}
-
+/// The window commands of the File Manager (`window.apply`), kept until it moves to the modules.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
-pub enum WindowAction {
+pub(crate) enum WindowAction {
     GetState,
     Minimize,
     Maximize,
@@ -64,29 +56,28 @@ pub enum WindowAction {
     StartResize { edge: ResizeEdge },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WindowState {
-    pub revision: u32,
-    pub title: String,
-    pub width: u32,
-    pub height: u32,
-    pub x: Option<i32>,
-    pub y: Option<i32>,
-    pub scale_factor: f64,
-    pub focused: bool,
-    pub maximized: bool,
-    pub minimized: Option<bool>,
-    pub visible: Option<bool>,
-    pub decorated: bool,
-    pub resizable: bool,
-    pub fullscreen: bool,
-    pub supports_drag_resize: bool,
+impl From<WindowAction> for WindowOp {
+    fn from(action: WindowAction) -> Self {
+        match action {
+            WindowAction::GetState => Self::State,
+            WindowAction::Minimize => Self::Minimize,
+            WindowAction::Maximize => Self::Maximize,
+            WindowAction::Restore => Self::Restore,
+            WindowAction::ToggleMaximize => Self::ToggleMaximize,
+            WindowAction::Close => Self::Close,
+            WindowAction::SetDecorations { enabled } => Self::SetDecorations { enabled },
+            WindowAction::SetResizable { enabled } => Self::SetResizable { enabled },
+            WindowAction::StartDrag => Self::StartDrag,
+            WindowAction::StartResize { edge } => Self::StartResize { edge },
+        }
+    }
 }
 
 pub(crate) enum UiRequest {
-    Window {
-        action: WindowAction,
+    /// `caller` is the window of the calling document.
+    Ui {
+        caller: u64,
+        call: UiCall,
         reply: UiReply,
     },
 }
@@ -188,9 +179,25 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    pub async fn window(&self, action: WindowAction) -> io::Result<Value> {
-        self.request(move |reply| Ok(UiRequest::Window { action, reply }))
-            .await
+    /// Runs `call` on the UI thread; `caller` is the window of the calling document.
+    pub(crate) async fn ui_call(&self, caller: u64, call: UiCall) -> io::Result<Value> {
+        self.request(move |reply| {
+            Ok(UiRequest::Ui {
+                caller,
+                call,
+                reply,
+            })
+        })
+        .await
+    }
+
+    /// The legacy `window.apply` of a document in `caller`.
+    pub(crate) async fn window(&self, caller: u64, action: WindowAction) -> io::Result<Value> {
+        let call = WindowCall {
+            label: None,
+            op: action.into(),
+        };
+        self.ui_call(caller, UiCall::Window(call)).await
     }
 
     /// Cancel-safe before execution; an already applied OS operation is not rolled back.
@@ -246,6 +253,11 @@ impl Host for RuntimeHandle {
             Theme::Light
         }
     }
+
+    fn ui(&self, caller: u64, call: UiCall) -> HostFuture {
+        let handle = self.clone();
+        Box::pin(async move { handle.ui_call(caller, call).await.map_err(AlefError::from) })
+    }
 }
 
 pub(crate) fn event_json<T: Serialize + ?Sized>(name: &str, payload: &T) -> io::Result<String> {
@@ -283,7 +295,7 @@ mod tests {
             .expect("events need no attached window");
         assert_eq!(
             handle
-                .window(WindowAction::GetState)
+                .window(1, WindowAction::GetState)
                 .await
                 .expect_err("unattached")
                 .kind(),
@@ -306,7 +318,7 @@ mod tests {
         );
         assert_eq!(
             backend
-                .window(WindowAction::GetState)
+                .window(1, WindowAction::GetState)
                 .await
                 .expect_err("closed")
                 .kind(),

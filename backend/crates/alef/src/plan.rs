@@ -13,7 +13,6 @@ use alef_core::{
         csp::build_csp,
         manifest::Manifest,
         permissions::{PathVars, PermissionSet},
-        window::{Length, Monitor, WindowDef, WindowPosition},
     },
 };
 
@@ -22,21 +21,8 @@ pub const MANIFEST_FILE: &str = "alef.ktav";
 /// Origin of the application documents; `build_csp` allows it explicitly (see its docs).
 const CSP_APP_ORIGIN: &str = "native://app";
 
-/// The window the manifest declares, in logical pixels.
-#[derive(Debug, PartialEq)]
-pub struct WindowPlan {
-    pub title: String,
-    /// Root-relative entry document.
-    pub entry: String,
-    pub width: f64,
-    pub height: f64,
-    pub min_size: Option<(f64, f64)>,
-    pub max_size: Option<(f64, f64)>,
-}
-
 pub struct Plan {
     pub manifest: Manifest,
-    pub window: WindowPlan,
     pub permissions: Arc<PermissionSet>,
     pub csp: String,
     pub assets: PathBuf,
@@ -58,74 +44,28 @@ pub fn load_manifest(app_dir: &Path) -> Result<Manifest, AlefError> {
     Manifest::from_ktav_str(&text)
 }
 
-fn pixels(length: Length, what: &str) -> Result<f64, AlefError> {
-    match length {
-        Length::Px(value) => Ok(value),
-        Length::Percent(..) => Err(unavailable(format!(
-            "{what}: percentage sizes arrive with the window module (M2.2); use pixels"
-        ))),
-    }
-}
-
-fn bound(
-    width: Option<Length>,
-    height: Option<Length>,
-    what: &str,
-    missing: f64,
-) -> Result<Option<(f64, f64)>, AlefError> {
-    if width.is_none() && height.is_none() {
-        return Ok(None);
-    }
-    let width = width
-        .map(|value| pixels(value, &format!("{what}Width")))
-        .transpose()?;
-    let height = height
-        .map(|value| pixels(value, &format!("{what}Height")))
-        .transpose()?;
-    Ok(Some((width.unwrap_or(missing), height.unwrap_or(missing))))
-}
-
-fn window_plan(title: &str, definition: &WindowDef) -> Result<WindowPlan, AlefError> {
-    if definition.monitor != Monitor::default()
-        || definition.position != WindowPosition::default()
-        || definition.restore
-    {
-        return Err(unavailable(format!(
-            "windows[0] ({}): monitor, position and restore arrive with the window module (M2.2)",
-            definition.label
-        )));
-    }
-    Ok(WindowPlan {
-        title: title.to_owned(),
-        entry: definition.url.clone(),
-        width: pixels(definition.width, "width")?,
-        height: pixels(definition.height, "height")?,
-        min_size: bound(definition.min_width, definition.min_height, "min", 0.0)?,
-        max_size: bound(definition.max_width, definition.max_height, "max", 1.0e6)?,
-    })
-}
-
 /// Derives the launch plan; `vars` are the directories behind the `$NAME` scope variables.
 pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<Plan, AlefError> {
-    let window = match manifest.windows.as_slice() {
-        [] => {
-            return Err(AlefError::new(
-                ErrorCode::ManifestInvalid,
-                "windows: the manifest declares no window",
-            ))
-        }
-        [only] => window_plan(&manifest.name, only)?,
-        _ => {
-            return Err(unavailable(
-                "windows: several windows arrive with the window module (M2.2); declare one"
-                    .to_owned(),
-            ))
-        }
-    };
+    if manifest.windows.is_empty() {
+        return Err(AlefError::new(
+            ErrorCode::ManifestInvalid,
+            "windows: the manifest declares no window",
+        ));
+    }
+    if let Some((index, window)) = manifest
+        .windows
+        .iter()
+        .enumerate()
+        .find(|(_, window)| window.restore)
+    {
+        return Err(unavailable(format!(
+            "windows[{index}] ({}): restore arrives with window restore (M2.4)",
+            window.label
+        )));
+    }
     let permissions = Arc::new(PermissionSet::from_manifest(&manifest.permissions, vars)?);
     let csp = build_csp(&manifest.external, CSP_APP_ORIGIN)?;
     Ok(Plan {
-        window,
         permissions,
         csp,
         assets: app_dir.to_path_buf(),
@@ -173,6 +113,7 @@ pub fn path_vars(app_dir: &Path, id: &str) -> Result<PathVars, AlefError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alef_core::security::window::Monitor;
 
     fn manifest(window: &str, permissions_fs_read: &str) -> Manifest {
         let text = format!(
@@ -244,19 +185,10 @@ permissions: {{
     }
 
     #[test]
-    fn a_plain_manifest_becomes_a_window_a_permission_set_and_a_csp() {
+    fn a_plain_manifest_becomes_a_permission_set_and_a_csp() {
         let plan = plan_of(manifest(SIZE, "[ $APP/data/* ]")).expect("plan");
-        assert_eq!(
-            plan.window,
-            WindowPlan {
-                title: "Example".to_owned(),
-                entry: "/index.html".to_owned(),
-                width: 800.0,
-                height: 600.0,
-                min_size: None,
-                max_size: None,
-            }
-        );
+        assert_eq!(plan.manifest.windows.len(), 1);
+        assert_eq!(plan.manifest.windows[0].url, "/index.html");
         assert!(plan
             .csp
             .starts_with("default-src 'none'; script-src 'self' native://app;"));
@@ -265,90 +197,57 @@ permissions: {{
     }
 
     #[test]
-    fn min_and_max_sizes_fill_the_missing_side() {
+    fn percentages_limits_monitor_and_position_are_the_window_module_s_to_resolve() {
         let plan = plan_of(manifest(
-            &format!(
-                "{SIZE}        minWidth: 400
-        maxHeight: 900
-"
-            ),
+            "        width: 70%work
+        height: 50%screen
+        minWidth: 400
+        maxHeight: 90%work
+        monitor: cursor
+        position: { x: 10, y: 20 }
+",
             "[]",
         ))
-        .expect("plan");
-        assert_eq!(plan.window.min_size, Some((400.0, 0.0)));
-        assert_eq!(plan.window.max_size, Some((1.0e6, 900.0)));
+        .expect("the runtime resolves these when it opens the window");
+        let window = &plan.manifest.windows[0];
+        assert_eq!(window.monitor, Monitor::Cursor);
+        assert!(window.max_height.is_some());
+    }
+
+    #[test]
+    fn several_windows_are_all_kept() {
+        let mut two = manifest(SIZE, "[]");
+        let mut second = two.windows[0].clone();
+        second.label = "tool".to_owned();
+        two.windows.push(second);
+        let plan = plan_of(two).expect("plan");
+        let labels: Vec<_> = plan
+            .manifest
+            .windows
+            .iter()
+            .map(|w| w.label.as_str())
+            .collect();
+        assert_eq!(labels, ["main", "tool"]);
     }
 
     #[test]
     fn what_the_runtime_cannot_honour_yet_is_refused_not_ignored() {
-        for (window, mentioned) in [
-            (
-                "        width: 70%work
-        height: 600
-",
-                "width",
-            ),
-            (
-                "        width: 800
-        height: 50%screen
-",
-                "height",
-            ),
-            (
-                &format!(
-                    "{SIZE}        minWidth: 10%screen
+        let error = refused(&format!(
+            "{SIZE}        restore: true
 "
-                ),
-                "minWidth",
-            ),
-            (
-                &format!(
-                    "{SIZE}        maxHeight: 90%work
-"
-                ),
-                "maxHeight",
-            ),
-            (
-                &format!(
-                    "{SIZE}        monitor: cursor
-"
-                ),
-                "monitor",
-            ),
-            (
-                &format!(
-                    "{SIZE}        restore: true
-"
-                ),
-                "restore",
-            ),
-            (
-                &format!(
-                    "{SIZE}        position: {{ x: 10, y: 20 }}
-"
-                ),
-                "position",
-            ),
-        ] {
-            let error = refused(window);
-            assert_eq!(error.code, ErrorCode::NotAvailable, "{window}");
-            assert!(error.message.contains(mentioned), "{}", error.message);
-            assert!(error.message.contains("M2.2"), "{}", error.message);
-        }
+        ));
+        assert_eq!(error.code, ErrorCode::NotAvailable);
+        assert!(error.message.contains("restore"), "{}", error.message);
+        assert!(error.message.contains("M2.4"), "{}", error.message);
     }
 
     #[test]
-    fn exactly_one_window_is_required() {
+    fn a_window_is_required() {
         let mut none = manifest(SIZE, "[]");
         none.windows.clear();
         let error = plan_of(none).err().expect("no window");
         assert_eq!(error.code, ErrorCode::ManifestInvalid);
         assert!(error.message.starts_with("windows:"));
-
-        let mut two = manifest(SIZE, "[]");
-        two.windows.push(two.windows[0].clone());
-        let error = plan_of(two).err().expect("two windows");
-        assert_eq!(error.code, ErrorCode::NotAvailable);
     }
 
     #[test]

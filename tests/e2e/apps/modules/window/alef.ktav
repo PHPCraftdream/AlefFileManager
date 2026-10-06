@@ -1,0 +1,67 @@
+id: org.alef.e2e.modules.window
+name: Alef e2e window
+version:: 4.5.6
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 70%work
+        height: 60%work
+        minWidth: 400
+        minHeight: 300
+        monitor: primary
+        position: center
+    }
+    {
+        label: side
+        url: /side.html
+        width: 480
+        height: 320
+        title: Side window
+        resizable: false
+        position: {
+            x: 10%work
+            y: 10%work
+        }
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+    window: {
+        create: true
+    }
+}
