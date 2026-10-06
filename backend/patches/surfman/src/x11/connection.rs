@@ -15,7 +15,7 @@ use euclid::default::Size2D;
 use std::marker::PhantomData;
 use std::os::raw::c_void;
 use std::ptr;
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex, Once};
 use x11_dl::xlib::{Display, Xlib};
 
 static X_THREADS_INIT: Once = Once::new();
@@ -320,6 +320,34 @@ impl<'a> DisplayGuard<'a> {
     }
 }
 
+/// The EGL displays made by `create_egl_display` and how many connections use each one. EGL gives
+/// the same display to every connection of one X11 display, and terminating it under the others
+/// breaks their contexts (`BadDisplay`): it is terminated with its last user.
+static EGL_DISPLAY_USERS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+fn retain_egl_display(display: EGLDisplay) {
+    let mut users = EGL_DISPLAY_USERS.lock().unwrap_or_else(|e| e.into_inner());
+    match users.iter_mut().find(|(known, _)| *known == display as usize) {
+        Some((_, count)) => *count += 1,
+        None => users.push((display as usize, 1)),
+    }
+}
+
+/// Whether the connection that lets go was the last one using the display.
+fn release_egl_display(display: EGLDisplay) -> bool {
+    let mut users = EGL_DISPLAY_USERS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(at) = users.iter().position(|(known, _)| *known == display as usize) else {
+        return true;
+    };
+    users[at].1 -= 1;
+    if users[at].1 == 0 {
+        users.swap_remove(at);
+        true
+    } else {
+        false
+    }
+}
+
 unsafe fn create_egl_display(display: *mut Display) -> EGLDisplay {
     EGL_FUNCTIONS.with(|egl| {
         let display_attributes = [egl::NONE as EGLAttrib];
@@ -332,6 +360,7 @@ unsafe fn create_egl_display(display: *mut Display) -> EGLDisplay {
         let (mut egl_major_version, mut egl_minor_version) = (0, 0);
         let ok = egl.Initialize(egl_display, &mut egl_major_version, &mut egl_minor_version);
         assert_ne!(ok, egl::FALSE);
+        retain_egl_display(egl_display);
 
         egl_display
     })
@@ -339,6 +368,8 @@ unsafe fn create_egl_display(display: *mut Display) -> EGLDisplay {
 
 unsafe fn terminate_egl_display(display: EGLDisplay) {
     EGL_FUNCTIONS.with(|egl| {
-        egl.Terminate(display);
+        if release_egl_display(display) {
+            egl.Terminate(display);
+        }
     })
 }
