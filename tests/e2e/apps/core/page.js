@@ -75,6 +75,18 @@ async function openStream(id, options = {}) {
 }
 
 async function rawChecks() {
+  // The runtime opens the window hidden and shows it with the first painted content (that it is not
+  // shown earlier is checked by the `startup` scenario, which watches the windows of the process).
+  await check('window-is-shown-once-it-has-content', async () => {
+    const started = performance.now();
+    for (;;) {
+      const { visible } = await api.nativeWindow.getState();
+      if (visible === null) return 'visibility is not reported on this platform';
+      if (visible) return `shown after ${Math.round(performance.now() - started)} ms`;
+      if (performance.now() - started > 20000) throw new Error('the window was never shown');
+      await sleep(50);
+    }
+  });
   await check('hello', async () => {
     const response = await fetch('native://call/runtime.hello', { method: 'POST', headers: { ...bearer(bootstrap), 'Content-Type': 'application/json' }, body: '{}' });
     const info = await response.json();

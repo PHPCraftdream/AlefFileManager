@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,quit,relaunch,system,arguments]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,quit,relaunch,system,arguments,startup]
 //                          [--timeout-s 150] [--verbose]
 // Exit code 0 = every selected scenario passed.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { countingServer, exeName, field, interesting, makeDriver, root, scratch, staticServer, startApp } from './lib.mjs';
 import { manifestCases } from './scenarios/manifests.mjs';
 import { moduleScenarios } from './scenarios/modules.mjs';
+import { startupScenarios } from './scenarios/startup.mjs';
 
 const args = process.argv.slice(2);
 const option = name => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
@@ -23,7 +24,7 @@ const WINDOW_BYTES = 1024 * 1024;
 const drive = makeDriver({ exe, verbose, timeoutMs });
 
 const CORE_CHECKS = [
-  'hello', 'denials', 'json-echo', 'binary-echo-16MiB', 'unknown-command-is-not-found', 'legacy-invoke-route-is-gone',
+  'window-is-shown-once-it-has-content', 'hello', 'denials', 'json-echo', 'binary-echo-16MiB', 'unknown-command-is-not-found', 'legacy-invoke-route-is-gone',
   'credit-window', 'abort-closes-the-source', 'events-stream',
   'lib-connect', 'lib-call-json', 'lib-binary-roundtrip-4MiB', 'lib-error-mapping', 'lib-readable-acks-by-itself',
   'lib-close-stops-the-source', 'lib-events', 'lib-window-watch',
@@ -64,6 +65,7 @@ const INDUCED = ['binary-echo-16MiB', 'lib-binary-roundtrip-4MiB'];
 
 const scenarios = {
   ...moduleScenarios({ drive, exe, verbose }),
+  ...startupScenarios({ exe }),
   core: () => drive({ name: 'core', app: 'core', expectedChecks: CORE_CHECKS, judge: judgeCore }),
 
   // The echo is corrupted on purpose: the runner must see exactly the two binary checks fail.

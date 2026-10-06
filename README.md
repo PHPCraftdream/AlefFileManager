@@ -42,6 +42,7 @@ npm start -- --data-dir ./local-data --root ./files
 - `frontend/src/native/runtime.ts`: универсальные `invoke`, `listen`/`Unlisten`, `nativeWindow` без зависимости от React или команд Alef.
 - `frontend/src/native/api.ts`: DTO и команды приложения поверх `invoke`.
 - `backend/patches/servo-paint-api`: локальный Servo 0.6 fix активации GL context до загрузки GL функций; версия не изменена.
+- `backend/patches/surfman`: surfman 0.13.0 без `WS_VISIBLE` у служебного окна `SurfmanFalseWindow` (на Windows оно создаётся при первом GL-контексте для загрузки расширений WGL и мигало на экране ~30 мс при каждом запуске); версия не изменена, лицензии сохранены.
 - `backend/patches/winit`: winit 0.30.13 с Windows fixes для packed signed coordinates в `WM_NCLBUTTONDOWN`, чтения maximized state из HWND и drag lifecycle по `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE`. Это устраняет зависший drag guard после maximize/restore; версия не изменена, Apache-2.0 license сохранена. [Win32 LPARAM контракт](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nclbuttondown).
 - `backend/crates/alef-runtime/src/window`: Servo window host (`app`, `state`, `delegate`), синхронный resize (`resize_wait`), ввод (`input/`: wheel, edge hit-testing); `backend/crates/alef-runtime/src/bridge`: приватный protocol bridge и `commands`.
 - `backend/crates/alef-runtime/src/window/platform`: Windows/Linux/macOS реализации icon, wheel policy и native resize capability; общий runtime не содержит платформенных FFI.
@@ -118,4 +119,4 @@ Windows smoke: production без Rsbuild, native React/Tailwind, переклю�
 
 ## Лицензия
 
-`MIT OR Apache-2.0` — на выбор пользователя, см. `LICENSE-MIT` и `LICENSE-APACHE`. Исключения: `backend/patches/servo-paint`, `backend/patches/servo-paint-api` и файлы `backend/crates/alef-runtime/src/window/` с заголовком MPL-2.0 (на основе примера Servo) — MPL-2.0; `backend/patches/winit` — Apache-2.0.
+`MIT OR Apache-2.0` — на выбор пользователя, см. `LICENSE-MIT` и `LICENSE-APACHE`. Исключения: `backend/patches/servo-paint`, `backend/patches/servo-paint-api` и файлы `backend/crates/alef-runtime/src/window/` с заголовком MPL-2.0 (на основе примера Servo) — MPL-2.0; `backend/patches/winit` — Apache-2.0; `backend/patches/surfman` — `MIT OR Apache-2.0 OR MPL-2.0` (лицензии оригинала, `LICENSE-*` в каталоге).

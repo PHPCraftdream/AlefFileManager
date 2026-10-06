@@ -9,7 +9,10 @@ use super::resize_wait::{self, WakeGeneration};
 use crate::ui::{event_json, WINDOW_STATE_EVENT};
 use crate::{WindowAction, WindowState};
 use serde_json::Value;
-use servo::{DevicePoint, Modifiers, RenderingContext, Servo, WebView, WindowRenderingContext};
+use servo::{
+    DeviceIntRect, DeviceIntSize, DevicePoint, Modifiers, RenderingContext, Servo, WebView,
+    WindowRenderingContext,
+};
 use winit::window::{CursorIcon, ResizeDirection, Window};
 
 // The engine and GL context must be dropped before their window.
@@ -32,6 +35,11 @@ pub(super) struct State {
     pub(super) page_ready: Rc<Cell<bool>>,
     pub(super) resize_hover: Option<ResizeDirection>,
     pub(super) frame_ready: Rc<Cell<bool>>,
+    pub(super) content_frame: Rc<Cell<bool>>,
+    /// The window has been shown (it starts hidden, see `try_reveal`).
+    pub(super) revealed: bool,
+    pub(super) created: Instant,
+    pub(super) ready_since: Option<Instant>,
     // BEGIN M0.2 multiwindow spike: present counter read by the spike oracle.
     pub(super) presents: Rc<Cell<u32>>,
     // END M0.2 multiwindow spike
@@ -41,6 +49,12 @@ pub(super) struct State {
 }
 
 const RESIZE_WAIT: Duration = Duration::from_millis(100);
+/// How often a hidden window checks whether it may be shown.
+pub(super) const REVEAL_POLL: Duration = Duration::from_millis(50);
+/// A page whose frames stay blank (or that announces none) is shown this long after it loaded.
+const REVEAL_SETTLE: Duration = Duration::from_millis(600);
+/// A page that never finishes loading must not leave the application invisible.
+const REVEAL_LIMIT: Duration = Duration::from_secs(10);
 
 impl State {
     pub(super) fn synchronize_viewport(&mut self) -> io::Result<bool> {
@@ -77,6 +91,64 @@ impl State {
         self.rendering.present();
         self.next_frame = Instant::now() + Duration::from_millis(16);
         Ok(())
+    }
+
+    /// Shows the window the first time there is something to show. Before that it is an unpainted
+    /// rectangle - white, with a black strip where it grew to its requested size - and the page
+    /// itself is blank: the load finishes before the application has drawn anything. So once the page
+    /// has loaded, every frame it announces is painted off screen and looked at; the first one that is
+    /// not a single colour is presented and the window is shown. A page that stays blank is shown
+    /// `REVEAL_SETTLE` after it loaded, one that never loads after `REVEAL_LIMIT`.
+    pub(super) fn try_reveal(&mut self) -> io::Result<()> {
+        if self.revealed {
+            return Ok(());
+        }
+        if self.page_ready.get() && self.ready_since.is_none() {
+            self.ready_since = Some(Instant::now());
+        }
+        let overdue = self.created.elapsed() >= REVEAL_LIMIT
+            || self
+                .ready_since
+                .is_some_and(|since| since.elapsed() >= REVEAL_SETTLE);
+        if overdue {
+            self.redraw()?;
+        } else if self.page_ready.get() && self.content_frame.replace(false) {
+            if !self.synchronize_viewport()? {
+                return Ok(());
+            }
+            self.servo.spin_event_loop();
+            self.frame_ready.set(false);
+            self.webview.paint();
+            if !self.painted_frame_has_content() {
+                return Ok(());
+            }
+            self.trace_present("reveal", None, false);
+            self.rendering.present();
+        } else {
+            return Ok(());
+        }
+        self.window.set_visible(true);
+        self.window.focus_window();
+        self.revealed = true;
+        self.snapshot_dirty = true;
+        Ok(())
+    }
+
+    /// Whether the frame just painted is more than one colour (read back before it is presented).
+    fn painted_frame_has_content(&self) -> bool {
+        let size = self.rendering.size();
+        let rectangle = DeviceIntRect::from_size(DeviceIntSize::new(
+            i32::try_from(size.width).unwrap_or(i32::MAX),
+            i32::try_from(size.height).unwrap_or(i32::MAX),
+        ));
+        self.rendering
+            .read_to_image(rectangle)
+            .is_some_and(|image| {
+                let mut pixels = image.pixels();
+                pixels
+                    .next()
+                    .is_some_and(|first| pixels.any(|pixel| pixel != first))
+            })
     }
 
     pub(super) fn trace_present(&self, path: &str, waited: Option<Duration>, timed_out: bool) {

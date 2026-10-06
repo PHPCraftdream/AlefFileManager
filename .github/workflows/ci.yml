@@ -124,7 +124,7 @@ jobs:
             libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
             libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri \
             libfontconfig1 libfreetype6 \
-            xvfb
+            xvfb openbox
 
       - name: npm ci
         run: npm ci
@@ -159,8 +159,9 @@ jobs:
         if: runner.os == 'Linux'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
+        # The window scenarios (maximize, resize events) need a window manager; openbox is the smallest.
         run: |
-          xvfb-run -a -s "-screen 0 1280x1024x24" node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose
+          xvfb-run -a -s "-screen 0 1280x1024x24" sh -c 'openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose'
 
       - name: Upload executable
         uses: actions/upload-artifact@v4

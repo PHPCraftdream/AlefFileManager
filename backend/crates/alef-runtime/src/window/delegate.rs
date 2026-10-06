@@ -33,11 +33,16 @@ pub(super) struct Delegate {
     pub(super) animating: Rc<Cell<bool>>,
     pub(super) page_ready: Rc<Cell<bool>>,
     pub(super) frame_ready: Rc<Cell<bool>>,
+    /// A frame was announced after the page finished loading: the window has something to show.
+    pub(super) content_frame: Rc<Cell<bool>>,
 }
 
 impl WebViewDelegate for Delegate {
     fn notify_new_frame_ready(&self, _: WebView) {
         self.frame_ready.set(true);
+        if self.page_ready.get() {
+            self.content_frame.set(true);
+        }
         if let Some(window) = self.window.upgrade() {
             window.request_redraw();
         }

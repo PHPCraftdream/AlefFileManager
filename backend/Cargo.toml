@@ -31,3 +31,4 @@ debug = 0
 servo-paint = { path = "patches/servo-paint" }
 servo-paint-api = { path = "patches/servo-paint-api" }
 winit = { path = "patches/winit" }
+surfman = { path = "patches/surfman" }

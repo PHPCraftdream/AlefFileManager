@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::delegate::Delegate;
-use super::state::{capture_window_state, State};
+use super::state::{capture_window_state, State, REVEAL_POLL};
 use super::App;
 use crate::ui::{UiRequest, Wake};
 use crate::WindowAction;
@@ -39,7 +39,10 @@ impl App {
                 self.options.height,
             ))
             .with_decorations(self.options.decorations)
-            .with_resizable(self.options.resizable);
+            .with_resizable(self.options.resizable)
+            // Shown by `State::try_reveal` once there is a first picture; until then the window
+            // would be an unpainted rectangle.
+            .with_visible(false);
         let attributes = match self.options.min_size {
             Some((width, height)) => {
                 attributes.with_min_inner_size(winit::dpi::LogicalSize::new(width, height))
@@ -90,6 +93,7 @@ impl App {
         let animating = Rc::new(Cell::new(false));
         let page_ready = Rc::new(Cell::new(false));
         let frame_ready = Rc::new(Cell::new(false));
+        let content_frame = Rc::new(Cell::new(false));
         let window_id = self.windows.allocate();
         let delegate = Rc::new(Delegate {
             window: Rc::downgrade(&window),
@@ -98,6 +102,7 @@ impl App {
             animating: animating.clone(),
             page_ready: page_ready.clone(),
             frame_ready: frame_ready.clone(),
+            content_frame: content_frame.clone(),
         });
         let webview = WebViewBuilder::new(&servo, rendering.clone())
             .url(self.url.clone())
@@ -130,6 +135,10 @@ impl App {
             page_ready,
             resize_hover: None,
             frame_ready,
+            content_frame,
+            revealed: false,
+            created: Instant::now(),
+            ready_since: None,
             // BEGIN M0.2 multiwindow spike
             presents: Rc::new(Cell::new(0)),
             // END M0.2 multiwindow spike
@@ -202,7 +211,7 @@ impl ApplicationHandler<Wake> for App {
         self.process_requests(event_loop);
         if let Some(state) = self.state.as_mut() {
             state.servo.spin_event_loop();
-            if let Err(error) = state.publish_snapshot() {
+            if let Err(error) = state.try_reveal().and_then(|()| state.publish_snapshot()) {
                 self.error = Some(error);
                 event_loop.exit();
             }
@@ -223,12 +232,14 @@ impl ApplicationHandler<Wake> for App {
         self.process_requests(event_loop);
         if let Some(state) = self.state.as_mut() {
             state.servo.spin_event_loop();
-            if let Err(error) = state.publish_snapshot() {
+            if let Err(error) = state.try_reveal().and_then(|()| state.publish_snapshot()) {
                 eprintln!("Window state capture failed: {error}");
                 event_loop.exit();
             }
             if state.animating.get() {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(state.next_frame));
+            } else if !state.revealed {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + REVEAL_POLL));
             } else {
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
