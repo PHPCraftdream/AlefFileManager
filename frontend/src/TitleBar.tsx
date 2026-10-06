@@ -1,6 +1,6 @@
 import type { PointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { nativeWindow, type WindowState } from './native/runtime';
+import { nativeWindow, type WindowState } from '@alef-tron/api';
 
 export default function TitleBar({ state, onError }: {
   state: WindowState | null;

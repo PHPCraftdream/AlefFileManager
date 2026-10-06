@@ -8,10 +8,9 @@ use std::time::{Duration, Instant};
 use super::delegate::Delegate;
 use super::state::{capture_window_state, State};
 use super::App;
-use crate::ui::{event_script, UiRequest, Wake};
+use crate::ui::{UiRequest, Wake};
 use crate::WindowAction;
 use euclid::Scale;
-use serde_json::Value;
 use servo::{
     Code, CompositionEvent, CompositionState, DevicePoint, ImeEvent, InputEvent, Key, KeyState,
     KeyboardEvent, Location, Modifiers, MouseButton, MouseButtonAction, MouseButtonEvent,
@@ -113,7 +112,6 @@ impl App {
             snapshot,
             snapshot_dirty: true,
             published_revision: None,
-            state_event_in_flight: Rc::new(Cell::new(false)),
             page_ready,
             resize_hover: None,
             frame_ready,
@@ -134,20 +132,6 @@ impl App {
         crate::spikes::integration::poll(state.window.as_ref());
         while let Ok(request) = self.requests.try_recv() {
             match request {
-                UiRequest::Emit { json, reply } => {
-                    if reply.canceled() {
-                        continue;
-                    }
-                    state
-                        .webview
-                        .evaluate_javascript(event_script(&json), move |result| {
-                            reply.finish(result.map(|_| Value::Null).map_err(|error| {
-                                io::Error::other(format!(
-                                    "Browser event dispatch failed: {error:?}"
-                                ))
-                            }));
-                        });
-                }
                 UiRequest::Window { action, reply } => {
                     if reply.canceled() {
                         continue;

@@ -12,6 +12,12 @@
     "strict": true,
     "noEmit": true,
     "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@alef-tron/api": [
+        "./packages/api/src/index.ts"
+      ]
+    },
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "types": [
@@ -23,6 +29,7 @@
   },
   "include": [
     "frontend/src",
+    "packages/api/src",
     "rsbuild.config.ts"
   ]
 }

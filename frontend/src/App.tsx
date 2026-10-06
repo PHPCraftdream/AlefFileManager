@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { nativeApi, type HelloResponse } from './native/api';
 import i18n, { languages, type Language } from './i18n';
-import { listen, nativeWindow, type Unlisten, type WindowState } from './native/runtime';
+import { nativeWindow, on, type Unlisten, type WindowState } from '@alef-tron/api';
 import TitleBar from './TitleBar';
 
 export default function App() {
@@ -23,11 +23,15 @@ export default function App() {
 
   useEffect(() => {
     if (!eventsEnabled) return;
-    return listen<HelloResponse>('backend.greeting', payload => {
+    const controller = new AbortController();
+    void on<HelloResponse>('backend.greeting', payload => {
       setLastEvent(payload);
       setReceivedEvents(count => count + 1);
+    }, { signal: controller.signal }).catch(failure => {
+      if (!controller.signal.aborted) reportWindowError(failure);
     });
-  }, [eventsEnabled]);
+    return () => controller.abort();
+  }, [eventsEnabled, reportWindowError]);
 
   useEffect(() => {
     const controller = new AbortController();

@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [pluginReact(), pluginTailwindcss()],
   source: {
     entry: { index: './frontend/src/main.tsx' },
+    alias: { '@alef-tron/api': './packages/api/src/index.ts' },
   },
   html: {
     template: './frontend/index.html',

@@ -1,5 +1,5 @@
 import type { Language } from '../i18n';
-import { invoke } from './runtime';
+import { call } from '@alef-tron/api';
 
 export interface PreferencesResponse {
   language: Language;
@@ -29,10 +29,10 @@ export interface DirectoryResponse {
 
 
 export const nativeApi = {
-  hello: (signal?: AbortSignal) => invoke<HelloResponse>('hello', null, signal),
-  preferences: (signal?: AbortSignal) => invoke<PreferencesResponse>('preferences.get', null, signal),
-  setPreferences: (language: Language) => invoke<PreferencesResponse>('preferences.set', { language }),
-  listDirectory: (path?: string, signal?: AbortSignal) => invoke<DirectoryResponse>(
-    'directory.list', { path }, signal,
+  hello: (signal?: AbortSignal) => call<HelloResponse>('app.hello', null, { signal }),
+  preferences: (signal?: AbortSignal) => call<PreferencesResponse>('preferences.get', null, { signal }),
+  setPreferences: (language: Language) => call<PreferencesResponse>('preferences.set', { language }),
+  listDirectory: (path?: string, signal?: AbortSignal) => call<DirectoryResponse>(
+    'directory.list', { path }, { signal },
   ),
 };

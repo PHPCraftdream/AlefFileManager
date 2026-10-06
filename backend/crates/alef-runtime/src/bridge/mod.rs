@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The `native://` protocol: application assets, the transport routes `call`/`stream` and the
-//! legacy `invoke` route (removed in M1.6).
+//! The `native://` protocol: application assets and the transport routes `call`/`stream`.
 pub(crate) mod commands;
 mod events;
 mod smoke;
@@ -36,7 +35,7 @@ use servo::protocol_handler::{
     ResourceFetchTiming, Response, ResponseBody,
 };
 use subtle::ConstantTimeEq;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::mpsc;
 use url::Url;
 
 use crate::ui::UiRequest;
@@ -190,14 +189,12 @@ impl Bridge {
         let handler = MemoryProtocol {
             assets,
             token,
-            commands: commands.clone(),
-            ui: ui.clone(),
             handle: tokio::runtime::Handle::current(),
-            admission: Arc::new(Semaphore::new(32)),
             transport: transport.clone(),
             windows: windows.clone(),
             limits: options.limits,
             csp: options.csp,
+            log_calls: std::env::var("ALEF_LOG_CALLS").is_ok_and(|value| value == "1"),
         };
         let mut protocols = ProtocolRegistry::with_internal_protocols();
         protocols.register("native", handler).map_err(|error| {
@@ -257,14 +254,14 @@ impl Bridge {
 pub(super) struct MemoryProtocol {
     pub(super) assets: Option<PathBuf>,
     pub(super) token: String,
-    pub(super) commands: Arc<Commands>,
-    pub(super) ui: RuntimeHandle,
     pub(super) handle: tokio::runtime::Handle,
-    pub(super) admission: Arc<Semaphore>,
     pub(super) transport: Arc<Transport>,
     pub(super) windows: WindowRegistry,
     pub(super) limits: Limits,
     pub(super) csp: Option<String>,
+    /// `ALEF_LOG_CALLS=1`: one stderr line per transport request (route and status only; never
+    /// headers, bodies or tokens), used by the end-to-end checks.
+    pub(super) log_calls: bool,
 }
 
 impl ProtocolHandler for MemoryProtocol {
@@ -307,13 +304,7 @@ impl ProtocolHandler for MemoryProtocol {
                     .spike(request, spike_stream, response, url.as_url())
                     .await;
             }
-            let result = if url.host_str() == Some("invoke") && url.path() == "/" {
-                self.invoke(request).await.and_then(|value| {
-                    serde_json::to_vec(&value)
-                        .map(|bytes| (bytes, "application/json".to_owned()))
-                        .map_err(io::Error::other)
-                })
-            } else if url.host_str() == Some("app") && request.method == http::Method::GET {
+            let result = if url.host_str() == Some("app") && request.method == http::Method::GET {
                 let assets = self.assets.clone();
                 let path = url.path().trim_start_matches('/').to_owned();
                 let mut task = transport::OwnedTask(

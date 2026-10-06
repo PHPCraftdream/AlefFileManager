@@ -12,6 +12,7 @@
     "gen:types": "node scripts/gen-types.mjs",
     "check:types": "node scripts/gen-types.mjs --check",
     "test:types": "node --test scripts/gen-types.test.mjs",
+    "test:api": "node --experimental-strip-types --test packages/api/test/*.test.mjs",
     "dev:web": "rsbuild dev",
     "typecheck": "tsc --noEmit",
     "build:frontend": "npm run typecheck && rsbuild build",
@@ -19,7 +20,7 @@
     "build": "npm run build:frontend && npm run build:rust",
     "start": "node scripts/start.mjs",
     "test:rust": "node scripts/cargo.mjs test --locked --workspace",
-    "lint": "oxlint --config .oxlintrc.json frontend/src scripts rsbuild.config.ts --max-warnings 0",
+    "lint": "oxlint --config .oxlintrc.json frontend/src packages scripts experiments/m1-smoke rsbuild.config.ts --max-warnings 0",
     "lint:structure": "node scripts/check-structure.mjs",
     "check": "npm run lint && npm run lint:structure && npm run typecheck &&node scripts/cargo.mjs clippy --locked --workspace --all-targets -- -D warnings"
   },

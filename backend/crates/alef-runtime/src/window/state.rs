@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use super::resize_wait::{self, WakeGeneration};
-use crate::ui::{event_json, event_script, WINDOW_STATE_EVENT};
+use crate::ui::{event_json, WINDOW_STATE_EVENT};
 use crate::{WindowAction, WindowState};
 use serde_json::Value;
 use servo::{DevicePoint, Modifiers, RenderingContext, Servo, WebView, WindowRenderingContext};
@@ -29,7 +29,6 @@ pub(super) struct State {
     pub(super) snapshot: WindowState,
     pub(super) snapshot_dirty: bool,
     pub(super) published_revision: Option<u32>,
-    pub(super) state_event_in_flight: Rc<Cell<bool>>,
     pub(super) page_ready: Rc<Cell<bool>>,
     pub(super) resize_hover: Option<ResizeDirection>,
     pub(super) frame_ready: Rc<Cell<bool>>,
@@ -174,24 +173,12 @@ impl State {
 
     pub(super) fn publish_snapshot(&mut self) -> io::Result<()> {
         self.refresh_snapshot()?;
-        if !self.page_ready.get()
-            || self.state_event_in_flight.get()
-            || self.published_revision == Some(self.snapshot.revision)
-        {
+        if !self.page_ready.get() || self.published_revision == Some(self.snapshot.revision) {
             return Ok(());
         }
         let json = event_json(WINDOW_STATE_EVENT, &self.snapshot)?;
         self.events.publish(Some(self.window_id), &json);
         self.published_revision = Some(self.snapshot.revision);
-        self.state_event_in_flight.set(true);
-        let in_flight = self.state_event_in_flight.clone();
-        self.webview
-            .evaluate_javascript(event_script(&json), move |result| {
-                in_flight.set(false);
-                if let Err(error) = result {
-                    eprintln!("Window state event failed: {error:?}");
-                }
-            });
         Ok(())
     }
 

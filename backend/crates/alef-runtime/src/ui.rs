@@ -73,10 +73,6 @@ pub struct WindowState {
 }
 
 pub(crate) enum UiRequest {
-    Emit {
-        json: String,
-        reply: UiReply,
-    },
     Window {
         action: WindowAction,
         reply: UiReply,
@@ -125,7 +121,7 @@ impl RuntimeHandle {
         self.admission.close();
     }
 
-    /// Non-durable broadcast to the current page. Resolves after JavaScript dispatch.
+    /// Non-durable broadcast to the event streams of every document; returns once queued.
     pub async fn emit<T: Serialize + Sync + ?Sized>(
         &self,
         name: &str,
@@ -137,17 +133,13 @@ impl RuntimeHandle {
                 "The runtime event namespace is reserved",
             ));
         }
-        let json = event_json(name, payload)?;
-        let page_json = json.clone();
-        self.request(|reply| {
-            Ok(UiRequest::Emit {
-                json: page_json,
-                reply,
-            })
-        })
-        .await?;
-        // removed in M1.6: the page-side `evaluate_javascript` delivery above
-        self.events.publish(None, &json);
+        if self.admission.is_closed() {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Native window is closed",
+            ));
+        }
+        self.events.publish(None, &event_json(name, payload)?);
         Ok(())
     }
 
@@ -216,10 +208,6 @@ pub(crate) fn event_json<T: Serialize + ?Sized>(name: &str, payload: &T) -> io::
     Ok(json)
 }
 
-pub(crate) fn event_script(json: &str) -> String {
-    format!("window.dispatchEvent(new CustomEvent('__alef_runtime_event__', {{detail: {json}}}));")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,14 +215,10 @@ mod tests {
     #[tokio::test]
     async fn native_operations_fail_without_an_attached_window() {
         let (handle, _receiver) = RuntimeHandle::channel();
-        assert_eq!(
-            handle
-                .emit("example", &1)
-                .await
-                .expect_err("unattached")
-                .kind(),
-            io::ErrorKind::NotConnected
-        );
+        handle
+            .emit("example", &1)
+            .await
+            .expect("events need no attached window");
         assert_eq!(
             handle
                 .window(WindowAction::GetState)
@@ -266,6 +250,45 @@ mod tests {
                 .kind(),
             io::ErrorKind::BrokenPipe
         );
+    }
+
+    #[tokio::test]
+    async fn emitted_events_reach_event_streams_and_the_runtime_namespace_is_reserved() {
+        use alef_core::{
+            protocol::{call::Limits, frame::Frame},
+            session::{session::SessionManager, TokenSource},
+        };
+        let (handle, _receiver) = RuntimeHandle::channel();
+        let source: TokenSource = Arc::new(|| "token".to_owned());
+        let sessions = SessionManager::new(source, Limits::default());
+        let session = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            sessions.begin_document(1),
+        )
+        .await
+        .expect("session");
+        let (writer, id) = session.streams().open_outgoing();
+        handle.events().attach(1, writer);
+        let mut reader = session.streams().reader(id).expect("reader");
+
+        handle
+            .emit("backend.greeting", &serde_json::json!({"n": 1}))
+            .await
+            .expect("emit");
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), reader.next_frame())
+            .await
+            .expect("event in time");
+        match frame {
+            Some(Frame::Json(value)) => assert_eq!(
+                value,
+                serde_json::json!({"name": "backend.greeting", "payload": {"n": 1}})
+            ),
+            other => panic!("expected the event as a json frame, got {other:?}"),
+        }
+        for reserved in ["runtime.window.state", "runtime."] {
+            let error = handle.emit(reserved, &1).await.expect_err("reserved");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{reserved}");
+        }
     }
 
     #[test]

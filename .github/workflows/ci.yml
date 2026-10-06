@@ -85,6 +85,16 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.7
 
+      # The Actions cache service has outages (the first run died on `sccache: error: Server startup
+      # failed`): the cache is an optimisation, so build with plain rustc when it cannot start.
+      - name: sccache health check
+        shell: bash
+        run: |
+          if ! sccache --start-server; then
+            echo "::warning::sccache cannot start (cache service down); building without it"
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          fi
+
       # Windows: MSVC/SDK — окружение через msvc-dev-cmd; LLVM — libclang для bindgen (mozjs_sys).
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
@@ -131,6 +141,9 @@ jobs:
         run: |
           npm run check:types
           npm run test:types
+
+      - name: "@alef-tron/api tests"
+        run: npm run test:api
 
       # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
       - name: Build (Rust, без frontend)

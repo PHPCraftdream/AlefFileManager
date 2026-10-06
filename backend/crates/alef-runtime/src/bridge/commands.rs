@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The application's command table. The same handlers are reachable through the legacy
-//! `native://invoke` route (removed in M1.6) and through the registry behind `native://call`.
+//! The application's command table, served through the registry behind `native://call`.
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
 
 use alef_core::{
     error::AlefError,
@@ -15,17 +13,13 @@ use alef_core::{
         dispatch::{valid_name, Registry},
     },
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
-use super::transport::{read_body, OwnedTask};
-use super::{authorize, MemoryProtocol};
 use crate::{RuntimeHandle, WindowAction};
 
 type CommandFuture = Pin<Box<dyn Future<Output = io::Result<Value>> + Send>>;
 type Command = Arc<dyn Fn(Value, RuntimeHandle) -> CommandFuture + Send + Sync>;
-
-const MAX_REQUEST_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Default)]
 pub struct Commands {
@@ -72,6 +66,7 @@ impl Commands {
         Ok(())
     }
 
+    /// Runs a registered command directly, without the transport (unit tests of command handlers).
     pub async fn invoke(
         &self,
         name: &str,
@@ -121,61 +116,6 @@ impl Commands {
                 async move { Ok(Reply::Json(ui.window(action).await?)) }
             })?;
         Ok(registry)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Invocation {
-    command: String,
-    arguments: Value,
-}
-
-impl MemoryProtocol {
-    /// Legacy `POST native://invoke/` — removed in M1.6 together with the old frontend client.
-    pub(super) async fn invoke(
-        &self,
-        request: &mut servo::protocol_handler::Request,
-    ) -> io::Result<Value> {
-        if request.method == http::Method::OPTIONS {
-            return Ok(Value::Null);
-        }
-        if request.method != http::Method::POST {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Invoke requires POST",
-            ));
-        }
-        authorize(&self.token, &request.headers)?;
-        let permit = self.admission.clone().try_acquire_owned().map_err(|_| {
-            io::Error::new(io::ErrorKind::WouldBlock, "Native command capacity reached")
-        })?;
-        let body = request.body.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "Missing invocation body")
-        })?;
-        let commands = self.commands.clone();
-        let ui = self.ui.clone();
-        let mut task = OwnedTask(self.handle.spawn(async move {
-            let _permit = permit;
-            let bytes =
-                tokio::time::timeout(Duration::from_secs(10), read_body(body, MAX_REQUEST_BYTES))
-                    .await
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::TimedOut, "Invocation body timed out")
-                    })??;
-            let invocation: Invocation = serde_json::from_slice(&bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            if invocation.command == "runtime.window" {
-                let action: WindowAction = serde_json::from_value(invocation.arguments)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-                ui.window(action).await
-            } else {
-                commands
-                    .invoke(&invocation.command, invocation.arguments, ui)
-                    .await
-            }
-        }));
-        (&mut task.0).await.map_err(io::Error::other)?
     }
 }
 

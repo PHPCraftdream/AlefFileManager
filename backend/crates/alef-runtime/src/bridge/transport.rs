@@ -151,6 +151,7 @@ impl MemoryProtocol {
                     ),
                     Ok(body) => {
                         let window = self.windows.resolve(request.target_webview_id);
+                        let route = self.log_calls.then(|| path.clone());
                         let request = TransportRequest {
                             method,
                             path,
@@ -159,7 +160,11 @@ impl MemoryProtocol {
                             window,
                             document: request.pipeline_id.map(document_of),
                         };
-                        self.transport.handle(request).await
+                        let reply = self.transport.handle(request).await;
+                        if let Some(route) = route {
+                            eprintln!("ALEF_CALL {route} {}", reply.status);
+                        }
+                        reply
                     }
                 }
             }

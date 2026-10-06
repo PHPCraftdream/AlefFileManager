@@ -1,5 +1,9 @@
 // M1 transport smoke (docs/stages/m1-core.md): drives native://call and native://stream inside
-// Servo and reports to the runtime stderr through `smoke.report`; run.mjs reads the verdict.
+// Servo, both with raw fetch (the protocol) and through the real @alef-tron/api (transpiled by
+// run.mjs next to this page), and reports to the runtime stderr through `smoke.report`; run.mjs
+// reads the verdict.
+import * as api from './src/index.js';
+
 const bootstrap = new URLSearchParams(location.hash.slice(1)).get('capability') ?? '';
 const logElement = document.getElementById('log');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -105,7 +109,17 @@ function pattern(size) {
   return bytes;
 }
 
-async function phaseOne() {
+const same = (left, right) => left.length === right.length && left.every((byte, index) => byte === right[index]);
+
+async function until(predicate, ms, what) {
+  const deadline = performance.now() + ms;
+  while (!predicate()) {
+    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await sleep(25);
+  }
+}
+
+async function rawChecks() {
   await check('hello', async () => {
     const response = await fetch('native://call/runtime.hello', { method: 'POST', headers: { ...bearer(bootstrap), 'Content-Type': 'application/json' }, body: '{}' });
     const info = await response.json();
@@ -133,11 +147,13 @@ async function phaseOne() {
     for (let i = 0; i < data.length; i += 1) if (back[i] !== data[i]) throw new Error(`byte ${i}`);
     return `${back.length} bytes intact`;
   });
-  await check('legacy-command-on-registry', async () => {
+  await check('app-command-on-registry', async () => {
     const hello = await callJson('app.hello', null);
     if (hello.engine !== 'Servo 0.6.0') throw new Error('unexpected reply');
+  });
+  await check('legacy-invoke-route-is-gone', async () => {
     const legacy = await fetch('native://invoke/', { method: 'POST', headers: { ...bearer(bootstrap), 'Content-Type': 'application/json' }, body: JSON.stringify({ command: 'hello', arguments: null }) });
-    if (!legacy.ok) throw new Error(`legacy invoke ${legacy.status}`);
+    if (legacy.status !== 404) throw new Error(`native://invoke/ answered ${legacy.status}`);
   });
   await check('credit-window', async () => {
     const total = 4 * MIB;
@@ -195,12 +211,76 @@ async function phaseOne() {
   });
 }
 
-// `how` names the kind of new document: a navigation (phase 2) or a real reload (phase 3).
-async function phaseTwo(previous, how) {
+// The same behaviours through the real client library.
+async function libraryChecks() {
+  await check('lib-connect', async () => {
+    const info = await api.connect();
+    if (info.protocol !== 1 || 'token' in info || !info.modules.includes('smoke')) throw new Error(JSON.stringify(info));
+    return `runtime=${info.runtime}`;
+  });
+  await check('lib-call-json', async () => {
+    const args = { a: [1, 2, 3], s: 'привет', n: null };
+    const value = await api.call('smoke.echo', args);
+    if (JSON.stringify(value) !== JSON.stringify(args)) throw new Error('mismatch');
+  });
+  await check('lib-binary-roundtrip-4MiB', async () => {
+    const data = pattern(4 * MIB);
+    const back = await api.call('smoke.echo', { name: 'ключ' }, { body: data });
+    if (!(back instanceof Uint8Array) || !same(back, data)) throw new Error('bytes differ');
+    return `${back.length} bytes intact`;
+  });
+  await check('lib-error-mapping', async () => {
+    const error = await api.call('smoke.nope').then(() => null, reason => reason);
+    if (!(error instanceof api.AlefError) || error.code !== 'NOT_FOUND' || error.status !== 404) throw new Error(String(error));
+  });
+  await check('lib-readable-acks-by-itself', async () => {
+    const total = 8 * MIB;
+    const { stream } = await api.call('smoke.flood', { total, piece: 64 * 1024 });
+    const readable = await api.openReadable(stream);
+    let received = 0;
+    for await (const frame of readable) {
+      if (frame.kind !== 'binary') throw new Error(`unexpected ${frame.kind} frame`);
+      received += frame.data.length;
+    }
+    if (received !== total) throw new Error(`received ${received} of ${total}`);
+    return `${received} bytes`;
+  });
+  await check('lib-close-stops-the-source', async () => {
+    const { stream } = await api.call('smoke.flood', { total: 256 * MIB, piece: 64 * 1024 });
+    const readable = await api.openReadable(stream);
+    const first = await readable[Symbol.asyncIterator]().next();
+    if (first.done || first.value.kind !== 'binary') throw new Error('no data');
+    await report(`abort-called stream=${stream} at_ms=${Date.now()}`);
+    await readable.close();
+    await sleep(400);
+  });
+  await check('lib-events', async () => {
+    const seen = [];
+    const off = await api.on('backend.greeting', payload => seen.push(payload));
+    await api.call('app.hello', null);
+    await until(() => seen.length > 0, 5000, 'backend.greeting');
+    off();
+    return `payload engine=${seen[0].engine}`;
+  });
+  await check('lib-window-watch', async () => {
+    const states = [];
+    const stop = await api.nativeWindow.watch(state => states.push(state));
+    if (states.length === 0 || typeof states[0].revision !== 'number') throw new Error('no snapshot');
+    await api.nativeWindow.maximize();
+    await until(() => states.some(state => state.maximized), 8000, 'a maximized window state');
+    await api.nativeWindow.restore();
+    stop();
+    const revisions = states.map(state => state.revision);
+    if (revisions.some((revision, index) => index > 0 && revision <= revisions[index - 1])) throw new Error(`revisions ${revisions}`);
+    return `revisions=${revisions}`;
+  });
+}
+
+async function newDocumentChecks(previous, how) {
   await check(`${how}-new-token`, async () => {
     const response = await fetch('native://call/runtime.hello', { method: 'POST', headers: { ...bearer(bootstrap), 'Content-Type': 'application/json' }, body: '{}' });
     const info = await response.json();
-    if (!response.ok || info.token === previous.token) throw new Error(`hello after reload: ${response.status}`);
+    if (!response.ok || info.token === previous.token) throw new Error(`hello after ${how}: ${response.status}`);
     token = info.token;
   });
   await check(`${how}-old-token-denied`, async () => {
@@ -208,6 +288,10 @@ async function phaseTwo(previous, how) {
     if (old.status !== 403) throw new Error(`old token status ${old.status}`);
     const fresh = await call('smoke.echo', { ok: true });
     if (!fresh.ok) throw new Error(`new token status ${fresh.status}`);
+  });
+  await check(`${how}-library-reconnects`, async () => {
+    const echoed = await api.call('smoke.echo', { after: how });
+    if (echoed.after !== how) throw new Error('library call failed in the new document');
   });
 }
 
@@ -228,13 +312,14 @@ const failedNow = () => results.filter(item => !item.ok).map(item => item.name);
 async function main() {
   const state = readState();
   if (state.phase === 1) {
-    await phaseOne();
+    await rawChecks();
+    await libraryChecks();
     await report('navigating');
     location.search = `?${new URLSearchParams({ phase: '2', token, failed: failedNow().join(',') })}`;
     return;
   }
   const how = state.phase === 2 ? 'navigation' : 'reload';
-  await phaseTwo(state, how);
+  await newDocumentChecks(state, how);
   const failed = [...state.failed, ...failedNow()];
   if (state.phase === 2) {
     await report('reloading');
@@ -242,8 +327,12 @@ async function main() {
     location.reload();
     return;
   }
+  log(failed.length === 0 ? 'PASS' : `FAIL ${failed}`);
   await report(`RESULT ${failed.length === 0 ? 'PASS' : 'FAIL'} ${failed.join(',')}`);
 }
 
 setTimeout(() => report('RESULT FAIL timeout'), 120000);
-main().catch(error => report(`RESULT FAIL ${error?.message ?? error}`));
+main().catch(error => {
+  console.error(`M1_SMOKE-page fatal ${error?.message ?? error}`);
+  return report(`RESULT FAIL ${error?.message ?? error}`);
+});
