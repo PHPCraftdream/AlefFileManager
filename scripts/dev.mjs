@@ -46,7 +46,7 @@ function finished(child) {
 
 try {
   const build = launch('cargo', ['build', '--manifest-path', 'backend/Cargo.toml',
-    '--locked', '--jobs', '1'], { ...process.env, RUSTC_WRAPPER: '' });
+    '--locked', '--jobs', '1']);
   await finished(build);
   if (stopping) process.exit(0);
   const frontend = launch(process.execPath,

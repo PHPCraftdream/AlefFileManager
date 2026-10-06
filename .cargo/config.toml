@@ -1,0 +1,5 @@
+# ts-rs writes its `export_bindings_*` test output here (never into the source tree);
+# scripts/gen-types.mjs merges it into packages/api/types. `u64` ids travel as JSON numbers.
+[env]
+TS_RS_EXPORT_DIR = { value = "backend/target/ts-rs", relative = true }
+TS_RS_LARGE_INT = "number"

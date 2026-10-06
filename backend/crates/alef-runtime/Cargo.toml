@@ -1,0 +1,46 @@
+[package]
+name = "alef-runtime"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+alef-core = { path = "../alef-core" }
+bytes = "=1.12.1"
+servo = "=0.6.0"
+winit = "=0.30.13"
+euclid = "=0.22.14"
+url = "=2.5.8"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+tokio = { version = "=1.53.1", features = ["rt-multi-thread", "fs", "sync", "time", "macros"] }
+getrandom = "=0.4.3"
+subtle = "=2.6.1"
+fjall = "=3.1.10"
+mime_guess = "=2.0.5"
+http = "=1.5.0"
+futures-util = "=0.3.34"
+ipc-channel = { version = "=0.22.0", features = ["async", "force-inprocess"] }
+servo-net-traits = "=0.6.0"
+servo-net = "=0.6.0"
+servo-embedder-traits = "=0.6.0"
+servo-base = "=0.6.0"
+
+# M0.3 spike (docs/stages/m0-spikes.md): off by default, enabled with --features spike-integration.
+tray-icon = { version = "=0.24.2", optional = true }
+muda = { version = "=0.19.3", optional = true }
+global-hotkey = { version = "=0.8.0", optional = true }
+rfd = { version = "=0.17.2", optional = true }
+crossbeam-channel = { version = "=0.5.17", optional = true }
+
+[features]
+spike-integration = ["dep:tray-icon", "dep:muda", "dep:global-hotkey", "dep:rfd", "dep:crossbeam-channel"]
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.52.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

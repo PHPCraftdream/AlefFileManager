@@ -22,7 +22,8 @@ npm run test:rust
 
 - `build`: TypeScript/Rsbuild production frontend и Rust workspace.
 - `start`: ранее собранный native executable; Rsbuild не нужен.
-- `check`: Oxlint, TypeScript и Clippy всего workspace с ошибкой на warnings.
+- `check`: Oxlint, лимиты структуры, TypeScript и Clippy всего workspace с ошибкой на warnings.
+- `lint:structure`: в нашем коде (`frontend/src`, `backend/src`, `backend/crates`, `scripts`, `packages`, `experiments`) не более 7 элементов в папке и не более 700 строк в файле (`scripts/check-structure.mjs`).
 - `test:rust`: Rust-тесты приложения и runtime.
 - `dev:web`: только asset server; обычный браузер не имеет доступа к native bridge.
 
@@ -36,13 +37,14 @@ npm start -- --data-dir ./local-data --root ./files
 
 ## Структура и повторное использование
 
-- `backend/runtime`: независимый crate `alef-runtime`; Servo window host, приватный bridge, typed async command registry, события backend → browser, window API и универсальный async Fjall facade.
+- `backend/crates/alef-runtime`: независимый crate `alef-runtime`; Servo window host, приватный bridge, typed async command registry, события backend → browser, window API и универсальный async Fjall facade.
 - `backend/src`: только запуск Alef и его команды/настройки.
-- `frontend/src/runtime.ts`: универсальные `invoke`, `listen`/`Unlisten`, `nativeWindow` без зависимости от React или команд Alef.
-- `frontend/src/api.ts`: DTO и команды приложения поверх `invoke`.
+- `frontend/src/native/runtime.ts`: универсальные `invoke`, `listen`/`Unlisten`, `nativeWindow` без зависимости от React или команд Alef.
+- `frontend/src/native/api.ts`: DTO и команды приложения поверх `invoke`.
 - `backend/patches/servo-paint-api`: локальный Servo 0.6 fix активации GL context до загрузки GL функций; версия не изменена.
 - `backend/patches/winit`: winit 0.30.13 с Windows fixes для packed signed coordinates в `WM_NCLBUTTONDOWN`, чтения maximized state из HWND и drag lifecycle по `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE`. Это устраняет зависший drag guard после maximize/restore; версия не изменена, Apache-2.0 license сохранена. [Win32 LPARAM контракт](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nclbuttondown).
-- `backend/runtime/src/platform`: Windows/Linux/macOS реализации icon, wheel policy и native resize capability; общий runtime не содержит платформенных FFI.
+- `backend/crates/alef-runtime/src/window`: Servo window host (`app`, `state`, `delegate`), синхронный resize (`resize_wait`), ввод (`input/`: wheel, edge hit-testing); `backend/crates/alef-runtime/src/bridge`: приватный protocol bridge и `commands`.
+- `backend/crates/alef-runtime/src/window/platform`: Windows/Linux/macOS реализации icon, wheel policy и native resize capability; общий runtime не содержит платформенных FFI.
 
 Другой binary в Rust workspace может зависеть от `alef-runtime`, зарегистрировать собственные команды через `Commands::register`, вызвать async `Bridge::new`, создать `WindowOptions::new(title, icon_png)` и открыть окно через `run`; после закрытия нужно await `Bridge::shutdown`. Default options: 1200×800 logical pixels, `decorations = true`, `resizable = true`; поля можно переопределить перед `run`. Handler получает serde-аргументы и `RuntimeHandle`, возвращает `Future<Output = io::Result<T>>`; код приложения не реализует transport. `Bridge::handle()` позволяет передавать тот же async handle собственным backend задачам. GUI event loop выполняется на main thread; команды — на Tokio workers. При переносе crate в другой workspace нужно сохранить root Cargo patches для `servo-paint-api` и `winit`, а также настройку TLS provider из native entry point.
 
@@ -113,3 +115,7 @@ Servo работает с `multiprocess: false`, а `ipc-channel` — с `force-
 Это не защита от debugger/process injection, чтения памяти с соответствующими правами или изменения доверенного frontend на диске. Production CSP запрещает внешние scripts/frames/connect destinations. Доступ к файловым директориям и assets ограничен их заданными корнями.
 
 Windows smoke: production без Rsbuild, native React/Tailwind, переключение Hebrew RTL → English, восстановление English из Fjall после restart; у native executable наблюдались 0 TCP listeners и 0 дочерних процессов. Native dev smoke подтвердил React HMR и тот же приватный Rust bridge.
+
+## Лицензия
+
+`MIT OR Apache-2.0` — на выбор пользователя, см. `LICENSE-MIT` и `LICENSE-APACHE`. Исключения: `backend/patches/servo-paint`, `backend/patches/servo-paint-api` и файлы `backend/crates/alef-runtime/src/window/` с заголовком MPL-2.0 (на основе примера Servo) — MPL-2.0; `backend/patches/winit` — Apache-2.0.

@@ -1,0 +1,195 @@
+# M0.4a — кроссплатформенный CI (docs/stages/m0-spikes.md, раздел «M0.4»).
+# Локально не запускался; первый запуск — после пуша в GitHub (нужно разрешение владельца).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # scripts/cargo.mjs и dev.mjs наследуют окружение — sccache подхватывается и через npm-скрипты.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  # Только предложение (docs/stages/m0-results/ci.md): scripts/cargo.mjs жёстко передаёт
+  # `--jobs 1`, CLI-флаг сильнее CARGO_BUILD_JOBS. Переменная начнёт действовать только
+  # после 2-строчной правки scripts (см. ci.md); сейчас ни на что не влияет.
+  ALEF_CARGO_JOBS: "4"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: alef-file-manager.exe
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            bin: alef-file-manager
+          - name: macos-x64
+            os: macos-13
+            target: x86_64-apple-darwin
+            bin: alef-file-manager
+          - name: linux-x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bin: alef-file-manager
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # MSRV 1.88 (backend/Cargo.toml: rust-version); stable >= 1.88, cargo проверяет сам.
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ matrix.name }}-${{ hashFiles('backend/Cargo.lock') }}
+
+      - name: Cache backend/target
+        uses: actions/cache@v4
+        with:
+          path: backend/target
+          key: cargo-target-${{ matrix.name }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ matrix.name }}-
+
+      - uses: mozilla-actions/sccache-action@v0.0.7
+
+      # Windows: MSVC/SDK — окружение через msvc-dev-cmd; LLVM — libclang для bindgen (mozjs_sys).
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - name: Servo build prerequisites (Windows)
+        if: runner.os == 'Windows'
+        run: choco install --no-progress -y llvm cmake ninja
+
+      - name: Servo build prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          xcode-select -p
+          brew install cmake ninja
+
+      # Обоснование каждого пакета по крейтам — docs/stages/m0-results/ci.md.
+      - name: Servo build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang libclang-dev cmake ninja-build pkg-config \
+            build-essential python3 curl git \
+            libfontconfig1-dev libfreetype-dev \
+            libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libegl1-mesa-dev libgl1-mesa-dev \
+            libx11-6 libxcb1 libxcursor1 libxrandr2 libxi6 \
+            libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
+            libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri \
+            libfontconfig1 libfreetype6 \
+            xvfb
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Lint (oxlint + структура)
+        run: |
+          npm run lint
+          npm run lint:structure
+
+      - name: Rust tests
+        run: npm run test:rust
+
+      - name: Generated TypeScript types
+        run: |
+          npm run check:types
+          npm run test:types
+
+      # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
+      - name: Build (Rust, без frontend)
+        if: runner.os != 'Linux'
+        run: npm run build:rust
+
+      - name: Build (typecheck + frontend + Rust)
+        if: runner.os == 'Linux'
+        run: npm run build
+
+      - name: e2e smoke (spike-страница, headless X11)
+        if: runner.os == 'Linux'
+        run: |
+          set -u
+          log="$RUNNER_TEMP/spike.log"
+          if ALEF_TRANSPORT_SPIKE=1 LIBGL_ALWAYS_SOFTWARE=1 \
+             timeout 180 xvfb-run -a -s "-screen 0 1280x1024x24" \
+             backend/target/debug/alef-file-manager --frontend-dir experiments/transport-spike \
+             >"$log" 2>&1
+          then
+            echo "spike exit code: 0"
+          else
+            code=$?
+            echo "spike exit code: $code"
+            tail -n 80 "$log"
+            exit 1
+          fi
+          if grep -qF 'panicked at' "$log"; then
+            echo "assertion failed: panic in log"
+            grep -F 'panicked at' "$log" | head -n 5
+            exit 1
+          fi
+          line="$(grep -F 'spike report: {"phase":"main"' "$log" | tail -n 1)"
+          if [ -z "$line" ]; then
+            echo "assertion failed: no spike report line"
+            tail -n 80 "$log"
+            exit 1
+          fi
+          node -e "const report = JSON.parse(process.argv[1].replace(/^.*spike report: /, ''));
+            if ('error' in report) { console.error('spike main report top-level error:', report.error); process.exit(1); }
+            const echo = report.results && report.results.echo;
+            if (!Array.isArray(echo) || echo.length === 0) { console.error('spike main report lacks results.echo'); process.exit(1); }
+            console.log('spike main report OK: echo entries=' + echo.length);" "$line"
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: alef-file-manager-${{ matrix.name }}
+          path: backend/target/debug/${{ matrix.bin }}
+          if-no-files-found: error
+
+      - name: Upload frontend dist
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: alef-frontend-dist
+          path: frontend/dist
+          if-no-files-found: error
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats

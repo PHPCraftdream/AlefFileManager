@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { nativeApi, type HelloResponse } from './api';
+import { nativeApi, type HelloResponse } from './native/api';
 import i18n, { languages, type Language } from './i18n';
-import { listen, nativeWindow, type Unlisten, type WindowState } from './runtime';
+import { listen, nativeWindow, type Unlisten, type WindowState } from './native/runtime';
 import TitleBar from './TitleBar';
 
 export default function App() {
