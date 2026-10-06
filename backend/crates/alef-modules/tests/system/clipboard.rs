@@ -3,18 +3,17 @@
 //! what a bad image or text does. The last test uses the real clipboard and runs only on request
 //! (`ALEF_TEST_DESKTOP=1 cargo test -p alef-modules --test clipboard -- --ignored`; CI does on its
 //! clean runners).
-mod common;
 
 use std::io::Cursor;
 
+use crate::common::{desktop_asked, Fixture};
 use alef_core::{registry::command::Reply, security::permissions::Permission, ErrorCode};
 use alef_modules::{ClipboardBackend, Image, SystemClipboard};
 use bytes::Bytes;
-use common::{desktop_asked, Fixture};
 use image::{ImageFormat, RgbaImage};
 use serde_json::Value;
 
-const MANIFEST: &str = include_str!("fixtures/app.ktav");
+const MANIFEST: &str = include_str!("../fixtures/app.ktav");
 
 fn reading() -> String {
     let allowed = MANIFEST
@@ -257,7 +256,7 @@ async fn a_write_needs_its_content_as_the_body_and_text_must_be_utf8() {
 
 #[tokio::test]
 async fn the_memory_clipboard_is_what_a_pretending_run_gives() {
-    let backends = alef_modules::Backends::pretending(None);
+    let backends = alef_modules::Backends::pretending(None, None);
     backends.clipboard.write_text("only here").unwrap();
     assert_eq!(backends.clipboard.read_text().unwrap(), "only here");
     backends

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Window geometry of FRAMEWORK-PLAN §6.2: lengths in px, `%screen` and `%work` resolved against a
 //! display. Pure arithmetic in logical pixels; the process that owns the windows supplies the displays.
+use serde::{Deserialize, Serialize};
+
 use super::{MonitorInfo, Point, Rect};
 use crate::{
     security::window::{Length, LengthUnit, Monitor, WindowDef, WindowPosition},
@@ -200,4 +202,77 @@ pub fn place(
         min_size,
         max_size,
     })
+}
+
+/// Where a window was when the application last ran: its outer position and client size in
+/// logical pixels as `window.state()` reports them, and whether it was maximized. The position is
+/// unknown where the system does not tell it (Wayland).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Remembered {
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub width: f64,
+    pub height: f64,
+    pub maximized: bool,
+}
+
+/// How much of a window must lie in a work area for a person to still get hold of it.
+const GRAB_WIDTH: f64 = 100.0;
+const GRAB_HEIGHT: f64 = 40.0;
+/// How far the top edge of a window may stick out above a work area.
+const TOP_SLACK: f64 = 16.0;
+
+/// Whether the window at `rect` can still be reached: its top edge is in a work area and enough
+/// of it is there to be grabbed.
+pub fn reachable(rect: &Rect, monitors: &[MonitorInfo]) -> bool {
+    monitors.iter().any(|monitor| {
+        let area = &monitor.work_area;
+        let wide = (rect.x + rect.width).min(area.x + area.width) - rect.x.max(area.x);
+        let high = (rect.y + rect.height).min(area.y + area.height) - rect.y.max(area.y);
+        wide >= GRAB_WIDTH.min(rect.width)
+            && high >= GRAB_HEIGHT.min(rect.height)
+            && rect.y >= area.y - TOP_SLACK
+    })
+}
+
+/// The window `definition` describes, opened where it was last time: the remembered size (never
+/// larger than the biggest work area, so a smaller display leaves no window half off screen) and,
+/// when the place is still on a display, the remembered position. A place that is on no display any
+/// more leaves the placement of the definition (the centre of its display) as it is.
+pub fn restore(
+    definition: &WindowDef,
+    remembered: &Remembered,
+    monitors: &[MonitorInfo],
+) -> WindowDef {
+    let widest = monitors
+        .iter()
+        .map(|m| m.work_area.width)
+        .fold(0.0, f64::max);
+    let tallest = monitors
+        .iter()
+        .map(|m| m.work_area.height)
+        .fold(0.0, f64::max);
+    let cap = |wanted: f64, most: f64| if most > 0.0 { wanted.min(most) } else { wanted };
+    let (width, height) = (
+        cap(remembered.width, widest),
+        cap(remembered.height, tallest),
+    );
+    let mut restored = definition.clone();
+    restored.width = Length::Px(width);
+    restored.height = Length::Px(height);
+    if let (Some(x), Some(y)) = (remembered.x, remembered.y) {
+        let rect = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        if reachable(&rect, monitors) {
+            restored.position = WindowPosition::At {
+                x: Length::Px(x),
+                y: Length::Px(y),
+            };
+        }
+    }
+    restored
 }

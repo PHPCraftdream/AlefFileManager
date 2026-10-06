@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Event-loop integration follows Servo 0.6's MPL-2.0 winit example.
 use std::io;
+use std::time::Instant;
 
 use super::App;
 use crate::ui::Wake;
@@ -43,6 +44,14 @@ impl App {
             }
         }
         self.expire_close_requests(event_loop);
+        self.deliver_drops();
+        if let Some(restore) = self.restore.as_mut() {
+            let now = Instant::now();
+            for state in &self.windows {
+                restore.observe(&state.snapshot, now);
+            }
+            restore.save_if_due(now);
+        }
     }
 
     fn detach(&mut self) {
@@ -165,6 +174,11 @@ impl ApplicationHandler<Wake> for App {
                 if let Err(error) = state.synchronize_viewport() {
                     self.error = Some(error);
                     event_loop.exit();
+                }
+            }
+            WindowEvent::DroppedFile(path) => {
+                if state.dropped.len() < super::host::drops::MAX_DROPPED {
+                    state.dropped.push(path);
                 }
             }
             WindowEvent::ThemeChanged(theme) => self.handle.theme_changed(theme),
@@ -355,6 +369,7 @@ impl ApplicationHandler<Wake> for App {
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.remember_windows();
         #[cfg(feature = "spike-integration")]
         if let Some(error) = crate::spikes::integration::deactivate() {
             self.error.get_or_insert(error);

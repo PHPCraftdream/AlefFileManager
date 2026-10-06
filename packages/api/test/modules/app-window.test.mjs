@@ -187,3 +187,13 @@ test('screen asks for the displays and the cursor', async () => {
   assert.equal(lastArgs('screen.monitors'), null);
   assert.deepEqual(await screen.cursorPosition(), { x: 3, y: 4 });
 });
+
+test('file-drop reaches the window it names and carries the paths', async () => {
+  const heard = [];
+  const off = await new AppWindow('tool').on('file-drop', event => heard.push(event.paths));
+  emit('window.file-drop', { label: 'tool', paths: ['/a.txt', '/folder'] });
+  emit('window.file-drop', { label: 'other', paths: ['/b.txt'] });
+  await settle();
+  assert.deepEqual(heard, [['/a.txt', '/folder']]);
+  off();
+});

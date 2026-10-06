@@ -3,16 +3,15 @@
 //! last test moves files to the real trash and runs only on request (`ALEF_TEST_DESKTOP=1 cargo test
 //! -p alef-modules --test shell -- --ignored`; CI does on its clean runners). Opening and showing are
 //! never tried against the real desktop: they would put windows in front of somebody.
-mod common;
 
 use std::{fs, path::Path};
 
+use crate::common::{desktop_asked, Fixture};
 use alef_core::ErrorCode;
 use alef_modules::{ShellBackend, ShellRequest, SystemShell};
-use common::{desktop_asked, Fixture};
 use serde_json::json;
 
-const MANIFEST: &str = include_str!("fixtures/app.ktav");
+const MANIFEST: &str = include_str!("../fixtures/app.ktav");
 
 /// URLs `https://example.com/docs/**` allowed, files read and written under `$TEMP`.
 fn open_manifest(read: bool, write: bool) -> String {

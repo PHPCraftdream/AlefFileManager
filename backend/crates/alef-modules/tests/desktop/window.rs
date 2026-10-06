@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `window` and `screen` through the registry: arguments, permission, and what reaches the host.
-mod common;
 
+use crate::common::Fixture;
 use alef_core::{
     registry::window::{ResizeEdge, UiCall, WindowCall, WindowOp},
     security::window::{Length, LengthUnit},
     AlefError, ErrorCode,
 };
-use common::Fixture;
 use serde_json::{json, Value};
 
-const MANIFEST: &str = include_str!("fixtures/app.ktav");
+const MANIFEST: &str = include_str!("../fixtures/app.ktav");
 
 fn allowing_create() -> String {
     let open = MANIFEST.replace('\r', "");

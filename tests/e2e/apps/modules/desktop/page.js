@@ -134,6 +134,21 @@ async function main() {
     await expectCode('no body', api.call('clipboard.writeText', null), 'INVALID_ARGUMENT');
   });
 
+  await check('notification-is-shown-and-its-text-and-icon-are-checked', async () => {
+    const { notification } = api;
+    await notification.show({ title: 'Done', body: 'All saved\nin two places' });
+    await notification.show({ title: 'With an icon', icon: t.icon });
+    for (const [what, options, code] of [
+      ['an empty title', { title: '' }, 'INVALID_ARGUMENT'],
+      ['a title with a line break', { title: 'a\nb' }, 'INVALID_ARGUMENT'],
+      ['an unknown field', { title: 't', sound: 'ding' }, 'INVALID_ARGUMENT'],
+      ['an icon outside the read scope', { title: 't', icon: t.outside }, 'PERMISSION_DENIED'],
+      ['an icon that is not there', { title: 't', icon: t.gone }, 'NOT_FOUND'],
+    ]) {
+      await expectCode(what, notification.show(options), code);
+    }
+  });
+
   await verdict(failed());
 }
 

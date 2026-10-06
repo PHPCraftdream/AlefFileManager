@@ -9,6 +9,7 @@ mod state;
 
 use std::cell::RefCell;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::bridge::WindowRegistry;
@@ -34,6 +35,9 @@ pub struct WindowOptions {
     /// The windows opened at start. The first is the main one and opens the entry document of the
     /// bridge, whatever its `url` says. Never empty.
     pub windows: Vec<WindowDef>,
+    /// The file that remembers where the windows with `restore: true` were; without it they are
+    /// not remembered.
+    pub state_file: Option<PathBuf>,
 }
 
 impl WindowOptions {
@@ -42,6 +46,7 @@ impl WindowOptions {
         Self {
             title: title.into(),
             icon_png,
+            state_file: None,
             windows: vec![WindowDef {
                 label: "main".to_owned(),
                 url: "/".to_owned(),
@@ -59,6 +64,12 @@ impl WindowOptions {
                 resizable: None,
             }],
         }
+    }
+
+    /// Remembers the windows that ask for it (`restore: true`) in `path`.
+    pub fn remembering_windows_in(mut self, path: impl Into<PathBuf>) -> Self {
+        self.state_file = Some(path.into());
+        self
     }
 
     /// Whether the main window has the native frame.
@@ -93,6 +104,7 @@ struct App {
     ids: WindowRegistry,
     runtime: tokio::runtime::Handle,
     dialogs: host::dialogs::Dialogs,
+    restore: Option<state::restore::Restore>,
 }
 
 pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -134,6 +146,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         ids: bridge.windows(),
         runtime: tokio::runtime::Handle::current(),
         dialogs: host::dialogs::Dialogs::new(),
+        restore: options.state_file.map(state::restore::Restore::load),
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {

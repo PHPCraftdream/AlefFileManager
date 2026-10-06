@@ -82,6 +82,8 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             return Ok(0);
         }
     };
+    // Where the windows that ask for it (`restore: true`) are written down between runs.
+    let window_state = vars.app_data.join("window-state.json");
     let context = ModuleContext {
         app: AppInfo {
             id: plan.manifest.id.clone(),
@@ -92,7 +94,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         paths: vars,
         args,
         process_args,
-        backends: Backends::from_environment(),
+        backends: Backends::from_environment(&plan.manifest.name),
     };
 
     rustls::crypto::aws_lc_rs::default_provider()
@@ -131,6 +133,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         WindowOptions {
             windows: plan.manifest.windows.clone(),
             ..WindowOptions::new(plan.manifest.name.clone(), icon)
+                .remembering_windows_in(window_state)
         },
     );
     bridge.shutdown().await?;

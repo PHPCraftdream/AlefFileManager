@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! What `alef` does for one application directory: the manifest read from `alef.ktav` and the
-//! window, permissions and CSP derived from it. A manifest the runtime cannot honour yet is refused
+//! window, permissions and CSP derived from it. A manifest the runtime cannot honour is refused
 //! up front with a clear error instead of being silently reduced.
 use std::{
     path::{Path, PathBuf},
@@ -28,10 +28,6 @@ pub struct Plan {
     pub assets: PathBuf,
 }
 
-fn unavailable(message: String) -> AlefError {
-    AlefError::new(ErrorCode::NotAvailable, message)
-}
-
 /// Reads and validates `<app_dir>/alef.ktav`.
 pub fn load_manifest(app_dir: &Path) -> Result<Manifest, AlefError> {
     let path = app_dir.join(MANIFEST_FILE);
@@ -51,17 +47,6 @@ pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<
             ErrorCode::ManifestInvalid,
             "windows: the manifest declares no window",
         ));
-    }
-    if let Some((index, window)) = manifest
-        .windows
-        .iter()
-        .enumerate()
-        .find(|(_, window)| window.restore)
-    {
-        return Err(unavailable(format!(
-            "windows[{index}] ({}): restore arrives with window restore (M2.4)",
-            window.label
-        )));
     }
     let permissions = Arc::new(PermissionSet::from_manifest(&manifest.permissions, vars)?);
     let csp = build_csp(&manifest.external, CSP_APP_ORIGIN)?;
@@ -178,12 +163,6 @@ permissions: {{
         make_plan(dir, manifest, &vars)
     }
 
-    fn refused(window: &str) -> AlefError {
-        plan_of(manifest(window, "[]"))
-            .err()
-            .expect("must be refused")
-    }
-
     #[test]
     fn a_plain_manifest_becomes_a_permission_set_and_a_csp() {
         let plan = plan_of(manifest(SIZE, "[ $APP/data/* ]")).expect("plan");
@@ -231,14 +210,21 @@ permissions: {{
     }
 
     #[test]
-    fn what_the_runtime_cannot_honour_yet_is_refused_not_ignored() {
-        let error = refused(&format!(
-            "{SIZE}        restore: true
+    fn a_window_that_asks_to_be_restored_is_accepted_and_keeps_its_flag() {
+        let plan = plan_of(manifest(
+            &format!(
+                "{SIZE}        restore: true
 "
-        ));
-        assert_eq!(error.code, ErrorCode::NotAvailable);
-        assert!(error.message.contains("restore"), "{}", error.message);
-        assert!(error.message.contains("M2.4"), "{}", error.message);
+            ),
+            "[]",
+        ))
+        .expect("the runtime remembers windows now");
+        assert!(plan.manifest.windows[0].restore);
+        let plain = plan_of(manifest(SIZE, "[]")).expect("plan");
+        assert!(
+            !plain.manifest.windows[0].restore,
+            "restore is off unless asked for"
+        );
     }
 
     #[test]

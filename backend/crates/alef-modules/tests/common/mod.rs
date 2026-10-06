@@ -24,7 +24,8 @@ use alef_core::{
     AlefError,
 };
 use alef_modules::{
-    desktop::args, register_all, AppInfo, Backends, MemoryClipboard, ModuleContext, PretendShell,
+    desktop::args, register_all, AppInfo, Backends, MemoryClipboard, ModuleContext,
+    PretendNotifications, PretendShell,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -43,6 +44,8 @@ pub struct FakeHost {
     pub calls: Mutex<Vec<(u64, UiCall)>>,
     /// Answers of `Host::ui`, first in first out; `null` when none is queued.
     pub replies: Mutex<VecDeque<Result<Value, AlefError>>>,
+    /// The events the modules sent: the window they went to (None: every window), name, payload.
+    pub events: Mutex<Vec<(Option<u64>, String, Value)>>,
 }
 
 impl Host for FakeHost {
@@ -51,6 +54,12 @@ impl Host for FakeHost {
     }
     fn theme(&self) -> Theme {
         *self.theme.lock().unwrap()
+    }
+    fn emit(&self, window: Option<u64>, name: &str, payload: Value) {
+        self.events
+            .lock()
+            .unwrap()
+            .push((window, name.to_owned(), payload));
     }
     fn ui(&self, caller: u64, call: UiCall) -> HostFuture {
         self.calls.lock().unwrap().push((caller, call));
@@ -70,6 +79,7 @@ pub struct Fixture {
     /// The clipboard and the shell behind the modules: in memory, and doing nothing.
     pub clipboard: Arc<MemoryClipboard>,
     pub shell: Arc<PretendShell>,
+    pub notifications: Arc<PretendNotifications>,
     pub context: ModuleContext,
     manager: SessionManager,
     session: Arc<Session>,
@@ -108,6 +118,7 @@ impl Fixture {
         let raw: Vec<OsString> = command_line.iter().map(OsString::from).collect();
         let clipboard = Arc::new(MemoryClipboard::default());
         let shell = Arc::new(PretendShell::default());
+        let notifications = Arc::new(PretendNotifications::default());
         let args = match args::parse(
             manifest.arguments.as_ref(),
             &manifest.name,
@@ -132,6 +143,7 @@ impl Fixture {
             backends: Backends {
                 clipboard: clipboard.clone(),
                 shell: shell.clone(),
+                notification: notifications.clone(),
             },
         };
         let host = Arc::new(FakeHost {
@@ -139,6 +151,7 @@ impl Fixture {
             theme: Mutex::new(Theme::Light),
             calls: Mutex::new(Vec::new()),
             replies: Mutex::new(VecDeque::new()),
+            events: Mutex::new(Vec::new()),
         });
         let mut registry = Registry::default();
         register_all(&mut registry, host.clone(), &context).expect("register");
@@ -150,10 +163,30 @@ impl Fixture {
             host,
             clipboard,
             shell,
+            notifications,
             context,
             manager,
             session,
             permissions,
+        }
+    }
+
+    /// Another window loads its document: its session, to call commands as that document.
+    pub async fn open_window(&self, window: u64) -> Arc<Session> {
+        self.manager.begin_document(window).await
+    }
+
+    /// Calls a command as the document of `session`.
+    pub async fn call_as(
+        &self,
+        session: &Arc<Session>,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, AlefError> {
+        let ctx = CallContext::new(session.clone(), self.permissions.clone());
+        match self.registry.dispatch(command, ctx, args).await? {
+            Reply::Json(value) => Ok(value),
+            other => panic!("expected JSON, got {other:?}"),
         }
     }
 

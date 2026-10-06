@@ -56,6 +56,8 @@ export interface WindowEvents {
   resized: { label: string; width: number; height: number; scaleFactor: number };
   focus: { label: string };
   blur: { label: string };
+  /** Files were dropped on the window; the document may read `paths` (a folder with everything below it) until it unloads. */
+  'file-drop': { label: string; paths: string[] };
   /** Call `preventDefault()` to keep the window open; the runtime waits for the handlers for 3 seconds. */
   'close-requested': CloseRequest;
 }

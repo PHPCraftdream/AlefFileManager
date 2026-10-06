@@ -29,4 +29,7 @@ pub trait Host: Send + Sync {
     /// Runs `call` on the thread that owns the windows. `caller` is the window of the calling
     /// document (0 when there is none); the reply is the JSON the command returns.
     fn ui(&self, caller: u64, call: UiCall) -> HostFuture;
+    /// Sends the event `name` to the documents of `window`, to those of every window when `None`.
+    /// Never waits for the documents. Names that begin with `runtime.` belong to the runtime.
+    fn emit(&self, window: Option<u64>, name: &str, payload: Value);
 }

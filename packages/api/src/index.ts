@@ -17,10 +17,11 @@ export {
   type WindowEvents,
   type WindowState,
 } from './desktop/window.ts';
-export { app, type Cancelable } from './desktop/app.ts';
+export { app, type AppEvents, type Cancelable, type QuitRequest, type SecondInstance } from './desktop/app.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shell } from './desktop/shell.ts';
 export { clipboard } from './system/clipboard.ts';
+export { notification, type NotificationOptions } from './system/notification.ts';
 export { path } from './system/path.ts';
 export { os, type OsEvent } from './system/os.ts';
 // The DTO `AlefError` of the generated types is the shape of the `AlefError` class above.

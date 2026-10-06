@@ -39,12 +39,17 @@ struct Report {
 }
 
 #[derive(Deserialize)]
+struct DropFiles {
+    paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct Once {
     path: String,
 }
 
 /// Registers `e2e.*` when the end-to-end mode is on.
-pub(super) fn register(registry: &mut Registry, _ui: &RuntimeHandle) -> Result<(), AlefError> {
+pub(super) fn register(registry: &mut Registry, ui: &RuntimeHandle) -> Result<(), AlefError> {
     if !enabled() {
         return Ok(());
     }
@@ -115,6 +120,22 @@ pub(super) fn register(registry: &mut Registry, _ui: &RuntimeHandle) -> Result<(
                 .open(&once.path)
                 .is_ok();
             Ok(Reply::Json(Value::Bool(created)))
+        })?;
+    // Files dropped on the window of the caller, as the system would drop them.
+    let dropper = ui.clone();
+    registry
+        .command::<DropFiles>("e2e.dropFiles")?
+        .handler(move |ctx, drop| {
+            let ui = dropper.clone();
+            async move {
+                let paths = drop
+                    .paths
+                    .into_iter()
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                ui.simulate_drop(ctx.session.window(), paths).await?;
+                Ok(Reply::Json(Value::Null))
+            }
         })?;
     registry
         .command::<Report>("e2e.report")?

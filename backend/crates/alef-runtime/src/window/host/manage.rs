@@ -95,6 +95,22 @@ impl App {
             event_loop.primary_monitor(),
         );
         let infos = displays.infos();
+        // A window that asks for it opens where it was the last time.
+        let (restored, start_maximized) = match self
+            .restore
+            .as_ref()
+            .filter(|_| definition.restore)
+            .and_then(|restore| restore.apply(definition, &infos))
+        {
+            Some((restored, maximized)) => (restored, maximized),
+            None => (definition.clone(), false),
+        };
+        if definition.restore {
+            if let Some(restore) = self.restore.as_mut() {
+                restore.track(&definition.label);
+            }
+        }
+        let definition = &restored;
         let cursor = displays.cursor();
         let placement = geometry::place(definition, &infos, cursor).map_err(io_error)?;
         let target = geometry::pick(&infos, definition.monitor, cursor)
@@ -113,7 +129,9 @@ impl App {
             .with_resizable(definition.resizable.unwrap_or(true))
             // Shown by `State::try_reveal` once there is a first picture; until then the window
             // would be an unpainted rectangle.
-            .with_visible(false);
+            .with_visible(false)
+            // In quiet mode maximizing is only what the document is told (see `state::Pretended`).
+            .with_maximized(start_maximized && !self.quiet);
         if let Some(position) = placement
             .position
             .and_then(|point| displays.physical_position(point, target))
@@ -219,7 +237,10 @@ impl App {
         if first {
             crate::spikes::integration::activate(&window, self.waker.0.clone());
         }
-        let quiet = self.quiet.then(Pretended::default);
+        let quiet = self.quiet.then(|| Pretended {
+            maximized: start_maximized,
+            ..Pretended::default()
+        });
         let snapshot = capture_info(
             &definition.label,
             &title,
@@ -262,6 +283,7 @@ impl App {
             max_size: placement.max_size,
             intercept: None,
             pending_close: None,
+            dropped: Vec::new(),
         });
         self.started = true;
         Ok(window_id)
@@ -285,6 +307,12 @@ impl App {
 
     /// Closes a window; the application ends with its last window.
     pub(in crate::window) fn close(&mut self, event_loop: &ActiveEventLoop, index: usize) {
+        if let (Some(restore), Ok(info)) =
+            (self.restore.as_mut(), self.windows[index].fresh_snapshot())
+        {
+            restore.observe(&info, Instant::now());
+            restore.flush();
+        }
         let state = self.windows.remove(index);
         self.ids.unbind(state.window_id);
         let (sessions, window) = (self.sessions.clone(), state.window_id);
@@ -359,7 +387,22 @@ impl App {
                 let close = state.pending_close.as_ref().map(|pending| pending.deadline);
                 [animation, reveal, close].into_iter().flatten().min()
             })
+            .chain(self.restore.as_ref().and_then(|restore| restore.due_at()))
             .min()
+    }
+
+    /// Writes down where the windows are, at the end of the application.
+    pub(in crate::window) fn remember_windows(&mut self) {
+        let Some(restore) = self.restore.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        for state in &mut self.windows {
+            if let Ok(info) = state.fresh_snapshot() {
+                restore.observe(&info, now);
+            }
+        }
+        restore.flush();
     }
 
     fn call(
@@ -482,11 +525,22 @@ impl App {
             crate::spikes::integration::poll(state.window.as_ref());
         }
         while let Ok(request) = self.requests.try_recv() {
-            let UiRequest::Ui {
-                caller,
-                call,
-                reply,
-            } = request;
+            let (caller, call, reply) = match request {
+                UiRequest::Ui {
+                    caller,
+                    call,
+                    reply,
+                } => (caller, call, reply),
+                UiRequest::Drop {
+                    window,
+                    paths,
+                    reply,
+                } => {
+                    self.file_drop(window, paths);
+                    reply.finish(Ok(Value::Null));
+                    continue;
+                }
+            };
             if reply.canceled() {
                 continue;
             }

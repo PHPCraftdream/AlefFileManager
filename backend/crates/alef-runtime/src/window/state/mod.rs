@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Event-loop integration follows Servo 0.6's MPL-2.0 winit example.
 pub(super) mod resize_wait;
+pub(super) mod restore;
 
 use std::cell::Cell;
 use std::io;
@@ -77,6 +78,8 @@ pub(super) struct State {
     /// The session whose document answers close requests of this window.
     pub(super) intercept: Option<SessionId>,
     pub(super) pending_close: Option<PendingClose>,
+    /// Files dropped on the window since the documents were last told (they arrive one by one).
+    pub(super) dropped: Vec<std::path::PathBuf>,
 }
 
 const RESIZE_WAIT: Duration = Duration::from_millis(100);

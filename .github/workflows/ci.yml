@@ -144,13 +144,13 @@ jobs:
         if: runner.os != 'Linux'
         env:
           ALEF_TEST_DESKTOP: "1"
-        run: node scripts/cargo.mjs test --locked -p alef-modules --test clipboard --test shell -- --ignored --nocapture
+        run: node scripts/cargo.mjs test --locked -p alef-modules --test system --test desktop -- --ignored --nocapture
 
       - name: Desktop backends (clipboard, trash; virtual display)
         if: runner.os == 'Linux'
         env:
           ALEF_TEST_DESKTOP: "1"
-        run: xvfb-run -a node scripts/cargo.mjs test --locked -p alef-modules --test clipboard --test shell -- --ignored --nocapture
+        run: xvfb-run -a node scripts/cargo.mjs test --locked -p alef-modules --test system --test desktop -- --ignored --nocapture
 
       - name: Generated TypeScript types
         run: |

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use super::geometry::{self, Axis};
 use super::*;
 use crate::{
-    security::window::{LengthUnit, Monitor},
+    security::window::{LengthUnit, Monitor, WindowPosition},
     ErrorCode,
 };
 
@@ -408,4 +408,163 @@ fn window_info_uses_camel_case_names() {
         serde_json::from_value::<WindowInfo>(json).expect("back"),
         info
     );
+}
+
+fn remembered(x: Option<f64>, y: Option<f64>, width: f64, height: f64) -> geometry::Remembered {
+    geometry::Remembered {
+        x,
+        y,
+        width,
+        height,
+        maximized: false,
+    }
+}
+
+#[test]
+fn a_window_is_reachable_when_its_top_edge_and_enough_of_it_are_on_a_display() {
+    let displays = monitors();
+    for (what, window) in [
+        ("inside", rect(100.0, 100.0, 800.0, 600.0)),
+        (
+            "on the display to the right",
+            rect(2000.0, 100.0, 800.0, 500.0),
+        ),
+        ("half off the left edge", rect(-400.0, 100.0, 800.0, 600.0)),
+        (
+            "top edge a little above the area",
+            rect(100.0, -10.0, 800.0, 600.0),
+        ),
+        ("across two displays", rect(1850.0, 100.0, 800.0, 600.0)),
+        (
+            "a small window in full view",
+            rect(100.0, 100.0, 50.0, 30.0),
+        ),
+    ] {
+        assert!(geometry::reachable(&window, &displays), "{what}");
+    }
+    for (what, window) in [
+        ("far away", rect(99999.0, 99999.0, 800.0, 600.0)),
+        (
+            "only a sliver at the left edge",
+            rect(-740.0, 100.0, 800.0, 600.0),
+        ),
+        (
+            "title bar above every display",
+            rect(100.0, -200.0, 800.0, 600.0),
+        ),
+        ("below the work area", rect(100.0, 1030.0, 800.0, 600.0)),
+        (
+            "a gone display to the left",
+            rect(-1900.0, 100.0, 800.0, 600.0),
+        ),
+    ] {
+        assert!(!geometry::reachable(&window, &displays), "{what}");
+    }
+    assert!(
+        !geometry::reachable(&rect(0.0, 0.0, 800.0, 600.0), &[]),
+        "no display at all"
+    );
+}
+
+#[test]
+fn a_window_opens_where_it_was_when_that_place_is_still_on_a_display() {
+    let def = definition(json!({}));
+    let restored = geometry::restore(
+        &def,
+        &remembered(Some(300.0), Some(200.0), 900.0, 700.0),
+        &monitors(),
+    );
+    assert_eq!(restored.width, Length::Px(900.0));
+    assert_eq!(restored.height, Length::Px(700.0));
+    assert_eq!(
+        restored.position,
+        WindowPosition::At {
+            x: Length::Px(300.0),
+            y: Length::Px(200.0)
+        }
+    );
+    let placed = geometry::place(&restored, &monitors(), None).expect("placement");
+    assert_eq!((placed.width, placed.height), (900.0, 700.0));
+    assert_eq!(placed.position, Some(point(300.0, 200.0)));
+}
+
+#[test]
+fn a_place_that_is_on_no_display_any_more_keeps_the_size_and_the_default_position() {
+    let def = definition(json!({}));
+    let restored = geometry::restore(
+        &def,
+        &remembered(Some(99999.0), Some(99999.0), 900.0, 700.0),
+        &monitors(),
+    );
+    assert_eq!(
+        (restored.width, restored.height),
+        (Length::Px(900.0), Length::Px(700.0))
+    );
+    assert_eq!(
+        restored.position,
+        WindowPosition::Center,
+        "back to the centre of the display"
+    );
+    let anchored = definition(json!({"position": {"x": 40, "y": 50}}));
+    let kept = geometry::restore(
+        &anchored,
+        &remembered(Some(-5000.0), Some(10.0), 900.0, 700.0),
+        &monitors(),
+    );
+    assert_eq!(
+        kept.position, anchored.position,
+        "the position the definition asks for stays"
+    );
+}
+
+#[test]
+fn an_unknown_position_restores_the_size_only() {
+    let def = definition(json!({}));
+    let restored = geometry::restore(&def, &remembered(None, None, 640.0, 480.0), &monitors());
+    assert_eq!(
+        (restored.width, restored.height),
+        (Length::Px(640.0), Length::Px(480.0))
+    );
+    assert_eq!(restored.position, WindowPosition::Center);
+}
+
+#[test]
+fn a_remembered_size_never_exceeds_the_biggest_work_area() {
+    let def = definition(json!({}));
+    let restored = geometry::restore(
+        &def,
+        &remembered(Some(0.0), Some(0.0), 5000.0, 4000.0),
+        &monitors(),
+    );
+    assert_eq!(
+        (restored.width, restored.height),
+        (Length::Px(1920.0), Length::Px(1040.0))
+    );
+    let nowhere = geometry::restore(&def, &remembered(Some(0.0), Some(0.0), 5000.0, 4000.0), &[]);
+    assert_eq!(
+        (nowhere.width, nowhere.height),
+        (Length::Px(5000.0), Length::Px(4000.0)),
+        "with no display to measure by the size is left alone"
+    );
+}
+
+#[test]
+fn restoring_changes_nothing_but_size_and_position() {
+    let def =
+        definition(json!({"minWidth": 300, "maxHeight": 900, "title": "T", "resizable": false}));
+    let restored = geometry::restore(
+        &def,
+        &remembered(Some(10.0), Some(10.0), 500.0, 400.0),
+        &monitors(),
+    );
+    let expected = WindowDef {
+        width: Length::Px(500.0),
+        height: Length::Px(400.0),
+        position: WindowPosition::At {
+            x: Length::Px(10.0),
+            y: Length::Px(10.0),
+        },
+        ..def
+    };
+    assert_eq!(restored, expected);
 }

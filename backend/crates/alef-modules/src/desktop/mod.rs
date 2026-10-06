@@ -3,6 +3,7 @@
 pub mod app;
 pub mod args;
 pub mod dialog;
+mod instance;
 pub mod shell;
 pub mod window;
 

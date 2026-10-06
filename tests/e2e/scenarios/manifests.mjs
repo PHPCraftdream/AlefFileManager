@@ -30,7 +30,6 @@ export function manifestCases() {
     refuses('with an external.connect entry that is not an origin', change(base, '    connect: []\n', '    connect: [ "not an origin" ]\n'), ['MANIFEST_INVALID', 'connect-src']),
     refuses('with an id that is a path', change(base, 'id: org.alef.e2e.core', 'id: ../evil'), ['MANIFEST_INVALID', 'id']),
     refuses('with no window', change(base, WINDOW, 'windows: []\n'), ['MANIFEST_INVALID', 'no window']),
-    refuses('with a window to restore (not supported yet)', change(base, '        height: 600\n', '        height: 600\n        restore: true\n'), ['NOT_AVAILABLE', 'restore', 'M2.4']),
     refuses('with two windows of the same label', change(base, WINDOW, `windows: [\n${entry}\n${entry}\n]\n`), ['MANIFEST_INVALID', 'duplicate label']),
     refuses('with a window url that names another host', change(base, 'url: /index.html', 'url: //evil.example/x'), ['MANIFEST_INVALID', 'windows[0].url']),
     refuses('with a minimum window size above the maximum', change(base, '        height: 600\n', '        height: 600\n        minWidth: 500\n        maxWidth: 400\n'), ['MANIFEST_INVALID', 'minwidth']),

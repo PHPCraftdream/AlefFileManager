@@ -187,6 +187,28 @@ async function main() {
     if (foreignClose?.code !== 'INVALID_ARGUMENT') throw new Error(`close-requested of another window: ${foreignClose?.code}`);
   });
 
+  await check('files-dropped-on-a-window-are-announced-and-become-readable', async () => {
+    const { drop } = await (await fetch('targets.json')).json();
+    const heard = [];
+    const off = await self.on('file-drop', event => heard.push(event));
+    const readable = async path => (await rejection(api.call('e2e.fsRead', { target: path }))) === null;
+    try {
+      if (await readable(drop.file)) throw new Error('the file was readable before the drop');
+      await api.call('e2e.dropFiles', { paths: [drop.file, drop.folder, drop.missing] });
+      await eventually(() => heard.length > 0, 10000, 'the file-drop event');
+      const [event] = heard;
+      if (event.label !== 'main') throw new Error(`the event names the window ${event.label}`);
+      if (JSON.stringify(event.paths) !== JSON.stringify([drop.file, drop.folder])) throw new Error(`paths ${JSON.stringify(event.paths)}`);
+      for (const path of [drop.file, drop.folder, drop.inside]) {
+        if (!(await readable(path))) throw new Error(`${path} is not readable after the drop`);
+      }
+      for (const path of [drop.sibling, drop.missing]) {
+        if (await readable(path)) throw new Error(`${path} became readable`);
+      }
+    } finally {
+      off();
+    }
+  });
   await check('a-document-can-refuse-and-then-allow-the-close-of-its-window', async () => {
     const side = (await api.window.all()).find(window => window.label === 'side');
     await eventually(() => armed(side), 60000, 'the side window to arm its close handler');

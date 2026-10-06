@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `dialog` through the registry: options, what reaches the host, and the grants a choice makes.
-mod common;
 
 use std::{fs, path::Path};
 
+use crate::common::Fixture;
 use alef_core::{
     registry::{
         dialog::{
@@ -15,7 +15,6 @@ use alef_core::{
     security::permissions::Permission,
     AlefError, ErrorCode,
 };
-use common::Fixture;
 use serde_json::{json, Value};
 
 fn text(path: &Path) -> String {

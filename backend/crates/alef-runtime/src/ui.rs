@@ -80,6 +80,12 @@ pub(crate) enum UiRequest {
         call: UiCall,
         reply: UiReply,
     },
+    /// A drop of files on a window that did not come from the system (end-to-end runs only).
+    Drop {
+        window: u64,
+        paths: Vec<std::path::PathBuf>,
+        reply: UiReply,
+    },
 }
 
 pub(crate) struct UiReply {
@@ -191,6 +197,22 @@ impl RuntimeHandle {
         .await
     }
 
+    /// Drops `paths` on the window `window` as if the system had (end-to-end runs only).
+    pub(crate) async fn simulate_drop(
+        &self,
+        window: u64,
+        paths: Vec<std::path::PathBuf>,
+    ) -> io::Result<Value> {
+        self.request(move |reply| {
+            Ok(UiRequest::Drop {
+                window,
+                paths,
+                reply,
+            })
+        })
+        .await
+    }
+
     /// The legacy `window.apply` of a document in `caller`.
     pub(crate) async fn window(&self, caller: u64, action: WindowAction) -> io::Result<Value> {
         let call = WindowCall {
@@ -257,6 +279,12 @@ impl Host for RuntimeHandle {
     fn ui(&self, caller: u64, call: UiCall) -> HostFuture {
         let handle = self.clone();
         Box::pin(async move { handle.ui_call(caller, call).await.map_err(AlefError::from) })
+    }
+
+    fn emit(&self, window: Option<u64>, name: &str, payload: Value) {
+        if let Ok(json) = event_json(name, &payload) {
+            self.events.publish(window, &json);
+        }
     }
 }
 

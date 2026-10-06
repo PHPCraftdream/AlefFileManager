@@ -8,6 +8,7 @@ pub(super) const RESIZED: &str = "window.resized";
 pub(super) const FOCUS: &str = "window.focus";
 pub(super) const BLUR: &str = "window.blur";
 pub(super) const CLOSE_REQUESTED: &str = "window.close-requested";
+pub(super) const FILE_DROP: &str = "window.file-drop";
 
 /// The events that tell a document how `previous` became `next`, in a fixed order.
 pub(in crate::window) fn changes(

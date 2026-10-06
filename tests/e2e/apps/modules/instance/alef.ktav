@@ -1,0 +1,61 @@
+id: org.alef.e2e.modules.instance
+name: Alef e2e instance
+version:: 4.5.6
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 900
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}
+arguments: {
+    options: [
+        {
+            name: role
+            type: string
+            description: first or second
+        }
+    ]
+    positional: {
+        name: files
+        description: Files to open
+    }
+}

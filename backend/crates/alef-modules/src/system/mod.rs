@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! System modules.
 pub mod clipboard;
+pub mod notification;
 pub mod os;
 pub mod path;
 pub mod screen;
@@ -20,6 +21,7 @@ pub(crate) fn register(
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
     clipboard::register(registry, context.backends.clipboard.clone())?;
+    notification::register(registry, context.backends.notification.clone())?;
     path::register(registry, context)?;
     os::register(registry, host.clone())?;
     screen::register(registry, host)

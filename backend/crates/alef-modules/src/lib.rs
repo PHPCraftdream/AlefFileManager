@@ -21,7 +21,10 @@ pub use desktop::{
     args::{ArgValue, ParsedArgs},
     shell::{PretendShell, ShellBackend, ShellRequest, SystemShell},
 };
-pub use system::clipboard::{ClipboardBackend, Image, MemoryClipboard, SystemClipboard};
+pub use system::{
+    clipboard::{ClipboardBackend, Image, MemoryClipboard, SystemClipboard},
+    notification::{Notification, NotificationBackend, PretendNotifications, SystemNotifications},
+};
 
 /// What the clipboard and the desktop shell really do. The system ones act on the desktop of the
 /// user; the pretending ones answer as if they did and leave it alone.
@@ -29,36 +32,48 @@ pub use system::clipboard::{ClipboardBackend, Image, MemoryClipboard, SystemClip
 pub struct Backends {
     pub clipboard: Arc<dyn ClipboardBackend>,
     pub shell: Arc<dyn ShellBackend>,
+    pub notification: Arc<dyn NotificationBackend>,
 }
 
 impl Backends {
-    /// The clipboard and the shell of the desktop.
-    pub fn system() -> Self {
+    /// The clipboard, the shell and the notifications of the desktop; the notifications are shown
+    /// under the name `application`.
+    pub fn system(application: &str) -> Self {
         Self {
             clipboard: Arc::new(SystemClipboard::default()),
             shell: Arc::new(SystemShell),
+            notification: Arc::new(SystemNotifications::new(application)),
         }
     }
 
-    /// A clipboard in memory and a shell that does nothing and, given a file, logs its requests.
-    pub fn pretending(shell_log: Option<PathBuf>) -> Self {
+    /// A clipboard in memory, a shell and notifications that do nothing and, given a file, log
+    /// their requests there.
+    pub fn pretending(shell_log: Option<PathBuf>, notification_log: Option<PathBuf>) -> Self {
         Self {
             clipboard: Arc::new(MemoryClipboard::default()),
             shell: Arc::new(match shell_log {
                 Some(path) => PretendShell::logging_to(path),
                 None => PretendShell::default(),
             }),
+            notification: Arc::new(match notification_log {
+                Some(path) => PretendNotifications::logging_to(path),
+                None => PretendNotifications::default(),
+            }),
         }
     }
 
-    /// An end-to-end run (`ALEF_E2E=1`) pretends, its requests of the shell go to the file
-    /// `ALEF_E2E_SHELL_LOG` names; every other run uses the desktop.
-    pub fn from_environment() -> Self {
+    /// An end-to-end run (`ALEF_E2E=1`) pretends, its requests of the shell and of the
+    /// notifications go to the files `ALEF_E2E_SHELL_LOG` and `ALEF_E2E_NOTIFICATION_LOG` name; every
+    /// other run uses the desktop.
+    pub fn from_environment(application: &str) -> Self {
         let flag = |name: &str| std::env::var(name).is_ok_and(|value| value == "1");
         if flag("ALEF_E2E") {
-            Self::pretending(std::env::var_os("ALEF_E2E_SHELL_LOG").map(PathBuf::from))
+            Self::pretending(
+                std::env::var_os("ALEF_E2E_SHELL_LOG").map(PathBuf::from),
+                std::env::var_os("ALEF_E2E_NOTIFICATION_LOG").map(PathBuf::from),
+            )
         } else {
-            Self::system()
+            Self::system(application)
         }
     }
 }

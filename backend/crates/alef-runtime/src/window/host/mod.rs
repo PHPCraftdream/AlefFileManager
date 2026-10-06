@@ -3,6 +3,7 @@
 //! what a document may do to one window, the displays, and the events a window raises.
 pub(super) mod dialogs;
 mod displays;
+pub(super) mod drops;
 pub(super) mod events;
 mod manage;
 mod ops;
