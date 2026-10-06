@@ -4,7 +4,7 @@
 
 ## Цель
 
-Модули `http`, `socket`, `websocket`, `cli` и консольный режим `app`. Нативная сеть не подчиняется CORS, но ограничена своими scopes в манифесте; `cli` даёт JS доступ к командной строке ОС (JS → Servo → фреймворк → ОС).
+Модули `http` (клиент и сервер), `socket`, `websocket` (клиент и сервер), `cli` и безоконные режимы `app` (консоль, служба). Нативная сеть не подчиняется CORS, но ограничена своими scopes в манифесте; `cli` даёт JS доступ к командной строке ОС (JS → Servo → фреймворк → ОС).
 
 ## Модули
 
@@ -40,6 +40,24 @@ websocket.connect(url, { protocols?, headers? }): Promise<WebSocketConnection>  
 
 `tokio-tungstenite` + `rustls`; scope — `permissions.net.http` (ws/wss по хосту).
 
+### Серверы: `http.serve` и `websocket.serve` (net)
+
+```ts
+const server = await http.serve({ host?: '127.0.0.1', port: 0, tls?, files?: '$APP/public' });  // port 0 — порт выберет ОС
+server.address                                              // { host, port }
+for await (const req of server) {                           // { method, url, headers, body: ReadableStream, upgrade(), respond({ status, headers, body }) }
+  await req.respond({ status: 200, headers: { 'content-type': 'text/plain' }, body: 'hi' });
+}
+const sockets = websocket.serve({ host?, port, path?, protocols?, origins? });   // AsyncIterable<WebSocketConnection>
+const connection = await req.upgrade();                      // WebSocket на том же порту, что и HTTP
+```
+
+- Разбор HTTP, TLS и сокеты — в Rust (`hyper`, `rustls`, `tokio-tungstenite`), обработчик — в JS; запросы идут потоком в документ с credit (транспорт v2 дополняется потоком на сервер, а не только одним потоком событий на документ). Сервер — ресурс сессии: закрытие документа закрывает сервер и все его соединения.
+- Режим `files`: статика отдаётся из каталога приложения без захода в JS.
+- Scope — `listen:host:port` в `permissions.net.socket` (общий для `socket.listen`, `http.serve`, `websocket.serve` и MCP); привязка по умолчанию **только к loopback**, другой адрес — явное право и отдельная строка в окне согласия (M2b). Для HTTP-серверов проверяются `Host` и `Origin` (против DNS-rebinding и CSRF), список допустимых `Origin` задаёт разработчик.
+- Подмена права `listen` (§6.4): вызов успешен и выдаёт порт, но сокет не открывается и входящих нет.
+- Граница: каждый запрос — событие через мост Servo; для API, WebSocket-каналов, MCP и локальных инструментов этого достаточно, высокой нагрузки (тысячи запросов в секунду) это не потянет — для неё нужен Rust-хост.
+
 ### `cli` (system)
 
 ```ts
@@ -51,6 +69,7 @@ cli.pty(program, args, { cols, rows, cwd?, env? }): Promise<Pty>   // readable, 
 ```
 
 - Право `permissions.cli.exec`: список программ (имя или абсолютный путь); `*` — любые, только явно. Для `exec` через оболочку проверяется сама оболочка и первая программа командной строки; при `*` — без ограничений.
+- Объявленные команды (§6.4, M2b): приложение заранее перечисляет фиксированные команды в `permissions.cli.commands` (`name`, `program`, шаблон `args`, `description`); пользователь по каждой разрешает, подменяет (команда зависает до таймаута) или отказывает; вызов вне списка — `PERMISSION_DENIED`. `permissions.cli.exec` (список программ, `*`) остаётся для приложений, которым нужны произвольные команды, и подтверждается отдельно, с предупреждением, что оболочка раскрывает всё.
 - Оболочка по умолчанию: Windows — `cmd.exe /C` (опция `powershell`), Unix — `/bin/sh -c`.
 - `spawn` без оболочки — аргументы без интерпретации.
 - PTY — `portable-pty` (ConPTY на Windows).
@@ -64,7 +83,8 @@ app.stdin: ReadableStream<Uint8Array>, app.stdout / app.stderr: WritableStream<U
 app.exit(code): Promise<never>
 ```
 
-- Манифест: `windows: []` + `console: true` → runtime не создаёт окно; документ приложения выполняется в скрытом webview (или без окна, если Servo позволяет — проверить; иначе невидимое окно 1×1).
+- Режимы: **консоль** — `windows: []` + `console: true` (stdin/stdout, код выхода); **служба** — `windows: []` без консоли (долгоживущие серверы, фоновая работа; завершение по SIGTERM/Ctrl+Break/`CTRL_CLOSE_EVENT` → событие `before-quit` → выход). Runtime не создаёт окно; документ приложения выполняется в скрытом `WebView` на программном контексте отрисовки (спайк M0.5 подтверждает, что это работает без дисплея; запасной путь — невидимое окно 1×1). Модули `window`, `screen`, `dialog` в этих режимах отвечают `NOT_AVAILABLE`.
+- Регистрация службы ОС (Windows Service, systemd unit, launchd) — установка и автозапуск (M5, M7b); runtime в режиме службы не требует консоли.
 - Windows: бинарник GUI-subsystem → `AttachConsole(ATTACH_PARENT_PROCESS)`, перенаправление stdio; при запуске двойным кликом консоли нет — stdout в никуда, это документировать.
 - Код выхода процесса = `app.exit(code)`.
 
@@ -92,5 +112,5 @@ packages/api/src/system/   cli.ts
 
 ## Риски
 
-- Консольный режим без окна в Servo — возможно, нужен скрытый webview; проверить в начале этапа.
+- Безоконные режимы без дисплея (Linux-сервер без X/Wayland, служба Windows в session 0) — результат спайка M0.5; этап M4 не начинается до его итога.
 - Завершение дерева процессов кроссплатформенно — Job Object / process group, тесты на каждой ОС.
