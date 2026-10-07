@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use alef_core::{security::consent::Decision, ErrorCode};
 use serde_json::{json, Value};
 
-use super::{at, fixture, fixture_in, read, scope_of, write};
+use crate::{at, fixture, fixture_in, read, scope_of, write};
 
 #[cfg(any(unix, windows))]
 fn link(target: &Path, at: &Path) -> bool {

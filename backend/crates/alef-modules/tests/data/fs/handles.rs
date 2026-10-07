@@ -9,8 +9,8 @@ use alef_core::{
 use bytes::Bytes;
 use serde_json::{json, Value};
 
-use super::{at, fixture, fixture_in, read, scope_of, write};
 use crate::common::Fixture;
+use crate::{at, fixture, fixture_in, read, scope_of, write};
 
 async fn open(app: &Fixture, path: &Path, flags: Value) -> u64 {
     let mut args = flags;

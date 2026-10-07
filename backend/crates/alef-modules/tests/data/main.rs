@@ -5,8 +5,7 @@ mod common;
 
 mod crypto;
 mod fs;
-mod handles;
-mod rights;
+mod secrets;
 mod sqlite;
 mod store;
 

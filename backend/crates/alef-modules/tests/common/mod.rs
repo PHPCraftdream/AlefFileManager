@@ -24,7 +24,7 @@ use alef_core::{
     AlefError,
 };
 use alef_modules::{
-    desktop::args, register_all, AppInfo, Backends, MemoryClipboard, ModuleContext,
+    desktop::args, register_all, AppInfo, Backends, MemoryClipboard, MemorySecrets, ModuleContext,
     PretendNotifications, PretendShell,
 };
 use bytes::Bytes;
@@ -81,6 +81,8 @@ pub struct Fixture {
     pub clipboard: Arc<MemoryClipboard>,
     pub shell: Arc<PretendShell>,
     pub notifications: Arc<PretendNotifications>,
+    /// The secrets behind the module: in memory.
+    pub secrets: Arc<MemorySecrets>,
     pub context: ModuleContext,
     manager: SessionManager,
     session: Arc<Session>,
@@ -121,6 +123,22 @@ impl Fixture {
         manifest: Option<&str>,
         command_line: &[&str],
     ) -> Self {
+        Self::new_sharing(
+            root,
+            manifest,
+            command_line,
+            Arc::new(MemorySecrets::default()),
+        )
+        .await
+    }
+
+    /// As `new_in`, with the store of secrets that another fixture has: two applications on one machine.
+    pub async fn new_sharing(
+        root: &std::path::Path,
+        manifest: Option<&str>,
+        command_line: &[&str],
+        secrets: Arc<MemorySecrets>,
+    ) -> Self {
         let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
         let manifest = Manifest::from_ktav_str(&text).expect("manifest");
         let root = root.to_path_buf();
@@ -157,6 +175,7 @@ impl Fixture {
                 clipboard: clipboard.clone(),
                 shell: shell.clone(),
                 notification: notifications.clone(),
+                secrets: secrets.clone(),
             },
             // Its own for every fixture: tests run side by side.
             shadow: root.join(format!(
@@ -182,6 +201,7 @@ impl Fixture {
             clipboard,
             shell,
             notifications,
+            secrets,
             context,
             manager,
             session,

@@ -117,6 +117,10 @@ const ARGS = {
   'crypto.ed25519Generate': [],
   'crypto.ed25519Sign': [new Uint8Array(32), 'x'],
   'crypto.ed25519Verify': [new Uint8Array(32), 'x', new Uint8Array(64)],
+  'secrets.get': ['service', 'account'],
+  'secrets.getText': ['service', 'account'],
+  'secrets.set': ['service', 'account', 'probe'],
+  'secrets.delete': ['service', 'account'],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -133,6 +137,7 @@ installRuntime({
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/window.all') return { json: [] };
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
+    if (request.url === 'native://call/secrets.get') return { json: null };
     if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
     return { json: { revision: 1 } };
   },
@@ -165,5 +170,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'sqlite', 'store', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'sqlite', 'store', 'window']);
 });

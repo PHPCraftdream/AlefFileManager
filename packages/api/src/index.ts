@@ -39,6 +39,7 @@ export {
   type SqlValue,
   type SqliteOpenOptions,
 } from './data/sqlite.ts';
+export { secrets } from './data/secrets.ts';
 export { Store, store } from './data/store.ts';
 export {
   crypto,

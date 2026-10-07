@@ -39,6 +39,10 @@ const WEBCRYPTO_CHECKS = [
   'rsa-oaep-2048',
 ].map(name => `webcrypto-${name}`);
 
+const SECRETS_CHECKS = ['secrets-a-secret-comes-back-as-it-went', 'secrets-the-limits-and-the-names-are-told'];
+const SECRETS_SUBSTITUTE_CHECKS = ['secrets-a-stand-in-keeps-what-is-written-until-the-run-ends'];
+const SECRETS_DENIED_CHECKS = ['secrets-a-denied-right-keeps-every-command-out'];
+
 const STORE_ID = 'org.alef.e2e.modules.store';
 const STORE_CHECKS = {
   write: [
@@ -341,6 +345,36 @@ export function dataScenarios({ drive, exe, verbose }) {
     // algorithm is supported (run with --verbose to read the table); only the context and the algorithms an
     // application cannot do without fail the run.
     webcrypto: () => drive({ name: 'webcrypto', app: 'modules/data/webcrypto', expectedChecks: WEBCRYPTO_CHECKS }),
+
+    // The secrets of an end-to-end run are in memory: the credential store of the machine is never touched.
+    // The page works with the right allowed; with a stand-in the user chose; with the right denied.
+    async secrets() {
+      return drive({ name: 'secrets', app: 'modules/data/secrets', targets: { mode: 'allowed' }, expectedChecks: SECRETS_CHECKS });
+    },
+
+    async 'secrets-substitute'() {
+      const home = mkdtempSync(join(os.tmpdir(), 'alef-e2e-secrets-'));
+      try {
+        return await drive({
+          name: 'secrets-substitute', app: 'modules/data/secrets', targets: { mode: 'substituted' },
+          env: { ALEF_HOME: home, ALEF_E2E_CONSENT: 'secrets=substitute' }, expectedChecks: SECRETS_SUBSTITUTE_CHECKS,
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+
+    async 'secrets-denied'() {
+      const home = mkdtempSync(join(os.tmpdir(), 'alef-e2e-secrets-'));
+      try {
+        return await drive({
+          name: 'secrets-denied', app: 'modules/data/secrets', targets: { mode: 'denied' },
+          env: { ALEF_HOME: home, ALEF_E2E_CONSENT: 'secrets=deny' }, expectedChecks: SECRETS_DENIED_CHECKS,
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
 
     // The store keeps what was written for the next run: the application runs twice, a new process each
     // time, on a data folder that is empty at the start and removed at the end.

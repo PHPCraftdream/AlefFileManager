@@ -18,6 +18,7 @@ pub mod data;
 pub mod desktop;
 pub mod system;
 
+pub use data::secrets::{MemorySecrets, SecretsBackend, SystemSecrets};
 pub use desktop::{
     args::{ArgValue, ParsedArgs},
     shell::{PretendShell, ShellBackend, ShellRequest, SystemShell},
@@ -34,6 +35,7 @@ pub struct Backends {
     pub clipboard: Arc<dyn ClipboardBackend>,
     pub shell: Arc<dyn ShellBackend>,
     pub notification: Arc<dyn NotificationBackend>,
+    pub secrets: Arc<dyn SecretsBackend>,
 }
 
 impl Backends {
@@ -44,6 +46,7 @@ impl Backends {
             clipboard: Arc::new(SystemClipboard::default()),
             shell: Arc::new(SystemShell),
             notification: Arc::new(SystemNotifications::new(application)),
+            secrets: Arc::new(SystemSecrets::default()),
         }
     }
 
@@ -60,6 +63,7 @@ impl Backends {
                 Some(path) => PretendNotifications::logging_to(path),
                 None => PretendNotifications::default(),
             }),
+            secrets: Arc::new(MemorySecrets::default()),
         }
     }
 

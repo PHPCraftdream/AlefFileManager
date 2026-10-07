@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! What `fs` does to the disk when the user allowed everything the manifest asks for.
+mod handles;
+mod rights;
+
 use std::fs;
 
 use alef_core::{security::consent::Decision, ErrorCode};
 use bytes::Bytes;
 use serde_json::{json, Value};
 
-use super::{at, fixture_in, read, write};
+use crate::{at, fixture_in, read, write};
 
 fn names(listing: &Value) -> Vec<String> {
     listing

@@ -140,17 +140,26 @@ jobs:
       # The system clipboard and trash against the real desktop of the clean runner. They change what
       # a user has, so the tests run only on request (ALEF_TEST_DESKTOP=1); Linux needs a display.
       # The default shell stays: Git Bash on Windows puts its own link.exe before the MSVC one.
-      - name: Desktop backends (clipboard, trash)
+      - name: Desktop backends (clipboard, trash, secrets)
         if: runner.os != 'Linux'
         env:
           ALEF_TEST_DESKTOP: "1"
-        run: node scripts/cargo.mjs test --locked -p alef-modules --test system --test desktop -- --ignored --nocapture
+        run: node scripts/cargo.mjs test --locked -p alef-modules --test system --test desktop --test data -- --ignored --nocapture
 
       - name: Desktop backends (clipboard, trash; virtual display)
         if: runner.os == 'Linux'
         env:
           ALEF_TEST_DESKTOP: "1"
         run: xvfb-run -a node scripts/cargo.mjs test --locked -p alef-modules --test system --test desktop -- --ignored --nocapture
+
+      # The Secret Service needs a session bus and a keyring daemon with its default collection unlocked.
+      - name: Desktop backends (secrets; keyring of a session)
+        if: runner.os == 'Linux'
+        env:
+          ALEF_TEST_DESKTOP: "1"
+        run: |
+          sudo apt-get install -y --no-install-recommends gnome-keyring
+          dbus-run-session -- bash -c 'echo -n "alef-ci" | gnome-keyring-daemon --unlock --components=secrets > /dev/null && node scripts/cargo.mjs test --locked -p alef-modules --test data -- --ignored --nocapture'
 
       - name: Generated TypeScript types
         run: |

@@ -26,7 +26,17 @@ base64 = "=0.22.1"
 ring = "=0.17.14"
 argon2 = "=0.5.3"
 scrypt = "=0.11.0"
+keyring-core = "=1.0.0"
 notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = "=1.1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "=1.0.2", features = ["keychain"] }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus-secret-service-keyring-store = { version = "=1.0.1", features = ["crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "=3.27.0"
