@@ -190,14 +190,19 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         std::process::id()
     );
     let handle = bridge.handle();
-    let result = alef_runtime::run(
-        &mut bridge,
-        WindowOptions {
-            windows: plan.manifest.windows.clone(),
-            ..WindowOptions::new(plan.manifest.name.clone(), icon)
-                .remembering_windows_in(window_state)
-        },
-    );
+    // M0.5 spike: the application in a hidden WebView, no window (docs/stages/m0-spikes.md).
+    let result = if std::env::var("ALEF_SPIKE_HEADLESS").is_ok_and(|value| value == "1") {
+        alef_runtime::run_headless(&mut bridge)
+    } else {
+        alef_runtime::run(
+            &mut bridge,
+            WindowOptions {
+                windows: plan.manifest.windows.clone(),
+                ..WindowOptions::new(plan.manifest.name.clone(), icon)
+                    .remembering_windows_in(window_state)
+            },
+        )
+    };
     bridge.shutdown().await?;
     result.map_err(|error| Failure::Runtime(error.to_string()))?;
     Ok(u8::try_from(handle.exit_code()).unwrap_or(1))

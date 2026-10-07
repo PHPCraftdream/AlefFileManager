@@ -7,6 +7,7 @@ mod window;
 
 pub use bridge::commands::Commands;
 pub use bridge::{Bridge, BridgeOptions, ModuleInstaller};
+pub use spikes::headless::run_headless;
 pub use store::Store;
 pub use ui::RuntimeHandle;
 pub use window::{run, WindowOptions};

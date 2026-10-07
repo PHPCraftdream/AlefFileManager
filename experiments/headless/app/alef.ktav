@@ -1,0 +1,62 @@
+id: org.alef.spike.headless
+name: Alef headless spike
+version:: 0.0.1
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 400
+        height: 300
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}
+arguments: {
+    options: [
+        {
+            name: hold-ms
+            type: number
+            description: How long to stay alive after the checks
+        }
+        {
+            name: raf
+            type: boolean
+            description: Keep a requestAnimationFrame loop running
+        }
+    ]
+}
