@@ -40,6 +40,16 @@ export {
   type SqliteOpenOptions,
 } from './data/sqlite.ts';
 export { Store, store } from './data/store.ts';
+export {
+  crypto,
+  type Argon2Options,
+  type CipherName,
+  type Ed25519Keys,
+  type HashName,
+  type HkdfOptions,
+  type ScryptOptions,
+  type SealOptions,
+} from './data/crypto.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shell } from './desktop/shell.ts';
 export { clipboard } from './system/clipboard.ts';

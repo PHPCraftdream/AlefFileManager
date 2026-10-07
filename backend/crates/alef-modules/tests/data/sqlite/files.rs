@@ -3,8 +3,8 @@
 use alef_core::{security::consent::Decision, ErrorCode};
 use serde_json::{json, Value};
 
-use super::{fixture, fixture_in, scope_of};
 use crate::sqlite::{denied, exec, failure, open, rows};
+use crate::{fixture, fixture_in, scope_of};
 
 #[tokio::test]
 async fn a_database_is_opened_as_the_rights_allow_and_a_file_is_what_it_is() {

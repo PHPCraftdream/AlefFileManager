@@ -8,6 +8,8 @@ use serde_json::{json, Value};
 use super::fixture_in;
 use crate::common::Fixture;
 
+mod files;
+
 pub(crate) async fn open(app: &Fixture, path: &Path, extra: Value) -> u64 {
     let mut args = extra;
     args["path"] = json!(path.to_string_lossy());

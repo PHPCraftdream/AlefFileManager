@@ -104,6 +104,19 @@ const ARGS = {
   'fs.readDirStream': ['/probe'],
   'fs.watch': ['/probe'],
   'sqlite.open': ['/probe'],
+  'crypto.random': [4],
+  'crypto.digest': ['sha-256', 'x'],
+  'crypto.hmac': ['sha-256', new Uint8Array(1), 'x'],
+  'crypto.hmacVerify': ['sha-256', new Uint8Array(1), 'x', new Uint8Array(32)],
+  'crypto.hkdf': ['sha-256', 'x', { length: 8 }],
+  'crypto.pbkdf2': ['sha-256', 'x', new Uint8Array(8), 1, 8],
+  'crypto.argon2id': ['x', new Uint8Array(8)],
+  'crypto.scrypt': ['x', new Uint8Array(8)],
+  'crypto.seal': ['aes-256-gcm', new Uint8Array(32), 'x'],
+  'crypto.open': ['aes-256-gcm', new Uint8Array(32), new Uint8Array(40)],
+  'crypto.ed25519Generate': [],
+  'crypto.ed25519Sign': [new Uint8Array(32), 'x'],
+  'crypto.ed25519Verify': [new Uint8Array(32), 'x', new Uint8Array(64)],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -119,6 +132,7 @@ installRuntime({
     if (request.url === 'native://call/runtime.events.subscribe') return { json: { stream: 5 } };
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/window.all') return { json: [] };
+    if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
     if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
     return { json: { revision: 1 } };
   },
@@ -151,5 +165,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'app', 'call', 'clipboard', 'connect', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'sqlite', 'store', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'sqlite', 'store', 'window']);
 });

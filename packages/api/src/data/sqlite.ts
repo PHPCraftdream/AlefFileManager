@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+import { decodeBase64, encodeBase64 } from '../core/base64.ts';
 import { AlefError } from '../core/errors.ts';
 import { openReadable } from '../core/stream.ts';
 import { call } from '../core/transport.ts';
@@ -23,21 +24,6 @@ export interface SqliteOpenOptions extends Cancelable {
   readonly?: boolean;
   /** Make the file when it is not there (the default; not for `readonly`). */
   create?: boolean;
-}
-
-const CHUNK = 0x8000;
-
-function encodeBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (let at = 0; at < bytes.length; at += CHUNK) binary += String.fromCharCode(...bytes.subarray(at, at + CHUNK));
-  return btoa(binary);
-}
-
-function decodeBase64(text: string): Uint8Array {
-  const binary = atob(text);
-  const bytes = new Uint8Array(binary.length);
-  for (let at = 0; at < binary.length; at += 1) bytes[at] = binary.charCodeAt(at);
-  return bytes;
 }
 
 /** A value of a parameter, as the runtime takes it (JSON, and tags for what JSON cannot hold). */

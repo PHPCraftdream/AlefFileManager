@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Scenarios of the data modules (docs/stages/m3-data.md, "Приёмка"): `fs` against the real disk, with
 // the scope allowed and with a stand-in the user chose; `store` across two runs of one application.
-import { createHash, randomBytes } from 'node:crypto';
+import * as nodeCrypto from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, createPrivateKey, createPublicKey, hkdfSync, pbkdf2Sync, randomBytes, scryptSync } from 'node:crypto';
 import { closeSync, createReadStream, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +24,20 @@ const SQLITE_CHECKS = [
   'sqlite-sql-cannot-reach-another-file-or-load-code', 'sqlite-a-database-closes-and-is-found-again-in-its-file',
 ];
 const SQLITE_SUBSTITUTE_CHECKS = ['sqlite-a-stand-in-keeps-the-database-and-the-folder-stays-empty'];
+
+const CRYPTO_CHECKS = [
+  'digests-and-macs-match-the-openssl-of-node', 'a-big-body-is-digested-whole', 'keys-derived-match-the-openssl-of-node',
+  'random-bytes-are-random', 'a-message-sealed-by-node-is-opened-and-the-page-seals-for-node',
+  'ed25519-signs-as-node-does-and-checks-what-node-signed', 'what-is-asked-wrongly-is-told',
+].map(name => `crypto-${name}`);
+
+const WEBCRYPTO_CHECKS = [
+  'state-of-the-engine', 'random-values-and-uuid', 'digest-sha-1', 'digest-sha-256', 'digest-sha-384',
+  'digest-sha-512', 'hmac-sha-256', 'hmac-sha-512', 'pbkdf2-sha-256', 'hkdf-sha-256', 'aes-gcm-256', 'aes-cbc-256',
+  'aes-ctr-256', 'aes-kw-256', 'derive-key-pbkdf2-to-aes-gcm', 'ecdsa-p-256', 'ecdsa-p-384', 'ecdsa-p-521', 'ecdh-p-256',
+  'ecdh-p-384', 'ecdsa-p-256-export-import-jwk-and-spki', 'ed25519', 'x25519', 'rsassa-pkcs1-v1_5-2048', 'rsa-pss-2048',
+  'rsa-oaep-2048',
+].map(name => `webcrypto-${name}`);
 
 const STORE_ID = 'org.alef.e2e.modules.store';
 const STORE_CHECKS = {
@@ -100,6 +115,87 @@ function prepare() {
     secret: join(outside, 'secret.txt'), picked: join(base, 'picked.txt'),
     scope: `${root.replaceAll('\\', '/')}/**`,
   };
+}
+
+const CIPHERS = { 'aes-128-gcm': 16, 'aes-256-gcm': 32, 'chacha20-poly1305': 32 };
+const ED25519_PKCS8 = Buffer.from('302e020100300506032b657004220420', 'hex');
+const ED25519_SPKI = Buffer.from('302a300506032b6570032100', 'hex');
+
+/** What the page of `crypto` is to find, worked out by the OpenSSL of Node, and the check of what the page sealed. */
+function cryptoOracle() {
+  const text = 'héllo — мир 🌍';
+  const plain = Buffer.from(text);
+  const salt = randomBytes(16);
+  const key = randomBytes(32);
+  const info = randomBytes(10);
+  const digest = {};
+  const hmac = {};
+  for (const [name, node] of [['sha-1', 'sha1'], ['sha-256', 'sha256'], ['sha-384', 'sha384'], ['sha-512', 'sha512']]) {
+    digest[name] = createHash(node).update(plain).digest('hex');
+    hmac[name] = createHmac(node, key).update(plain).digest('hex');
+  }
+  const big = Buffer.alloc(8 * 1024 * 1024);
+  for (let index = 0; index < big.length; index += 1) big[index] = (index * 31 + (index >> 8)) & 255;
+  const sealed = {};
+  for (const [cipher, length] of Object.entries(CIPHERS)) {
+    const sealKey = randomBytes(length);
+    const aad = randomBytes(8);
+    const nonce = randomBytes(12);
+    const sealer = createCipheriv(cipher, sealKey, nonce, { authTagLength: 16 });
+    sealer.setAAD(aad, { plaintextLength: plain.length });
+    const body = Buffer.concat([sealer.update(plain), sealer.final()]);
+    sealed[cipher] = {
+      keyHex: sealKey.toString('hex'), aadHex: aad.toString('hex'),
+      messageHex: Buffer.concat([nonce, body, sealer.getAuthTag()]).toString('hex'),
+    };
+  }
+  const seed = randomBytes(32);
+  const privateKey = createPrivateKey({ key: Buffer.concat([ED25519_PKCS8, seed]), format: 'der', type: 'pkcs8' });
+  const publicKey = createPublicKey(privateKey).export({ format: 'der', type: 'spki' }).subarray(-32);
+  const targets = {
+    saltHex: salt.toString('hex'), keyHex: key.toString('hex'), infoHex: info.toString('hex'), digest, hmac,
+    bigDigest: createHash('sha256').update(big).digest('hex'),
+    hkdf: Buffer.from(hkdfSync('sha256', plain, salt, info, 42)).toString('hex'),
+    pbkdf2: pbkdf2Sync(plain, salt, 1000, 48, 'sha256').toString('hex'),
+    scrypt: scryptSync(plain, salt, 40, { N: 1024, r: 8, p: 1 }).toString('hex'),
+    argon2id: typeof nodeCrypto.argon2Sync === 'function'
+      ? nodeCrypto.argon2Sync('argon2id', { message: plain, nonce: salt, parallelism: 2, tagLength: 40, memory: 4096, passes: 3 }).toString('hex')
+      : null,
+    sealed,
+    ed25519: {
+      seedHex: seed.toString('hex'), publicHex: publicKey.toString('hex'),
+      signature: nodeCrypto.sign(null, plain, privateKey).toString('hex'),
+    },
+  };
+  const judge = lines => {
+    const problems = [];
+    for (const cipher of Object.keys(CIPHERS)) {
+      const line = lines.map(item => new RegExp(`ALEF_E2E sealed ${cipher} ([0-9a-f]+)`).exec(item)?.[1]).find(Boolean);
+      if (!line) {
+        problems.push(`the page did not report what it sealed with ${cipher}`);
+        continue;
+      }
+      try {
+        const message = Buffer.from(line, 'hex');
+        const opener = createDecipheriv(cipher, Buffer.from(sealed[cipher].keyHex, 'hex'), message.subarray(0, 12), { authTagLength: 16 });
+        opener.setAAD(Buffer.from(sealed[cipher].aadHex, 'hex'), { plaintextLength: message.length - 28 });
+        opener.setAuthTag(message.subarray(message.length - 16));
+        const opened = Buffer.concat([opener.update(message.subarray(12, message.length - 16)), opener.final()]);
+        if (!opened.equals(plain)) problems.push(`${cipher}: Node opened another text`);
+      } catch (error) {
+        problems.push(`${cipher}: Node could not open what the page sealed: ${error.message}`);
+      }
+    }
+    const signed = lines.map(item => /ALEF_E2E ed25519 ([0-9a-f]{64}) ([0-9a-f]{128})/.exec(item)).find(Boolean);
+    if (!signed) {
+      problems.push('the page did not report its Ed25519 signature');
+    } else {
+      const generated = createPublicKey({ key: Buffer.concat([ED25519_SPKI, Buffer.from(signed[1], 'hex')]), format: 'der', type: 'spki' });
+      if (!nodeCrypto.verify(null, plain, generated, Buffer.from(signed[2], 'hex'))) problems.push('Node does not verify the signature of the page');
+    }
+    return problems;
+  };
+  return { targets, judge };
 }
 
 export function dataScenarios({ drive, exe, verbose }) {
@@ -231,6 +327,20 @@ export function dataScenarios({ drive, exe, verbose }) {
         rmSync(base, { recursive: true, force: true });
       }
     },
+
+    // The module crypto against the OpenSSL of Node, the runner being the oracle and the page the subject.
+    async crypto() {
+      const oracle = cryptoOracle();
+      return drive({
+        name: 'crypto', app: 'modules/data/crypto', targets: oracle.targets, expectedChecks: CRYPTO_CHECKS,
+        judge: lines => oracle.judge(lines),
+      });
+    },
+
+    // The WebCrypto of the engine in the origin of an application: the detail of every check says whether the
+    // algorithm is supported (run with --verbose to read the table); only the context and the algorithms an
+    // application cannot do without fail the run.
+    webcrypto: () => drive({ name: 'webcrypto', app: 'modules/data/webcrypto', expectedChecks: WEBCRYPTO_CHECKS }),
 
     // The store keeps what was written for the next run: the application runs twice, a new process each
     // time, on a data folder that is empty at the start and removed at the end.
