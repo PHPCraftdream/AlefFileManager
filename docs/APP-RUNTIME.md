@@ -107,10 +107,10 @@
 
 | Этап | Что даёт среде |
 |---|---|
-| M2 (идёт) | окна (`window`, `screen` — M2.2 готов), `app`, `path`, `os`; M2.3 `dialog`, `shell`, `clipboard`; M2.4 `notification`, single-instance, restore |
+| M2 (готов) | окна (`window`, `screen`), `app`, `path`, `os`, `dialog`, `shell`, `clipboard`, `notification`, single-instance, restore |
 | **M0.5** | спайк безоконного режима: работает ли скрытый `WebView` без дисплея на трёх ОС; замеры старта, RAM, CPU |
 | **M2b** | подтверждение и подмена прав: исход «подменить», хранилище решений, окно согласия, `alef permissions` |
-| M3 | `fs` с виртуализацией, `store`, `sqlite`, `crypto`/`secrets`; File Manager как обычное Alef-приложение |
+| M3 (готов) | `fs` с виртуализацией, `store`, `sqlite`, `crypto`, `secrets`; File Manager — обычное Alef-приложение |
 | M4 | `http` (клиент и сервер), `socket`, `websocket` (клиент и сервер), `cli` с объявленными командами, режимы консоль и служба |
 | **M4b** | серверы и MCP: `@alef-tron/mcp` |
 | M5 | меню, трей, хоткеи, автозапуск, deep links — через идентичность приложения (`alef run <пакет>`) |

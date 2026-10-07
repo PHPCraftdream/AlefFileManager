@@ -105,8 +105,8 @@ sqlite.open(path, { readonly?, create? }): Promise<Database>    // путь в s
 ## Структура кода
 
 ```
-alef-modules/src/data/   mod.rs, fs/ (mod.rs, ops.rs, handle.rs, watch.rs, scope.rs), store.rs, sqlite/ (mod.rs, worker.rs, values.rs), crypto.rs, secrets.rs
-packages/api/src/data/   fs.ts, store.ts, sqlite.ts, crypto.ts, secrets.ts (или secrets внутри crypto.ts — по правилу 7 элементов)
+alef-modules/src/data/   mod.rs, crypto.rs, secrets.rs, store.rs, fs/ (mod.rs, ops.rs, handle.rs, watch.rs, space.rs, dto.rs, fault.rs), sqlite/ (mod.rs, worker.rs, values.rs)
+packages/api/src/data/   fs.ts, store.ts, sqlite.ts, crypto.ts, secrets.ts
 ```
 
 ## Приёмка
@@ -121,6 +121,41 @@ packages/api/src/data/   fs.ts, store.ts, sqlite.ts, crypto.ts, secrets.ts (ил
 | `sqlite`: схема, транзакция с откатом, prepared, iterate 100k строк без роста памяти | e2e |
 | WebCrypto: таблица поддерживаемых алгоритмов задокументирована; argon2/secrets работают | e2e |
 | File Manager на `fs`/`store` работает как раньше; `backend/src` удалён | ручная + e2e смоук |
+
+## Итоги (M3.7)
+
+**Что готово.** Модули `fs` (файлы, дескрипторы, потоки, `watch`, подмена), `store`, `sqlite`, `crypto`, `secrets`; File Manager идет на встроенном API, `backend/src` удален. CI на четырех раннерах (windows-x64, macos-x64, macos-arm64, linux-x64) зеленый на каждом шаге этапа; настоящее хранилище ключей проверено на всех трех ОС (Credential Manager, Keychain, Secret Service под `gnome-keyring`).
+
+| Строка приёмки | Итог |
+|---|---|
+| Чтение/запись, дескриптор с потоками, копирование большого файла потоками | e2e `fs`: файл 96 MiB + 4321 байт копируется потоками и приходит целым, каталог в 2500 файлов идет пачками. **Отклонение:** 96 MiB, не 1 GiB (отладочная сборка), память процесса **не измерялась** — ограничивает ее окно кредита в полёте на поток (проверено в M1: пик ≤ 1 MiB) |
+| Выход за scope (`..`, symlink наружу) → `PERMISSION_DENIED` | Rust-тесты и e2e `fs` |
+| Грант из `dialog.open` — чтение выбранного файла вне scope только в этой сессии | Rust-тесты `dialog` (грант, конец сессии) и e2e `fs` («выбранный файл не требует scope»); сам диалог — вручную не проверялся |
+| `watch` — create/modify/remove | e2e `fs` |
+| `store` переживает перезапуск | e2e `store` (два процесса подряд) |
+| `sqlite`: схема, транзакция с откатом, prepared, `iterate` на 100k строк | e2e `sqlite`, `sqlite-substitute`; рост памяти **не измерялся** (то же окно кредита) |
+| WebCrypto: таблица задокументирована; argon2/secrets работают | e2e `webcrypto` (таблица под `--verbose`: ничего не поддержано, см. ниже), `crypto` (OpenSSL из Node как оракул), `secrets`, `secrets-substitute`, `secrets-denied`; настоящее хранилище — `cargo test ... -- --ignored` на раннерах CI |
+| File Manager на `fs`/`store`; `backend/src` удален | `frontend/test`, `tests/e2e/boot-file-manager.mjs` (смоук: `app.info`, `store.get`, события, окно) |
+
+**Мутации** (гейт этапа: каждая правка кода должна ронять тест; эквивалентные — оставлены в списке и объяснены):
+
+| Часть | Rust | JS API |
+|---|---|---|
+| `fs` (дескрипторы, потоки, `watch`) | 37 из 43; шесть оставшихся эквивалентны (ту же границу держит сама ОС) | — |
+| `store` | 18 из 18 | 10 из 10 |
+| `sqlite` | 43 из 43, плюс одна, что могла повесить прогон, отдельно | 18 из 18 |
+| `crypto` | 69 из 71 (две эквивалентны: нижние границы Argon2id, ноль проходов и хеш в 3 байта, отклоняет сама библиотека); еще четыре убраны: две вместе с мертвой проверкой HKDF, две про границу стоимости scrypt (ее держит проверка памяти) | 32 из 32 |
+| `secrets` | 28 из 28 (кроме `SystemSecrets`: он проверяется только настоящим хранилищем на CI) | 14 из 14 |
+| страница File Manager (`api.ts`) | — | 21 из 21 |
+
+**Что нашли проверки** (все исправлено в этапе):
+- `sqlite`: закрытие базы зависало, пока поток строк ждал кредит, которого страница не дает (поток соединения не завершался, `close` и конец документа ждали вечно); прежний тест проходил в 24 запусках из 25, потому что `close` успевал раньше, чем строки заполняли окно. Теперь тест ждет заполнения окна и падает без исправления всегда.
+- `crypto.scrypt`: ключ в 1–9 и 65–1024 байт (разрешены и описаны) отклонялся, потому что `scrypt::Params` принимает для длины только 10–64 (она нужна для PHC-строки, а длина вывода своя).
+- `crypto.hkdf`: проверка предела «255 блоков» не могла сработать (ключ до 1024 байт, блок от 20) — удалена.
+- Тесты хешей паролей считали гигабайты в отладочной сборке (80 с на тест): пределы вынесены в функции с модульными тестами на каждую границу.
+- Страницы приложений не имеют WebCrypto вовсе (`isSecureContext` ложь, `crypto` не определен: feature `webcrypto` Servo выключена, origin — `native://app`); поэтому модуль `crypto` дает все, что нужно, из Rust. Включение — отдельная задача (https-origin приложения).
+
+**Решения по открытым вопросам.** Хранилище Linux для `secrets` — Secret Service (`zbus`, без libdbus); без сеанса со службой — `NOT_AVAILABLE`, подставка в памяти. Миграция данных Fjall прежнего File Manager не делается (одна настройка языка, другой путь данных).
 
 ## Риски
 
