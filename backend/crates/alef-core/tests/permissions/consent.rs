@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The decisions of the user: the manifest says what may be asked, the decision what is given.
-use std::{fs, path::Path, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use alef_core::{
     protocol::Limits,
@@ -460,6 +464,114 @@ fn the_user_can_take_a_right_back_while_the_application_runs_but_not_give_one_mo
     assert!(
         !permissions.narrow(&silent),
         "a right the store says nothing about is left as it is"
+    );
+}
+
+#[test]
+fn a_substituted_path_knows_where_its_stand_in_keeps_it() {
+    let root = tempfile::tempdir().unwrap();
+    let documents = root.path().join("documents");
+    fs::create_dir_all(documents.join("a")).unwrap();
+    let json = json!({"fs": {"read": ["$DOCUMENTS/**"], "write": []}});
+    let substituted = set(root.path(), json.clone()).with_consent(consent(&[(
+        Right::scoped("fs.read", "$DOCUMENTS/**"),
+        Decision::Substitute,
+    )]));
+    let grants = Grants::new();
+    let at = |permissions: &PermissionSet, path: &Path| {
+        permissions.authorize_at(
+            Permission::FsRead,
+            path.to_str(),
+            &grants,
+            alef_core::security::permissions::Reach::Through,
+        )
+    };
+    let inner = at(&substituted, &documents.join("a").join("b.txt")).unwrap();
+    assert_eq!(inner.decision, Decision::Substitute);
+    let shadow = inner.shadow.expect("a stand-in has a place");
+    assert_eq!(shadow.scope, "$DOCUMENTS/**");
+    assert_eq!(shadow.inside, Path::new("a").join("b.txt"));
+    let top = at(&substituted, &documents).unwrap();
+    assert_eq!(
+        top.shadow.map(|shadow| shadow.inside),
+        Some(PathBuf::new()),
+        "the scope itself is the root of its stand-in"
+    );
+    let allowed = set(root.path(), json).with_consent(consent(&[(
+        Right::scoped("fs.read", "$DOCUMENTS/**"),
+        Decision::Allow,
+    )]));
+    assert_eq!(at(&allowed, &documents.join("a")).unwrap().shadow, None);
+    let picked = root.path().join("elsewhere.txt");
+    fs::write(&picked, "x").unwrap();
+    let granted = Grants::new();
+    granted.grant_read(&picked).unwrap();
+    let real = substituted
+        .authorize_at(
+            Permission::FsRead,
+            picked.to_str(),
+            &granted,
+            alef_core::security::permissions::Reach::Through,
+        )
+        .unwrap();
+    assert_eq!(
+        (real.decision, real.shadow),
+        (Decision::Allow, None),
+        "what the user picked is real"
+    );
+}
+
+#[cfg(any(unix, windows))]
+fn link(target: &Path, at: &Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, at);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, at);
+    made.is_ok()
+}
+
+#[test]
+fn an_entry_is_not_followed_but_what_a_path_leads_to_is() {
+    use alef_core::security::permissions::Reach;
+    let root = tempfile::tempdir().unwrap();
+    let documents = root.path().join("documents");
+    let outside = root.path().join("outside");
+    fs::create_dir_all(&documents).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("target.txt"), "x").unwrap();
+    let escaping = documents.join("escaping");
+    let dangling = documents.join("dangling");
+    if !link(&outside.join("target.txt"), &escaping)
+        || !link(&outside.join("never-was.txt"), &dangling)
+    {
+        eprintln!("skipped: this account cannot create symbolic links");
+        return;
+    }
+    let permissions = set(
+        root.path(),
+        json!({"fs": {"read": ["$DOCUMENTS/**"], "write": []}}),
+    );
+    let reach = |path: &Path, reach| {
+        permissions.authorize_at(Permission::FsRead, path.to_str(), &Grants::new(), reach)
+    };
+    for link in [&escaping, &dangling] {
+        assert!(
+            reach(link, Reach::Through).is_err(),
+            "a link that leads out of the scope gives nothing through it: {link:?}"
+        );
+        let entry = reach(link, Reach::Entry).unwrap();
+        assert_eq!(
+            entry.path.file_name(),
+            link.file_name(),
+            "the link itself lies in the scope"
+        );
+    }
+    let hostile = documents.join("..").join("outside").join("target.txt");
+    assert!(reach(&hostile, Reach::Entry).is_err());
+    assert!(reach(&documents, Reach::Entry).is_ok());
+    assert!(
+        reach(Path::new("/"), Reach::Entry).is_err(),
+        "a root names no entry"
     );
 }
 

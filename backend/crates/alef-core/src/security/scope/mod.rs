@@ -6,7 +6,7 @@ pub(crate) mod path;
 
 use crate::{AlefError, ErrorCode};
 
-pub(crate) use path::canonical;
+pub(crate) use path::{canonical, canonical_entry};
 
 /// Manifest error for an unusable scope pattern.
 pub(crate) fn invalid(message: impl Into<String>) -> AlefError {

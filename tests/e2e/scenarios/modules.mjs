@@ -120,7 +120,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
     // The first instance restarts the program; the second one shares the log pipe and reports.
     async relaunch() {
       const directory = mkdtempSync(join(scratch, 'marker-'));
-      const site = prepareSite('relaunch', 'modules/relaunch');
+      const site = prepareSite('relaunch', 'modules/lifecycle/relaunch');
       const running = startApp({
         exe, args: ['--app', site, '--', '--label=relaunch'], env: { ALEF_E2E_MARKER: join(directory, 'once') }, verbose,
       });
@@ -148,7 +148,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
     // Two processes of one application: the first holds the endpoint and hears of the second, which learns
     // that it is not the first and quits; the first vetoes a quit, then allows one and exits with code 9.
     async instance() {
-      const site = prepareSite('instance', 'modules/instance', { targets: { cwd: process.cwd() } });
+      const site = prepareSite('instance', 'modules/lifecycle/instance', { targets: { cwd: process.cwd() } });
       const first = startApp({ exe, args: ['--app', site, '--', '--role=first'], verbose });
       let second;
       const problems = [];
@@ -185,7 +185,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
     // the runner reads the file the runtime wrote and rewrites it (a place on no display, a damaged file).
     async restore() {
       const tolerance = process.platform === 'linux' ? 80 : 3;
-      const site = prepareSite('restore', 'modules/restore', { targets: { tolerance } });
+      const site = prepareSite('restore', 'modules/lifecycle/restore', { targets: { tolerance } });
       const problems = [];
       let appData;
       const run = async step => {

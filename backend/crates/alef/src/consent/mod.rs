@@ -47,6 +47,12 @@ pub fn runtime_home() -> PathBuf {
         .join("alef")
 }
 
+/// Where the stand-ins of the application keep their content: a folder of the runtime under the
+/// key of the identity, so that another folder or another key does not find it.
+pub fn shadow_folder(identity: &Identity) -> PathBuf {
+    runtime_home().join("shadow").join(identity.key())
+}
+
 /// The decisions of the users, one file per application.
 pub fn store() -> FileConsentStore {
     FileConsentStore::new(runtime_home().join("consent"))

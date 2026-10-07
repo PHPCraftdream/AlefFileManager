@@ -18,6 +18,7 @@ export {
   type WindowState,
 } from './desktop/window.ts';
 export { app, type AppEvents, type Cancelable, type QuitRequest, type SecondInstance } from './desktop/app.ts';
+export { fs, type ReadTextOptions, type TreeOptions, type WriteOptions } from './data/fs.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shell } from './desktop/shell.ts';
 export { clipboard } from './system/clipboard.ts';
@@ -29,6 +30,9 @@ export type {
   AppInfo,
   ArgValue,
   ConfirmOptions,
+  DirEntry,
+  FileKind,
+  FileStat,
   ErrorCode,
   FileFilter,
   Length,

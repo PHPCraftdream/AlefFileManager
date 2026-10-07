@@ -12,6 +12,9 @@ use serde_json::Value;
 pub enum ErrorCode {
     NotFound,
     AlreadyExists,
+    NotADirectory,
+    IsADirectory,
+    DirectoryNotEmpty,
     PermissionDenied,
     InvalidArgument,
     Timeout,
@@ -27,7 +30,10 @@ impl ErrorCode {
     pub fn http_status(self) -> u16 {
         match self {
             Self::NotFound => 404,
-            Self::AlreadyExists => 409,
+            Self::AlreadyExists
+            | Self::NotADirectory
+            | Self::IsADirectory
+            | Self::DirectoryNotEmpty => 409,
             Self::PermissionDenied => 403,
             Self::InvalidArgument | Self::ManifestInvalid => 400,
             Self::Timeout => 408,
@@ -42,6 +48,9 @@ impl ErrorCode {
         match self {
             Self::NotFound => "NOT_FOUND",
             Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::NotADirectory => "NOT_A_DIRECTORY",
+            Self::IsADirectory => "IS_A_DIRECTORY",
+            Self::DirectoryNotEmpty => "DIRECTORY_NOT_EMPTY",
             Self::PermissionDenied => "PERMISSION_DENIED",
             Self::InvalidArgument => "INVALID_ARGUMENT",
             Self::Timeout => "TIMEOUT",
@@ -92,6 +101,10 @@ impl From<io::Error> for AlefError {
         let code = match error.kind() {
             io::ErrorKind::NotFound => ErrorCode::NotFound,
             io::ErrorKind::AlreadyExists => ErrorCode::AlreadyExists,
+            io::ErrorKind::NotADirectory => ErrorCode::NotADirectory,
+            io::ErrorKind::IsADirectory => ErrorCode::IsADirectory,
+            io::ErrorKind::DirectoryNotEmpty => ErrorCode::DirectoryNotEmpty,
+            io::ErrorKind::ResourceBusy => ErrorCode::Busy,
             io::ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
             io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => ErrorCode::InvalidArgument,
             io::ErrorKind::TimedOut => ErrorCode::Timeout,
@@ -116,6 +129,13 @@ mod tests {
     fn io_kinds_map_to_codes() {
         let cases = [
             (io::ErrorKind::NotFound, ErrorCode::NotFound),
+            (io::ErrorKind::NotADirectory, ErrorCode::NotADirectory),
+            (io::ErrorKind::IsADirectory, ErrorCode::IsADirectory),
+            (
+                io::ErrorKind::DirectoryNotEmpty,
+                ErrorCode::DirectoryNotEmpty,
+            ),
+            (io::ErrorKind::ResourceBusy, ErrorCode::Busy),
             (io::ErrorKind::PermissionDenied, ErrorCode::PermissionDenied),
             (io::ErrorKind::InvalidInput, ErrorCode::InvalidArgument),
             (io::ErrorKind::TimedOut, ErrorCode::Timeout),
@@ -138,6 +158,9 @@ mod tests {
         for code in [
             ErrorCode::NotFound,
             ErrorCode::AlreadyExists,
+            ErrorCode::NotADirectory,
+            ErrorCode::IsADirectory,
+            ErrorCode::DirectoryNotEmpty,
             ErrorCode::PermissionDenied,
             ErrorCode::InvalidArgument,
             ErrorCode::Timeout,
@@ -190,6 +213,9 @@ mod tests {
         let mut wire: Vec<&str> = [
             ErrorCode::NotFound,
             ErrorCode::AlreadyExists,
+            ErrorCode::NotADirectory,
+            ErrorCode::IsADirectory,
+            ErrorCode::DirectoryNotEmpty,
             ErrorCode::PermissionDenied,
             ErrorCode::InvalidArgument,
             ErrorCode::Timeout,

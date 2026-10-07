@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Framework modules: desktop (`app`, `window`, `dialog`, `shell`), system (`path`, `os`, `screen`,
-//! `clipboard`); more arrive with M2 and later.
+//! `clipboard`), data (`fs`); more arrive with M3 and later.
 //!
 //! A module registers its commands in the registry (`<module>.<command>`) with the permission and
 //! scope each one needs; the registry checks them before the handler runs. Everything the modules
@@ -14,6 +14,7 @@ use alef_core::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod data;
 pub mod desktop;
 pub mod system;
 
@@ -101,6 +102,9 @@ pub struct ModuleContext {
     pub process_args: Vec<OsString>,
     /// The clipboard and the shell the modules act through.
     pub backends: Backends,
+    /// Where the stand-ins of this application keep their content: a folder of the runtime, outside
+    /// every scope of every application.
+    pub shadow: PathBuf,
 }
 
 /// Registers every module of this crate.
@@ -110,6 +114,7 @@ pub fn register_all(
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
     desktop::register(registry, host.clone(), context)?;
+    data::register(registry, context)?;
     system::register(registry, host, context)
 }
 

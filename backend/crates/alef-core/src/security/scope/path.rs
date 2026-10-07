@@ -87,6 +87,17 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
     path
 }
 
+/// Resolves the entry a path names without following it when it is a link: the directory it lies
+/// in is resolved like [`canonical`] does, the name is kept. For what acts on a link itself (remove,
+/// rename, `lstat`). A path that ends in `..` or has no parent names no entry.
+pub(crate) fn canonical_entry(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?;
+    if windows_unsafe(&name.to_string_lossy()) {
+        return None;
+    }
+    Some(canonical(path.parent()?)?.join(name))
+}
+
 /// Path split into comparable string components (prefix and root included).
 pub(crate) fn parts(path: &Path) -> Vec<String> {
     path.components()
@@ -145,6 +156,14 @@ impl PathPattern {
             base: parts(&canonical),
             rest,
         })
+    }
+
+    /// The components of a path this scope matches that come after its literal base: where the
+    /// path lies inside the scope.
+    pub(crate) fn inside(&self, candidate: &[String]) -> std::path::PathBuf {
+        candidate[self.base.len().min(candidate.len())..]
+            .iter()
+            .collect()
     }
 
     /// Tests already canonical components.

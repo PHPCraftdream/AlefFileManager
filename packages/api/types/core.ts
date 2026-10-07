@@ -28,7 +28,7 @@ export type ConfirmOptions = {
  */
 export type Decision = "allow" | "substitute" | "deny";
 
-export type ErrorCode = "NOT_FOUND" | "ALREADY_EXISTS" | "PERMISSION_DENIED" | "INVALID_ARGUMENT" | "TIMEOUT" | "CLOSED" | "BUSY" | "NOT_AVAILABLE" | "MANIFEST_INVALID" | "INTERNAL";
+export type ErrorCode = "NOT_FOUND" | "ALREADY_EXISTS" | "NOT_A_DIRECTORY" | "IS_A_DIRECTORY" | "DIRECTORY_NOT_EMPTY" | "PERMISSION_DENIED" | "INVALID_ARGUMENT" | "TIMEOUT" | "CLOSED" | "BUSY" | "NOT_AVAILABLE" | "MANIFEST_INVALID" | "INTERNAL";
 
 /**
  * A named group of file extensions of a file dialog.

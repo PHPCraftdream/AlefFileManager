@@ -6,8 +6,8 @@ use alef_core::{error::AlefError, security::consent::ConsentStore};
 use alef_launch::{
     args::{parse_args, Command, Launch, USAGE},
     consent::{
-        ask::AppSummary, enforce, identity_of, runtime_home, settle, store, watch, Asker,
-        WATCH_EVERY,
+        ask::AppSummary, enforce, identity_of, runtime_home, settle, shadow_folder, store, watch,
+        Asker, WATCH_EVERY,
     },
     permissions,
     plan::{load_manifest, make_plan, path_vars},
@@ -144,6 +144,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             .with_protected(&runtime_home()),
     );
     enforce(&granted, &settled_consent).map_err(Failure::Runtime)?;
+    let shadow = shadow_folder(&identity);
     // The user may take a right back while the application runs.
     let _following = watch(granted.clone(), store(), identity, WATCH_EVERY);
     // Where the windows that ask for it (`restore: true`) are written down between runs.
@@ -159,6 +160,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         args,
         process_args,
         backends: Backends::from_environment(&plan.manifest.name),
+        shadow,
     };
 
     install_tls()?;

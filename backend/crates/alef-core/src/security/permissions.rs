@@ -5,7 +5,7 @@ use super::{
     consent::{Consent, Decision, Right},
     manifest::Permissions,
     scope::{
-        canonical,
+        canonical, canonical_entry,
         exec::ExecScope,
         invalid,
         net::{SocketScope, UrlScope},
@@ -69,6 +69,33 @@ impl Permission {
             Self::WindowCreate => "window.create",
         }
     }
+}
+
+/// Whether the last component of a path is followed when it is a link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// The path means what it leads to (reading a file, listing a folder).
+    Through,
+    /// The path means the entry itself (removing or renaming a link, `lstat`).
+    Entry,
+}
+
+/// Where a stand-in keeps what the application believes to be at a path: the scope the path lies in
+/// (as the manifest wrote it) and the place inside that scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shadow {
+    pub scope: String,
+    pub inside: PathBuf,
+}
+
+/// A filesystem path the user's decisions let the application use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Authorized {
+    /// The canonical path as the application knows it.
+    pub path: PathBuf,
+    pub decision: Decision,
+    /// Set when the decision is `Substitute`: where the stand-in keeps the path.
+    pub shadow: Option<Shadow>,
 }
 
 /// Runtime path variables available to manifest scope patterns.
@@ -185,18 +212,40 @@ fn rights_of<'a, T>(
         .map(move |entry| Right::scoped(permission, &entry.raw))
 }
 
-/// The most restrictive decision among the entries of a scope list that match, or `None` when no
-/// entry matches (the manifest does not allow it).
+/// The entry of a scope list that decides: the most restrictive decision among the entries that
+/// match (the first of equally strict ones), or `None` when no entry matches (the manifest does
+/// not allow it).
+fn deciding<'a, T>(
+    list: &'a [Scoped<T>],
+    permission: &str,
+    consent: &Consent,
+    matches: impl Fn(&T) -> bool,
+) -> Option<(Decision, &'a Scoped<T>)> {
+    list.iter()
+        .filter(|entry| matches(&entry.scope))
+        .map(|entry| {
+            (
+                consent.decision(&Right::scoped(permission, &entry.raw)),
+                entry,
+            )
+        })
+        .reduce(|best, next| {
+            if best.0.stricter(next.0) == best.0 {
+                best
+            } else {
+                next
+            }
+        })
+}
+
+/// [`deciding`] without the entry.
 fn decided<T>(
     list: &[Scoped<T>],
     permission: &str,
     consent: &Consent,
     matches: impl Fn(&T) -> bool,
 ) -> Option<Decision> {
-    list.iter()
-        .filter(|entry| matches(&entry.scope))
-        .map(|entry| consent.decision(&Right::scoped(permission, &entry.raw)))
-        .reduce(Decision::stricter)
+    deciding(list, permission, consent, matches).map(|(decision, _)| decision)
 }
 
 impl PermissionSet {
@@ -404,6 +453,19 @@ impl PermissionSet {
         target: Option<&str>,
         grants: &Grants,
     ) -> Result<(PathBuf, Decision), AlefError> {
+        self.authorize_at(permission, target, grants, Reach::Through)
+            .map(|authorized| (authorized.path, authorized.decision))
+    }
+
+    /// [`Self::authorize`] with the reach of the last component, and with the place of the stand-in
+    /// when the user chose one.
+    pub fn authorize_at(
+        &self,
+        permission: Permission,
+        target: Option<&str>,
+        grants: &Grants,
+        reach: Reach,
+    ) -> Result<Authorized, AlefError> {
         let (write, name, scopes) = match permission {
             Permission::FsRead => (false, "fs.read", &self.read),
             Permission::FsWrite => (true, "fs.write", &self.write),
@@ -415,20 +477,34 @@ impl PermissionSet {
             }
         };
         let resolved = target
-            .and_then(|t| canonical(Path::new(t)))
+            .and_then(|t| match reach {
+                Reach::Through => canonical(Path::new(t)),
+                Reach::Entry => canonical_entry(Path::new(t)),
+            })
             .ok_or_else(|| refusal(permission))?;
         let components = parts(&resolved);
         if self.is_protected(&components) {
             return Err(refusal(permission));
         }
         if grants.allows(write, &components) {
-            return Ok((resolved, Decision::Allow));
+            return Ok(Authorized {
+                path: resolved,
+                decision: Decision::Allow,
+                shadow: None,
+            });
         }
-        match decided(scopes, name, &self.decided_by_user(), |scope| {
+        match deciding(scopes, name, &self.decided_by_user(), |scope| {
             scope.matches_canonical(&components)
         }) {
-            Some(Decision::Deny) | None => Err(refusal(permission)),
-            Some(decision) => Ok((resolved, decision)),
+            Some((Decision::Deny, _)) | None => Err(refusal(permission)),
+            Some((decision, entry)) => Ok(Authorized {
+                shadow: (decision == Decision::Substitute).then(|| Shadow {
+                    scope: entry.raw.clone(),
+                    inside: entry.scope.inside(&components),
+                }),
+                path: resolved,
+                decision,
+            }),
         }
     }
 }

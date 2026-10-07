@@ -31,6 +31,7 @@ use bytes::Bytes;
 use serde_json::Value;
 
 const MANIFEST: &str = include_str!("../fixtures/app.ktav");
+static SHADOWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// The tests that change the desktop of the user (clipboard, trash) run only when asked.
 pub fn desktop_asked() -> bool {
@@ -146,6 +147,11 @@ impl Fixture {
                 shell: shell.clone(),
                 notification: notifications.clone(),
             },
+            // Its own for every fixture: tests run side by side.
+            shadow: root.join(format!(
+                "shadow-{}",
+                SHADOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            )),
         };
         let host = Arc::new(FakeHost {
             quits: Mutex::new(Vec::new()),

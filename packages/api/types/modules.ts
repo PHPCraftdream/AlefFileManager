@@ -14,6 +14,30 @@ export type AppInfo = { id: string, name: string, version: string,
 export type ArgValue = boolean | number | string;
 
 /**
+ * One entry of `fs.readDir`: the entry itself, a link is not followed.
+ */
+export type DirEntry = { name: string,
+  /**
+   * The path of the entry as the application names it.
+   */
+  path: string, kind: FileKind, size: number, };
+
+export type FileKind = "file" | "dir" | "symlink" | "other";
+
+/**
+ * `fs.stat` and `fs.lstat`.
+ */
+export type FileStat = { kind: FileKind,
+  /**
+   * Bytes; 0 for a folder.
+   */
+  size: number,
+  /**
+   * Milliseconds since the Unix epoch; absent where the file system keeps no such time.
+   */
+  modified?: number, accessed?: number, created?: number, readonly: boolean, };
+
+/**
  * Facts about the machine (`os.info`).
  */
 export type OsInfo = {

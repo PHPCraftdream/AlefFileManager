@@ -88,6 +88,20 @@ const ARGS = {
   'clipboard.writeHtml': ['probe'],
   'clipboard.readImage': [],
   'clipboard.writeImage': [new Uint8Array(1)],
+  'fs.readBytes': ['/probe'],
+  'fs.readText': ['/probe'],
+  'fs.writeBytes': ['/probe', new Uint8Array(1)],
+  'fs.writeText': ['/probe', 'probe'],
+  'fs.stat': ['/probe'],
+  'fs.lstat': ['/probe'],
+  'fs.readDir': ['/probe'],
+  'fs.exists': ['/probe'],
+  'fs.mkdir': ['/probe'],
+  'fs.remove': ['/probe'],
+  'fs.rename': ['/probe', '/probe2'],
+  'fs.copy': ['/probe', '/probe2'],
+  'fs.tempFile': [],
+  'fs.tempDir': [],
 };
 
 installRuntime({
@@ -95,7 +109,7 @@ installRuntime({
     if (request.url === 'native://call/runtime.events.subscribe') return { json: { stream: 5 } };
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/window.all') return { json: [] };
-    if (/^native:\/\/call\/clipboard\.read(Text|Html)$/.test(request.url)) return { bytes: new Uint8Array(0) };
+    if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
     return { json: { revision: 1 } };
   },
 });
@@ -127,5 +141,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'app', 'call', 'clipboard', 'connect', 'dialog', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'app', 'call', 'clipboard', 'connect', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'window']);
 });

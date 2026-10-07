@@ -217,6 +217,19 @@ pub struct Identity {
     pub signer: Option<String>,
 }
 
+impl Identity {
+    /// A name for the identity that is fit for a file or a folder: the same for the same identity,
+    /// short, and never a path of its own. Whatever is kept for the application on the disk of the
+    /// runtime (decisions, the content of stand-ins) lies under it.
+    pub fn key(&self) -> String {
+        let signer = self
+            .signer
+            .as_deref()
+            .map_or_else(|| "folder".to_owned(), file_part);
+        format!("{}@{signer}", file_part(&self.app_id))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Entry {
     permission: String,
@@ -290,12 +303,7 @@ impl FileConsentStore {
     }
 
     fn path(&self, identity: &Identity) -> PathBuf {
-        let signer = identity
-            .signer
-            .as_deref()
-            .map_or_else(|| "folder".to_owned(), file_part);
-        self.folder
-            .join(format!("{}@{signer}.json", file_part(&identity.app_id)))
+        self.folder.join(format!("{}.json", identity.key()))
     }
 
     fn read(path: &Path) -> io::Result<Option<(Identity, Consent)>> {
