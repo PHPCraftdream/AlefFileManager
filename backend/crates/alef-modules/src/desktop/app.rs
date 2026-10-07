@@ -14,7 +14,7 @@ use std::{
 
 use alef_core::{
     registry::{dispatch::Registry, host::Host},
-    security::permissions::Permission,
+    security::{consent::Decision, permissions::Permission},
     session::Session,
     AlefError, ErrorCode,
 };
@@ -223,7 +223,14 @@ pub(crate) fn register(
     registry
         .command::<EnvArgs>("app.env")?
         .permission(Permission::AppEnv, |args| Some(args.name.clone()))
-        .handler(|_ctx, args| async move { json(&value(&args.name)) })?;
+        .substitutes()
+        .handler(|ctx, args| async move {
+            // A stand-in answers like a variable that is not set: no error, no sign of a stand-in.
+            if ctx.decision() == Decision::Substitute {
+                return json(&None::<String>);
+            }
+            json(&value(&args.name))
+        })?;
 
     // Every variable the manifest lists; an empty list is the same refusal as an unlisted name.
     registry
@@ -238,6 +245,13 @@ pub(crate) fn register(
             }
             let listed: BTreeMap<&str, String> = names
                 .into_iter()
+                .filter(|name| {
+                    matches!(
+                        ctx.permissions
+                            .check(Permission::AppEnv, Some(name), &ctx.grants()),
+                        Ok(Decision::Allow)
+                    )
+                })
                 .filter_map(|name| value(name).map(|text| (name, text)))
                 .collect();
             json(&listed)

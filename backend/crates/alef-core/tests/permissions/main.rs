@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Permission gating: closed-by-default booleans, environment names, window creation and error hygiene.
+mod consent;
+
 use alef_core::{
     security::{
         grants::Grants,
@@ -26,7 +28,7 @@ const ALL: [Permission; 12] = [
 ];
 
 fn closed() -> Permissions {
-    Manifest::from_ktav_str(include_str!("fixtures/minimal.ktav"))
+    Manifest::from_ktav_str(include_str!("../fixtures/minimal.ktav"))
         .expect("fixture")
         .permissions
 }

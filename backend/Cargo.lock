@@ -75,6 +75,8 @@ dependencies = [
  "alef-runtime",
  "dirs",
  "rustls",
+ "serde",
+ "serde_json",
  "surfman",
  "tempfile",
  "tokio",

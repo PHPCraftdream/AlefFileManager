@@ -71,11 +71,17 @@ export function assertQuiet(exe) {
   }
 }
 
+/**
+ * The user of an end-to-end run has decided before the start: every right is given (a scenario of
+ * consent says otherwise), and the decisions are kept in a folder of the run, not in the data of the user.
+ */
+const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '*=allow' };
+
 /** Starts the runtime; its stderr and stdout are kept line by line and can be awaited. */
 export function startApp({ exe, args, env = {}, verbose = false }) {
   assertQuiet(exe);
   const child = spawn(exe, args, {
-    env: { ...process.env, ALEF_E2E: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...env },
+    env: { ...process.env, ALEF_E2E: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const lines = [];

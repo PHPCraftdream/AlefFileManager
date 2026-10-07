@@ -3,6 +3,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod consent;
 mod dialog;
 mod lifecycle;
 mod shell;

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,quit,relaunch,instance,restore,system,window,desktop,arguments,startup]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,quit,relaunch,instance,restore,system,window,desktop,consent,narrowing,ask,cancel,decisions,arguments,startup]
 //                          [--timeout-s 150] [--verbose]
 // Exit code 0 = every selected scenario passed.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { countingServer, exeName, field, interesting, makeDriver, root, scratch, staticServer, startApp } from './lib.mjs';
+import { consentScenarios } from './scenarios/consent.mjs';
 import { manifestCases } from './scenarios/manifests.mjs';
 import { moduleScenarios } from './scenarios/modules.mjs';
 import { startupScenarios } from './scenarios/startup.mjs';
@@ -65,6 +66,7 @@ const INDUCED = ['binary-echo-16MiB', 'lib-binary-roundtrip-4MiB'];
 
 const scenarios = {
   ...moduleScenarios({ drive, exe, verbose }),
+  ...consentScenarios({ drive, exe, verbose }),
   ...startupScenarios({ exe }),
   core: () => drive({ name: 'core', app: 'core', expectedChecks: CORE_CHECKS, judge: judgeCore }),
 

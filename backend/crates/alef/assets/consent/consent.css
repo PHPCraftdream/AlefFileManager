@@ -1,0 +1,67 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f7;
+  --card: #ffffff;
+  --text: #1b1b1f;
+  --muted: #5d5d66;
+  --line: #d8d8de;
+  --accent: #2257d6;
+  --warn: #b25a00;
+  --warn-bg: #fff3e0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a;
+    --card: #222226;
+    --text: #ececf0;
+    --muted: #a0a0aa;
+    --line: #38383f;
+    --accent: #7aa2ff;
+    --warn: #ffb259;
+    --warn-bg: #3a2a14;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+main { max-width: 720px; margin: 0 auto; padding: 20px 20px 96px; }
+
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 16px; }
+.note { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 16px; color: var(--muted); }
+
+.bulk { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
+button {
+  font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 12px; cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; overflow: hidden; }
+section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+
+.right { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); align-items: center; }
+.right:last-child { border-bottom: 0; }
+.what { word-break: break-all; font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 13px; }
+.what small { display: block; font-family: system-ui, sans-serif; color: var(--muted); font-size: 12px; }
+
+fieldset { border: 0; margin: 0; padding: 0; display: flex; gap: 12px; }
+fieldset label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+
+.risk { grid-column: 1 / -1; background: var(--warn-bg); color: var(--warn); border-radius: 6px; padding: 6px 10px; display: flex; gap: 8px; align-items: center; }
+
+footer {
+  position: fixed; inset: auto 0 0 0; background: var(--card); border-top: 1px solid var(--line);
+  padding: 12px 20px; display: flex; gap: 8px; justify-content: flex-end; align-items: center;
+}
+footer .hint { margin-right: auto; color: var(--muted); }

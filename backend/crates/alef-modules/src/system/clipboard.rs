@@ -10,8 +10,8 @@ use std::{
 };
 
 use alef_core::{
-    registry::{command::Reply, dispatch::Registry},
-    security::permissions::Permission,
+    registry::{command::Reply, context::CallContext, dispatch::Registry},
+    security::{consent::Decision, permissions::Permission},
     AlefError, ErrorCode,
 };
 use bytes::Bytes;
@@ -253,60 +253,91 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| AlefError::new(ErrorCode::Internal, format!("clipboard: {error}")))?
 }
 
+/// The clipboard of the user and the stand-in for a document that was given one.
+struct Pair {
+    real: Arc<dyn ClipboardBackend>,
+    stand_in: Arc<dyn ClipboardBackend>,
+}
+
+impl Pair {
+    /// The decision on reading decides for the whole clipboard: a document that was given a
+    /// stand-in finds its own writes there and writes nothing to the clipboard of the user. A
+    /// document whose manifest does not ask to read, or whose reading was denied, still writes.
+    fn pick(&self, ctx: &CallContext) -> Arc<dyn ClipboardBackend> {
+        let decision = ctx
+            .permissions
+            .check(Permission::ClipboardRead, None, &ctx.grants())
+            .unwrap_or(Decision::Allow);
+        if decision == Decision::Substitute {
+            self.stand_in.clone()
+        } else {
+            self.real.clone()
+        }
+    }
+}
+
 pub(crate) fn register(
     registry: &mut Registry,
     backend: Arc<dyn ClipboardBackend>,
+    stand_in: Arc<dyn ClipboardBackend>,
 ) -> Result<(), AlefError> {
-    let this = backend.clone();
+    let pair = Arc::new(Pair {
+        real: backend,
+        stand_in,
+    });
+    let this = pair.clone();
     registry
         .command::<()>("clipboard.readText")?
         .permission(Permission::ClipboardRead, |_| None)
-        .handler(move |_, ()| {
-            let backend = this.clone();
+        .substitutes()
+        .handler(move |ctx, ()| {
+            let backend = this.pick(&ctx);
             async move {
                 let text = blocking(&backend, |b| b.read_text()).await?;
                 Ok(Reply::Bytes(Bytes::from(text)))
             }
         })?;
-    let this = backend.clone();
+    let this = pair.clone();
     registry
         .command::<()>("clipboard.writeText")?
         .handler(move |ctx, ()| {
-            let backend = this.clone();
+            let backend = this.pick(&ctx);
             async move {
                 let text = text_of("clipboard.writeText", ctx.body())?;
                 blocking(&backend, move |b| b.write_text(&text)).await?;
                 Ok(Reply::Json(serde_json::Value::Null))
             }
         })?;
-    let this = backend.clone();
+    let this = pair.clone();
     registry
         .command::<()>("clipboard.readHtml")?
         .permission(Permission::ClipboardRead, |_| None)
-        .handler(move |_, ()| {
-            let backend = this.clone();
+        .substitutes()
+        .handler(move |ctx, ()| {
+            let backend = this.pick(&ctx);
             async move {
                 let html = blocking(&backend, |b| b.read_html()).await?;
                 Ok(Reply::Bytes(Bytes::from(html)))
             }
         })?;
-    let this = backend.clone();
+    let this = pair.clone();
     registry
         .command::<()>("clipboard.writeHtml")?
         .handler(move |ctx, ()| {
-            let backend = this.clone();
+            let backend = this.pick(&ctx);
             async move {
                 let html = text_of("clipboard.writeHtml", ctx.body())?;
                 blocking(&backend, move |b| b.write_html(&html)).await?;
                 Ok(Reply::Json(serde_json::Value::Null))
             }
         })?;
-    let this = backend.clone();
+    let this = pair.clone();
     registry
         .command::<()>("clipboard.readImage")?
         .permission(Permission::ClipboardRead, |_| None)
-        .handler(move |_, ()| {
-            let backend = this.clone();
+        .substitutes()
+        .handler(move |ctx, ()| {
+            let backend = this.pick(&ctx);
             async move {
                 match blocking(&backend, |b| b.read_image()).await? {
                     Some(image) => Ok(Reply::Bytes(Bytes::from(encode_png(&image)?))),
@@ -317,7 +348,7 @@ pub(crate) fn register(
     registry
         .command::<()>("clipboard.writeImage")?
         .handler(move |ctx, ()| {
-            let backend = backend.clone();
+            let backend = pair.pick(&ctx);
             async move {
                 let png = ctx
                     .body()

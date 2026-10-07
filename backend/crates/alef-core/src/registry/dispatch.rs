@@ -76,6 +76,7 @@ impl Registry {
             name: name.to_owned(),
             permission: Permission::None,
             target: Box::new(|_| None),
+            substitutes: false,
             marker: std::marker::PhantomData,
         })
     }

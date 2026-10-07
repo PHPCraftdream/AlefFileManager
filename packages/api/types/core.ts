@@ -23,6 +23,11 @@ export type ConfirmOptions = {
    */
   cancelLabel?: string, };
 
+/**
+ * What the user gives for a right.
+ */
+export type Decision = "allow" | "substitute" | "deny";
+
 export type ErrorCode = "NOT_FOUND" | "ALREADY_EXISTS" | "PERMISSION_DENIED" | "INVALID_ARGUMENT" | "TIMEOUT" | "CLOSED" | "BUSY" | "NOT_AVAILABLE" | "MANIFEST_INVALID" | "INTERNAL";
 
 /**
@@ -122,6 +127,21 @@ export type ResizeEdge = "north" | "northEast" | "east" | "southEast" | "south" 
  * A resource (file, socket, database, process...) owned by a session.
  */
 export type ResourceId = number;
+
+/**
+ * One thing the manifest asks for, as the consent window shows it and the store remembers it:
+ * the name of the permission and, where it has scopes, one scope as the manifest wrote it.
+ */
+export type Right = {
+  /**
+   * `fs.read`, `net.http`, `app.env`, `clipboard.read`, ...
+   */
+  permission: string,
+  /**
+   * The scope entry (`$DOCUMENTS/**`, `https://example.com/*`, an environment variable name);
+   * `None` for a right without scopes (`clipboard.read`, `secrets`).
+   */
+  scope?: string, };
 
 /**
  * Options of `dialog.save`.

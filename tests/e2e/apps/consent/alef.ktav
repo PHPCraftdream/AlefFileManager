@@ -1,0 +1,51 @@
+id: org.alef.e2e.modules.consent
+name: Alef e2e consent
+version:: 1.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 800
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: [ $TEMP/**, $HOME/** ]
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: [ https://allowed.example/*, https://stand-in.example/* ]
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: {{SECRETS}}
+    app: {
+        env: [ ALEF_E2E_ENV_ALLOWED, ALEF_E2E_ENV_SUBSTITUTED, ALEF_E2E_ENV_DENIED, ALEF_E2E_ENV_UNSET ]
+    }
+    window: {
+        create: true
+    }
+}

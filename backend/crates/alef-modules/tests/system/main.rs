@@ -4,4 +4,5 @@
 mod common;
 
 mod clipboard;
+mod consent;
 mod notification;

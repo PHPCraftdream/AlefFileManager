@@ -191,6 +191,12 @@ impl Fixture {
         }
     }
 
+    /// The user decided: the rights of the manifest are given as `consent` says.
+    pub fn with_consent(mut self, consent: alef_core::security::consent::Consent) -> Self {
+        self.permissions = Arc::new((*self.permissions).clone().with_consent(consent));
+        self
+    }
+
     pub fn session(&self) -> Arc<Session> {
         self.session.clone()
     }

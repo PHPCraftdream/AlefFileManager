@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Runtime authorization: the manifest's permission policy plus per-session grants.
+//! Runtime authorization: the manifest's permission policy, the decisions of the user and the
+//! per-session grants.
 use super::{
+    consent::{Consent, Decision, Right},
     manifest::Permissions,
     scope::{
         canonical,
         exec::ExecScope,
         invalid,
         net::{SocketScope, UrlScope},
-        path::{parts, PathPattern},
+        path::{parts, same, PathPattern},
     },
 };
 use crate::{AlefError, ErrorCode};
@@ -15,6 +17,7 @@ use serde_json::json;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    sync::{Arc, RwLock, RwLockReadGuard},
 };
 
 pub use super::grants::Grants;
@@ -108,20 +111,33 @@ impl PathVars {
     }
 }
 
-/// Validated permission policy; every scope is parsed once at load and matching fails closed.
+/// One entry of a scope list of the manifest: the text the manifest wrote (the user decides on
+/// that text) and what it was parsed to.
+#[derive(Debug, Clone)]
+struct Scoped<T> {
+    raw: String,
+    scope: T,
+}
+
+/// Validated permission policy; every scope is parsed once at load and matching fails closed. The
+/// manifest decides what may be asked for, the consent of the user what is given.
 #[derive(Debug, Clone)]
 pub struct PermissionSet {
-    read: Vec<PathPattern>,
-    write: Vec<PathPattern>,
-    exec: Vec<ExecScope>,
-    http: Vec<UrlScope>,
-    socket: Vec<SocketScope>,
-    shell: Vec<UrlScope>,
+    read: Vec<Scoped<PathPattern>>,
+    write: Vec<Scoped<PathPattern>>,
+    exec: Vec<Scoped<ExecScope>>,
+    http: Vec<Scoped<UrlScope>>,
+    socket: Vec<Scoped<SocketScope>>,
+    shell: Vec<Scoped<UrlScope>>,
     env: HashSet<String>,
     clipboard: bool,
     shortcut: bool,
     secrets: bool,
     window: bool,
+    /// Shared by the clones of the set: narrowing it narrows the rights of every holder.
+    consent: Arc<RwLock<Consent>>,
+    /// Folders no right reaches, whatever the manifest lists or the user picked.
+    protected: Vec<Vec<String>>,
 }
 
 /// `$VAR` is only valid as the first path segment; its value is taken literally.
@@ -139,20 +155,54 @@ fn path_pattern(pattern: &str, vars: &PathVars) -> Result<PathPattern, AlefError
     }
 }
 
-fn denied(permission: Permission) -> AlefError {
+/// The one refusal of every right: the same error whether the manifest does not list the right
+/// or the user denied it.
+pub fn refusal(permission: Permission) -> AlefError {
     AlefError::new(ErrorCode::PermissionDenied, "permission denied")
         .with_details(json!({"permission": permission.name()}))
 }
 
+fn scoped<T>(
+    list: &[String],
+    parse: impl Fn(&str) -> Result<T, AlefError>,
+) -> Result<Vec<Scoped<T>>, AlefError> {
+    list.iter()
+        .map(|raw| {
+            Ok(Scoped {
+                raw: raw.clone(),
+                scope: parse(raw)?,
+            })
+        })
+        .collect()
+}
+
+/// The rights of one scope list.
+fn rights_of<'a, T>(
+    permission: &'static str,
+    list: &'a [Scoped<T>],
+) -> impl Iterator<Item = Right> + 'a {
+    list.iter()
+        .map(move |entry| Right::scoped(permission, &entry.raw))
+}
+
+/// The most restrictive decision among the entries of a scope list that match, or `None` when no
+/// entry matches (the manifest does not allow it).
+fn decided<T>(
+    list: &[Scoped<T>],
+    permission: &str,
+    consent: &Consent,
+    matches: impl Fn(&T) -> bool,
+) -> Option<Decision> {
+    list.iter()
+        .filter(|entry| matches(&entry.scope))
+        .map(|entry| consent.decision(&Right::scoped(permission, &entry.raw)))
+        .reduce(Decision::stricter)
+}
+
 impl PermissionSet {
-    /// Expands variables and validates every scope; a malformed scope is `MANIFEST_INVALID`.
+    /// Expands variables and validates every scope; a malformed scope is `MANIFEST_INVALID`. The
+    /// user has not been asked yet and nothing is held back: see [`Self::with_consent`].
     pub fn from_manifest(policy: &Permissions, vars: &PathVars) -> Result<Self, AlefError> {
-        let paths = |list: &[String]| -> Result<Vec<PathPattern>, AlefError> {
-            list.iter().map(|p| path_pattern(p, vars)).collect()
-        };
-        let urls = |list: &[String]| -> Result<Vec<UrlScope>, AlefError> {
-            list.iter().map(|p| UrlScope::parse(p)).collect()
-        };
         let env = policy
             .app
             .env
@@ -166,28 +216,98 @@ impl PermissionSet {
             })
             .collect::<Result<_, _>>()?;
         Ok(Self {
-            read: paths(&policy.fs.read)?,
-            write: paths(&policy.fs.write)?,
-            exec: policy
-                .cli
-                .exec
-                .iter()
-                .map(|e| ExecScope::parse(e))
-                .collect::<Result<_, _>>()?,
-            http: urls(&policy.net.http)?,
-            socket: policy
-                .net
-                .socket
-                .iter()
-                .map(|s| SocketScope::parse(s))
-                .collect::<Result<_, _>>()?,
-            shell: urls(&policy.shell.open_external)?,
+            read: scoped(&policy.fs.read, |p| path_pattern(p, vars))?,
+            write: scoped(&policy.fs.write, |p| path_pattern(p, vars))?,
+            exec: scoped(&policy.cli.exec, ExecScope::parse)?,
+            http: scoped(&policy.net.http, UrlScope::parse)?,
+            socket: scoped(&policy.net.socket, SocketScope::parse)?,
+            shell: scoped(&policy.shell.open_external, UrlScope::parse)?,
             env,
             clipboard: policy.clipboard.read,
             shortcut: policy.shortcut.global,
             secrets: policy.secrets,
             window: policy.window.as_ref().is_some_and(|window| window.create),
+            consent: Arc::new(RwLock::new(Consent::allow_all())),
+            protected: Vec::new(),
         })
+    }
+
+    /// The decisions of the user replace the default of giving everything the manifest lists.
+    pub fn with_consent(mut self, consent: Consent) -> Self {
+        self.consent = Arc::new(RwLock::new(consent));
+        self
+    }
+
+    /// Puts `folder` out of reach of every filesystem right: the decisions of the users live in the
+    /// folder of the runtime, and an application that could write there would decide for itself.
+    pub fn with_protected(mut self, folder: &Path) -> Self {
+        if let Some(path) = canonical(folder) {
+            self.protected.push(parts(&path));
+        }
+        self
+    }
+
+    fn is_protected(&self, components: &[String]) -> bool {
+        self.protected.iter().any(|folder| {
+            components.len() >= folder.len()
+                && folder.iter().zip(components).all(|(a, b)| same(a, b))
+        })
+    }
+
+    fn decided_by_user(&self) -> RwLockReadGuard<'_, Consent> {
+        self.consent.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The decisions in force now.
+    pub fn consent(&self) -> Consent {
+        self.decided_by_user().clone()
+    }
+
+    /// Takes over the part of `stored` that is stricter than what is in force, and nothing else: a
+    /// right the user took back applies at once, a right he gave applies from the next start, so a
+    /// running application is never handed more than it was started with. `true` when something
+    /// was narrowed.
+    pub fn narrow(&self, stored: &Consent) -> bool {
+        let mut consent = self.consent.write().unwrap_or_else(|e| e.into_inner());
+        let mut narrowed = false;
+        for right in self.rights() {
+            if !stored.decided(&right) {
+                continue;
+            }
+            let now = consent.decision(&right);
+            let next = now.stricter(stored.decision(&right));
+            if next != now {
+                consent.set(right, next);
+                narrowed = true;
+            }
+        }
+        narrowed
+    }
+
+    /// Everything the manifest asks for, one right per scope entry, in a stable order: what the
+    /// consent window shows and the store remembers.
+    pub fn rights(&self) -> Vec<Right> {
+        let mut rights: Vec<Right> = rights_of("fs.read", &self.read)
+            .chain(rights_of("fs.write", &self.write))
+            .chain(rights_of("cli.exec", &self.exec))
+            .chain(rights_of("net.http", &self.http))
+            .chain(rights_of("net.socket", &self.socket))
+            .chain(rights_of("shell.openExternal", &self.shell))
+            .chain(self.env.iter().map(|name| Right::scoped("app.env", name)))
+            .collect();
+        for (asked, name) in [
+            (self.clipboard, "clipboard.read"),
+            (self.shortcut, "shortcut.global"),
+            (self.secrets, "secrets"),
+            (self.window, "window.create"),
+        ] {
+            if asked {
+                rights.push(Right::plain(name));
+            }
+        }
+        rights.sort();
+        rights.dedup();
+        rights
     }
 
     /// Names of the environment variables the manifest exposes (`permissions.app.env`), sorted.
@@ -203,34 +323,64 @@ impl PermissionSet {
         self
     }
 
-    /// Checks `permission` for `target`; scoped permissions deny a missing target, and every
-    /// failure is a uniform `PERMISSION_DENIED` naming only the permission.
+    /// Checks `permission` for `target` and says what the user gave for it. A scoped permission
+    /// denies a missing target; whatever the manifest does not list, or the user denied, is a
+    /// uniform `PERMISSION_DENIED` naming only the permission. `Decision::Substitute` means the
+    /// module is to give a stand-in, not the real thing.
     pub fn check(
         &self,
         permission: Permission,
         target: Option<&str>,
         grants: &Grants,
-    ) -> Result<(), AlefError> {
-        let any = |matched: &dyn Fn(&str) -> bool| target.is_some_and(matched);
-        let allowed = match permission {
-            Permission::None => true,
-            Permission::ClipboardRead => self.clipboard,
-            Permission::ShortcutGlobal => self.shortcut,
-            Permission::Secrets => self.secrets,
-            Permission::WindowCreate => self.window,
-            Permission::AppEnv => target.is_some_and(|name| self.env.contains(name)),
-            Permission::FsRead | Permission::FsWrite => {
-                return self.authorize_path(permission, target, grants).map(|_| ());
-            }
-            Permission::CliExec => any(&|t| self.exec.iter().any(|s| s.matches(t))),
-            Permission::NetHttp => any(&|t| self.http.iter().any(|s| s.matches(t))),
-            Permission::NetSocket => any(&|t| self.socket.iter().any(|s| s.matches(t))),
-            Permission::ShellOpenExternal => any(&|t| self.shell.iter().any(|s| s.matches(t))),
+    ) -> Result<Decision, AlefError> {
+        let flag = |asked: bool, name: &str| {
+            asked.then(|| self.decided_by_user().decision(&Right::plain(name)))
         };
-        if allowed {
-            Ok(())
-        } else {
-            Err(denied(permission))
+        let decision = match permission {
+            Permission::None => return Ok(Decision::Allow),
+            Permission::ClipboardRead => flag(self.clipboard, "clipboard.read"),
+            Permission::ShortcutGlobal => flag(self.shortcut, "shortcut.global"),
+            Permission::Secrets => flag(self.secrets, "secrets"),
+            Permission::WindowCreate => flag(self.window, "window.create"),
+            Permission::AppEnv => target.filter(|name| self.env.contains(*name)).map(|name| {
+                self.decided_by_user()
+                    .decision(&Right::scoped("app.env", name))
+            }),
+            Permission::FsRead | Permission::FsWrite => {
+                return self
+                    .authorize(permission, target, grants)
+                    .map(|(_, decision)| decision);
+            }
+            Permission::CliExec => target.and_then(|t| {
+                decided(&self.exec, "cli.exec", &self.decided_by_user(), |scope| {
+                    scope.matches(t)
+                })
+            }),
+            Permission::NetHttp => target.and_then(|t| {
+                decided(&self.http, "net.http", &self.decided_by_user(), |scope| {
+                    scope.matches(t)
+                })
+            }),
+            Permission::NetSocket => target.and_then(|t| {
+                decided(
+                    &self.socket,
+                    "net.socket",
+                    &self.decided_by_user(),
+                    |scope| scope.matches(t),
+                )
+            }),
+            Permission::ShellOpenExternal => target.and_then(|t| {
+                decided(
+                    &self.shell,
+                    "shell.openExternal",
+                    &self.decided_by_user(),
+                    |scope| scope.matches(t),
+                )
+            }),
+        };
+        match decision {
+            Some(Decision::Deny) | None => Err(refusal(permission)),
+            Some(decision) => Ok(decision),
         }
     }
 
@@ -242,9 +392,21 @@ impl PermissionSet {
         target: Option<&str>,
         grants: &Grants,
     ) -> Result<PathBuf, AlefError> {
-        let write = match permission {
-            Permission::FsRead => false,
-            Permission::FsWrite => true,
+        self.authorize(permission, target, grants)
+            .map(|(path, _)| path)
+    }
+
+    /// [`Self::authorize_path`] and what the user gave for the path: a path the user picked (a
+    /// grant of the session) is always the real thing, the scopes of the manifest are as decided.
+    pub fn authorize(
+        &self,
+        permission: Permission,
+        target: Option<&str>,
+        grants: &Grants,
+    ) -> Result<(PathBuf, Decision), AlefError> {
+        let (write, name, scopes) = match permission {
+            Permission::FsRead => (false, "fs.read", &self.read),
+            Permission::FsWrite => (true, "fs.write", &self.write),
             _ => {
                 return Err(AlefError::new(
                     ErrorCode::InvalidArgument,
@@ -254,15 +416,19 @@ impl PermissionSet {
         };
         let resolved = target
             .and_then(|t| canonical(Path::new(t)))
-            .ok_or_else(|| denied(permission))?;
+            .ok_or_else(|| refusal(permission))?;
         let components = parts(&resolved);
-        let scopes = if write { &self.write } else { &self.read };
-        if scopes.iter().any(|s| s.matches_canonical(&components))
-            || grants.allows(write, &components)
-        {
-            Ok(resolved)
-        } else {
-            Err(denied(permission))
+        if self.is_protected(&components) {
+            return Err(refusal(permission));
+        }
+        if grants.allows(write, &components) {
+            return Ok((resolved, Decision::Allow));
+        }
+        match decided(scopes, name, &self.decided_by_user(), |scope| {
+            scope.matches_canonical(&components)
+        }) {
+            Some(Decision::Deny) | None => Err(refusal(permission)),
+            Some(decision) => Ok((resolved, decision)),
         }
     }
 }

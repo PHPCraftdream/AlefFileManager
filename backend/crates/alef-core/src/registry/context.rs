@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-call context and cooperative cancellation.
 use crate::{
-    security::permissions::{Grants, PermissionSet},
+    security::{
+        consent::Decision,
+        permissions::{Grants, PermissionSet},
+    },
     session::{resources::ResourceTable, session::Session, streams::StreamHub},
 };
 use bytes::Bytes;
@@ -61,6 +64,7 @@ pub struct CallContext {
     pub session: Arc<Session>,
     /// Resolved permission set for the session.
     pub permissions: Arc<PermissionSet>,
+    decision: Decision,
     body: Option<Bytes>,
     cancel: CancelHandle,
     /// Keeps the default channel open so an unbound context is never "cancelled".
@@ -73,10 +77,22 @@ impl CallContext {
         Self {
             session,
             permissions,
+            decision: Decision::Allow,
             body: None,
             cancel,
             keepalive: Some(sender),
         }
+    }
+    /// What the user gave for the right this command was checked against: `Substitute` tells the
+    /// handler to give a stand-in that the application cannot tell from the real thing, with no error
+    /// code of its own. `Allow` for a command without a right.
+    pub fn decision(&self) -> Decision {
+        self.decision
+    }
+    /// Sets the decision (builder style).
+    pub fn with_decision(mut self, decision: Decision) -> Self {
+        self.decision = decision;
+        self
     }
     /// Session-scoped runtime path grants.
     pub fn grants(&self) -> Arc<Grants> {

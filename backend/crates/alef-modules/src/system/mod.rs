@@ -13,14 +13,18 @@ use alef_core::{
     AlefError,
 };
 
-use crate::ModuleContext;
+use crate::{MemoryClipboard, ModuleContext};
 
 pub(crate) fn register(
     registry: &mut Registry,
     host: Arc<dyn Host>,
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
-    clipboard::register(registry, context.backends.clipboard.clone())?;
+    clipboard::register(
+        registry,
+        context.backends.clipboard.clone(),
+        Arc::new(MemoryClipboard::default()),
+    )?;
     notification::register(registry, context.backends.notification.clone())?;
     path::register(registry, context)?;
     os::register(registry, host.clone())?;

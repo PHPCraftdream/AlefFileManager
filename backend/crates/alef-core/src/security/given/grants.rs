@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runtime path grants (dialogs, drops) layered on top of manifest scopes for one session.
-use super::scope::{
+use crate::security::scope::{
     canonical,
     path::{parts, same},
 };

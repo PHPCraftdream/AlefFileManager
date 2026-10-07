@@ -15,8 +15,8 @@ use std::{
 };
 
 use alef_core::{
-    registry::{command::Reply, dispatch::Registry},
-    security::permissions::Permission,
+    registry::{command::Reply, context::CallContext, dispatch::Registry},
+    security::{consent::Decision, permissions::Permission},
     AlefError, ErrorCode,
 };
 use serde::Deserialize;
@@ -260,27 +260,50 @@ fn existing(path: &Path) -> Result<(), AlefError> {
     }
 }
 
+/// The desktop of the user and the stand-in for a command whose right was given as a stand-in.
+struct Pair {
+    real: Arc<dyn ShellBackend>,
+    stand_in: Arc<dyn ShellBackend>,
+}
+
+impl Pair {
+    /// What the user decided for the right of this command (the address, the path) picks the desktop.
+    fn pick(&self, ctx: &CallContext) -> Arc<dyn ShellBackend> {
+        if ctx.decision() == Decision::Substitute {
+            self.stand_in.clone()
+        } else {
+            self.real.clone()
+        }
+    }
+}
+
 pub(crate) fn register(
     registry: &mut Registry,
     backend: Arc<dyn ShellBackend>,
 ) -> Result<(), AlefError> {
-    let this = backend.clone();
+    let pair = Arc::new(Pair {
+        real: backend,
+        stand_in: Arc::new(PretendShell::default()),
+    });
+    let this = pair.clone();
     registry
         .command::<UrlArgs>("shell.openExternal")?
         .permission(Permission::ShellOpenExternal, |args| Some(args.url.clone()))
-        .handler(move |_, args| {
-            let backend = this.clone();
+        .substitutes()
+        .handler(move |ctx, args| {
+            let backend = this.pick(&ctx);
             async move {
                 blocking(&backend, move |b| b.open_external(&args.url)).await?;
                 Ok(Reply::Json(serde_json::Value::Null))
             }
         })?;
-    let this = backend.clone();
+    let this = pair.clone();
     registry
         .command::<PathArgs>("shell.openPath")?
         .permission(Permission::FsRead, |args| Some(args.path.clone()))
+        .substitutes()
         .handler(move |ctx, args| {
-            let backend = this.clone();
+            let backend = this.pick(&ctx);
             async move {
                 let path = ctx.permissions.authorize_path(
                     Permission::FsRead,
@@ -298,12 +321,13 @@ pub(crate) fn register(
                 Ok(Reply::Json(serde_json::Value::Null))
             }
         })?;
-    let this = backend.clone();
+    let this = pair.clone();
     registry
         .command::<PathArgs>("shell.showInFolder")?
         .permission(Permission::FsRead, |args| Some(args.path.clone()))
+        .substitutes()
         .handler(move |ctx, args| {
-            let backend = this.clone();
+            let backend = this.pick(&ctx);
             async move {
                 let path = ctx.permissions.authorize_path(
                     Permission::FsRead,
@@ -318,8 +342,9 @@ pub(crate) fn register(
     registry
         .command::<PathArgs>("shell.trash")?
         .permission(Permission::FsWrite, |args| Some(args.path.clone()))
+        .substitutes()
         .handler(move |ctx, args| {
-            let backend = backend.clone();
+            let backend = pair.pick(&ctx);
             async move {
                 let path = ctx.permissions.authorize_path(
                     Permission::FsWrite,
