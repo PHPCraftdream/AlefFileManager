@@ -29,6 +29,7 @@ export {
   type WatchOptions,
   type WriteOptions,
 } from './data/fs.ts';
+export { Store, store } from './data/store.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shell } from './desktop/shell.ts';
 export { clipboard } from './system/clipboard.ts';

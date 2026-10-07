@@ -106,13 +106,24 @@ pub fn path_vars(root: &std::path::Path) -> PathVars {
 impl Fixture {
     /// `manifest` replaces the fixture manifest when given; `command_line` is parsed by its schema.
     pub async fn new(manifest: Option<&str>, command_line: &[&str]) -> Self {
-        let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
-        let manifest = Manifest::from_ktav_str(&text).expect("manifest");
         let root = std::env::current_exe()
             .unwrap()
             .parent()
             .unwrap()
             .join("alef-modules-paths");
+        Self::new_in(&root, manifest, command_line).await
+    }
+
+    /// As `new`, with the folders of the application (data, config, ...) under `root`: a test that
+    /// keeps data gets its own, and a second fixture on the same root is the next run of the application.
+    pub async fn new_in(
+        root: &std::path::Path,
+        manifest: Option<&str>,
+        command_line: &[&str],
+    ) -> Self {
+        let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
+        let manifest = Manifest::from_ktav_str(&text).expect("manifest");
+        let root = root.to_path_buf();
         let vars = path_vars(&root);
         let permissions = Arc::new(
             PermissionSet::from_manifest(&manifest.permissions, &vars).expect("permissions"),

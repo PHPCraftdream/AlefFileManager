@@ -6,6 +6,7 @@ mod common;
 mod fs;
 mod handles;
 mod rights;
+mod store;
 
 use std::path::Path;
 

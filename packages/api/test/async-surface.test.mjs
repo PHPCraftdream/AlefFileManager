@@ -103,6 +103,12 @@ const ARGS = {
   'fs.open': ['/probe'],
   'fs.readDirStream': ['/probe'],
   'fs.watch': ['/probe'],
+  'store.get': ['k'],
+  'store.set': ['k', 1],
+  'store.delete': ['k'],
+  'store.keys': [],
+  'store.flush': [],
+  'store.open': ['area'],
   'fs.tempFile': [],
   'fs.tempDir': [],
 };
@@ -144,5 +150,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'app', 'call', 'clipboard', 'connect', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'Store', 'app', 'call', 'clipboard', 'connect', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'shell', 'store', 'window']);
 });

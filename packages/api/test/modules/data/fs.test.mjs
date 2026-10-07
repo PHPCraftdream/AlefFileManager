@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AlefError, FileHandle, fs } from '../../src/index.ts';
-import { binaryFrame, endFrame, errorFrame, installRuntime, join, jsonFrame } from '../fake-runtime.mjs';
+import { AlefError, FileHandle, fs } from '../../../src/index.ts';
+import { binaryFrame, endFrame, errorFrame, installRuntime, join, jsonFrame } from '../../fake-runtime.mjs';
 
 const replies = new Map();
 const streams = new Map();

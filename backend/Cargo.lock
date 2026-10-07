@@ -118,6 +118,7 @@ dependencies = [
  "alef-core",
  "arboard",
  "bytes",
+ "fjall",
  "gethostname",
  "image",
  "notify",
