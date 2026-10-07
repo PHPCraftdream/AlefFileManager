@@ -136,9 +136,11 @@ dependencies = [
  "sys-locale",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "trash",
  "ts-rs",
  "url",
+ "webpki-roots",
  "windows-native-keyring-store",
  "zbus-secret-service-keyring-store",
 ]

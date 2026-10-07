@@ -278,6 +278,7 @@ fn socket_protocols_hosts_and_ports() {
         "udp:0.0.0.0:5353",
         "listen:127.0.0.1:9001",
         "listen:127.0.0.1:1",
+        "listen:127.0.0.1:0",
         "tcp:[::1]:9000",
         "tcp:anything.test:22",
     ] {
@@ -289,7 +290,7 @@ fn socket_protocols_hosts_and_ports() {
         "tcp:a.example.com:444",
         "udp:127.0.0.1:5353",
         "tcp:127.0.0.1:9001",
-        "listen:127.0.0.1:0",
+        "listen:127.0.0.1:00",
         "listen:127.0.0.1:",
         "listen:127.0.0.1:65536",
         "listen:127.0.0.2:9001",
@@ -304,6 +305,24 @@ fn socket_protocols_hosts_and_ports() {
     ] {
         assert!(!ok(&set, s, no), "{no:?}");
     }
+}
+
+#[test]
+fn port_zero_is_any_free_port_for_listening_only_and_only_a_wildcard_port_covers_it() {
+    let s = Permission::NetSocket;
+    let named = sockets(&[
+        "listen:127.0.0.1:9001",
+        "tcp:host.test:*",
+        "udp:host.test:*",
+    ]);
+    for no in ["listen:127.0.0.1:0", "tcp:host.test:0", "udp:host.test:0"] {
+        assert!(!ok(&named, s, no), "{no}");
+    }
+    let any = sockets(&["listen:127.0.0.1:*"]);
+    assert!(ok(&any, s, "listen:127.0.0.1:0"));
+    assert!(ok(&any, s, "listen:127.0.0.1:9001"));
+    assert!(!ok(&any, s, "listen:127.0.0.2:0"));
+    assert!(!ok(&any, s, "tcp:127.0.0.1:0"));
 }
 
 #[test]

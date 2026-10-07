@@ -286,12 +286,18 @@ impl SocketScope {
         })
     }
 
-    /// Tests a concrete `proto:host:port` target (no wildcards, port 1..=65535).
+    /// Tests a concrete `proto:host:port` target (no wildcards, port 1..=65535; `listen` may also
+    /// ask for port 0, any free port, which only a `*` port in the scope covers).
     pub(crate) fn matches(&self, target: &str) -> bool {
         let Some((proto, host_text, port_text)) = socket_parts(target) else {
             return false;
         };
-        let (Some(host_name), Some(port)) = (host(host_text), port_number(port_text)) else {
+        let port = if proto == Proto::Listen && port_text == "0" {
+            Some(0)
+        } else {
+            port_number(port_text)
+        };
+        let (Some(host_name), Some(port)) = (host(host_text), port) else {
             return false;
         };
         proto == self.proto && self.host.matches(&host_name) && self.port.is_none_or(|p| p == port)

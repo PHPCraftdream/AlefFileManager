@@ -43,6 +43,18 @@ export { secrets } from './data/secrets.ts';
 export { Store, store } from './data/store.ts';
 export { http, HttpResponse, type DownloadOptions, type HttpRequestOptions } from './net/http.ts';
 export {
+  socket,
+  TcpServer,
+  TcpSocket,
+  UdpSocket,
+  type Address,
+  type ConnectOptions,
+  type Datagram,
+  type ListenOptions,
+  type TlsOptions,
+  type UdpOptions,
+} from './net/socket.ts';
+export {
   crypto,
   type Argon2Options,
   type CipherName,

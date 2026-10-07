@@ -1,0 +1,48 @@
+id: org.alef.e2e.modules.socket
+name: Alef e2e socket
+version:: 1.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 800
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: [ tcp:127.0.0.1:*, listen:127.0.0.1:*, udp:127.0.0.1:* ]
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}

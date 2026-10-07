@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Scenarios of the network modules (docs/stages/m4-net-cli.md, "Приёмка"): `http` against servers of the
-// runner on the loopback, with the right allowed and with a stand-in the user chose.
+// Scenarios of the network modules (docs/stages/m4-net-cli.md, "Приёмка"): `http` and `socket` against
+// servers of the runner on the loopback, with the right allowed and with a stand-in the user chose.
 import { createHash } from 'node:crypto';
+import dgram from 'node:dgram';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import tls from 'node:tls';
+import { fileURLToPath } from 'node:url';
 
 const SIZE = 8 * 1024 * 1024;
 
@@ -15,6 +19,15 @@ const HTTP_CHECKS = [
   'http-an-abort-reaches-the-connection', 'http-a-download-fills-a-file-with-progress-and-an-abort-leaves-none',
 ];
 const HTTP_SUBSTITUTE_CHECKS = ['http-a-substituted-network-hangs-until-its-time-is-up'];
+const SOCKET_CHECKS = [
+  'socket-tcp-carries-a-big-body-both-ways-through-an-echo-server', 'socket-a-listener-takes-a-connection-of-the-page-itself',
+  'socket-tls-trusts-the-authority-the-page-names-and-no-other', 'socket-udp-goes-between-two-sockets-and-to-a-server',
+  'socket-the-scope-holds-for-every-command-and-a-closed-port-is-the-network',
+  'socket-a-closed-socket-ends-its-streams-and-the-server-sees-the-end',
+];
+const SOCKET_SUBSTITUTE_CHECKS = ['socket-a-substituted-network-is-dead-and-takes-no-port'];
+/** The certificates of the tests of the runtime: an authority and a server for localhost and the loopback. */
+const TLS_FILES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'backend', 'crates', 'alef-modules', 'tests', 'fixtures', 'tls');
 
 /** The byte at a place of `/big`, the same pattern the page works out again. */
 const bigByte = at => (at * 31 + (at >> 8)) & 255;
@@ -133,6 +146,61 @@ async function absent(path, ms) {
   return !existsSync(path);
 }
 
+/** A TCP echo, a TLS echo and a UDP echo on the loopback, with a count of what each took. */
+async function socketServers() {
+  const seen = { accepted: 0, ended: 0, handshakes: 0, datagrams: 0 };
+  const open = new Set();
+  const track = connection => {
+    open.add(connection);
+    connection.on('close', () => open.delete(connection));
+    connection.on('error', () => {});
+  };
+  const echo = net.createServer(connection => {
+    seen.accepted += 1;
+    track(connection);
+    connection.on('end', () => { seen.ended += 1; });
+    connection.pipe(connection);
+  });
+  const secure = tls.createServer(
+    { key: readFileSync(join(TLS_FILES, 'server.key')), cert: readFileSync(join(TLS_FILES, 'server.pem')) },
+    connection => {
+      seen.handshakes += 1;
+      track(connection);
+      connection.pipe(connection);
+    },
+  );
+  secure.on('tlsClientError', () => {});
+  const udp = dgram.createSocket('udp4');
+  udp.on('error', () => {});
+  udp.on('message', (message, from) => {
+    seen.datagrams += 1;
+    udp.send(message, from.port, from.address);
+  });
+  await Promise.all([
+    new Promise(resolve => echo.listen(0, '127.0.0.1', resolve)),
+    new Promise(resolve => secure.listen(0, '127.0.0.1', resolve)),
+    new Promise(resolve => udp.bind(0, '127.0.0.1', resolve)),
+  ]);
+  return {
+    seen,
+    echo: echo.address().port,
+    secure: secure.address().port,
+    udp: udp.address().port,
+    authority: readFileSync(join(TLS_FILES, 'ca.pem'), 'utf8'),
+    close: async () => {
+      for (const connection of open) connection.destroy();
+      await Promise.all([new Promise(resolve => echo.close(resolve)), new Promise(resolve => secure.close(resolve)), new Promise(resolve => udp.close(resolve))]);
+    },
+  };
+}
+
+/** Waits (a few seconds at most) until a condition holds. */
+async function eventually(condition, ms) {
+  const deadline = Date.now() + ms;
+  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  return condition();
+}
+
 export function netScenarios({ drive }) {
   async function run(name, mode, expectedChecks, env, judge) {
     const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-http-'));
@@ -153,6 +221,24 @@ export function netScenarios({ drive }) {
     } finally {
       await main.close();
       await aside.close();
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
+  async function runSocket(name, mode, expectedChecks, env, judge) {
+    const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-socket-'));
+    const servers = await socketServers();
+    const closed = await closedPort();
+    try {
+      return await drive({
+        name, app: 'modules/net/socket',
+        targets: { mode, echo: servers.echo, secure: servers.secure, udp: servers.udp, closed, size: SIZE, authority: servers.authority },
+        env: { ALEF_HOME: join(base, 'home'), ...env },
+        expectedChecks,
+        judge: () => judge(servers.seen),
+      });
+    } finally {
+      await servers.close();
       rmSync(base, { recursive: true, force: true });
     }
   }
@@ -182,6 +268,28 @@ export function netScenarios({ drive }) {
       if (!main.cut.includes('/big')) problems.push('a body that the page gave up did not close the connection');
       return problems;
     }),
+
+    socket: () => runSocket('socket', 'allowed', SOCKET_CHECKS, {}, async seen => {
+      const problems = [];
+      if (!(await eventually(() => seen.ended >= 2, 5000))) problems.push(`the echo server saw ${seen.ended} connection(s) end, expected 2`);
+      if (seen.accepted !== 2) problems.push(`the echo server took ${seen.accepted} connection(s), expected 2`);
+      if (seen.handshakes !== 1) problems.push(`the TLS server finished ${seen.handshakes} handshake(s), expected 1`);
+      if (seen.datagrams !== 1) problems.push(`the UDP server got ${seen.datagrams} datagram(s), expected 1`);
+      return problems;
+    }),
+
+    // The user chose a stand-in for the sockets: nothing reached the servers.
+    'socket-substitute': () => runSocket(
+      'socket-substitute', 'substituted', SOCKET_SUBSTITUTE_CHECKS,
+      { ALEF_E2E_CONSENT: ['tcp', 'listen', 'udp'].map(kind => `net.socket:${kind}:127.0.0.1:*=substitute`).concat('*=allow').join(';') },
+      async seen => {
+        const problems = [];
+        if (seen.accepted !== 0) problems.push(`the echo server took ${seen.accepted} connection(s)`);
+        if (seen.handshakes !== 0) problems.push(`the TLS server finished ${seen.handshakes} handshake(s)`);
+        if (seen.datagrams !== 0) problems.push(`the UDP server got ${seen.datagrams} datagram(s)`);
+        return problems;
+      },
+    ),
 
     // The user chose a stand-in: the network is dead, and nothing reached the servers.
     'http-substitute': () => run(

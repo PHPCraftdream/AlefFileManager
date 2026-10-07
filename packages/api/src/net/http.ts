@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { AlefError } from '../core/errors.ts';
-import { openReadable, openWritable, type Readable } from '../core/stream.ts';
+import { openReadable, openWritable } from '../core/stream.ts';
 import { call } from '../core/transport.ts';
+import { bytesOf } from '../core/web-stream.ts';
 import type { Cancelable } from '../desktop/app.ts';
 
 /** A body up to this size travels with the call; a bigger one, and a stream, go up as a stream. */
@@ -72,31 +73,7 @@ export class HttpResponse {
   get body(): ReadableStream<Uint8Array> | null {
     if (this.#stream === null || this.#used) return null;
     this.#used = true;
-    const stream = this.#stream;
-    let readable: Readable | undefined;
-    let frames: AsyncIterator<{ kind: string; data?: Uint8Array }> | undefined;
-    return new ReadableStream<Uint8Array>({
-      async start() {
-        readable = await openReadable(stream);
-        frames = readable[Symbol.asyncIterator]();
-      },
-      async pull(controller) {
-        for (;;) {
-          const next = await frames!.next();
-          if (next.done) {
-            controller.close();
-            return;
-          }
-          if (next.value.kind === 'binary' && next.value.data) {
-            controller.enqueue(next.value.data);
-            return;
-          }
-        }
-      },
-      async cancel() {
-        await readable?.close();
-      },
-    });
+    return bytesOf(this.#stream);
   }
 
   /** The whole body. */
