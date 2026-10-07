@@ -143,37 +143,56 @@ impl Instance {
             State::Later => return Ok(false),
             State::Unasked => {}
         }
-        match platform::claim(&self.endpoint).await.map_err(unavailable)? {
-            Claim::First(mut listener) => {
-                let host = self.host.clone();
-                tokio::spawn(async move {
-                    loop {
-                        match listener.accept().await {
-                            Ok(connection) => {
-                                let host = host.clone();
-                                tokio::spawn(async move {
-                                    let _ = tokio::time::timeout(IO_LIMIT, serve(connection, host))
-                                        .await;
-                                });
+        // Twice: a socket that looked alive and then refuses every connection is the leftover of a
+        // process that died; it is cleared and claimed again.
+        for round in 0..2 {
+            match platform::claim(&self.endpoint).await.map_err(unavailable)? {
+                Claim::First(mut listener) => {
+                    let host = self.host.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            match listener.accept().await {
+                                Ok(connection) => {
+                                    let host = host.clone();
+                                    tokio::spawn(async move {
+                                        let _ =
+                                            tokio::time::timeout(IO_LIMIT, serve(connection, host))
+                                                .await;
+                                    });
+                                }
+                                Err(_) => tokio::time::sleep(RETRY_AFTER).await,
                             }
-                            Err(_) => tokio::time::sleep(RETRY_AFTER).await,
                         }
+                    });
+                    *state = State::First;
+                    return Ok(true);
+                }
+                Claim::Taken => {
+                    let cwd = std::env::current_dir().map_err(unavailable)?;
+                    let hello = Hello {
+                        args: self.args.clone(),
+                        cwd: cwd.to_string_lossy().into_owned(),
+                    };
+                    match deliver(&self.endpoint, &hello).await {
+                        Ok(()) => {
+                            *state = State::Later;
+                            return Ok(false);
+                        }
+                        Err(error)
+                            if round == 0
+                                && matches!(
+                                    error.kind(),
+                                    io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                                ) =>
+                        {
+                            platform::forget(&self.endpoint);
+                        }
+                        Err(error) => return Err(unavailable(error)),
                     }
-                });
-                *state = State::First;
-                Ok(true)
-            }
-            Claim::Taken => {
-                let cwd = std::env::current_dir().map_err(unavailable)?;
-                let hello = Hello {
-                    args: self.args.clone(),
-                    cwd: cwd.to_string_lossy().into_owned(),
-                };
-                deliver(&self.endpoint, &hello).await.map_err(unavailable)?;
-                *state = State::Later;
-                Ok(false)
+                }
             }
         }
+        Err(unavailable("the endpoint could not be claimed"))
     }
 }
 
@@ -302,6 +321,11 @@ mod platform {
     pub(super) async fn connect(endpoint: &Endpoint) -> io::Result<Connection> {
         Ok(Box::new(UnixStream::connect(socket(endpoint)).await?))
     }
+
+    /// The socket file of an endpoint whose owner is gone.
+    pub(super) fn forget(endpoint: &Endpoint) {
+        let _ = fs::remove_file(socket(endpoint));
+    }
 }
 
 #[cfg(windows)]
@@ -346,6 +370,9 @@ mod platform {
             Err(error) => Err(error),
         }
     }
+
+    /// A pipe has no file that outlives its owner.
+    pub(super) fn forget(_: &Endpoint) {}
 
     pub(super) async fn connect(endpoint: &Endpoint) -> io::Result<Connection> {
         let name = name(endpoint);

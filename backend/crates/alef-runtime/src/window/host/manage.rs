@@ -272,7 +272,8 @@ impl App {
             frame_ready,
             content_frame,
             revealed: false,
-            maximize_when_shown: None,
+            // Asked at creation, but a window manager of X11 hears of it only when the window is mapped.
+            maximize_when_shown: (start_maximized && !self.quiet).then_some(true),
             created: Instant::now(),
             ready_since: None,
             resize_pending: false,
