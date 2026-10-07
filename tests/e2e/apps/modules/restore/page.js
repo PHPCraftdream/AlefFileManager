@@ -55,7 +55,9 @@ async function main() {
     });
     await check('a-maximized-window-is-remembered-as-maximized', async () => {
       await win.maximize();
-      await eventually(async () => (await win.state()).maximized, 20000, 'the window to be maximized');
+      await eventually(async () => (await win.state()).maximized, 20000, 'the window to be maximized').catch(async error => {
+        throw new Error(`${error.message}; the window is ${JSON.stringify(await win.state())}`);
+      });
     });
   } else if (step === 'maximized') {
     await check('the-window-opens-maximized-again-and-restores-to-its-old-size', async () => {

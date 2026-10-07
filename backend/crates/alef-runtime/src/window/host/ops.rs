@@ -130,6 +130,14 @@ impl State {
         true
     }
 
+    /// Maximizes or restores the window; for a window that is not shown yet, once it is.
+    fn maximize(&mut self, maximized: bool) {
+        self.window.set_maximized(maximized);
+        if !self.revealed {
+            self.maximize_when_shown = Some(maximized);
+        }
+    }
+
     fn apply_to_window(&mut self, op: WindowOp) -> io::Result<Value> {
         if self.pretend(&op) {
             return Ok(Value::Null);
@@ -177,16 +185,24 @@ impl State {
                     .set_outer_position(LogicalPosition::new(at.x, at.y));
             }
             WindowOp::Minimize => self.window.set_minimized(true),
-            WindowOp::Maximize => self.window.set_maximized(true),
+            WindowOp::Maximize => self.maximize(true),
             WindowOp::Restore => {
                 if self.window.is_minimized() == Some(true) {
                     self.window.set_minimized(false);
                 }
-                if self.window.is_maximized() {
-                    self.window.set_maximized(false);
+                if self
+                    .maximize_when_shown
+                    .unwrap_or_else(|| self.window.is_maximized())
+                {
+                    self.maximize(false);
                 }
             }
-            WindowOp::ToggleMaximize => self.window.set_maximized(!self.window.is_maximized()),
+            WindowOp::ToggleMaximize => {
+                let now = self
+                    .maximize_when_shown
+                    .unwrap_or_else(|| self.window.is_maximized());
+                self.maximize(!now);
+            }
             WindowOp::SetFullscreen { enabled } => self
                 .window
                 .set_fullscreen(enabled.then_some(Fullscreen::Borderless(None))),

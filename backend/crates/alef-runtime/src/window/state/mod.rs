@@ -63,6 +63,9 @@ pub(super) struct State {
     pub(super) content_frame: Rc<Cell<bool>>,
     /// The window has been shown (it starts hidden, see `try_reveal`).
     pub(super) revealed: bool,
+    /// Maximizing or restoring that was asked before the window was shown: an X11 window manager
+    /// ignores the request for a window that is not mapped, so it is repeated once it is.
+    pub(super) maximize_when_shown: Option<bool>,
     pub(super) created: Instant,
     pub(super) ready_since: Option<Instant>,
     pub(super) resize_pending: bool,
@@ -165,6 +168,9 @@ impl State {
             Some(pretended) => pretended.visible = true,
             None => {
                 self.window.set_visible(true);
+                if let Some(maximized) = self.maximize_when_shown.take() {
+                    self.window.set_maximized(maximized);
+                }
                 self.window.focus_window();
             }
         }

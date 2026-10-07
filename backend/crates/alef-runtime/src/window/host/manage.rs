@@ -272,6 +272,7 @@ impl App {
             frame_ready,
             content_frame,
             revealed: false,
+            maximize_when_shown: None,
             created: Instant::now(),
             ready_since: None,
             resize_pending: false,
