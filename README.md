@@ -119,4 +119,4 @@ Windows smoke: production без Rsbuild, native React/Tailwind, переклю�
 
 ## Лицензия
 
-`MIT OR Apache-2.0` — на выбор пользователя, см. `LICENSE-MIT` и `LICENSE-APACHE`. Исключения: `backend/patches/servo-paint`, `backend/patches/servo-paint-api` и файлы `backend/crates/alef-runtime/src/window/` с заголовком MPL-2.0 (на основе примера Servo) — MPL-2.0; `backend/patches/winit` — Apache-2.0; `backend/patches/surfman` — `MIT OR Apache-2.0 OR MPL-2.0` (лицензии оригинала, `LICENSE-*` в каталоге).
+`MIT OR Apache-2.0` — на выбор пользователя, см. `LICENSE-MIT` и `LICENSE-APACHE`. Исключения: `backend/patches/servo-paint`, `backend/patches/servo-paint-api` (текст — `LICENSE-MPL` в каталогах) и файлы `backend/crates/alef-runtime/src/window/` с заголовком MPL-2.0 (на основе примера Servo) — MPL-2.0; `backend/patches/winit` — Apache-2.0; `backend/patches/surfman` — `MIT OR Apache-2.0 OR MPL-2.0` (лицензии оригинала, `LICENSE-*` в каталоге).
