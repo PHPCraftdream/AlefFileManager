@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AlefError, notification } from '../../src/index.ts';
-import { DENIED, installRuntime } from '../fake-runtime.mjs';
+import { AlefError, notification } from '../../../src/index.ts';
+import { DENIED, installRuntime } from '../../fake-runtime.mjs';
 
 const replies = new Map();
 const runtime = installRuntime({

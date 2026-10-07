@@ -24,6 +24,33 @@ pub(in crate::data) mod space;
 mod watch;
 
 pub use dto::{DirEntry, FileKind, FileStat};
+
+/// A file another module fills (`http.download`): the path as `permissions.fs.write` lets it be written,
+/// or its place in the stand-in when the user chose one.
+pub(crate) struct Target(space::Place);
+
+impl Target {
+    /// The file, empty and open for writing.
+    pub(crate) fn create(&self) -> Result<fs::File, AlefError> {
+        ops::create_file(&self.0)
+    }
+
+    /// Where the bytes go; to remove what a failed download left.
+    pub(crate) fn real(&self) -> &std::path::Path {
+        &self.0.real
+    }
+}
+
+/// Authorizes `path` for writing; `shadow` is the folder of the stand-ins (`ModuleContext::shadow`).
+pub(crate) fn write_target(
+    shadow: &std::path::Path,
+    ctx: &alef_core::registry::context::CallContext,
+    path: &str,
+) -> Result<Target, AlefError> {
+    Space::new(shadow.to_path_buf())
+        .place(ctx, Permission::FsWrite, path, Reach::Through)
+        .map(Target)
+}
 use fault::{fault as io_fault, invalid};
 use space::Space;
 

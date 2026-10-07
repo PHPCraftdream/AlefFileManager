@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { nativeWindow } from '../../src/index.ts';
-import { installRuntime, jsonFrame, liveStream } from '../fake-runtime.mjs';
+import { nativeWindow } from '../../../src/index.ts';
+import { installRuntime, jsonFrame, liveStream } from '../../fake-runtime.mjs';
 
 const feed = liveStream();
 let revision = 4;

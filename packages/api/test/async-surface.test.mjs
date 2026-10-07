@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as api from '../src/index.ts';
-import { installRuntime, liveStream } from './fake-runtime.mjs';
+import { endFrame, installRuntime, liveStream } from './fake-runtime.mjs';
 
 const isClass = value => typeof value === 'function' && /^class\s/.test(Function.prototype.toString.call(value));
 const isThenable = value => typeof value?.then === 'function';
@@ -121,6 +121,8 @@ const ARGS = {
   'secrets.getText': ['service', 'account'],
   'secrets.set': ['service', 'account', 'probe'],
   'secrets.delete': ['service', 'account'],
+  'http.request': ['http://127.0.0.1/'],
+  'http.download': ['http://127.0.0.1/', '/probe'],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -136,6 +138,9 @@ installRuntime({
     if (request.url === 'native://call/runtime.events.subscribe') return { json: { stream: 5 } };
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/window.all') return { json: [] };
+    if (request.url === 'native://call/http.request') return { json: { status: 200, statusText: 'OK', url: 'http://127.0.0.1/', redirected: false, headers: [], stream: null } };
+    if (request.url === 'native://call/http.download') return { json: { stream: 9 } };
+    if (request.url === 'native://stream/9') return { chunks: [endFrame()] };
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
     if (request.url === 'native://call/secrets.get') return { json: null };
     if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
@@ -170,5 +175,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'sqlite', 'store', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'HttpResponse', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'sqlite', 'store', 'window']);
 });

@@ -11,7 +11,7 @@ alef-core = { path = "../alef-core" }
 bytes = "=1.12.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-tokio = { version = "=1.53.1", features = ["rt", "sync", "time", "net", "io-util"] }
+tokio = { version = "=1.53.1", features = ["rt", "sync", "time", "net", "io-util", "fs"] }
 ts-rs = { version = "=12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
 gethostname = "=1.1.0"
 sys-locale = "=0.3.2"
@@ -28,6 +28,12 @@ argon2 = "=0.5.3"
 scrypt = "=0.11.0"
 keyring-core = "=1.0.0"
 notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
+hyper = { version = "=1.11.1", default-features = false, features = ["client", "http1", "http2"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "=0.27.10", default-features = false, features = ["http1", "http2", "webpki-tokio", "aws-lc-rs"] }
+http-body-util = { version = "=0.1.5", features = ["channel"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "std"] }
+url = "=2.5.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = "=1.1.0"
@@ -40,4 +46,5 @@ zbus-secret-service-keyring-store = { version = "=1.0.1", features = ["crypto-ru
 
 [dev-dependencies]
 tempfile = "=3.27.0"
+hyper = { version = "=1.11.1", default-features = false, features = ["server", "http1"] }
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "test-util"] }

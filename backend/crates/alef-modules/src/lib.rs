@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod data;
 pub mod desktop;
+pub mod net;
 pub mod system;
 
 pub use data::secrets::{MemorySecrets, SecretsBackend, SystemSecrets};
@@ -119,6 +120,7 @@ pub fn register_all(
 ) -> Result<(), AlefError> {
     desktop::register(registry, host.clone(), context)?;
     data::register(registry, context)?;
+    net::register(registry, context)?;
     system::register(registry, host, context)
 }
 

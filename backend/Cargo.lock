@@ -119,12 +119,17 @@ dependencies = [
  "bytes",
  "fjall",
  "gethostname",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
  "image",
  "keyring-core",
  "notify",
  "opener",
  "ring",
  "rusqlite",
+ "rustls",
  "scrypt",
  "serde",
  "serde_json",
@@ -133,6 +138,7 @@ dependencies = [
  "tokio",
  "trash",
  "ts-rs",
+ "url",
  "windows-native-keyring-store",
  "zbus-secret-service-keyring-store",
 ]
@@ -3036,6 +3042,7 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
@@ -3073,6 +3080,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",

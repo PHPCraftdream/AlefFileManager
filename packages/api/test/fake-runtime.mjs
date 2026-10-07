@@ -99,7 +99,7 @@ function respond(reply, signal) {
  * Installs `location` and `fetch`. `handler(request)` answers everything except the handshake and
  * the authorization check; it returns `{ json | bytes | text | chunks | body, status }`.
  */
-export function installRuntime({ hash = '#capability=boot', token = 'tok', handler = () => undefined } = {}) {
+export function installRuntime({ hash = '#capability=boot', token = 'tok', handler = () => undefined, limits = {} } = {}) {
   const requests = [];
   globalThis.location = { hash };
   globalThis.fetch = async (url, init = {}) => {
@@ -111,7 +111,7 @@ export function installRuntime({ hash = '#capability=boot', token = 'tok', handl
     if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
     let reply;
     if (request.url === 'native://call/runtime.hello') {
-      reply = headers.authorization === 'Bearer boot' ? { json: { ...INFO, token } } : { status: 403, json: DENIED };
+      reply = headers.authorization === 'Bearer boot' ? { json: { ...INFO, limits: { ...INFO.limits, ...limits }, token } } : { status: 403, json: DENIED };
     } else if (headers.authorization !== `Bearer ${token}`) {
       reply = { status: 403, json: DENIED };
     } else {

@@ -41,6 +41,7 @@ export {
 } from './data/sqlite.ts';
 export { secrets } from './data/secrets.ts';
 export { Store, store } from './data/store.ts';
+export { http, HttpResponse, type DownloadOptions, type HttpRequestOptions } from './net/http.ts';
 export {
   crypto,
   type Argon2Options,

@@ -96,6 +96,20 @@ pub(super) fn write_file(
         .map_err(fault)
 }
 
+/// A file made empty and open for writing, for a stream that arrives from elsewhere.
+pub(super) fn create_file(place: &Place) -> Result<fs::File, AlefError> {
+    place.prepare().map_err(fault)?;
+    if is_folder(place) {
+        return Err(coded(ErrorCode::IsADirectory));
+    }
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&place.real)
+        .map_err(fault)
+}
+
 pub(super) fn file_stat(meta: &Metadata) -> FileStat {
     FileStat {
         kind: kind_of(meta),

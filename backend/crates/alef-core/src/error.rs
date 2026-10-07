@@ -20,6 +20,8 @@ pub enum ErrorCode {
     Timeout,
     Closed,
     Busy,
+    /// The network failed: no connection, a name that does not resolve, a TLS handshake that failed.
+    Network,
     NotAvailable,
     ManifestInvalid,
     Internal,
@@ -39,6 +41,7 @@ impl ErrorCode {
             Self::Timeout => 408,
             Self::Closed => 410,
             Self::Busy => 429,
+            Self::Network => 502,
             Self::NotAvailable => 501,
             Self::Internal => 500,
         }
@@ -56,6 +59,7 @@ impl ErrorCode {
             Self::Timeout => "TIMEOUT",
             Self::Closed => "CLOSED",
             Self::Busy => "BUSY",
+            Self::Network => "NETWORK",
             Self::NotAvailable => "NOT_AVAILABLE",
             Self::ManifestInvalid => "MANIFEST_INVALID",
             Self::Internal => "INTERNAL",
@@ -168,6 +172,7 @@ mod tests {
             ErrorCode::Busy,
             ErrorCode::NotAvailable,
             ErrorCode::ManifestInvalid,
+            ErrorCode::Network,
             ErrorCode::Internal,
         ] {
             let json = serde_json::to_string(&code).expect("serialize");
@@ -223,6 +228,7 @@ mod tests {
             ErrorCode::Busy,
             ErrorCode::NotAvailable,
             ErrorCode::ManifestInvalid,
+            ErrorCode::Network,
             ErrorCode::Internal,
         ]
         .iter()
@@ -238,5 +244,6 @@ mod tests {
         assert_eq!(ErrorCode::NotFound.http_status(), 404);
         assert_eq!(ErrorCode::ManifestInvalid.http_status(), 400);
         assert_eq!(ErrorCode::Internal.http_status(), 500);
+        assert_eq!(ErrorCode::Network.http_status(), 502);
     }
 }
