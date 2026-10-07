@@ -58,13 +58,51 @@ fn fnv1a(text: &str) -> u64 {
     })
 }
 
+/// A Unix socket path has to be shorter than 104 bytes (macOS) or 108 (Linux, with the closing zero).
+#[cfg_attr(windows, allow(dead_code))]
+const SOCKET_PATH_LIMIT: usize = 100;
+
+/// The first of `candidates` in which a socket `name` fits; the last one when none does (the
+/// attempt to use it then says why it cannot be).
+#[cfg_attr(windows, allow(dead_code))]
+fn folder_that_fits(name: &str, candidates: Vec<PathBuf>) -> PathBuf {
+    candidates
+        .iter()
+        .find(|folder| folder.join(name).as_os_str().len() < SOCKET_PATH_LIMIT)
+        .or(candidates.last())
+        .cloned()
+        .unwrap_or_default()
+}
+
 impl Endpoint {
     pub(crate) fn of(context: &ModuleContext) -> Self {
         let identity = format!("{}|{}", context.paths.home.display(), context.app.id);
+        let key = format!("{:016x}", fnv1a(&identity));
         Self {
-            folder: context.paths.app_cache.join("instance"),
-            key: format!("{:016x}", fnv1a(&identity)),
+            folder: Self::folder_for(&key, &context.paths.app_cache),
+            key,
         }
+    }
+
+    /// Where the socket lives. The cache folder of an application with a long id or a deep home is
+    /// often too long for a socket path, so the folders that are private to the user and short are
+    /// tried first: the runtime folder of the session (Linux) and the temporary folder of the user
+    /// (macOS).
+    fn folder_for(key: &str, cache: &std::path::Path) -> PathBuf {
+        let mut candidates = Vec::new();
+        #[cfg(unix)]
+        {
+            let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .filter(|folder| folder.is_absolute() && folder.is_dir());
+            if let Some(runtime) = runtime {
+                candidates.push(runtime.join("alef"));
+            }
+            #[cfg(target_os = "macos")]
+            candidates.push(std::env::temp_dir().join("alef"));
+        }
+        candidates.push(cache.join("instance"));
+        folder_that_fits(&format!("{key}.sock"), candidates)
     }
 }
 
@@ -249,6 +287,12 @@ mod platform {
                     // Nobody listens: the socket is left over from a process that died.
                     fs::remove_file(&path)?;
                 }
+                Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
+                    return Err(io::Error::other(format!(
+                        "the socket path is {} bytes long and a Unix socket takes fewer than 104",
+                        path.as_os_str().len()
+                    )));
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -430,6 +474,31 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert_eq!(host.count(), 1);
+    }
+
+    #[test]
+    fn the_socket_goes_to_the_first_folder_where_its_path_fits() {
+        let short = PathBuf::from("/run/user/1000/alef");
+        let long = PathBuf::from(format!("/home/{}/.cache/app/instance", "x".repeat(120)));
+        let name = "0123456789abcdef.sock";
+        assert_eq!(
+            folder_that_fits(name, vec![short.clone(), long.clone()]),
+            short
+        );
+        assert_eq!(
+            folder_that_fits(name, vec![long.clone(), short.clone()]),
+            short,
+            "the long one is passed over"
+        );
+        assert_eq!(
+            folder_that_fits(
+                name,
+                vec![long.clone(), PathBuf::from(format!("/{}", "y".repeat(110)))]
+            ),
+            PathBuf::from(format!("/{}", "y".repeat(110))),
+            "when nothing fits the last one is left to say why"
+        );
+        assert_eq!(folder_that_fits(name, Vec::new()), PathBuf::new());
     }
 
     #[cfg(unix)]

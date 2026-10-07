@@ -91,7 +91,8 @@ pub fn path_vars(root: &std::path::Path) -> PathVars {
     PathVars {
         app_data: at("data"),
         app_config: at("config"),
-        app_cache: at("cache"),
+        // Short: a Unix socket path of the single instance lives here, and it must not be long.
+        app_cache: std::env::temp_dir().join("alef-modules-cache"),
         home: at("home"),
         documents: at("documents"),
         downloads: at("downloads"),
