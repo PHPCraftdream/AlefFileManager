@@ -6,6 +6,8 @@ mod common;
 mod fs;
 mod handles;
 mod rights;
+mod sqlite;
+mod sqlite_files;
 mod store;
 
 use std::path::Path;

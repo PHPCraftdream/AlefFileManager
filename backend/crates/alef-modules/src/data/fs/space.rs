@@ -15,7 +15,7 @@ use alef_core::{
 
 /// A path as the application knows it and where its bytes are.
 #[derive(Debug, Clone)]
-pub(super) struct Place {
+pub(in crate::data) struct Place {
     /// The path as the application spelled it; the answers are given in these terms.
     pub shown: PathBuf,
     /// Where the bytes are: the path itself, or its place in the stand-in.
@@ -31,7 +31,7 @@ impl Place {
     }
 
     /// Makes the stand-in of the scope exist, empty at first: the scope is always a folder.
-    pub(super) fn prepare(&self) -> io::Result<()> {
+    pub(in crate::data) fn prepare(&self) -> io::Result<()> {
         match &self.root {
             Some(root) => fs::create_dir_all(root),
             None => Ok(()),
@@ -69,18 +69,18 @@ fn scope_folder(scope: &str) -> String {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct Space {
+pub(in crate::data) struct Space {
     /// Where the stand-ins of this application keep their content.
     shadow: PathBuf,
 }
 
 impl Space {
-    pub(super) fn new(shadow: PathBuf) -> Self {
+    pub(in crate::data) fn new(shadow: PathBuf) -> Self {
         Self { shadow }
     }
 
     /// Authorizes `path` for `permission` and says where it lies.
-    pub(super) fn place(
+    pub(in crate::data) fn place(
         &self,
         ctx: &CallContext,
         permission: Permission,

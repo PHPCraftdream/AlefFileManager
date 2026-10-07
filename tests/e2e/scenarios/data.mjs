@@ -16,6 +16,14 @@ const FS_CHECKS = [
   'fs-a-big-folder-comes-in-batches', 'fs-watch-tells-create-modify-and-remove',
 ];
 
+const SQLITE_CHECKS = [
+  'sqlite-schema-insert-and-query-with-every-kind-of-value', 'sqlite-a-transaction-commits-and-a-failing-one-rolls-back',
+  'sqlite-a-prepared-statement-runs-with-other-parameters', 'sqlite-a-hundred-thousand-rows-pass-in-order-through-iterate',
+  'sqlite-the-connection-is-busy-while-iterating-and-free-after', 'sqlite-errors-say-what-failed',
+  'sqlite-sql-cannot-reach-another-file-or-load-code', 'sqlite-a-database-closes-and-is-found-again-in-its-file',
+];
+const SQLITE_SUBSTITUTE_CHECKS = ['sqlite-a-stand-in-keeps-the-database-and-the-folder-stays-empty'];
+
 const STORE_ID = 'org.alef.e2e.modules.store';
 const STORE_CHECKS = {
   write: [
@@ -157,6 +165,70 @@ export function dataScenarios({ drive, exe, verbose }) {
         return result;
       } finally {
         rmSync(here.base, { recursive: true, force: true });
+      }
+    },
+
+    // A database in the scope the user allowed: the page works with it, and the runner opens the file itself.
+    async sqlite() {
+      const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-sqlite-'));
+      const root = join(base, 'root');
+      const outside = join(base, 'outside');
+      mkdirSync(root);
+      mkdirSync(outside);
+      try {
+        return await drive({
+          name: 'sqlite', app: 'modules/data/sqlite', replacements: { ROOT: root.replaceAll('\\', '/') },
+          targets: { mode: 'real', root, outside, many: 100000 },
+          env: { ALEF_HOME: join(base, 'home') },
+          expectedChecks: SQLITE_CHECKS,
+          judge: async () => {
+            const problems = [];
+            const file = join(root, 'app.db');
+            if (!existsSync(file)) return ['the database is not in the folder of the scope'];
+            if (filesBelow(outside).length !== 0) problems.push(`something was made outside the scope: ${filesBelow(outside)}`);
+            try {
+              const { DatabaseSync } = await import('node:sqlite');
+              const database = new DatabaseSync(file, { readOnly: true });
+              const count = database.prepare('SELECT count(*) AS n FROM items').get().n;
+              if (count !== 24) problems.push(`the file holds ${count} items, expected 24`);
+              const check = database.prepare('PRAGMA integrity_check').get().integrity_check;
+              if (check !== 'ok') problems.push(`integrity_check: ${check}`);
+              database.close();
+            } catch (error) {
+              if (error?.code !== 'ERR_UNKNOWN_BUILTIN_MODULE') problems.push(`the runner could not read the file: ${error.message}`);
+            }
+            return problems;
+          },
+        });
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+
+    // The user chose a stand-in: the database is in the folder of the runtime, the real folder stays empty.
+    async 'sqlite-substitute'() {
+      const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-sqlite-'));
+      const root = join(base, 'root');
+      const outside = join(base, 'outside');
+      mkdirSync(root);
+      mkdirSync(outside);
+      const home = join(base, 'home');
+      const scope = `${root.replaceAll('\\', '/')}/**`;
+      try {
+        return await drive({
+          name: 'sqlite-substitute', app: 'modules/data/sqlite', replacements: { ROOT: root.replaceAll('\\', '/') },
+          targets: { mode: 'substituted', root, outside },
+          env: { ALEF_HOME: home, ALEF_E2E_CONSENT: `fs.read:${scope}=substitute;fs.write:${scope}=substitute` },
+          expectedChecks: SQLITE_SUBSTITUTE_CHECKS,
+          judge: () => {
+            const problems = [];
+            if (filesBelow(root).length !== 0) problems.push(`the real folder changed: ${filesBelow(root)}`);
+            if (!filesBelow(join(home, 'shadow')).some(path => path.endsWith('app.db'))) problems.push('the database is not in the folder of the stand-in');
+            return problems;
+          },
+        });
+      } finally {
+        rmSync(base, { recursive: true, force: true });
       }
     },
 

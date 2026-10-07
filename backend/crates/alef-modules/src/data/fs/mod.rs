@@ -20,7 +20,7 @@ mod dto;
 mod fault;
 mod handle;
 mod ops;
-mod space;
+pub(in crate::data) mod space;
 mod watch;
 
 pub use dto::{DirEntry, FileKind, FileStat};

@@ -29,6 +29,16 @@ export {
   type WatchOptions,
   type WriteOptions,
 } from './data/fs.ts';
+export {
+  SqliteDatabase,
+  SqliteStatement,
+  SqliteTransaction,
+  sqlite,
+  type ExecResult,
+  type SqlParams,
+  type SqlValue,
+  type SqliteOpenOptions,
+} from './data/sqlite.ts';
 export { Store, store } from './data/store.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shell } from './desktop/shell.ts';
