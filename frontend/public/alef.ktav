@@ -1,0 +1,59 @@
+id: org.alef.filemanager
+name: Alef File Manager
+version:: 0.1.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        title: Alef File Manager
+        width: 1200
+        height: 800
+        decorations: false
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: [ $HOME/** ]
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}
+arguments: {
+    options: [
+        {
+            name: root
+            type: string
+            description: The folder the file manager opens first (inside the home folder); the home folder when omitted
+        }
+    ]
+}

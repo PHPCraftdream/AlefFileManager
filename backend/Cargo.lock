@@ -108,21 +108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alef-file-manager"
-version = "0.1.0"
-dependencies = [
- "alef-runtime",
- "dirs",
- "rustls",
- "serde",
- "serde_json",
- "surfman",
- "tempfile",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "alef-modules"
 version = "0.1.0"
 dependencies = [

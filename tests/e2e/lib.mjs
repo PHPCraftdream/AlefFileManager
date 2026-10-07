@@ -5,12 +5,21 @@ import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const here = dirname(fileURLToPath(import.meta.url));
 export const root = resolve(here, '..', '..');
 export const scratch = join(root, 'backend', 'target', `e2e-${process.pid}`);
+/** Where the runtime keeps the data of the application of this id: the folder `$APPDATA` names. */
+export function appDataOf(id) {
+  const home = homedir();
+  if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), id);
+  if (process.platform === 'darwin') return join(home, 'Library', 'Application Support', id);
+  return join(process.env.XDG_DATA_HOME ?? join(home, '.local', 'share'), id);
+}
+
 export const exeName = process.platform === 'win32' ? '.exe' : '';
 
 /**

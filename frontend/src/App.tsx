@@ -1,37 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { nativeApi, type HelloResponse } from './native/api';
+import { nativeApi, type AppInfo } from './native/api';
 import i18n, { languages, type Language } from './i18n';
-import { nativeWindow, on, type Unlisten, type WindowState } from '@alef-tron/api';
+import { nativeWindow, type Unlisten, type WindowState } from '@alef-tron/api';
 import TitleBar from './TitleBar';
 
 export default function App() {
   const { t } = useTranslation();
-  const [backend, setBackend] = useState<HelloResponse | null>(null);
+  const [backend, setBackend] = useState<AppInfo | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [windowState, setWindowState] = useState<WindowState | null>(null);
   const [windowError, setWindowError] = useState('');
-  const [eventsEnabled, setEventsEnabled] = useState(true);
-  const [receivedEvents, setReceivedEvents] = useState(0);
-  const [lastEvent, setLastEvent] = useState<HelloResponse | null>(null);
 
   const reportWindowError = useCallback((failure: unknown) => {
     setWindowError(failure instanceof Error ? failure.message : String(failure));
   }, []);
-
-  useEffect(() => {
-    if (!eventsEnabled) return;
-    const controller = new AbortController();
-    void on<HelloResponse>('backend.greeting', payload => {
-      setLastEvent(payload);
-      setReceivedEvents(count => count + 1);
-    }, { signal: controller.signal }).catch(failure => {
-      if (!controller.signal.aborted) reportWindowError(failure);
-    });
-    return () => controller.abort();
-  }, [eventsEnabled, reportWindowError]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -49,11 +34,11 @@ export default function App() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void Promise.all([nativeApi.hello(controller.signal), nativeApi.preferences(controller.signal)])
-      .then(async ([hello, preferences]) => {
+    void Promise.all([nativeApi.info(controller.signal), nativeApi.preferences(controller.signal)])
+      .then(async ([info, preferences]) => {
         if (controller.signal.aborted) return;
         await i18n.changeLanguage(preferences.language);
-        if (!controller.signal.aborted) setBackend(hello);
+        if (!controller.signal.aborted) setBackend(info);
       })
       .catch(failure => {
         if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : String(failure));
@@ -66,7 +51,7 @@ export default function App() {
     setLoading(true);
     setError('');
     try {
-      setBackend(await nativeApi.hello());
+      setBackend(await nativeApi.info());
     } catch (failure) {
       setBackend(null);
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -108,7 +93,7 @@ export default function App() {
           ) : backend ? (
             <>
               <p className="font-medium text-[#8fe4bc]">{t('connected')}</p>
-              <p className="mt-1 text-sm text-[#a3bac9]">{t('identity', { pid: backend.process_id, engine: backend.engine })}</p>
+              <p className="mt-1 text-sm text-[#a3bac9]">{t('identity', { name: backend.name, version: backend.version, runtime: backend.runtimeVersion })}</p>
             </>
           ) : null}
         </div>
@@ -143,14 +128,8 @@ export default function App() {
         </fieldset>
         <p className="mt-3 text-sm text-[#a3bac9]" aria-live="polite">{t(saving ? 'saving' : 'saved')}</p>
         <div className="mt-6 border-t border-[#294455] pt-4 text-sm text-[#a3bac9]">
-          <p aria-live="polite">{t('eventsReceived', { count: receivedEvents })}</p>
-          {lastEvent && <p className="mt-1">{lastEvent.message}</p>}
-          <button type="button" onClick={() => setEventsEnabled(enabled => !enabled)}
-            className="mt-2 rounded-md border border-[#294455] px-3 py-2">
-            {t(eventsEnabled ? 'unsubscribeEvents' : 'subscribeEvents')}
-          </button>
           {windowState && (
-            <p className="mt-4" aria-live="polite">
+            <p aria-live="polite">
               {t('windowState', { width: windowState.width, height: windowState.height,
                 mode: t(windowState.maximized ? 'windowMaximized' : 'windowNormal') })}
             </p>

@@ -94,11 +94,13 @@ sqlite.open(path, { readonly?, create? }): Promise<Database>    // путь в s
 
 ## Перевод File Manager
 
-1. Список каталога: `nativeApi.listDirectory` → `fs.readDir` + `fs.stat`; корень — из `app.args()` (`--root`) или `path.home()`; ограничение корнем — scope `fs.read` в манифесте File Manager.
-2. Настройки языка: `preferences.get/set` → `store.get/set('language')`; миграция существующих данных Fjall (тот же формат или одноразовый перенос).
-3. Приветствие `hello` и событие `backend.greeting` — удалить или заменить на `app.info`.
-4. `apps/file-manager/alef.ktav`: окна, `external` закрыт, `fs.read` — корни.
-5. Удалить `backend/src`; File Manager запускается генерическим `alef --app apps/file-manager`.
+Сделано (M3.6):
+
+1. Список каталога: `nativeApi.listDirectory` → `fs.readDir`; корень — `--root` из `app.args()` или `path.home()`; ограничение корнем — scope `fs.read: [ $HOME/** ]` в манифесте (прежний корень по `--root` вне дома теперь не открыть: право выдает пользователь на этапе согласия). Интерфейс список пока не вызывает.
+2. Настройки языка: `preferences.get/set` → `store.get/set('language')` с `flush`; неизвестное или чужое значение читается как русский. **Миграция данных Fjall не делается:** там одна настройка языка, и путь данных другой (`$APPDATA` приложения `org.alef.filemanager`, а не `AlefFileManager/fjall`); старая папка не трогается.
+3. Приветствие `hello` → `app.info` (имя, версия, версия runtime в строке «личность»); событие `backend.greeting` и его демо в странице (счетчик, переключатель подписки) удалены: поток событий остается в состоянии окна (`nativeWindow.watch`).
+4. Приложение — каталог `frontend`: манифест и `icon.png` в `frontend/public` (rsbuild копирует их в `frontend/dist`); `alef --app frontend/dist` (`npm start`) и `alef --app frontend/public --dev-url http://127.0.0.1:3000/` (`npm run dev`). Окно без рамки 1200 × 800, `external` закрыт.
+5. `backend/src` удален, `backend/Cargo.toml` — виртуальный workspace; CI собирает и выкладывает бинарник `alef`. Проверки: `frontend/test/native-api.test.mjs` (язык, `info`, список) и `tests/e2e/boot-file-manager.mjs` (запуск `alef` на копии приложения под своим id: `app.info`, `store.get`, поток событий, `window.apply`).
 
 ## Структура кода
 

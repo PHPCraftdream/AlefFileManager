@@ -36,19 +36,19 @@ jobs:
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: alef-file-manager.exe
+            bin: alef.exe
           - name: macos-arm64
             os: macos-14
             target: aarch64-apple-darwin
-            bin: alef-file-manager
+            bin: alef
           - name: macos-x64
             os: macos-15-intel
             target: x86_64-apple-darwin
-            bin: alef-file-manager
+            bin: alef
           - name: linux-x64
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            bin: alef-file-manager
+            bin: alef
     steps:
       - uses: actions/checkout@v4
 
@@ -205,7 +205,7 @@ jobs:
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: alef-file-manager-${{ matrix.name }}
+          name: alef-${{ matrix.name }}
           path: backend/target/debug/${{ matrix.bin }}
           if-no-files-found: error
 

@@ -7,7 +7,7 @@ import { closeSync, createReadStream, existsSync, ftruncateSync, mkdirSync, mkdt
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { prepareSite, startApp, verdictOf } from '../lib.mjs';
+import { appDataOf, prepareSite, startApp, verdictOf } from '../lib.mjs';
 
 const FS_CHECKS = [
   'fs-text-and-bytes-round-trip-with-unicode', 'fs-stat-readdir-rename-copy-and-remove',
@@ -51,14 +51,6 @@ const STORE_CHECKS = {
   ],
   read: ['store-what-the-first-run-kept-is-there-after-the-restart', 'store-it-goes-on-working-after-the-restart'],
 };
-
-/** Where the runtime keeps the data of the application of this id: the folder `$APPDATA` names. */
-function appDataOf(id) {
-  const home = os.homedir();
-  if (process.platform === 'win32') return join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), id);
-  if (process.platform === 'darwin') return join(home, 'Library', 'Application Support', id);
-  return join(process.env.XDG_DATA_HOME ?? join(home, '.local', 'share'), id);
-}
 
 const COPY_SIZE = 96 * 1024 * 1024 + 4321;
 const MANY = 2500;

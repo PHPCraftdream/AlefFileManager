@@ -21,26 +21,26 @@ npm run test:rust
 ```
 
 - `build`: TypeScript/Rsbuild production frontend и Rust workspace.
-- `start`: ранее собранный native executable; Rsbuild не нужен.
+- `start`: `alef --app frontend/dist` на ранее собранном приложении; Rsbuild не нужен.
 - `check`: Oxlint, лимиты структуры, TypeScript и Clippy всего workspace с ошибкой на warnings.
-- `lint:structure`: в нашем коде (`frontend/src`, `backend/src`, `backend/crates`, `scripts`, `packages`, `experiments`) не более 7 элементов в папке и не более 700 строк в файле (`scripts/check-structure.mjs`).
+- `lint:structure`: в нашем коде (`frontend/src`, `frontend/test`, `backend/crates`, `scripts`, `packages`, `tests`, `experiments`) не более 7 элементов в папке и не более 700 строк в файле (`scripts/check-structure.mjs`).
 - `test:rust`: Rust-тесты приложения и runtime.
 - `dev:web`: только asset server; обычный браузер не имеет доступа к native bridge.
 
-Аргументы передаются через `--`, например:
+File Manager — обычное приложение Alef: манифест `frontend/public/alef.ktav` (rsbuild кладет его с иконкой `icon.png` в `frontend/dist`), запуск — генерический бинарник `alef` (`npm start`, `npm run dev`). Аргументы приложения передаются после имени скрипта, например:
 
 ```sh
-npm start -- --data-dir ./local-data --root ./files
+npm start -- --root ~/Documents
 ```
 
-По умолчанию Fjall находится в локальном каталоге данных пользователя `AlefFileManager/fjall`. `--frontend-dir` выбирает production assets; `--frontend-url` разрешает только HTTP frontend на `127.0.0.1` для разработки.
+`--root` — каталог, с которого начинается список; он должен лежать в домашнем каталоге (манифест разрешает чтение `$HOME/**`, право спрашивается у пользователя при первом запуске). Язык хранится в `store` приложения (`org.alef.filemanager`, каталог данных пользователя). Старые данные Fjall прежней версии (`AlefFileManager/fjall`) не переносятся: там была одна настройка языка.
 
 ## Структура и повторное использование
 
 - `backend/crates/alef-runtime`: независимый crate `alef-runtime`; Servo window host, приватный bridge, typed async command registry, события backend → browser, window API и универсальный async Fjall facade.
-- `backend/src`: только запуск Alef и его команды/настройки.
+- `frontend/public`: манифест `alef.ktav` и иконка File Manager; Rust-кода у приложения нет.
 - `frontend/src/native/runtime.ts`: универсальные `invoke`, `listen`/`Unlisten`, `nativeWindow` без зависимости от React или команд Alef.
-- `frontend/src/native/api.ts`: DTO и команды приложения поверх `invoke`.
+- `frontend/src/native/api.ts`: язык в `store`, каталог через `fs`, `app.info` — поверх `@alef-tron/api`; тест — `frontend/test/native-api.test.mjs`.
 - `backend/patches/servo-paint-api`: локальный Servo 0.6 fix активации GL context до загрузки GL функций; версия не изменена.
 - `backend/patches/surfman`: surfman 0.13.0 без `WS_VISIBLE` у служебного окна `SurfmanFalseWindow` (на Windows оно создаётся при первом GL-контексте для загрузки расширений WGL и мигало на экране ~30 мс при каждом запуске); версия не изменена, лицензии сохранены.
 - `backend/patches/winit`: winit 0.30.13 с Windows fixes для packed signed coordinates в `WM_NCLBUTTONDOWN`, чтения maximized state из HWND и drag lifecycle по `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE`. Это устраняет зависший drag guard после maximize/restore; версия не изменена, Apache-2.0 license сохранена. [Win32 LPARAM контракт](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nclbuttondown).

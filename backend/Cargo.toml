@@ -1,28 +1,7 @@
-[package]
-name = "alef-file-manager"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.88"
-license = "MIT OR Apache-2.0"
-publish = false
-
 [workspace]
 members = ["crates/alef-core", "crates/alef-modules", "crates/alef-runtime", "crates/alef"]
 exclude = ["patches/winit"]
 resolver = "2"
-
-[dependencies]
-alef-runtime = { path = "crates/alef-runtime" }
-url = "=2.5.8"
-rustls = "=0.23.45"
-serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.151"
-tokio = { version = "=1.53.1", features = ["rt-multi-thread", "fs", "sync", "macros"] }
-surfman = "=0.13.0"
-dirs = "=6.0.0"
-
-[dev-dependencies]
-tempfile = "=3.27.0"
 
 [profile.dev]
 debug = 0

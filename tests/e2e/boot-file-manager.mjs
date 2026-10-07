@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Boot check of the real File Manager: starts the binary with the built frontend (frontend/dist) and
-// ALEF_LOG_CALLS=1, then requires the startup traffic of the new API to succeed: handshake, app.hello,
-// preferences.get, the window snapshot and the event stream, with no failed request and no page error.
-//   node tests/e2e/boot-file-manager.mjs --exe <alef-file-manager binary> [--frontend-dir <dir>] [--timeout-s 60] [--verbose]
+// Boot check of the real File Manager: starts the generic binary `alef` on the application (the built
+// frontend, frontend/dist, holds its manifest and icon) with ALEF_LOG_CALLS=1, then requires the startup
+// traffic of the API to succeed: handshake, app.info, store.get, the window snapshot and the event stream,
+// with no failed request and no page error. The application runs from a copy under an id of its own, so
+// the data it makes is removed with the copy.
+//   node tests/e2e/boot-file-manager.mjs --exe <alef binary> [--frontend-dir <dir>] [--timeout-s 60] [--verbose]
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertQuiet, quiet } from './lib.mjs';
+import { appDataOf, assertQuiet, quiet } from './lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..');
@@ -16,21 +18,33 @@ const args = process.argv.slice(2);
 const option = name => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
 const verbose = args.includes('--verbose');
 const timeoutMs = Number(option('--timeout-s') ?? 60) * 1000;
-const exe = option('--exe') ?? join(root, 'backend', 'target', 'debug', process.platform === 'win32' ? 'alef-file-manager.exe' : 'alef-file-manager');
+const exe = option('--exe') ?? join(root, 'backend', 'target', 'debug', process.platform === 'win32' ? 'alef.exe' : 'alef');
 const frontend = resolve(option('--frontend-dir') ?? join(root, 'frontend', 'dist'));
 const scratch = join(root, 'backend', 'target', `boot-data-${process.pid}`);
+const id = `org.alef.filemanager.boot${process.pid}`;
+const appData = appDataOf(id);
 
 // Routes the File Manager UI must have used successfully (status 2xx) by the time it is up.
 const REQUIRED = [
-  /^call\/runtime\.hello$/, /^call\/app\.hello$/, /^call\/preferences\.get$/,
+  /^call\/runtime\.hello$/, /^call\/app\.info$/, /^call\/store\.get$/,
   /^call\/runtime\.events\.subscribe$/, /^stream\/\d+$/, /^call\/window\.apply$/,
 ];
 const SETTLE_MS = 3000;
 
 assertQuiet(exe);
+if (!existsSync(join(frontend, 'alef.ktav'))) throw new Error(`${frontend} has no alef.ktav: build the frontend first (npm run build:frontend)`);
 mkdirSync(scratch, { recursive: true });
-const child = spawn(exe, ['--frontend-dir', frontend, '--data-dir', scratch, '--root', root], {
-  env: { ...process.env, ALEF_LOG_CALLS: '1', ...(quiet ? { ALEF_E2E: '1', ALEF_E2E_QUIET: '1' } : {}) },
+const appDir = join(scratch, 'app');
+cpSync(frontend, appDir, { recursive: true });
+const manifest = join(appDir, 'alef.ktav');
+const text = readFileSync(manifest, 'utf8');
+if (!text.includes('id: org.alef.filemanager\n')) throw new Error('the manifest of the File Manager has another id');
+writeFileSync(manifest, text.replace('id: org.alef.filemanager\n', `id: ${id}\n`));
+const child = spawn(exe, ['--app', appDir], {
+  env: {
+    ...process.env, ALEF_LOG_CALLS: '1', ALEF_E2E: '1', ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '*=allow',
+    ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}),
+  },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 
@@ -45,6 +59,7 @@ const finish = code => {
   clearTimeout(settled);
   child.kill();
   rmSync(scratch, { recursive: true, force: true });
+  if (appData.endsWith(id)) rmSync(appData, { recursive: true, force: true });
   process.exitCode = code;
 };
 
