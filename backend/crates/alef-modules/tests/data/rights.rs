@@ -330,3 +330,33 @@ async fn what_a_stand_in_copies_in_or_out_is_real_on_the_side_that_is_real() {
         ErrorCode::NotFound
     );
 }
+
+#[tokio::test]
+async fn the_answers_use_the_spelling_of_the_path_the_application_used() {
+    let scope = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let alias = outside.path().join("alias");
+    if !link_to_folder(scope.path(), &alias) {
+        eprintln!("skipped: this account cannot create symbolic links");
+        return;
+    }
+    fs::write(scope.path().join("a.txt"), "a").unwrap();
+    // The scope is the real folder; the application reaches it by another name.
+    let app = fixture_in(scope.path(), Decision::Allow).await;
+    let listing = app.call("fs.readDir", at(&alias)).await.unwrap();
+    assert_eq!(
+        listing[0]["path"],
+        json!(alias.join("a.txt").to_string_lossy()),
+        "the entry is named under the name the application used"
+    );
+    assert_eq!(read(&app, &alias.join("a.txt")).await.unwrap(), b"a");
+}
+
+#[cfg(any(unix, windows))]
+fn link_to_folder(target: &Path, at: &Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, at);
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(target, at);
+    made.is_ok()
+}

@@ -2,7 +2,10 @@
 //! Where a path of the application lies on the disk. What the user allowed is the path itself; what
 //! he substituted is a place in the folder the runtime keeps for the stand-in, the same path inside
 //! the same scope, so that nothing but the place differs and the application is never told it.
-use std::{fs, io, path::PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use alef_core::{
     registry::context::CallContext,
@@ -13,7 +16,7 @@ use alef_core::{
 /// A path as the application knows it and where its bytes are.
 #[derive(Debug, Clone)]
 pub(super) struct Place {
-    /// What the application calls the path; the answers are given in these terms.
+    /// The path as the application spelled it; the answers are given in these terms.
     pub shown: PathBuf,
     /// Where the bytes are: the path itself, or its place in the stand-in.
     pub real: PathBuf,
@@ -22,11 +25,27 @@ pub(super) struct Place {
 }
 
 impl Place {
+    #[cfg(test)]
+    pub(super) fn for_test(shown: PathBuf, real: PathBuf, root: Option<PathBuf>) -> Place {
+        Place { shown, real, root }
+    }
+
     /// Makes the stand-in of the scope exist, empty at first: the scope is always a folder.
     pub(super) fn prepare(&self) -> io::Result<()> {
         match &self.root {
             Some(root) => fs::create_dir_all(root),
             None => Ok(()),
+        }
+    }
+
+    /// What the application calls a path the disk reports for this place: the path itself, or, for a
+    /// stand-in, the same place inside the scope; `None` for a path the place does not hold.
+    pub(super) fn shown_path(&self, found: &Path) -> Option<PathBuf> {
+        match found.strip_prefix(&self.real) {
+            Ok(inside) => Some(self.shown.join(inside)),
+            // A real place may be reported in another spelling of the same path: better told than lost.
+            Err(_) if self.root.is_none() => Some(found.to_path_buf()),
+            Err(_) => None,
         }
     }
 
@@ -73,15 +92,15 @@ impl Space {
                 .authorize_at(permission, Some(path), &ctx.grants(), reach)?;
         Ok(match authorized.shadow {
             None => Place {
-                real: authorized.path.clone(),
-                shown: authorized.path,
+                real: authorized.path,
+                shown: PathBuf::from(path),
                 root: None,
             },
             Some(shadow) => {
                 let root = self.shadow.join(scope_folder(&shadow.scope));
                 Place {
                     real: root.join(&shadow.inside),
-                    shown: authorized.path,
+                    shown: PathBuf::from(path),
                     root: Some(root),
                 }
             }

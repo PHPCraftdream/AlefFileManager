@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Scenarios of the data modules (docs/stages/m3-data.md, "Приёмка"): `fs` against the real disk, with
 // the scope allowed and with a stand-in the user chose.
-import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { closeSync, createReadStream, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +10,20 @@ const FS_CHECKS = [
   'fs-text-and-bytes-round-trip-with-unicode', 'fs-stat-readdir-rename-copy-and-remove',
   'fs-outside-the-scope-is-denied-however-the-path-is-spelled', 'fs-a-link-that-leads-out-of-the-scope-leads-nowhere',
   'fs-a-scratch-file-and-a-picked-file-need-no-scope', 'fs-a-whole-file-is-for-small-files',
+  'fs-a-handle-reads-and-writes-pieces', 'fs-a-big-file-is-copied-through-streams-and-arrives-whole',
+  'fs-a-big-folder-comes-in-batches', 'fs-watch-tells-create-modify-and-remove',
 ];
+
+const COPY_SIZE = 96 * 1024 * 1024 + 4321;
+const MANY = 2500;
+
+/** The sha-256 of a file, read as a stream. */
+function sha256(path) {
+  return new Promise((resolvePromise, reject) => {
+    const hash = createHash('sha256');
+    createReadStream(path).on('data', chunk => hash.update(chunk)).on('error', reject).on('end', () => resolvePromise(hash.digest('hex')));
+  });
+}
 
 const SUBSTITUTE_CHECKS = [
   'fs-a-stand-in-starts-as-an-empty-folder', 'fs-a-stand-in-keeps-what-is-written-and-answers-like-a-disk',
@@ -43,12 +57,19 @@ function prepare() {
   } catch {
     // an account that may not make links: the page says so
   }
+  const many = join(root, 'many');
+  mkdirSync(many);
+  for (let index = 0; index < MANY; index += 1) writeFileSync(join(many, `f${String(index).padStart(5, '0')}.txt`), 'x');
+  const copySource = join(root, 'copy-source.bin');
+  const source = openSync(copySource, 'w');
+  for (let written = 0; written < COPY_SIZE; written += 1024 * 1024) writeSync(source, randomBytes(Math.min(1024 * 1024, COPY_SIZE - written)));
+  closeSync(source);
   const big = join(root, 'big.bin');
   const handle = openSync(big, 'w');
   ftruncateSync(handle, 64 * 1024 * 1024 + 1);
   closeSync(handle);
   return {
-    base, root, link, big,
+    base, root, link, big, many, copySource, outside,
     secret: join(outside, 'secret.txt'), picked: join(base, 'picked.txt'),
     scope: `${root.replaceAll('\\', '/')}/**`,
   };
@@ -62,11 +83,16 @@ export function dataScenarios({ drive }) {
       try {
         return await drive({
           name: 'fs', app: 'modules/data/fs', replacements: { ROOT: here.scope.slice(0, -3) },
-          targets: { mode: 'real', root: here.root, outside: here.secret, outsideName: 'outside', link: here.link, big: here.big },
+          targets: {
+            mode: 'real', root: here.root, outside: here.secret, outsideName: 'outside', outsideFolder: here.outside, link: here.link,
+            big: here.big, many: here.many, manyCount: MANY, copySource: here.copySource, copySize: COPY_SIZE,
+          },
           env: { ALEF_HOME: join(here.base, 'home'), ALEF_E2E_DIALOGS: JSON.stringify([{ open: [here.picked] }]) },
           expectedChecks: FS_CHECKS,
-          judge: () => {
+          judge: async () => {
             const problems = [];
+            const copied = join(here.root, 'work', 'copied.bin');
+            if (!existsSync(copied) || await sha256(copied) !== await sha256(here.copySource)) problems.push('the copy made through streams is not the file');
             const note = join(here.root, 'work', 'note.txt');
             if (!existsSync(note) || readFileSync(note, 'utf8') !== 'héllo — мир 🌍!') problems.push('the note is not on the disk as the page wrote it');
             if (readFileSync(here.secret, 'utf8') !== 'secret') problems.push('the file outside the scope was changed');

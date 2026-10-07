@@ -74,3 +74,17 @@ export type ParsedArgs = {
    * Arguments that are not options, in order.
    */
   positional: Array<string>, };
+
+/**
+ * One frame of the stream of `fs.watch`.
+ */
+export type WatchEvent = { kind: WatchKind,
+  /**
+   * The path as the application names it.
+   */
+  path: string, to?: string, };
+
+/**
+ * What happened to a path `fs.watch` watches.
+ */
+export type WatchKind = "create" | "modify" | "remove" | "rename" | "overflow";

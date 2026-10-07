@@ -46,3 +46,30 @@ pub struct DirEntry {
     #[ts(type = "number")]
     pub size: u64,
 }
+
+/// What happened to a path `fs.watch` watches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "modules.ts")]
+pub enum WatchKind {
+    Create,
+    Modify,
+    Remove,
+    /// `path` is the old name, `to` the new one when the system tells it.
+    Rename,
+    /// Events were lost: look at the folder again.
+    Overflow,
+}
+
+/// One frame of the stream of `fs.watch`.
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "modules.ts")]
+pub struct WatchEvent {
+    pub kind: WatchKind,
+    /// The path as the application names it.
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub to: Option<String>,
+}

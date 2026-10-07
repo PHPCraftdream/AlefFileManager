@@ -95,6 +95,86 @@ async function real(t, check) {
     if (!/fs\.open/.test(error.message)) throw new Error(`the hint: ${error.message}`);
     await expectCode('writing a big file whole', fs.writeBytes(join(dir, 'big.out'), new Uint8Array(64 * 1024 * 1024 + 1)), 'INVALID_ARGUMENT');
   });
+
+  await check('fs-a-handle-reads-and-writes-pieces', async () => {
+    const file = join(dir, 'handle.bin');
+    const handle = await fs.open(file, { read: true, write: true, create: true, truncate: true });
+    if (await handle.write(new TextEncoder().encode('0123456789')) !== 10) throw new Error('write says another count');
+    await handle.write(new TextEncoder().encode('AB'), 2);
+    const piece = new TextDecoder().decode(await handle.read(6, 0));
+    if (piece !== '01AB45') throw new Error(`read: ${piece}`);
+    if ((await handle.stat()).size !== 10) throw new Error('fstat');
+    await handle.truncate(4);
+    await handle.sync();
+    await handle.close();
+    if (await fs.readText(file) !== '01AB') throw new Error('what is in the file');
+    await expectCode('a closed handle', handle.stat(), 'NOT_FOUND');
+    const reading = await fs.open(file);
+    await expectCode('writing a handle opened for reading', reading.write(new Uint8Array(1)), 'PERMISSION_DENIED');
+    await reading.close();
+  });
+
+  await check('fs-a-big-file-is-copied-through-streams-and-arrives-whole', async () => {
+    const source = await fs.open(t.copySource);
+    const target = await fs.open(join(dir, 'copied.bin'), { write: true, create: true, truncate: true });
+    const started = performance.now();
+    await source.readable.pipeTo(target.writable);
+    await target.close();
+    await source.close();
+    const copied = await fs.stat(join(dir, 'copied.bin'));
+    if (copied.size !== t.copySize) throw new Error(`the copy has ${copied.size} bytes, not ${t.copySize}`);
+    return `${Math.round(t.copySize / 1048576)} MiB in ${Math.round(performance.now() - started)} ms`;
+  });
+
+  await check('fs-a-big-folder-comes-in-batches', async () => {
+    let count = 0;
+    const seen = new Set();
+    for await (const entry of fs.readDirStream(t.many)) {
+      count += 1;
+      seen.add(entry.name);
+      if (!entry.path.endsWith(entry.name)) throw new Error(`a path that is not the entry's: ${entry.path}`);
+    }
+    if (count !== t.manyCount || seen.size !== t.manyCount) throw new Error(`${count} entries, ${seen.size} different, expected ${t.manyCount}`);
+    await expectCode('a folder that is not there', (async () => { for await (const entry of fs.readDirStream(join(t.root, 'nothing'))) void entry; })(), 'NOT_FOUND');
+  });
+
+  await check('fs-watch-tells-create-modify-and-remove', async () => {
+    const folder = join(dir, 'watched');
+    await fs.mkdir(folder);
+    const events = [];
+    const stop = new AbortController();
+    const pump = (async () => {
+      try {
+        for await (const event of fs.watch(folder, { recursive: true, signal: stop.signal })) {
+          events.push(`${event.kind}:${event.path.split(/[\\/]/).pop()}`);
+        }
+      } catch (error) {
+        if (!stop.signal.aborted) throw error;
+      }
+    })();
+    // The watch starts when the loop asks for its first event, and how long that takes is not known:
+    // the page acts again and again until it hears what the act does.
+    const waitFor = async (predicate, what, act) => {
+      const deadline = performance.now() + 15000;
+      while (!events.some(predicate)) {
+        if (performance.now() > deadline) throw new Error(`no ${what} event, got ${JSON.stringify(events)}`);
+        await act();
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    };
+    const seen = join(folder, 'seen.txt');
+    let round = 0;
+    const write = () => fs.writeText(seen, String(round++));
+    await waitFor(event => event.endsWith(':seen.txt') && /^(create|modify)/.test(event), 'create', write);
+    await waitFor(event => event.startsWith('modify:seen.txt'), 'modify', write);
+    await waitFor(event => event.startsWith('remove:seen.txt'), 'remove', async () => {
+      if (await fs.exists(seen)) await fs.remove(seen);
+    });
+    stop.abort();
+    await pump;
+    await expectCode('a folder that is not there', (async () => { for await (const event of fs.watch(join(folder, 'missing'))) void event; })(), 'NOT_FOUND');
+    await expectCode('a folder outside the scope', (async () => { for await (const event of fs.watch(t.outsideFolder)) void event; })(), 'PERMISSION_DENIED');
+  });
 }
 
 async function substituted(t, check) {

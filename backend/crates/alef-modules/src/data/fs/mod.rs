@@ -18,8 +18,10 @@ use crate::{json, ModuleContext};
 
 mod dto;
 mod fault;
+mod handle;
 mod ops;
 mod space;
+mod watch;
 
 pub use dto::{DirEntry, FileKind, FileStat};
 use fault::{fault as io_fault, invalid};
@@ -51,6 +53,14 @@ fn yes() -> bool {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TreeArgs {
+    path: String,
+    #[serde(default)]
+    recursive: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchArgs {
     path: String,
     #[serde(default)]
     recursive: bool,
@@ -134,6 +144,57 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                 json(&blocking(move || ops::read_dir(&place)).await?)
             }
         })?;
+
+    let at = space.clone();
+    registry
+        .command::<PathArgs>("fs.readDirStream")?
+        .handler(move |ctx, args| {
+            let at = at.clone();
+            async move {
+                let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                let (place, entries) = blocking(move || {
+                    let entries = ops::open_dir(&place)?;
+                    Ok((place, entries))
+                })
+                .await?;
+                let (writer, id) = ctx.streams().open_outgoing();
+                let (batches, mut received) = tokio::sync::mpsc::channel(2);
+                let reading = tokio::task::spawn_blocking(move || {
+                    ops::send_batches(&place, entries, |batch| {
+                        batches.blocking_send(batch).is_ok()
+                    })
+                });
+                tokio::spawn(async move {
+                    while let Some(batch) = received.recv().await {
+                        let frame = serde_json::to_value(&batch).unwrap_or_default();
+                        if writer.send_json(frame).await.is_err() {
+                            return;
+                        }
+                    }
+                    match reading.await {
+                        Ok(Ok(())) => writer.end(),
+                        Ok(Err(error)) => writer.error(error),
+                        Err(error) => {
+                            writer.error(AlefError::new(ErrorCode::Internal, error.to_string()))
+                        }
+                    }
+                });
+                json(&serde_json::json!({ "stream": id.0 }))
+            }
+        })?;
+
+    let at = space.clone();
+    registry
+        .command::<WatchArgs>("fs.watch")?
+        .handler(move |ctx, args| {
+            let at = at.clone();
+            async move {
+                let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                watch::start(&ctx, place, args.recursive).await
+            }
+        })?;
+
+    handle::register(registry, &space)?;
 
     let at = space.clone();
     registry

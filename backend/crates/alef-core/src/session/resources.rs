@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-session resource ownership and explicit asynchronous teardown.
-use std::{future::Future, pin::Pin, sync::Mutex};
+use std::{any::Any, future::Future, pin::Pin, sync::Mutex};
 
 use crate::{
     error::{AlefError, ErrorCode},
@@ -9,7 +9,7 @@ use crate::{
 
 /// Session-owned handle (file, socket, process...) with explicit asynchronous close.
 /// Boxing the future keeps this trait object-safe; consuming `Box<Self>` prevents use after close.
-pub trait Resource: Send + 'static {
+pub trait Resource: Send + Any {
     /// Closes the resource, consuming it.
     fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
@@ -79,6 +79,19 @@ impl ResourceTable {
             .and_then(|(_, value)| value.as_deref())
             .ok_or_else(|| AlefError::new(ErrorCode::NotFound, "resource not found"))?;
         Ok(f(resource))
+    }
+    /// Runs `f` on the resource when it is a `T`; `NotFound` for an absent resource and for one of
+    /// another kind, so that a handle of one module is nothing to the commands of another.
+    pub fn with_as<T: Resource, R>(
+        &self,
+        id: ResourceId,
+        f: impl FnOnce(&T) -> R,
+    ) -> Result<R, AlefError> {
+        self.with(id, |resource| {
+            let any: &dyn Any = resource;
+            any.downcast_ref::<T>().map(f)
+        })?
+        .ok_or_else(|| AlefError::new(ErrorCode::NotFound, "resource not found"))
     }
     /// Removes and returns ownership of a resource.
     pub fn take(&self, id: ResourceId) -> Result<Box<dyn Resource>, AlefError> {
@@ -173,6 +186,27 @@ mod tests {
         timeout_close(&table).await;
         assert_eq!(*log.lock().expect("log"), vec!["b", "a"]);
         error_code(table.insert(resource("c", &log)), ErrorCode::Closed);
+    }
+    struct Other;
+    impl Resource for Other {
+        fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+    }
+    #[test]
+    fn a_resource_is_found_as_its_own_kind_and_as_nothing_else() {
+        let table = ResourceTable::new(3);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let a = table.insert(resource("a", &log)).expect("insert");
+        let name = table
+            .with_as::<Recording, _>(a, |r| r.name)
+            .expect("a Recording");
+        assert_eq!(name, "a");
+        error_code(table.with_as::<Other, _>(a, |_| ()), ErrorCode::NotFound);
+        error_code(
+            table.with_as::<Recording, _>(ResourceId(99), |_| ()),
+            ErrorCode::NotFound,
+        );
     }
     #[tokio::test]
     async fn taken_resource_is_not_closed_and_ids_are_never_reused() {

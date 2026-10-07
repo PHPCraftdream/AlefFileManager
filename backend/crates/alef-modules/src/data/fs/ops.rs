@@ -96,6 +96,17 @@ pub(super) fn write_file(
         .map_err(fault)
 }
 
+pub(super) fn file_stat(meta: &Metadata) -> FileStat {
+    FileStat {
+        kind: kind_of(meta),
+        size: size_of(meta),
+        modified: millis(meta.modified()),
+        accessed: millis(meta.accessed()),
+        created: millis(meta.created()),
+        readonly: meta.permissions().readonly(),
+    }
+}
+
 /// `follow`: a link is looked through (`stat`), or looked at (`lstat`).
 pub(super) fn stat(place: &Place, follow: bool) -> Result<FileStat, AlefError> {
     place.prepare().map_err(fault)?;
@@ -105,37 +116,62 @@ pub(super) fn stat(place: &Place, follow: bool) -> Result<FileStat, AlefError> {
         fs::symlink_metadata(&place.real)
     }
     .map_err(fault)?;
-    Ok(FileStat {
+    Ok(file_stat(&meta))
+}
+
+fn entry_of(place: &Place, entry: std::io::Result<fs::DirEntry>) -> Result<DirEntry, AlefError> {
+    let entry = entry.map_err(fault)?;
+    let meta = entry.metadata().map_err(fault)?;
+    let name = entry.file_name().to_string_lossy().into_owned();
+    Ok(DirEntry {
+        path: place.shown_entry(&name).to_string_lossy().into_owned(),
+        name,
         kind: kind_of(&meta),
         size: size_of(&meta),
-        modified: millis(meta.modified()),
-        accessed: millis(meta.accessed()),
-        created: millis(meta.created()),
-        readonly: meta.permissions().readonly(),
     })
 }
 
 pub(super) fn read_dir(place: &Place) -> Result<Vec<DirEntry>, AlefError> {
-    place.prepare().map_err(fault)?;
     let mut entries = Vec::new();
-    for entry in fs::read_dir(&place.real).map_err(fault)? {
-        let entry = entry.map_err(fault)?;
+    for entry in open_dir(place)? {
         if entries.len() >= MAX_ENTRIES {
             return Err(invalid(&format!(
                 "more than {MAX_ENTRIES} entries: read the folder with fs.readDirStream"
             )));
         }
-        let meta = entry.metadata().map_err(fault)?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        entries.push(DirEntry {
-            path: place.shown_entry(&name).to_string_lossy().into_owned(),
-            name,
-            kind: kind_of(&meta),
-            size: size_of(&meta),
-        });
+        entries.push(entry_of(place, entry)?);
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
+}
+
+/// How many entries of a big folder travel in one frame.
+const BATCH: usize = 500;
+
+/// Opens a folder for reading; the mistakes of the first look come now.
+pub(super) fn open_dir(place: &Place) -> Result<fs::ReadDir, AlefError> {
+    place.prepare().map_err(fault)?;
+    fs::read_dir(&place.real).map_err(fault)
+}
+
+/// Hands the entries of an opened folder to `send` in batches, in the order of the disk, until the
+/// folder ends or `send` says no (the one who reads has gone).
+pub(super) fn send_batches(
+    place: &Place,
+    entries: fs::ReadDir,
+    mut send: impl FnMut(Vec<DirEntry>) -> bool,
+) -> Result<(), AlefError> {
+    let mut batch = Vec::with_capacity(BATCH);
+    for entry in entries {
+        batch.push(entry_of(place, entry)?);
+        if batch.len() == BATCH && !send(std::mem::take(&mut batch)) {
+            return Ok(());
+        }
+    }
+    if !batch.is_empty() {
+        send(batch);
+    }
+    Ok(())
 }
 
 pub(super) fn mkdir(place: &Place, recursive: bool) -> Result<(), AlefError> {
