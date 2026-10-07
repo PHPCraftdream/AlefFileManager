@@ -275,7 +275,13 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                         // The page closed the stream, or the document went away: dropping the
                         // receiver tells the connection to stop reading.
                         Ok(rows) => {
-                            if writer.send_json(Value::Array(rows)).await.is_err() {
+                            // Credit the page does not give must not keep the thread of the
+                            // connection from ending when the database is closed.
+                            let sent = tokio::select! {
+                                sent = writer.send_json(Value::Array(rows)) => sent,
+                                _ = stopped.wait_for(|stopped| *stopped) => return,
+                            };
+                            if sent.is_err() {
                                 return;
                             }
                         }

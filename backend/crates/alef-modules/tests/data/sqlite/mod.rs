@@ -539,6 +539,10 @@ async fn a_database_closes_even_when_nobody_reads_the_rows_it_is_sending() {
         .await
         .unwrap();
     let _unread = stream_of(&started);
+    // Let the rows fill the window of the stream and the queue behind it: the sender then waits for
+    // credit that nobody gives. (Closing at once finds it still reading its first rows, which is the
+    // easy case: the hang was missed by this test for that reason.)
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     tokio::time::timeout(
         Duration::from_secs(20),
         app.call("sqlite.close", json!({ "db": db })),
