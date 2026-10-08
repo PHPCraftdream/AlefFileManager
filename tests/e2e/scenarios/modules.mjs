@@ -69,6 +69,13 @@ const USAGE_CASES = [
   { name: 'help works without a schema', app: 'core', tail: ['--help'], exit: 0, mentions: ['Usage: Alef e2e core [OPTIONS]', '-V, --version'] },
 ];
 
+const CLI_CHECKS = [
+  'cli-exec-runs-a-program-and-reports-its-code-and-output', 'cli-exec-feeds-stdin-and-captures-stderr',
+  'cli-exec-through-a-shell', 'cli-exec-times-out-and-kills-the-tree', 'cli-spawn-pipes-streams-both-ways',
+  'cli-kill-takes-down-the-grandchild', 'cli-rights-are-held', 'cli-exec-resolution-ignores-the-page-env',
+];
+const CLI_SUBSTITUTE_CHECKS = ['cli-exec-substituted-hangs-and-times-out-quickly'];
+
 export function moduleScenarios({ drive, exe, verbose }) {
   return {
     app: () => drive({
@@ -309,6 +316,42 @@ export function moduleScenarios({ drive, exe, verbose }) {
         return problems;
       },
     }),
+
+    // Programs of the page: exec (code, streams, shell, timeout, rights) and spawn (streams, kill of
+    // the tree); the temp folder of the run is the `fs.read` scope of the app. `cli-substitute` runs
+    // with the right `cli.exec:node` substituted: the call hangs and falls with TIMEOUT, nothing starts.
+    async cli() {
+      const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-cli-'));
+      const work = join(base, 'work');
+      mkdirSync(work);
+      try {
+        return await drive({
+          name: 'cli', app: 'modules/system/cli',
+          replacements: { WORK: work.replaceAll('\\', '/') },
+          targets: { mode: 'allowed', work, outside: base },
+          expectedChecks: CLI_CHECKS,
+        });
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
+
+    async 'cli-substitute'() {
+      const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-cli-sub-'));
+      const work = join(base, 'work');
+      mkdirSync(work);
+      try {
+        return await drive({
+          name: 'cli-substitute', app: 'modules/system/cli',
+          replacements: { WORK: work.replaceAll('\\', '/') },
+          targets: { mode: 'substituted', work },
+          env: { ALEF_E2E_CONSENT: 'cli.exec:node=substitute;*=allow' },
+          expectedChecks: CLI_SUBSTITUTE_CHECKS,
+        });
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    },
 
     // `--help`, `--version` and usage errors: decided from the manifest schema before a window opens.
     async arguments() {

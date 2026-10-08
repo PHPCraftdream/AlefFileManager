@@ -85,6 +85,15 @@ export {
 } from './data/crypto.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shell } from './desktop/shell.ts';
+export {
+  ChildProcess,
+  cli,
+  type ExecOptions,
+  type ExecResult as CliExecResult,
+  type KillSignal,
+  type SpawnOptions,
+  type WaitResult,
+} from './system/cli.ts';
 export { clipboard } from './system/clipboard.ts';
 export { notification, type NotificationOptions } from './system/notification.ts';
 export { path } from './system/path.ts';

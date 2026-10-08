@@ -11,7 +11,7 @@ alef-core = { path = "../alef-core" }
 bytes = "=1.12.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-tokio = { version = "=1.53.1", features = ["rt", "sync", "time", "net", "io-util", "fs"] }
+tokio = { version = "=1.53.1", features = ["rt", "sync", "time", "net", "io-util", "fs", "process"] }
 ts-rs = { version = "=12.0.1", features = ["serde-json-impl", "no-serde-warnings"] }
 gethostname = "=1.1.0"
 sys-locale = "=0.3.2"
@@ -41,6 +41,10 @@ url = "=2.5.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = "=1.1.0"
+windows-sys = { version = "=0.59.0", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.189"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "=1.0.2", features = ["keychain"] }

@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+import { AlefError } from '../core/errors.ts';
+import { call } from '../core/transport.ts';
+import { bytesOf, sinkOf } from '../core/web-stream.ts';
+import type { Cancelable } from '../desktop/app.ts';
+
+const encoder = new TextEncoder();
+const MAX_INPUT = 192 * 1024;
+
+export interface ExecOptions extends Cancelable {
+  shell?: boolean | 'powershell';
+  cwd?: string;
+  env?: Record<string, string>;
+  /** Milliseconds the process has; it ends with `TIMEOUT` after that. */
+  timeout?: number;
+  /**
+   * What the process reads on its standard input. It travels in the call body, so it is at most
+   * 192 KiB; more goes through `cli.spawn` and streams.
+   */
+  input?: string | Uint8Array;
+}
+
+export interface ExecResult {
+  code: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+}
+
+export type KillSignal = 'SIGTERM' | 'SIGKILL' | 'SIGINT';
+
+export interface SpawnOptions extends Cancelable {
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: 'pipe' | 'ignore';
+  stdout?: 'pipe' | 'ignore';
+  stderr?: 'pipe' | 'ignore';
+}
+
+export interface WaitResult {
+  code: number | null;
+  signal: string | null;
+}
+
+interface Opened {
+  process: number;
+  pid: number;
+  stdin: number | null;
+  stdout: number | null;
+  stderr: number | null;
+}
+
+/** A process that `cli.spawn` started: its streams carry the bytes with backpressure. */
+export class ChildProcess {
+  readonly pid: number;
+  readonly stdin: WritableStream<Uint8Array> | null;
+  readonly stdout: ReadableStream<Uint8Array> | null;
+  readonly stderr: ReadableStream<Uint8Array> | null;
+  #id: number;
+
+  constructor(opened: Opened) {
+    this.#id = opened.process;
+    this.pid = opened.pid;
+    this.stdin = opened.stdin === null ? null : sinkOf(opened.stdin);
+    this.stdout = opened.stdout === null ? null : bytesOf(opened.stdout);
+    this.stderr = opened.stderr === null ? null : bytesOf(opened.stderr);
+  }
+
+  /** Resolves when the process ends, with its exit code or the signal that stopped it. */
+  async wait(): Promise<WaitResult> {
+    return call<WaitResult>('cli.wait', { process: this.#id });
+  }
+
+  /** Asks the process to stop. */
+  async kill(signal?: KillSignal): Promise<void> {
+    await call<null>('cli.kill', { process: this.#id, signal });
+  }
+}
+
+/**
+ * Running other programs. `permissions.cli.exec` lists the programs they may run: `exec` takes a
+ * command line (a shell splits it, when `shell` says so), `spawn` a program and its arguments, and
+ * gives back a `ChildProcess` whose streams carry the bytes.
+ */
+export const cli = {
+  exec: async (commandLine: string, options: ExecOptions = {}): Promise<ExecResult> => {
+    const { shell, cwd, env, timeout, input, signal } = options;
+    if (typeof commandLine !== 'string' || commandLine.trim() === '') throw new AlefError('INVALID_ARGUMENT', 'exec needs a command line.');
+    const body = (input === undefined
+      ? undefined
+      : typeof input === 'string' ? encoder.encode(input) : input) as Uint8Array<ArrayBuffer> | undefined;
+    if (body !== undefined && body.length > MAX_INPUT) {
+      throw new AlefError('INVALID_ARGUMENT', 'input above 192 KiB does not fit a call: pass it through cli.spawn streams.');
+    }
+    return call<ExecResult>('cli.exec', { commandLine, shell, cwd, env: env && Object.entries(env), timeoutMs: timeout }, { signal, body });
+  },
+
+  spawn: async (program: string, args?: string[], options: SpawnOptions = {}): Promise<ChildProcess> => {
+    const { cwd, env, stdin, stdout, stderr, signal } = options;
+    if (typeof program !== 'string' || program === '') throw new AlefError('INVALID_ARGUMENT', 'spawn needs a program.');
+    return new ChildProcess(await call<Opened>('cli.spawn', { program, args, cwd, env: env && Object.entries(env), stdin, stdout, stderr }, { signal }));
+  },
+};

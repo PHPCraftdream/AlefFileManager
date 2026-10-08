@@ -127,6 +127,7 @@ dependencies = [
  "hyper-util",
  "image",
  "keyring-core",
+ "libc",
  "notify",
  "opener",
  "ring",
@@ -144,6 +145,7 @@ dependencies = [
  "url",
  "webpki-roots",
  "windows-native-keyring-store",
+ "windows-sys 0.59.0",
  "zbus-secret-service-keyring-store",
 ]
 
@@ -8882,6 +8884,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

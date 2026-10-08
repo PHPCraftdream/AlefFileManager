@@ -127,6 +127,18 @@ cli.pty(program, args, { cols, rows, cwd?, env? }): Promise<Pty>   // readable, 
 - Процессы — ресурсы сессии: при закрытии сессии дерево процессов завершается (Windows — Job Object; Unix — process group).
 - Sidecar: программы из каталога приложения (`$APP/bin/<name>`) — scope `sidecar:<name>`.
 
+**Как сделано (M4.5a)** — `alef-modules/src/system/cli/`, `packages/api/src/system/cli.ts`:
+
+- Команды `cli.exec`, `cli.spawn`, `cli.wait`, `cli.kill`. Право `permissions.cli.exec` с целью — программой: для `spawn` её `program`, для `exec` без оболочки первый токен командной строки; с оболочкой проверяются и оболочка (`cmd.exe`/`sh`/`powershell` по имени), и первый токен — два разрешения.
+- `exec` без оболочки режет командную строку по простым правилам (пробелы, двойные кавычки, ничего больше); с `shell: true` — `cmd.exe /C` (Windows) или `/bin/sh -c`; `shell: "powershell"` (только Windows) — `powershell.exe -NoProfile -Command`. Право не `*`: командная строка с оболочкой, где есть ``; & | < > $ ` ( ) { } % ^ ! * ? [ ] ~ #``, перевод строки, кавычка или обратная косая — `INVALID_ARGUMENT` («operators need permissions.cli.exec: [*]»); с `*` — всё можно.
+- Программа ищется по PATH самого runtime (и PATHEXT на Windows), запускается по найденному абсолютному пути; страница не может повлиять на поиск: пары env с именами PATH, PATHEXT, COMSPEC (без учёта регистра на Windows) и LD_*/DYLD_* отвергаются, если право не `*`. Программы нет — `NOT_FOUND`. Абсолютный путь берётся как есть, путь с разделителем без корня — не программа. На Windows расширения PATHEXT пробуются раньше имени без расширения: рядом с `npm.cmd` лежит `npm`, скрипт, который Windows не запускает.
+- `cwd` по умолчанию — cwd runtime; заданный должен существовать (`INVALID_ARGUMENT`) и проверяется правом `fs.read` страницы.
+- stdout и stderr — до 16 MiB каждый, UTF-8 lossy; больше — дерево убивается, вызов падает с `INVALID_ARGUMENT`. `timeoutMs` — по истечении дерево убивается, `TIMEOUT`. Тело вызова — stdin (до 192 KiB).
+- `spawn` — ресурс сессии: stdin — входящий поток (конец потока закрывает stdin ребёнка), stdout/stderr — исходящие с credit (конец пайпа — конец потока), «страница не читает быстрее, чем подтверждает». `wait` — один раз, после него ресурса нет; `kill` убивает всё дерево (Windows — Job Object с KILL_ON_JOB_CLOSE, Unix — новая группа процессов и сигнал группе; SIGTERM/SIGINT на Windows — `INVALID_ARGUMENT`) и не снимает ресурс. Закрытие документа убивает деревья сессии.
+- Подмена права — мёртвый запуск: вызов висит до своего `timeoutMs` (30 с без него) и падает с `TIMEOUT`, ничего не запускается.
+- Не сделано: pty, объявленные команды (`permissions.cli.commands`), sidecar.
+- Проверки (Windows): 20 модульных тестов правил (23 определены, 3 под одну ОС: разбор строки, каждый оператор оболочки, фильтр env, резолвер, пустой элемент PATH), 33 теста через реестр на `node` (34 определены, один только для Unix: stdout/stderr и код выхода, stdin и ребёнок, не читающий stdin, таймаут с убийством дерева, предел 16 MiB, нет программы, право и `*`, отказ операторов, env, cwd вне `fs.read` и подменённый cwd, потоки в обе стороны, backpressure, `wait` один раз, `kill` дерева, закрытие сессии, потомки без `wait`, подмены `exec`, оболочки и `spawn`), 10 тестов JS-обёртки; e2e `cli` (8 проверок) и `cli-substitute` (1) прошли, весь e2e и загрузка File Manager — тоже. Внуки в тестах запускаются с `detached: true` (иначе на Windows их убивает собственный Job Object `node`, а не наш), их жизнь проверяется по файлу-пульсу (Windows быстро отдаёт PID умершего процесса другому). Мутации: 62 в Rust, пойманы все, кроме одной, эквивалентной на Windows (ошибка записи в stdin ребёнка: буферизованный пайп tokio отдаёт её только в `shutdown`), её ловит тот же тест на Unix; две эквивалентные исключены (подменённое `*` — строжайшее решение подменяет и программу; kill при сбросе процесса — потомки уже убиты при выходе ребёнка), две лишние ветки кода удалены. 21 мутация JS-обёртки — все пойманы. Unix-ветки локально не запускались.
+
 ### Консольный режим `app`
 
 ```ts
@@ -143,7 +155,7 @@ app.exit(code): Promise<never>
 
 ```
 alef-modules/src/net/      mod.rs, http/ (mod.rs, client.rs, body.rs, spec.rs, server/ (mod.rs, guard.rs, files.rs, upgrade.rs)), socket/ (mod.rs, tcp.rs, udp.rs, tls.rs), websocket/ (mod.rs), headers.rs
-alef-modules/src/system/   cli/ (mod.rs, exec.rs, spawn.rs, pty.rs, tree.rs)
+alef-modules/src/system/   cli/ (mod.rs, exec.rs, spawn.rs, tree.rs)
 packages/api/src/net/      body.ts, http.ts, http-server.ts, socket.ts, websocket.ts, websocket-connection.ts
 packages/api/src/system/   cli.ts
 ```

@@ -17,7 +17,7 @@ export function pattern(size) {
 
 export async function until(predicate, ms, what) {
   const deadline = performance.now() + ms;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await sleep(25);
   }
