@@ -3,7 +3,11 @@
 //! gives back what it wrote; `cli.spawn` wires the pipes of a process to streams of the page;
 //! `cli.wait` and `cli.kill` watch it and take it down. A process is a whole tree: whatever the
 //! child starts goes with it, and a right the user substituted starts nothing at all.
+//! `cli.run` and `cli.start` do the same for a command the manifest declares, by name.
+//! `sidecar:<name>` is a program of the application (`bin/<name>`), never one found on `PATH`.
+mod commands;
 pub(crate) mod exec;
+mod sidecar;
 pub(crate) mod spawn;
 pub(crate) mod tree;
 
@@ -28,6 +32,21 @@ const HANG: Duration = Duration::from_secs(30);
 pub(crate) async fn dead(limit: Option<Duration>) -> AlefError {
     tokio::time::sleep(limit.unwrap_or(HANG)).await;
     AlefError::new(ErrorCode::Timeout, "the process did not start in time")
+}
+
+/// What `cli.exec` and `cli.run` answer with.
+fn run_reply(
+    out: &[u8],
+    err: &[u8],
+    code: Option<i32>,
+    signal: Option<String>,
+) -> Result<Reply, AlefError> {
+    json(&json!({
+        "code": code,
+        "signal": signal,
+        "stdout": String::from_utf8_lossy(out),
+        "stderr": String::from_utf8_lossy(err),
+    }))
 }
 
 fn invalid(message: &str) -> AlefError {
@@ -157,108 +176,94 @@ fn apply_signal(process: &spawn::Process, signal: KillSignal) {
 
 pub(crate) fn register(
     registry: &mut Registry,
-    _context: &crate::ModuleContext,
+    context: &crate::ModuleContext,
 ) -> Result<(), AlefError> {
+    let app = context.paths.app.clone();
+    let exec_app = app.clone();
+    let spawn_app = app.clone();
     registry
         .command::<ExecArgs>("cli.exec")?
         .permission(Permission::CliExec, |args| first_token(&args.command_line))
         .substitutes()
-        .handler(|ctx, args| async move {
-            use alef_core::security::permissions::Permission;
-            let limit = args.timeout_ms.map(Duration::from_millis);
-            if ctx.decision() == Decision::Substitute {
-                return Err(dead(limit).await);
+        .handler(move |ctx, args| {
+            let app = exec_app.clone();
+            async move {
+                use alef_core::security::permissions::Permission;
+                let limit = args.timeout_ms.map(Duration::from_millis);
+                if ctx.decision() == Decision::Substitute {
+                    return Err(dead(limit).await);
+                }
+                let env = spawn::check_env(args.env, wildcard(&ctx))?;
+                let (program_text, arguments) = match exec::shell_of(&args.shell)? {
+                    Some(shell) => {
+                        let shell_decision = ctx.permissions.check(
+                            Permission::CliExec,
+                            Some(shell.name()),
+                            &ctx.grants(),
+                        )?;
+                        if !wildcard(&ctx) && exec::needs_wildcard(&args.command_line) {
+                            return Err(invalid("operators need permissions.cli.exec: [*]"));
+                        }
+                        if shell_decision == Decision::Substitute {
+                            return Err(dead(limit).await);
+                        }
+                        sidecar::refuse_in_shell(first_token(&args.command_line).as_deref())?;
+                        let (program, arguments) = shell.command(&args.command_line);
+                        (program.to_owned(), arguments)
+                    }
+                    None => {
+                        let mut words = exec::split(&args.command_line)
+                            .ok_or_else(|| invalid("the command line has an unterminated quote"))?;
+                        if words.is_empty() {
+                            return Err(invalid("the command line is empty"));
+                        }
+                        let program = words.remove(0);
+                        (program, words)
+                    }
+                };
+                let cwd = cwd_of(&ctx, &args.cwd)?;
+                let program = sidecar::program(&app, &program_text)?;
+                let body = ctx.body().cloned();
+                let (out, err, code, signal) = exec::run(exec::Spec {
+                    program,
+                    args: arguments,
+                    cwd,
+                    env,
+                    body,
+                    limit,
+                })
+                .await?;
+                run_reply(&out, &err, code, signal)
             }
-            let env = spawn::check_env(args.env, wildcard(&ctx))?;
-            let (program_text, arguments) = match exec::shell_of(&args.shell)? {
-                Some(shell) => {
-                    let shell_decision = ctx.permissions.check(
-                        Permission::CliExec,
-                        Some(shell.name()),
-                        &ctx.grants(),
-                    )?;
-                    if !wildcard(&ctx) && exec::needs_wildcard(&args.command_line) {
-                        return Err(invalid("operators need permissions.cli.exec: [*]"));
-                    }
-                    if shell_decision == Decision::Substitute {
-                        return Err(dead(limit).await);
-                    }
-                    let (program, arguments) = shell.command(&args.command_line);
-                    (program.to_owned(), arguments)
-                }
-                None => {
-                    let mut words = exec::split(&args.command_line)
-                        .ok_or_else(|| invalid("the command line has an unterminated quote"))?;
-                    if words.is_empty() {
-                        return Err(invalid("the command line is empty"));
-                    }
-                    let program = words.remove(0);
-                    (program, words)
-                }
-            };
-            let cwd = cwd_of(&ctx, &args.cwd)?;
-            // Resolution uses the search path of the runtime, never the environment of the page.
-            let program = tree::resolve(
-                &program_text,
-                std::env::var_os("PATH").as_deref(),
-                std::env::var_os("PATHEXT").as_deref(),
-            )
-            .ok_or_else(|| {
-                AlefError::new(
-                    ErrorCode::NotFound,
-                    format!("the program {program_text} was not found"),
-                )
-            })?;
-            let body = ctx.body().cloned();
-            let (out, err, code, signal) = exec::run(exec::Spec {
-                program,
-                args: arguments,
-                cwd,
-                env,
-                body,
-                limit,
-            })
-            .await?;
-            json(&json!({
-                "code": code,
-                "signal": signal,
-                "stdout": String::from_utf8_lossy(&out),
-                "stderr": String::from_utf8_lossy(&err),
-            }))
         })?;
 
     registry
         .command::<SpawnArgs>("cli.spawn")?
         .permission(Permission::CliExec, |args| Some(args.program.clone()))
         .substitutes()
-        .handler(|ctx, args| async move {
-            if ctx.decision() == Decision::Substitute {
-                return Err(dead(None).await);
-            }
-            let env = spawn::check_env(args.env, wildcard(&ctx))?;
-            let cwd = cwd_of(&ctx, &args.cwd)?;
-            let program = tree::resolve(
-                &args.program,
-                std::env::var_os("PATH").as_deref(),
-                std::env::var_os("PATHEXT").as_deref(),
-            )
-            .ok_or_else(|| {
-                AlefError::new(
-                    ErrorCode::NotFound,
-                    format!("the program {} was not found", args.program),
+        .handler(move |ctx, args| {
+            let app = spawn_app.clone();
+            async move {
+                if ctx.decision() == Decision::Substitute {
+                    return Err(dead(None).await);
+                }
+                let env = spawn::check_env(args.env, wildcard(&ctx))?;
+                let cwd = cwd_of(&ctx, &args.cwd)?;
+                let program = sidecar::program(&app, &args.program)?;
+                let reply = spawn::spawn_command(
+                    &ctx.session,
+                    program,
+                    args.args.unwrap_or_default(),
+                    cwd,
+                    env,
+                    spawn::pipes_of(args.stdin, args.stdout, args.stderr),
                 )
-            })?;
-            let reply = spawn::spawn_command(
-                &ctx.session,
-                program,
-                args.args.unwrap_or_default(),
-                cwd,
-                env,
-                spawn::pipes_of(args.stdin, args.stdout, args.stderr),
-            )
-            .await?;
-            json(&reply)
+                .await?;
+                json(&reply)
+            }
         })?;
+
+    commands::register(registry, app)?;
 
     registry
         .command::<WaitArgs>("cli.wait")?

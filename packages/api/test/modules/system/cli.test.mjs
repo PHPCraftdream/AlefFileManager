@@ -24,6 +24,100 @@ const runtime = installRuntime({
   },
 });
 
+test('run transports declared params, options and binary or string stdin without a shell', async () => {
+  const result = { code: 3, signal: null, stdout: 'out', stderr: 'err' };
+  replies.set('cli.run', { json: result });
+  assert.deepEqual(await cli.run('hello', { value: 'a b' }, {
+    cwd: '/w', env: { A: 'b' }, timeout: 90, input: 'é', shell: true,
+  }), result);
+  assert.deepEqual(argsOf('cli.run'), { name: 'hello', params: { value: 'a b' }, cwd: '/w', env: [['A', 'b']], timeoutMs: 90 });
+  assert.deepEqual(runtime.calls('cli.run').at(-1).body, encode('é'));
+  await cli.run('hello');
+  assert.deepEqual(argsOf('cli.run'), { name: 'hello' });
+  for (const input of [new Uint8Array(192 * 1024), 'é'.repeat(96 * 1024)]) {
+    await cli.run('hello', {}, { input });
+    assert.equal(runtime.calls('cli.run').at(-1).body.length, 192 * 1024);
+  }
+  const before = runtime.calls('cli.run').length;
+  for (const input of [new Uint8Array(192 * 1024 + 1), 'é'.repeat(96 * 1024 + 1)]) {
+    await assert.rejects(cli.run('hello', undefined, { input }), { code: 'INVALID_ARGUMENT' });
+  }
+  assert.equal(runtime.calls('cli.run').length, before);
+});
+
+test('run and start validate names and string params before transport', async () => {
+  for (const method of ['run', 'start']) {
+    const before = runtime.calls(`cli.${method}`).length;
+    for (const name of ['', 'a\0b', null, undefined, 42]) {
+      await assert.rejects(cli[method](name), { code: 'INVALID_ARGUMENT' });
+    }
+    for (const params of [null, [], 42, 'x', { a: 1 }, { a: null }, { a: 'b\0c' }, { ['a\0b']: 'c' }]) {
+      await assert.rejects(cli[method]('hello', params), { code: 'INVALID_ARGUMENT' });
+    }
+    assert.equal(runtime.calls(`cli.${method}`).length, before);
+  }
+});
+
+test('start returns ChildProcess with stdin, output, wait and kill using the opened resource', async () => {
+  replies.set('cli.start', { json: { process: 10, pid: 4245, stdin: 71, stdout: 72, stderr: null } });
+  replies.set('cli.wait', { json: { code: 0, signal: null } });
+  streams.set(71, endless());
+  streams.set(72, { chunks: [join(binaryFrame(encode('declared')), endFrame())] });
+  const child = await cli.start('hello', { value: 'literal' }, { cwd: '/w', env: { A: 'b' }, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
+  assert.ok(child instanceof ChildProcess);
+  assert.equal(child.pid, 4245);
+  assert.equal(child.stderr, null);
+  assert.deepEqual(argsOf('cli.start'), { name: 'hello', params: { value: 'literal' }, cwd: '/w', env: [['A', 'b']], stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
+  assert.deepEqual(await readAll(child.stdout), ['declared']);
+  const writer = child.stdin.getWriter();
+  await writer.write(encode('in'));
+  assert.deepEqual(argsOf('runtime.stream.write'), { id: 71 });
+  assert.equal(decode(runtime.calls('runtime.stream.write').at(-1).body), 'in');
+  await writer.close();
+  writer.releaseLock();
+  await child.kill('SIGKILL');
+  assert.deepEqual(argsOf('cli.kill'), { process: 10, signal: 'SIGKILL' });
+  assert.deepEqual(await child.wait(), { code: 0, signal: null });
+  assert.deepEqual(argsOf('cli.wait'), { process: 10 });
+  replies.set('cli.start', { json: { process: 11, pid: 4246, stdin: null, stdout: null, stderr: null } });
+  const ignored = await cli.start('hello');
+  assert.deepEqual(argsOf('cli.start'), { name: 'hello' });
+  assert.equal(ignored.stdin, null);
+  assert.equal(ignored.stdout, null);
+  assert.equal(ignored.stderr, null);
+});
+
+for (const method of ['run', 'start']) {
+  test(`abort during ${method} reaches the runtime`, async () => {
+    const command = `cli.${method}`;
+    hold.add(command);
+    const controller = new AbortController();
+    const reached = new Promise(resolve => { onHold = resolve; });
+    const outcome = cli[method]('hello', undefined, { signal: controller.signal }).then(() => 'success', error => error?.name);
+    try {
+      await soon(reached);
+      assert.equal(runtime.calls(command).at(-1).signal, controller.signal);
+      controller.abort();
+      assert.equal(await soon(outcome), 'AbortError');
+    } finally {
+      controller.abort();
+      hold.delete(command);
+      onHold = () => {};
+    }
+  });
+
+  test(`${method} propagates native errors`, async () => {
+    replies.set(`cli.${method}`, { status: 504, json: { code: 'TIMEOUT', message: 'substituted', details: { name: 'hello' } } });
+    await assert.rejects(cli[method]('hello'), error => {
+      assert.ok(error instanceof AlefError);
+      assert.equal(error.code, 'TIMEOUT');
+      assert.equal(error.status, 504);
+      assert.deepEqual(error.details, { name: 'hello' });
+      return true;
+    });
+  });
+}
+
 const encode = text => new TextEncoder().encode(text);
 const decode = bytes => new TextDecoder().decode(bytes);
 const argsOf = command => runtime.argsOf(runtime.calls(command).at(-1));

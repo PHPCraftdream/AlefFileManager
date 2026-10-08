@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Executable scopes: `*`, a bare program name, or an absolute path (compared component-wise).
-use super::{clean, invalid, path};
+//! Executable scopes: `*`, a bare program name, an absolute path (compared component-wise) or
+//! `sidecar:<name>`.
+use super::{
+    clean, invalid, path,
+    sidecar::{is_sidecar_reference, sidecar_name},
+};
 use crate::AlefError;
 
 /// Path separators of the host OS; a backslash is an ordinary name character on Unix.
@@ -15,6 +19,8 @@ pub(crate) enum ExecScope {
     Name(String),
     /// Absolute path, compared by normalized components.
     Path(Vec<String>),
+    /// `sidecar:<name>`: the program `bin/<name>` of the application; never matches a plain name.
+    Sidecar(String),
 }
 
 fn drive_form(text: &str) -> bool {
@@ -68,6 +74,11 @@ impl ExecScope {
         if !clean(pattern) {
             return Err(invalid("invalid executable scope"));
         }
+        if is_sidecar_reference(pattern) {
+            return sidecar_name(pattern)
+                .map(|name| Self::Sidecar(name.to_owned()))
+                .ok_or_else(|| invalid("invalid sidecar name"));
+        }
         if absolute(pattern) {
             return components(pattern)
                 .map(Self::Path)
@@ -89,6 +100,9 @@ impl ExecScope {
             Self::Any => true,
             Self::Name(name) => {
                 !absolute(target) && !target.contains(SEPARATORS) && path::same(name, target)
+            }
+            Self::Sidecar(name) => {
+                sidecar_name(target).is_some_and(|actual| path::same(name, actual))
             }
             Self::Path(expected) => {
                 absolute(target)

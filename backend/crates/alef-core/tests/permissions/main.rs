@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Permission gating: closed-by-default booleans, environment names, window creation and error hygiene.
+mod commands;
 mod consent;
 
 use alef_core::{
@@ -12,11 +13,12 @@ use alef_core::{
 };
 use std::path::PathBuf;
 
-const ALL: [Permission; 12] = [
+const ALL: [Permission; 13] = [
     Permission::None,
     Permission::FsRead,
     Permission::FsWrite,
     Permission::CliExec,
+    Permission::CliCommand,
     Permission::NetHttp,
     Permission::NetSocket,
     Permission::ShellOpenExternal,

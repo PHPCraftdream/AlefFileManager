@@ -6,6 +6,7 @@ use super::{
     manifest::Permissions,
     scope::{
         canonical, canonical_entry,
+        command::{parse_cli, DeclaredCommand},
         exec::ExecScope,
         invalid,
         net::{SocketScope, UrlScope},
@@ -33,6 +34,8 @@ pub enum Permission {
     FsWrite,
     /// Run a program listed in `cli.exec`.
     CliExec,
+    /// Run a declared command (`cli.commands`); the target is its name.
+    CliCommand,
     /// HTTP(S)/WebSocket request to a `net.http` target.
     NetHttp,
     /// Raw socket to a `net.socket` target.
@@ -59,6 +62,7 @@ impl Permission {
             Self::FsRead => "fs.read",
             Self::FsWrite => "fs.write",
             Self::CliExec => "cli.exec",
+            Self::CliCommand => "cli.command",
             Self::NetHttp => "net.http",
             Self::NetSocket => "net.socket",
             Self::ShellOpenExternal => "shell.openExternal",
@@ -153,6 +157,7 @@ pub struct PermissionSet {
     read: Vec<Scoped<PathPattern>>,
     write: Vec<Scoped<PathPattern>>,
     exec: Vec<Scoped<ExecScope>>,
+    commands: Vec<DeclaredCommand>,
     http: Vec<Scoped<UrlScope>>,
     socket: Vec<Scoped<SocketScope>>,
     shell: Vec<Scoped<UrlScope>>,
@@ -264,10 +269,12 @@ impl PermissionSet {
                 }
             })
             .collect::<Result<_, _>>()?;
+        let commands = parse_cli(&policy.cli)?;
         Ok(Self {
             read: scoped(&policy.fs.read, |p| path_pattern(p, vars))?,
             write: scoped(&policy.fs.write, |p| path_pattern(p, vars))?,
             exec: scoped(&policy.cli.exec, ExecScope::parse)?,
+            commands,
             http: scoped(&policy.net.http, UrlScope::parse)?,
             socket: scoped(&policy.net.socket, SocketScope::parse)?,
             shell: scoped(&policy.shell.open_external, UrlScope::parse)?,
@@ -339,6 +346,11 @@ impl PermissionSet {
         let mut rights: Vec<Right> = rights_of("fs.read", &self.read)
             .chain(rights_of("fs.write", &self.write))
             .chain(rights_of("cli.exec", &self.exec))
+            .chain(
+                self.commands
+                    .iter()
+                    .map(|command| Right::scoped("cli.command", &command.name)),
+            )
             .chain(rights_of("net.http", &self.http))
             .chain(rights_of("net.socket", &self.socket))
             .chain(rights_of("shell.openExternal", &self.shell))
@@ -357,6 +369,22 @@ impl PermissionSet {
         rights.sort();
         rights.dedup();
         rights
+    }
+
+    /// The declared command called `name`; whether it may run is [`Self::check`] with
+    /// `Permission::CliCommand`.
+    pub fn command(&self, name: &str) -> Option<&DeclaredCommand> {
+        self.commands.iter().find(|command| command.name == name)
+    }
+
+    /// What the user is told about `right` where it is listed (the description and the command
+    /// line of a declared command); `None` for a right that says it all by itself.
+    pub fn describe(&self, right: &Right) -> Option<String> {
+        if right.permission != "cli.command" {
+            return None;
+        }
+        self.command(right.scope.as_deref()?)
+            .map(DeclaredCommand::summary)
     }
 
     /// Names of the environment variables the manifest exposes (`permissions.app.env`), sorted.
@@ -405,6 +433,14 @@ impl PermissionSet {
                     scope.matches(t)
                 })
             }),
+            Permission::CliCommand => {
+                target
+                    .filter(|name| self.command(name).is_some())
+                    .map(|name| {
+                        self.decided_by_user()
+                            .decision(&Right::scoped("cli.command", name))
+                    })
+            }
             Permission::NetHttp => target.and_then(|t| {
                 decided(&self.http, "net.http", &self.decided_by_user(), |scope| {
                     scope.matches(t)

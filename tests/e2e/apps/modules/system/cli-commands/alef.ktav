@@ -1,0 +1,76 @@
+id: org.alef.e2e.modules.cli.commands
+name: Alef e2e cli commands
+version:: 4.5.6
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 900
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: [ sidecar:node ]
+        commands: [
+            {
+                name: echo
+                program: node
+                args: [
+                    -e
+                    let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{process.stdout.write(process.argv[1]+':'+d);process.stderr.write('warn')})
+                    :: {prefix}
+                ]
+                description: Echo input with a literal prefix
+            }
+            {
+                name: bundled
+                program: sidecar:node
+                args: [
+                    -e
+                    process.stdout.write(process.argv[1])
+                    :: {value}
+                ]
+                description: Print a literal parameter using the bundled node
+            }
+            {
+                name: substituted
+                program: node
+                args: [ -e, process.exit(0) ]
+                description: Must never run
+            }
+        ]
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}

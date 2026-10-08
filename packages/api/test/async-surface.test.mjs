@@ -83,6 +83,8 @@ const ARGS = {
   'shell.showInFolder': ['/probe'],
   'shell.trash': ['/probe'],
   'notification.show': [{ title: 'probe' }],
+  'cli.run': ['hello'],
+  'cli.start': ['hello'],
   'cli.exec': ['node -v'],
   'cli.spawn': ['node'],
   'clipboard.readText': [],
@@ -155,8 +157,8 @@ installRuntime({
     if (request.url === 'native://call/socket.listen') return { json: { server: 2, accept: 21, localAddress: { host: '127.0.0.1', port: 3 } } };
     if (request.url === 'native://call/websocket.connect') return { json: { socket: 5, messages: 41, protocol: '', url: 'ws://127.0.0.1/' } };
     if (request.url === 'native://call/socket.udp') return { json: { socket: 3, messages: 31, localAddress: { host: '127.0.0.1', port: 4 } } };
-    if (request.url === 'native://call/cli.exec') return { json: { code: 0, signal: null, stdout: '', stderr: '' } };
-    if (request.url === 'native://call/cli.spawn') return { json: { process: 9, pid: 42, stdin: 91, stdout: 92, stderr: 93 } };
+    if (/^native:\/\/call\/cli\.(exec|run)$/.test(request.url)) return { json: { code: 0, signal: null, stdout: '', stderr: '' } };
+    if (/^native:\/\/call\/cli\.(spawn|start)$/.test(request.url)) return { json: { process: 9, pid: 42, stdin: 91, stdout: 92, stderr: 93 } };
     if (/^native:\/\/stream\/(11|21|31|41|51|91|92|93)$/.test(request.url)) return { chunks: [endFrame()] };
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
     if (request.url === 'native://call/secrets.get') return { json: null };

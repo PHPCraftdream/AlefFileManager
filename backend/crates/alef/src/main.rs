@@ -6,8 +6,8 @@ use alef_core::{error::AlefError, security::consent::ConsentStore};
 use alef_launch::{
     args::{parse_args, Command, Launch, USAGE},
     consent::{
-        ask::AppSummary, enforce, identity_of, runtime_home, settle, shadow_folder, store, watch,
-        Asker, WATCH_EVERY,
+        ask::AppSummary, enforce, identity_of, runtime_home, settle_with, shadow_folder, store,
+        watch, Asker, WATCH_EVERY,
     },
     permissions,
     plan::{load_manifest, make_plan, path_vars},
@@ -190,9 +190,10 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         name: plan.manifest.name.clone(),
         version: plan.manifest.version.clone(),
     };
-    let settled = settle(
+    let settled = settle_with(
         &summary,
         &plan.permissions.rights(),
+        &|right| plan.permissions.describe(right),
         decisions.load(&identity)?,
         &asker,
     )

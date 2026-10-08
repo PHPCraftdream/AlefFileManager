@@ -58,6 +58,7 @@ section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04e
 fieldset { border: 0; margin: 0; padding: 0; display: flex; gap: 12px; }
 fieldset label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
 
+.detail { grid-column: 1 / -1; color: var(--muted); font-size: 12px; word-break: break-word; }
 .risk { grid-column: 1 / -1; background: var(--warn-bg); color: var(--warn); border-radius: 6px; padding: 6px 10px; display: flex; gap: 8px; align-items: center; }
 
 footer {

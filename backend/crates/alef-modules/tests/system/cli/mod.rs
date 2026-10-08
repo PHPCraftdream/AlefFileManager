@@ -2,8 +2,10 @@
 //! The `cli` module through the registry, against the `node` on the PATH: what a run gives back,
 //! the rights each command needs, and that every child and grandchild is gone when it must be.
 #![allow(dead_code)] // each test file uses a different part
+pub mod commands;
 pub mod edges;
 pub mod exec;
+pub mod sidecar;
 pub mod spawn;
 
 #[path = "../../net/shared/pipe.rs"]

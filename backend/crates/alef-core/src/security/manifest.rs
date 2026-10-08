@@ -53,8 +53,31 @@ pub struct FsPermissions {
 #[serde(deny_unknown_fields)]
 #[ts(export, export_to = "manifest.ts")]
 pub struct CliPermissions {
-    /// Executable commands.
+    /// Executable commands; omitted means no direct execution permission.
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<String>>")]
     pub exec: Vec<String>,
+    /// Fixed commands the page may run by name; each is a right of its own (`cli.command`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<CliCommand>>")]
+    pub commands: Vec<CliCommand>,
+}
+
+/// A declared command: the program and the argument template are fixed by the manifest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "manifest.ts")]
+pub struct CliCommand {
+    /// Lowercase letters, digits and hyphens, not starting with a hyphen; unique in the list.
+    pub name: String,
+    /// A bare program name, an absolute path or `sidecar:<name>`.
+    pub program: String,
+    /// Arguments; an element that is exactly `{param}` is replaced by the value the page passes
+    /// (`param`: a lowercase letter, then letters and digits), any other element is passed as is.
+    /// In Ktav write brace-enclosed elements as raw items (`:: {path}`).
+    pub args: Vec<String>,
+    /// Non-empty text shown to the user.
+    pub description: String,
 }
 
 /// Network permissions.
@@ -303,6 +326,7 @@ impl Manifest {
                 ));
             }
         }
+        super::command::parse_cli(&manifest.permissions.cli)?;
         if let Some(arguments) = &manifest.arguments {
             validate_arguments(arguments).map_err(|(path, reason)| invalid(&path, reason))?;
         }

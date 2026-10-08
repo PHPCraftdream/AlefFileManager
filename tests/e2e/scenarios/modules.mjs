@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Scenarios of the framework modules (docs/stages/m2-desktop.md, "Приёмка"): `app` (+ `quit`, `relaunch`,
 // the generated usage text, `instance`), the system modules `path` and `os`, `window` and `desktop` (`dialog`, `shell`, `clipboard`).
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import { join } from 'node:path';
@@ -110,6 +110,11 @@ const CLI_CHECKS = [
   'cli-exec-runs-a-program-and-reports-its-code-and-output', 'cli-exec-feeds-stdin-and-captures-stderr',
   'cli-exec-through-a-shell', 'cli-exec-times-out-and-kills-the-tree', 'cli-spawn-pipes-streams-both-ways',
   'cli-kill-takes-down-the-grandchild', 'cli-rights-are-held', 'cli-exec-resolution-ignores-the-page-env',
+];
+const CLI_COMMAND_CHECKS = [
+  'cli-run-declared-params-and-body', 'cli-start-declared-params-and-streams',
+  'cli-sidecar-declared-and-direct-launch', 'cli-declared-command-rights-are-separate',
+  'cli-declared-substituted-times-out',
 ];
 const CLI_SUBSTITUTE_CHECKS = ['cli-exec-substituted-hangs-and-times-out-quickly'];
 
@@ -466,6 +471,34 @@ export function moduleScenarios({ drive, exe, verbose }) {
       } finally {
         rmSync(base, { recursive: true, force: true });
       }
+    },
+
+    async 'cli-commands'() {
+      const site = prepareSite('cli-commands', 'modules/system/cli-commands');
+      let running;
+      const problems = [];
+      try {
+        const bin = join(site, 'bin');
+        mkdirSync(bin);
+        const node = join(bin, process.platform === 'win32' ? 'node.exe' : 'node');
+        copyFileSync(process.execPath, node);
+        if (process.platform !== 'win32') chmodSync(node, 0o755);
+        running = startApp({ exe, args: ['--app', site], verbose,
+          env: { ALEF_E2E_CONSENT: 'cli.command:substituted=substitute;*=allow' } });
+        await running.waitFor(line => line.includes('ALEF_E2E RESULT'), 120000, 'the declared command verdict');
+        const result = verdictOf(running.lines);
+        if (result?.[1] !== 'PASS') problems.push(`verdict ${result?.[1]}: ${result?.[2]}`);
+        for (const name of CLI_COMMAND_CHECKS) {
+          if (!running.lines.some(line => line.includes(` check ${name} ok `))) problems.push(`check without an ok line: ${name}`);
+        }
+      } catch (error) {
+        problems.push(error.message);
+      } finally {
+        running?.stop();
+        if (!running || await running.waitForClosed(30000)) rmSync(site, { recursive: true, force: true });
+        else problems.push('runtime did not close within 30 s; temporary site retained');
+      }
+      return { problems, lines: running?.lines ?? [] };
     },
 
     async 'cli-substitute'() {

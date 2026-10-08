@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `alef permissions`: what the user decided for an application, read and changed from the command
 //! line. The decisions are the user's: this is the same store the start of an application asks.
-use std::{fmt::Write as _, path::Path};
+use std::{fmt::Write as _, path::Path, sync::Arc};
 
 use alef_core::{
     error::AlefError,
-    security::consent::{Consent, ConsentStore, Identity, Right},
+    security::{
+        consent::{Consent, ConsentStore, Identity, Right},
+        permissions::PermissionSet,
+    },
 };
 
 use crate::{
@@ -15,12 +18,13 @@ use crate::{
 };
 
 /// Who the folder is and what its manifest asks for.
-fn asked_by(app_dir: &Path) -> Result<(Identity, Vec<Right>), AlefError> {
+fn asked_by(app_dir: &Path) -> Result<(Identity, Vec<Right>, Arc<PermissionSet>), AlefError> {
     let manifest = load_manifest(app_dir)?;
     let vars = path_vars(app_dir, &manifest.id)?;
     let id = manifest.id.clone();
     let plan = make_plan(app_dir, manifest, &vars)?;
-    Ok((identity_of(app_dir, &id)?, plan.permissions.rights()))
+    let rights = plan.permissions.rights();
+    Ok((identity_of(app_dir, &id)?, rights, plan.permissions))
 }
 
 fn io(error: std::io::Error) -> String {
@@ -42,7 +46,7 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
             }
         }
         PermissionsCommand::List { app: Some(app) } => {
-            let (identity, wanted) = asked_by(app).map_err(|e| e.message)?;
+            let (identity, wanted, permissions) = asked_by(app).map_err(|e| e.message)?;
             let consent = store.load(&identity).map_err(io)?;
             let _ = writeln!(out, "{}", identity.app_id);
             if wanted.is_empty() {
@@ -53,7 +57,11 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
                     Some(consent) if consent.decided(right) => word_of(consent.decision(right)),
                     _ => "undecided",
                 };
-                let _ = writeln!(out, "  {word}\t{right}");
+                let _ = write!(out, "  {word}\t{right}");
+                if let Some(detail) = permissions.describe(right) {
+                    let _ = write!(out, "\t{detail}");
+                }
+                out.push('\n');
             }
         }
         PermissionsCommand::Set {
@@ -61,7 +69,7 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
             right,
             decision,
         } => {
-            let (identity, wanted) = asked_by(app).map_err(|e| e.message)?;
+            let (identity, wanted, _) = asked_by(app).map_err(|e| e.message)?;
             if !wanted.contains(right) {
                 return Err(format!(
                     "{} does not ask for {right}; it asks for: {}",
@@ -82,7 +90,7 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
             let _ = writeln!(out, "{right}: {}", word_of(*decision));
         }
         PermissionsCommand::Reset { app } => {
-            let (identity, _) = asked_by(app).map_err(|e| e.message)?;
+            let (identity, _, _) = asked_by(app).map_err(|e| e.message)?;
             store.forget(&identity).map_err(io)?;
             let _ = writeln!(
                 out,
@@ -97,7 +105,7 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consent::fixtures::app;
+    use crate::consent::fixtures::{app, app_with_command};
     use alef_core::security::consent::{Decision, FileConsentStore};
 
     #[test]
@@ -140,6 +148,36 @@ mod tests {
         assert!(run(&list, &store)
             .unwrap()
             .contains("undecided\tapp.env:HOME"));
+    }
+
+    #[test]
+    fn a_declared_command_is_listed_with_its_description_and_command_line() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = FileConsentStore::new(scratch.path().join("store"));
+        let folder = app_with_command(scratch.path(), "org.example.one");
+        let list = PermissionsCommand::List {
+            app: Some(folder.clone()),
+        };
+        let listed = run(&list, &store).unwrap();
+        assert!(
+            listed.contains(
+                "  undecided\tcli.command:status\tstatus — Shows the state of the folder (git status --short {path})\n"
+            ),
+            "{listed}"
+        );
+        assert!(
+            listed.contains("  undecided\tcli.exec:sidecar:tool\n"),
+            "{listed}"
+        );
+        let set = PermissionsCommand::Set {
+            app: folder,
+            right: "cli.command:status".parse().unwrap(),
+            decision: Decision::Substitute,
+        };
+        run(&set, &store).unwrap();
+        assert!(run(&list, &store)
+            .unwrap()
+            .contains("  substitute\tcli.command:status\tstatus — "));
     }
 
     #[test]

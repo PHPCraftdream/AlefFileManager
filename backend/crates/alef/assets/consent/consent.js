@@ -120,6 +120,7 @@ function render(request) {
     const row = element('div', { class: 'right', 'data-right': textOf(right) },
       element('div', { class: 'what', text: textOf(right) }),
       choices);
+    if (right.detail !== undefined) row.append(element('div', { class: 'detail', text: right.detail }));
     if (right.risk !== undefined) {
       row.append(element('div', { class: 'risk' },
         element('span', { text: `⚠ ${right.risk}` }),

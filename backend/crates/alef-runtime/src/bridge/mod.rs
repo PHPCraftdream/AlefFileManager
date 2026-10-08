@@ -122,7 +122,10 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
             read: Vec::new(),
             write: Vec::new(),
         },
-        cli: CliPermissions { exec: Vec::new() },
+        cli: CliPermissions {
+            exec: Vec::new(),
+            commands: Vec::new(),
+        },
         net: NetPermissions {
             http: Vec::new(),
             socket: Vec::new(),

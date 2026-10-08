@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Fail-closed scope matching for filesystem paths, network targets and executables.
+pub mod command;
 pub(crate) mod exec;
 pub(crate) mod net;
 pub(crate) mod path;
+pub mod sidecar;
 
 use crate::{AlefError, ErrorCode};
 

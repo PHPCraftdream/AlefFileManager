@@ -32,6 +32,10 @@ pub struct AskedRight {
     /// Why the user should think twice (see `Right::risk`); allowing it needs a confirmation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk: Option<String>,
+    /// What the manifest says about the right (a declared command: its description and command
+    /// line); text of the application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// What the user decided before, if he did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<Decision>,
@@ -71,10 +75,12 @@ pub struct Answer {
     pub decisions: Vec<Answered>,
 }
 
-/// The question for every right the manifest asks, with what was decided before.
+/// The question for every right the manifest asks, with what was decided before; `describe` gives
+/// the detail a right is shown with.
 pub fn request_for(
     app: &AppSummary,
     wanted: &[Right],
+    describe: &dyn Fn(&Right) -> Option<String>,
     stored: &Consent,
     automation: Option<Value>,
 ) -> Request {
@@ -86,6 +92,7 @@ pub fn request_for(
                 permission: right.permission.clone(),
                 scope: right.scope.clone(),
                 risk: right.risk().map(str::to_owned),
+                detail: describe(right),
                 decision: stored.decided(right).then(|| stored.decision(right)),
             })
             .collect(),
@@ -226,7 +233,7 @@ mod tests {
         let wanted = rights();
         let mut stored = Consent::undecided();
         stored.set(wanted[2].clone(), Decision::Substitute);
-        let request = request_for(&app(), &wanted, &stored, None);
+        let request = request_for(&app(), &wanted, &|_| None, &stored, None);
         assert_eq!(request.rights.len(), 3);
         assert_eq!(request.rights[0].risk, None);
         assert!(
@@ -241,9 +248,28 @@ mod tests {
     }
 
     #[test]
+    fn a_right_is_shown_with_the_detail_the_manifest_gives_it() {
+        let wanted = [
+            Right::scoped("cli.command", "status"),
+            Right::plain("clipboard.read"),
+        ];
+        let describe = |right: &Right| {
+            (right.permission == "cli.command").then(|| "status — Shows (git status)".to_owned())
+        };
+        let request = request_for(&app(), &wanted, &describe, &Consent::undecided(), None);
+        assert_eq!(
+            request.rights[0].detail.as_deref(),
+            Some("status — Shows (git status)")
+        );
+        assert_eq!(request.rights[1].detail, None);
+        let text = serde_json::to_string(&request).unwrap();
+        assert_eq!(text.matches("detail").count(), 1, "{text}");
+    }
+
+    #[test]
     fn only_the_whole_answer_is_believed() {
         let wanted = rights();
-        let request = request_for(&app(), &wanted, &Consent::undecided(), None);
+        let request = request_for(&app(), &wanted, &|_| None, &Consent::undecided(), None);
         let whole = answer(&[
             (&wanted[0], Decision::Substitute, false),
             (&wanted[1], Decision::Allow, true),

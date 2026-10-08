@@ -61,6 +61,29 @@ export type Arguments = {
   positional?: ArgPositional, };
 
 /**
+ * A declared command: the program and the argument template are fixed by the manifest.
+ */
+export type CliCommand = {
+  /**
+   * Lowercase letters, digits and hyphens, not starting with a hyphen; unique in the list.
+   */
+  name: string,
+  /**
+   * A bare program name, an absolute path or `sidecar:<name>`.
+   */
+  program: string,
+  /**
+   * Arguments; an element that is exactly `{param}` is replaced by the value the page passes
+   * (`param`: a lowercase letter, then letters and digits), any other element is passed as is.
+   * In Ktav write brace-enclosed elements as raw items (`:: {path}`).
+   */
+  args: Array<string>,
+  /**
+   * Non-empty text shown to the user.
+   */
+  description: string, };
+
+/**
  * Clipboard permissions.
  */
 export type ClipboardPermissions = {
@@ -74,9 +97,13 @@ export type ClipboardPermissions = {
  */
 export type CliPermissions = {
   /**
-   * Executable commands.
+   * Executable commands; omitted means no direct execution permission.
    */
-  exec: Array<string>, };
+  exec?: Array<string>,
+  /**
+   * Fixed commands the page may run by name; each is a right of its own (`cli.command`).
+   */
+  commands?: Array<CliCommand>, };
 
 /**
  * External-resource policy; all fields are required.

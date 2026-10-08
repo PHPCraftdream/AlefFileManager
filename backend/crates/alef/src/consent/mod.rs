@@ -230,6 +230,18 @@ pub fn settle(
     stored: Option<Consent>,
     asker: &Asker,
 ) -> Result<Settled, Unanswered> {
+    settle_with(app, wanted, &|_| None, stored, asker)
+}
+
+/// [`settle`] where the window shows `describe(right)` next to a right (see
+/// `PermissionSet::describe`).
+pub fn settle_with(
+    app: &AppSummary,
+    wanted: &[Right],
+    describe: &dyn Fn(&Right) -> Option<String>,
+    stored: Option<Consent>,
+    asker: &Asker,
+) -> Result<Settled, Unanswered> {
     let mut consent = stored.unwrap_or_else(Consent::undecided);
     let new: Vec<Right> = consent.missing(wanted).into_iter().cloned().collect();
     let dropped = consent
@@ -263,7 +275,7 @@ pub fn settle(
             }
             Asker::Window { automation } => {
                 // The window shows every right with what was decided before; its answer is the answer to all.
-                let request = request_for(app, wanted, &consent, automation.clone());
+                let request = request_for(app, wanted, describe, &consent, automation.clone());
                 match ask_in_window(&request) {
                     Ok(Some(answers)) => {
                         for (right, decision) in answers {

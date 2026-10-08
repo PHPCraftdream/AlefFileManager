@@ -62,3 +62,27 @@ permissions: {{
     std::fs::write(folder.join(MANIFEST_FILE), manifest).unwrap();
     folder
 }
+
+/// [`app`] with the program `sidecar:tool` in `cli.exec` and the declared command `status`.
+pub fn app_with_command(dir: &Path, id: &str) -> PathBuf {
+    let folder = app(dir, id);
+    let file = folder.join(MANIFEST_FILE);
+    let text = std::fs::read_to_string(&file).unwrap().replace(
+        "exec: []",
+        "exec: [ sidecar:tool ]
+        commands: [
+            {
+                name: status
+                program: git
+                args: [
+                    status
+                    --short
+                    :: {path}
+                ]
+                description: Shows the state of the folder
+            }
+        ]",
+    );
+    std::fs::write(file, text).unwrap();
+    folder
+}

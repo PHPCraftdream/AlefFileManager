@@ -20,6 +20,8 @@ export interface ExecOptions extends Cancelable {
   input?: string | Uint8Array;
 }
 
+export type RunOptions = Omit<ExecOptions, 'shell'>;
+
 export interface ExecResult {
   code: number | null;
   signal: string | null;
@@ -77,12 +79,42 @@ export class ChildProcess {
   }
 }
 
+function commandParams(name: string, params?: Record<string, string>): void {
+  if (typeof name !== 'string' || name === '' || name.includes('\0')) {
+    throw new AlefError('INVALID_ARGUMENT', 'a declared command needs a nonempty name without NUL.');
+  }
+  if (params !== undefined && (params === null || typeof params !== 'object' || Array.isArray(params)
+    || Object.entries(params).some(([key, value]) => key.includes('\0') || typeof value !== 'string' || value.includes('\0')))) {
+    throw new AlefError('INVALID_ARGUMENT', 'command params must map names without NUL to strings without NUL.');
+  }
+}
+
 /**
  * Running other programs. `permissions.cli.exec` lists the programs they may run: `exec` takes a
  * command line (a shell splits it, when `shell` says so), `spawn` a program and its arguments, and
  * gives back a `ChildProcess` whose streams carry the bytes.
  */
 export const cli = {
+  /** Runs a command declared in `permissions.cli.commands`, without a shell. */
+  run: async (name: string, params?: Record<string, string>, options: RunOptions = {}): Promise<ExecResult> => {
+    commandParams(name, params);
+    const { cwd, env, timeout, input, signal } = options;
+    const body = (input === undefined
+      ? undefined
+      : typeof input === 'string' ? encoder.encode(input) : input) as Uint8Array<ArrayBuffer> | undefined;
+    if (body !== undefined && body.length > MAX_INPUT) {
+      throw new AlefError('INVALID_ARGUMENT', 'input above 192 KiB does not fit a call: pass it through cli.start streams.');
+    }
+    return call<ExecResult>('cli.run', { name, params, cwd, env: env && Object.entries(env), timeoutMs: timeout }, { signal, body });
+  },
+
+  /** Starts a declared command with the same streams and process resource as `spawn`. */
+  start: async (name: string, params?: Record<string, string>, options: SpawnOptions = {}): Promise<ChildProcess> => {
+    commandParams(name, params);
+    const { cwd, env, stdin, stdout, stderr, signal } = options;
+    return new ChildProcess(await call<Opened>('cli.start', { name, params, cwd, env: env && Object.entries(env), stdin, stdout, stderr }, { signal }));
+  },
+
   exec: async (commandLine: string, options: ExecOptions = {}): Promise<ExecResult> => {
     const { shell, cwd, env, timeout, input, signal } = options;
     if (typeof commandLine !== 'string' || commandLine.trim() === '') throw new AlefError('INVALID_ARGUMENT', 'exec needs a command line.');

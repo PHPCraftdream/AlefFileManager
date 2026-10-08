@@ -91,6 +91,7 @@ export {
   type ExecOptions,
   type ExecResult as CliExecResult,
   type KillSignal,
+  type RunOptions,
   type SpawnOptions,
   type WaitResult,
 } from './system/cli.ts';
