@@ -54,9 +54,10 @@ impl Drop for Leftovers {
     }
 }
 
-// `detached`: on Windows node keeps its children in a job of its own that dies with it, which would
-// do the work of the tree killer under test.
-const GRANDCHILD: &str = "require('child_process').spawn(process.execPath,['-e',`require('fs').writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>require('fs').writeFileSync(process.env.GRAND_PID+'.beat',String(Date.now())),50)`],{stdio:'STDIO',detached:true}).unref();const t=setInterval(()=>{if(require('fs').existsSync(process.env.GRAND_PID))process.exit(0)},10)";
+// Detached on Windows only: there node keeps its children in a job of its own that dies with it, which
+// would do the work of the tree killer under test. On Unix a detached child starts a session of its own
+// and leaves the process group, which no group kill reaches.
+const GRANDCHILD: &str = "require('child_process').spawn(process.execPath,['-e',`require('fs').writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>require('fs').writeFileSync(process.env.GRAND_PID+'.beat',String(Date.now())),50)`],{stdio:'STDIO',detached:process.platform==='win32'}).unref();const t=setInterval(()=>{if(require('fs').existsSync(process.env.GRAND_PID))process.exit(0)},10)";
 
 #[tokio::test]
 async fn a_child_that_does_not_read_its_input_still_reports_how_it_ended() {
@@ -158,8 +159,9 @@ async fn a_substituted_shell_starts_nothing_and_times_out() {
             ("cmd.exe", Decision::Substitute),
             ("sh", Decision::Substitute),
         ]));
-    // A script that leaves a mark when it runs; its path has no character the shell acts on.
-    let dir = tempdir().unwrap();
+    // A script that leaves a mark when it runs, in a folder whose path has no character the shell acts
+    // on (the temp folder of a runner can be a short name with a tilde).
+    let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
     let script = dir.path().join("run.js");
     std::fs::write(
         &script,

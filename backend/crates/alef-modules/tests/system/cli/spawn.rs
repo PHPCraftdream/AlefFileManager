@@ -187,7 +187,7 @@ async fn kill_takes_down_the_whole_tree() {
     // The child writes its own pid file (the reply has it too), starts a grandchild that writes
     // its pid into another file, and both sleep forever. The grandchild is found through the
     // environment the child passes on.
-    let script = r#"require('fs').writeFileSync(process.env.ALEF_CLI_TEST_PIDFILE,String(process.pid));require('child_process').spawn(process.execPath,['-e','require("fs").writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>{},1e5)'],{stdio:'ignore',env:process.env,detached:true}).unref();setInterval(()=>{},1e5)"#;
+    let script = r#"require('fs').writeFileSync(process.env.ALEF_CLI_TEST_PIDFILE,String(process.pid));require('child_process').spawn(process.execPath,['-e','require("fs").writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>{},1e5)'],{stdio:'ignore',env:process.env,detached:process.platform==='win32'}).unref();setInterval(()=>{},1e5)"#;
     let reply = spawn(
         &fixture,
         json!({
@@ -370,7 +370,7 @@ async fn descendants_die_when_direct_child_exits() {
     let dir = tempdir().unwrap();
     let grand_file = dir.path().join("grand");
     let release = dir.path().join("release");
-    let script = r#"const fs=require('fs');require('child_process').spawn(process.execPath,['-e','require("fs").writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>{},1e5)'],{stdio:'ignore',detached:true}).unref();const t=setInterval(()=>{if(fs.existsSync(process.env.RELEASE))process.exit(0)},10)"#;
+    let script = r#"const fs=require('fs');require('child_process').spawn(process.execPath,['-e','require("fs").writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>{},1e5)'],{stdio:'ignore',detached:process.platform==='win32'}).unref();const t=setInterval(()=>{if(fs.existsSync(process.env.RELEASE))process.exit(0)},10)"#;
     let reply = spawn(
         &fixture,
         json!({"program":"node","args":["-e",script],

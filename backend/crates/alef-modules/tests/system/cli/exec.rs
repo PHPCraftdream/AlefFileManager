@@ -78,7 +78,7 @@ async fn exec_times_out_and_kills_the_tree() {
         }
     }
     let mut cleanup = Cleanup(vec![grand_file.clone(), parent_file.clone()]);
-    let script = "const fs=require('fs');fs.writeFileSync(process.env.PARENT_PID,String(process.pid));require('child_process').spawn(process.execPath,['-e',`require('fs').writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>{},1e5)`],{stdio:'ignore',detached:true});setInterval(()=>{},1e5)";
+    let script = "const fs=require('fs');fs.writeFileSync(process.env.PARENT_PID,String(process.pid));require('child_process').spawn(process.execPath,['-e',`require('fs').writeFileSync(process.env.GRAND_PID,String(process.pid));setInterval(()=>{},1e5)`],{stdio:'ignore',detached:process.platform==='win32'});setInterval(()=>{},1e5)";
     // Freeze the command's deadline, not OS scheduling. Keeping yield_now runnable prevents
     // Tokio's paused-clock auto-advance while real Node processes reach the readiness barrier.
     tokio::time::pause();
