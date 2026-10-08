@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { nativeWindow } from '../../../src/index.ts';
-import { installRuntime, jsonFrame, liveStream } from '../../fake-runtime.mjs';
+import { installRuntime, jsonFrame, liveStream, quiet } from '../../fake-runtime.mjs';
 
 const feed = liveStream();
 let revision = 4;
@@ -19,7 +19,7 @@ const runtime = installRuntime({
 });
 
 const emit = state => feed.push(jsonFrame({ name: 'runtime.window.state', payload: state }));
-const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+const settle = () => quiet(runtime);
 const order = () => runtime.requests.map(request => request.url.replace('native://', ''));
 
 test('watch subscribes before it reads the snapshot and drops stale revisions', async () => {

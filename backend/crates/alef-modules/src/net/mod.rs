@@ -6,10 +6,13 @@ use alef_core::{registry::dispatch::Registry, AlefError};
 
 use crate::ModuleContext;
 
+mod headers;
 pub mod http;
 pub mod socket;
+pub mod websocket;
 
 pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Result<(), AlefError> {
     http::register(registry, context)?;
-    socket::register(registry)
+    socket::register(registry)?;
+    websocket::register(registry)
 }

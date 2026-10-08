@@ -1,39 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! TLS of a connection, against a server of the test with a certificate of the test authority (the
 //! files in `fixtures/tls` are made for these tests alone and protect nothing).
-use alef_core::security::consent::{Consent, Decision, Right};
-use rustls::{
-    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
-    ServerConfig,
-};
-use tokio_rustls::TlsAcceptor;
-
 use super::*;
-
-const AUTHORITY: &str = include_str!("../../fixtures/tls/ca.pem");
-const CERTIFICATE: &[u8] = include_bytes!("../../fixtures/tls/server.pem");
-const KEY: &[u8] = include_bytes!("../../fixtures/tls/server.key");
-
-fn acceptor(tls12_only: bool) -> TlsAcceptor {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let builder = ServerConfig::builder_with_provider(provider);
-    let builder = if tls12_only {
-        builder.with_protocol_versions(&[&rustls::version::TLS12])
-    } else {
-        builder.with_safe_default_protocol_versions()
-    }
-    .unwrap();
-    let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(CERTIFICATE)
-        .collect::<Result<_, _>>()
-        .unwrap();
-    let key = PrivateKeyDer::from_pem_slice(KEY).unwrap();
-    TlsAcceptor::from(Arc::new(
-        builder
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
-            .unwrap(),
-    ))
-}
+use crate::shared::tls::{acceptor, certificate, AUTHORITY};
+use alef_core::security::consent::{Consent, Decision, Right};
 
 /// A TLS server that gives back what it gets, and the number of the handshakes it finished.
 async fn secure_echo(tls12_only: bool) -> (SocketAddr, Arc<AtomicUsize>) {
@@ -139,7 +109,7 @@ async fn an_authority_nobody_trusts_fails_the_handshake_and_the_authorities_give
         unknown.message
     );
     // A certificate that is not the authority of the server does not make it trusted.
-    let leaf = String::from_utf8(CERTIFICATE.to_vec()).unwrap();
+    let leaf = certificate();
     let wrong = connect(
         &app,
         "127.0.0.1",

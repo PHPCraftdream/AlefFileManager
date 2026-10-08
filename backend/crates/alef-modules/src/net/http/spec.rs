@@ -1,26 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The request as the client takes it: the parts the page names, held against what a request may be
 //! before anything is sent. The scope of `net.http` is the first guard; these are the ones behind it.
-use hyper::{
-    header::{HeaderName, HeaderValue},
-    HeaderMap, Method,
-};
+use hyper::Method;
 use url::Url;
 
 use super::{client::Spec, invalid};
+use crate::net::headers;
 use alef_core::AlefError;
-
-/// Headers the program does not set: the framing of a request is the client's business.
-const FORBIDDEN: [&str; 8] = [
-    "host",
-    "content-length",
-    "transfer-encoding",
-    "connection",
-    "upgrade",
-    "keep-alive",
-    "te",
-    "trailer",
-];
 
 pub(super) fn spec(
     url: &str,
@@ -44,23 +30,10 @@ pub(super) fn spec(
             .filter(|method| method != Method::CONNECT)
             .ok_or_else(|| invalid("the method is not one a request may have"))?,
     };
-    let mut map = HeaderMap::new();
-    for (name, value) in headers {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| invalid("a header has a name that is not valid"))?;
-        if FORBIDDEN.contains(&name.as_str()) || name.as_str().starts_with("proxy-") {
-            return Err(invalid(
-                "a header is the client's own: host, framing, connection",
-            ));
-        }
-        let value = HeaderValue::from_str(value)
-            .map_err(|_| invalid("a header has a value that is not valid"))?;
-        map.append(name, value);
-    }
     Ok(Spec {
         url,
         method,
-        headers: map,
+        headers: headers::parse(headers, &["proxy-"])?,
         follow,
     })
 }
@@ -137,17 +110,10 @@ mod tests {
     }
 
     #[test]
-    fn the_headers_of_the_client_are_refused_whatever_the_case() {
+    fn the_headers_of_the_client_and_of_the_proxy_are_refused() {
         for name in [
             "Host",
-            "CONTENT-LENGTH",
-            "Transfer-Encoding",
-            "Connection",
-            "Upgrade",
-            "Keep-Alive",
             "Proxy-Connection",
-            "TE",
-            "Trailer",
             "proxy-authorization",
             "Proxy-Anything",
         ] {
@@ -157,24 +123,11 @@ mod tests {
                 "{name}"
             );
         }
-        for name in [
-            "accept",
-            "x-proxy",
-            "authorization",
-            "cookie",
-            "content-type",
-        ] {
+        for name in ["accept", "x-proxy", "authorization", "cookie"] {
             assert_eq!(
                 refused("http://h.test/", None, &[(name, "x")]),
                 None,
                 "{name}"
-            );
-        }
-        for (name, value) in [("bad name", "x"), ("x-ok", "line\nbreak"), ("", "x")] {
-            assert_eq!(
-                refused("http://h.test/", None, &[(name, value)]),
-                Some(ErrorCode::InvalidArgument),
-                "{name:?}"
             );
         }
     }

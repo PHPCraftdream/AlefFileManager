@@ -27,6 +27,8 @@ mod tcp;
 mod tls;
 mod udp;
 
+pub(in crate::net) use tcp::{open, Io, TlsOptions};
+
 /// Where a server or a UDP socket listens when the page names no host: only this machine reaches it.
 const LOOPBACK: &str = "127.0.0.1";
 /// How long a connection the user substituted hangs when it names no timeout.
@@ -126,7 +128,7 @@ fn address(address: SocketAddr) -> Value {
 }
 
 /// What the user substituted for the network: nothing answers until the time is up.
-async fn dead(limit: Option<Duration>) -> AlefError {
+pub(in crate::net) async fn dead(limit: Option<Duration>) -> AlefError {
     tokio::time::sleep(limit.unwrap_or(HANG)).await;
     AlefError::new(ErrorCode::Timeout, "the server did not answer in time")
 }

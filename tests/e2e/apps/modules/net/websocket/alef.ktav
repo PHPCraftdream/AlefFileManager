@@ -1,0 +1,48 @@
+id: org.alef.e2e.modules.websocket
+name: Alef e2e websocket
+version:: 1.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 800
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: [ ws://127.0.0.1:{{PORT}}/*, wss://127.0.0.1:{{SECURE}}/*, ws://127.0.0.1:{{CLOSED}}/* ]
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}

@@ -54,6 +54,7 @@ export {
   type TlsOptions,
   type UdpOptions,
 } from './net/socket.ts';
+export { websocket, WebSocketConnection, type CloseInfo, type WebSocketMessage, type WebSocketOptions } from './net/websocket.ts';
 export {
   crypto,
   type Argon2Options,

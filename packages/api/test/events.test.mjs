@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, on } from '../src/index.ts';
-import { installRuntime, jsonFrame, liveStream } from './fake-runtime.mjs';
+import { installRuntime, jsonFrame, liveStream, quiet } from './fake-runtime.mjs';
 
 const feed = liveStream();
 let subscribeStatus = 200;
@@ -19,7 +19,7 @@ const runtime = installRuntime({
 });
 
 const emit = (name, payload) => feed.push(jsonFrame({ name, payload }));
-const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+const settle = () => quiet(runtime);
 
 test('a failed subscription rejects, leaves no handler behind and is retried by the next on()', async () => {
   subscribeStatus = 500;

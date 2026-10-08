@@ -10,10 +10,7 @@ use std::{
     time::Duration,
 };
 
-use alef_core::{
-    ids::StreamId, protocol::frame::Frame, session::streams::IncomingWriter,
-    session::streams::StreamReader, AlefError, ErrorCode,
-};
+use alef_core::{ids::StreamId, session::streams::IncomingWriter, AlefError, ErrorCode};
 use bytes::Bytes;
 use serde_json::{json, Value};
 use tokio::{
@@ -21,7 +18,7 @@ use tokio::{
     net::TcpListener,
 };
 
-use crate::common::Fixture;
+use crate::{common::Fixture, shared::pipe::Pipe};
 
 mod tcp;
 mod tls;
@@ -55,82 +52,6 @@ fn code<T>(result: Result<T, AlefError>) -> ErrorCode {
     match result {
         Ok(_) => panic!("an error was expected"),
         Err(error) => error.code,
-    }
-}
-
-/// A stream that comes from the runtime, read as a page reads it: every frame is acknowledged.
-struct Pipe {
-    app: Arc<alef_core::session::session::Session>,
-    id: StreamId,
-    reader: StreamReader,
-    pending: Vec<u8>,
-}
-
-impl Pipe {
-    fn open(app: &Fixture, id: u64) -> Self {
-        let session = app.session();
-        let id = StreamId(id);
-        let reader = session.streams().reader(id).expect("an outgoing stream");
-        Self {
-            app: session,
-            id,
-            reader,
-            pending: Vec::new(),
-        }
-    }
-
-    async fn frame(&mut self) -> Option<Frame> {
-        tokio::time::timeout(Duration::from_secs(20), self.reader.next_frame())
-            .await
-            .expect("the stream stalled")
-    }
-
-    /// The next bytes, once there are `count` of them; the surplus waits for the next call.
-    async fn exactly(&mut self, count: usize) -> Vec<u8> {
-        while self.pending.len() < count {
-            match self.frame().await {
-                Some(Frame::Binary(bytes)) => {
-                    self.app.streams().ack(self.id, bytes.len()).unwrap();
-                    self.pending.extend_from_slice(&bytes);
-                }
-                other => panic!(
-                    "the stream ended after {} bytes: {other:?}",
-                    self.pending.len()
-                ),
-            }
-        }
-        self.pending.drain(..count).collect()
-    }
-
-    /// Everything until the stream ends: the bytes, or the error it ended with.
-    async fn until_end(&mut self) -> Result<Vec<u8>, AlefError> {
-        loop {
-            match self.frame().await {
-                Some(Frame::Binary(bytes)) => {
-                    self.app.streams().ack(self.id, bytes.len()).unwrap();
-                    self.pending.extend_from_slice(&bytes);
-                }
-                Some(Frame::End) | None => return Ok(std::mem::take(&mut self.pending)),
-                Some(Frame::Error(error)) => return Err(error),
-                Some(Frame::Json(value)) => panic!("unexpected {value}"),
-            }
-        }
-    }
-
-    /// The next frame of JSON (connections that come, datagrams that arrive), `None` at the end.
-    async fn json(&mut self) -> Option<Value> {
-        match self.frame().await {
-            Some(Frame::Json(value)) => {
-                self.app
-                    .streams()
-                    .ack(self.id, value.to_string().len())
-                    .unwrap();
-                Some(value)
-            }
-            Some(Frame::End) | None => None,
-            Some(Frame::Error(error)) => panic!("the stream failed: {error}"),
-            Some(Frame::Binary(_)) => panic!("unexpected bytes"),
-        }
     }
 }
 

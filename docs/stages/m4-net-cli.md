@@ -59,7 +59,17 @@ socket.udp({ host?, port? }): Promise<UdpSocket>              // send(data, host
 websocket.connect(url, { protocols?, headers? }): Promise<WebSocketConnection>  // send(text|bytes), AsyncIterable<message>, close(code?, reason?)
 ```
 
-`tokio-tungstenite` + `rustls`; scope — `permissions.net.http` (ws/wss по хосту).
+`async-tungstenite` (он уже в дереве через Servo; `tokio-tungstenite` потребовал бы вторую версию `tungstenite`) + `rustls`; scope — `permissions.net.http` (ws/wss по хосту).
+
+**Как сделано (M4.3)** — `alef-modules/src/net/websocket/`, `packages/api/src/net/websocket.ts`:
+
+- Команды `websocket.connect`, `websocket.send`, `websocket.close`. Адрес проверяется по `permissions.net.http` (шаблоны `ws://…` и `wss://…`); права `http` на другую схему не хватает, ответ рукопожатия с редиректом никто не повторяет — это `NETWORK`. Заголовки рукопожатия задаёт страница (`Origin`, `Authorization`…), кроме своих у клиента (`Host`, `Upgrade`, `Connection`, `Sec-WebSocket-*`, `proxy-*`); повторы значений склеиваются (`, `, у `Cookie` — `; `), потому что библиотека держит одно значение имени. Подпротоколы — токены, по одному разу; выбранный сервером приходит в `protocol`. `ca` — PEM своих центров для `wss://` (заменяют корни Mozilla, как в `socket`).
+- Входящие сообщения идут одним потоком с credit: кадр JSON с видом (`text`/`binary`) и длиной, за ним байты; большое сообщение (до 16 MiB) не лежит в памяти целиком на пути к странице. Событие `close` (`code`, `reason`, `clean`) заканчивает поток: 1005 — закрытие без кода, 1006 — соединение оборвано без закрытия (`clean: false`). Исходящее сообщение — тело вызова `websocket.send`, до 192 KiB (предел одного вызова). `close(code?, reason?)`: 1000 или 3000–4999, причина до 123 байт, как у браузера; ждёт ответного закрытия до 2 с.
+- Ответ на закрытие от сервера библиотека отправляет только при следующем чтении соединения, поэтому читающая задача читает ещё раз; без этого сервер получал обрыв вместо ответа. Выход из итерации (`break`) закрывает соединение.
+- Подмена права — мёртвая сеть, как у `http`: рукопожатие висит до `timeout` и падает с `TIMEOUT`.
+- Не сделано: расширения (`permessage-deflate`), сообщения от страницы больше 192 KiB (потоком), пинг от страницы (сервер получает pong автоматически), повтор соединения.
+- Заодно: правила заголовков вынесены из `http` в общий `net/headers.rs` (их использует и `websocket`); `socket::open`, `Io` и `TlsOptions` открыты для `websocket` (WebSocket — это TCP с TLS и рукопожатием); общее для тестов сокетов и WebSocket (чтение потока `Pipe`, TLS-сервер теста, манифесты) лежит в `tests/net/{pipe,tls,manifest}.rs`.
+- Проверки: модульные тесты (заголовки и их запретные имена, адрес, коды закрытия, подпротоколы), 16 тестов через реестр на сервере протокола loopback (сообщения обоих видов и пустые, 5 MiB вниз и 250 KiB вверх, закрытие с любой стороны, обрыв, кадр против протокола, неверный ответ рукопожатия, `wss` с центром теста, права, подмена, что команды берут только своё, соединение уходит вместе с ресурсом), 8 тестов JS-обёртки, e2e `websocket` (5 проверок на маленьком сервере RFC 6455 в `tests/e2e/ws-server.mjs`: сообщения и подпротокол, 4 MiB вниз, закрытие с кодом, `wss`, права) и `websocket-substitute`. Мутации: Rust 61 из 61 и JS 42 из 42 пойманы. Тесты сами нашли два дефекта кода: библиотека хранит одно значение заголовка рукопожатия (повторы терялись — теперь склеиваются), и она не отправляет ответ на закрытие, пока соединение не прочитают ещё раз (клиент уходил без ответа). Мутации нашли дыры в тестах: склейку `Cookie`, закрытие без кода (1005), неверное рукопожатие, соединение, которое уходит с ресурсом; проверка пустого сообщения оказалась лишней и убрана.
 
 ### Серверы: `http.serve` и `websocket.serve` (net)
 
@@ -112,7 +122,7 @@ app.exit(code): Promise<never>
 ## Структура кода
 
 ```
-alef-modules/src/net/      mod.rs, http/ (mod.rs, client.rs, body.rs, spec.rs), socket/ (mod.rs, tcp.rs, udp.rs, tls.rs), websocket.rs
+alef-modules/src/net/      mod.rs, http/ (mod.rs, client.rs, body.rs, spec.rs), socket/ (mod.rs, tcp.rs, udp.rs, tls.rs), websocket/ (mod.rs), headers.rs
 alef-modules/src/system/   cli/ (mod.rs, exec.rs, spawn.rs, pty.rs, tree.rs)
 packages/api/src/net/      http.ts, socket.ts, websocket.ts
 packages/api/src/system/   cli.ts

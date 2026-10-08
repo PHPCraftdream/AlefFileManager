@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, app, os, path } from '../../../src/index.ts';
-import { DENIED, installRuntime, jsonFrame, liveStream } from '../../fake-runtime.mjs';
+import { DENIED, installRuntime, jsonFrame, liveStream, quiet } from '../../fake-runtime.mjs';
 
 const feed = liveStream();
 const replies = new Map();
@@ -75,11 +75,11 @@ test('os.info and os.theme read replies; theme-changed delivers the theme itself
   feed.push(jsonFrame({ name: 'os.theme-changed', payload: { theme: 'dark' } }));
   feed.push(jsonFrame({ name: 'os.other', payload: { theme: 'light' } }));
   feed.push(jsonFrame({ name: 'os.theme-changed', payload: { theme: 'light' } }));
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await quiet(runtime);
   assert.deepEqual(seen, ['dark', 'light'], 'only theme-changed, as the bare theme');
   off();
   feed.push(jsonFrame({ name: 'os.theme-changed', payload: { theme: 'dark' } }));
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await quiet(runtime);
   assert.deepEqual(seen, ['dark', 'light'], 'nothing after unsubscribe');
 });
 

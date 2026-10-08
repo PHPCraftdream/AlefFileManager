@@ -30,7 +30,10 @@ const READ_CHUNK: usize = 32 * 1024;
 const ACCEPT_PAUSE: Duration = Duration::from_millis(50);
 
 /// What the bytes of a connection go through, whether TLS wraps them or not.
-trait Io: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
+pub(in crate::net) trait Io:
+    AsyncRead + AsyncWrite + Send + Unpin + 'static
+{
+}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> Io for T {}
 
 #[derive(Debug, Deserialize)]
@@ -54,11 +57,21 @@ enum TlsArg {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct TlsOptions {
+pub(in crate::net) struct TlsOptions {
     #[serde(default)]
     server_name: Option<String>,
     #[serde(default)]
     ca: Option<String>,
+}
+
+impl TlsOptions {
+    /// TLS that trusts the authorities of `ca` (PEM) or, without them, the roots of Mozilla.
+    pub(in crate::net) fn trusting(ca: Option<String>) -> Self {
+        Self {
+            server_name: None,
+            ca,
+        }
+    }
 }
 
 fn tls_options(arg: Option<TlsArg>) -> Option<TlsOptions> {
@@ -170,7 +183,7 @@ fn attach(
     }))
 }
 
-async fn open(
+pub(in crate::net) async fn open(
     host: &str,
     port: u16,
     tls: Option<TlsOptions>,

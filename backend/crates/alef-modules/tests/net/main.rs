@@ -5,4 +5,6 @@ mod common;
 
 mod http;
 mod server;
+mod shared;
 mod socket;
+mod websocket;

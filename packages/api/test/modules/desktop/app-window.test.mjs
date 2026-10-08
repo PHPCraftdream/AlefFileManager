@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, AppWindow, screen, window } from '../../../src/index.ts';
-import { installRuntime, jsonFrame, liveStream } from '../../fake-runtime.mjs';
+import { installRuntime, jsonFrame, liveStream, quiet } from '../../fake-runtime.mjs';
 
 const feed = liveStream();
 const replies = new Map();
@@ -15,7 +15,7 @@ const runtime = installRuntime({
 });
 
 const emit = (name, payload) => feed.push(jsonFrame({ name, payload }));
-const settle = () => new Promise(resolve => setTimeout(resolve, 20));
+const settle = () => quiet(runtime);
 const lastArgs = command => runtime.argsOf(runtime.calls(command).at(-1));
 const infoOf = label => ({ label, revision: 1, title: label });
 
@@ -153,7 +153,7 @@ test('close-requested: the handler decides, the answer follows, interception end
 
 test('a throwing close handler does not stop the answer', async () => {
   const win = new AppWindow('main', true);
-  const quiet = console.error;
+  const original = console.error;
   console.error = () => {};
   try {
     const stop = await win.on('close-requested', () => {
@@ -165,7 +165,7 @@ test('a throwing close handler does not stop the answer', async () => {
     stop();
     await settle();
   } finally {
-    console.error = quiet;
+    console.error = original;
   }
 });
 

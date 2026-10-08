@@ -49,6 +49,23 @@ export function chunked(bytes, size) {
   return pieces;
 }
 
+/**
+ * Waits until the page has done all that an event set going: its calls to the runtime stop for a while.
+ * A fixed wait is a flake under load, for the events pass through the loop of events of the process.
+ */
+export async function quiet(runtime, polls = 5) {
+  let seen = runtime.requests.length;
+  let stable = 0;
+  while (stable < polls) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    if (runtime.requests.length === seen) stable += 1;
+    else {
+      seen = runtime.requests.length;
+      stable = 0;
+    }
+  }
+}
+
 /** A stream body the test feeds by hand; aborting the request errors it like a real fetch. */
 export function liveStream() {
   let controller;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Scenarios of the network modules (docs/stages/m4-net-cli.md, "Приёмка"): `http` and `socket` against
-// servers of the runner on the loopback, with the right allowed and with a stand-in the user chose.
+// Scenarios of the network modules (docs/stages/m4-net-cli.md, "Приёмка"): `http`, `socket` and `websocket`
+// against servers of the runner on the loopback, with the right allowed and with a stand-in the user chose.
 import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -10,6 +10,7 @@ import os from 'node:os';
 import { dirname, join } from 'node:path';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
+import { BIG, wsServer } from '../ws-server.mjs';
 
 const SIZE = 8 * 1024 * 1024;
 
@@ -26,6 +27,14 @@ const SOCKET_CHECKS = [
   'socket-a-closed-socket-ends-its-streams-and-the-server-sees-the-end',
 ];
 const SOCKET_SUBSTITUTE_CHECKS = ['socket-a-substituted-network-is-dead-and-takes-no-port'];
+const WEBSOCKET_CHECKS = [
+  'websocket-text-and-bytes-go-both-ways-and-the-server-chooses-a-subprotocol',
+  'websocket-a-big-message-comes-in-pieces-and-one-the-page-sends-comes-back',
+  'websocket-the-close-is-done-from-either-side-with-its-code-and-reason',
+  'websocket-wss-trusts-the-authority-the-page-names-and-no-other',
+  'websocket-the-scope-holds-and-a-closed-port-is-the-network',
+];
+const WEBSOCKET_SUBSTITUTE_CHECKS = ['websocket-a-substituted-network-hangs-until-its-time-is-up'];
 /** The certificates of the tests of the runtime: an authority and a server for localhost and the loopback. */
 const TLS_FILES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'backend', 'crates', 'alef-modules', 'tests', 'fixtures', 'tls');
 
@@ -243,6 +252,27 @@ export function netScenarios({ drive }) {
     }
   }
 
+  async function runWebsocket(name, mode, expectedChecks, env, judge) {
+    const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-websocket-'));
+    const plain = await wsServer();
+    const secure = await wsServer({ tls: { key: readFileSync(join(TLS_FILES, 'server.key')), cert: readFileSync(join(TLS_FILES, 'server.pem')) } });
+    const closed = await closedPort();
+    try {
+      return await drive({
+        name, app: 'modules/net/websocket',
+        replacements: { PORT: String(plain.port), SECURE: String(secure.port), CLOSED: String(closed) },
+        targets: { mode, port: plain.port, secure: secure.port, closed, size: BIG, authority: readFileSync(join(TLS_FILES, 'ca.pem'), 'utf8') },
+        env: { ALEF_HOME: join(base, 'home'), ...(typeof env === 'function' ? env({ plain, secure }) : env) },
+        expectedChecks,
+        judge: () => judge({ plain, secure }),
+      });
+    } finally {
+      await plain.close();
+      await secure.close();
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
   return {
     // The user allowed the addresses: everything is real, and the runner looks at what its servers saw.
     http: () => run('http', 'allowed', HTTP_CHECKS, {}, async ({ root, main, aside }) => {
@@ -277,6 +307,29 @@ export function netScenarios({ drive }) {
       if (seen.datagrams !== 1) problems.push(`the UDP server got ${seen.datagrams} datagram(s), expected 1`);
       return problems;
     }),
+
+    websocket: () => runWebsocket('websocket', 'allowed', WEBSOCKET_CHECKS, {}, async ({ plain }) => {
+      const problems = [];
+      const first = plain.seen.headers[0];
+      if (first?.origin !== 'https://app.test' || first?.protocol !== 'superchat') problems.push(`the server saw ${JSON.stringify(first)}`);
+      if (!(await eventually(() => plain.seen.closes.some(close => close.code === 4000 && close.reason === 'done'), 5000))) problems.push(`the server did not see the close with 4000: ${JSON.stringify(plain.seen.closes)}`);
+      if (plain.seen.messages < 4) problems.push(`the server got ${plain.seen.messages} message(s), expected at least 4`);
+      return problems;
+    }),
+
+    // The user chose a stand-in for the network: nothing reached the servers.
+    'websocket-substitute': () => runWebsocket(
+      'websocket-substitute', 'substituted', WEBSOCKET_SUBSTITUTE_CHECKS,
+      ({ plain, secure }) => ({
+        ALEF_E2E_CONSENT: [plain.port, secure.port].map((port, index) => `net.http:${index === 0 ? 'ws' : 'wss'}://127.0.0.1:${port}/*=substitute`).concat('*=allow').join(';'),
+      }),
+      async ({ plain, secure }) => {
+        const problems = [];
+        if (plain.seen.upgrades !== 0) problems.push(`the server was reached: ${plain.seen.upgrades}`);
+        if (secure.seen.upgrades !== 0) problems.push(`the secure server was reached: ${secure.seen.upgrades}`);
+        return problems;
+      },
+    ),
 
     // The user chose a stand-in for the sockets: nothing reached the servers.
     'socket-substitute': () => runSocket(

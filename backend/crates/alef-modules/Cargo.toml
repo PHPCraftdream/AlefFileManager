@@ -35,6 +35,8 @@ http-body-util = { version = "=0.1.5", features = ["channel"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 webpki-roots = "=1.0.9"
+async-tungstenite = { version = "=0.35.0", default-features = false, features = ["handshake", "tokio-runtime"] }
+futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
 url = "=2.5.8"
 
 [target.'cfg(windows)'.dependencies]

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, app } from '../../../src/index.ts';
-import { installRuntime, jsonFrame, liveStream } from '../../fake-runtime.mjs';
+import { installRuntime, jsonFrame, liveStream, quiet } from '../../fake-runtime.mjs';
 
 const feed = liveStream();
 const replies = new Map();
@@ -15,7 +15,7 @@ const runtime = installRuntime({
 });
 
 const emit = (name, payload) => feed.push(jsonFrame({ name, payload }));
-const settle = () => new Promise(resolve => setTimeout(resolve, 30));
+const settle = () => quiet(runtime);
 const argsOf = command => runtime.calls(command).map(call => runtime.argsOf(call));
 
 test('requestSingleInstance sends no arguments and gives the answer back', async () => {

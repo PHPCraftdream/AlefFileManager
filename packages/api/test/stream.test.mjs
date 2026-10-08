@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, openReadable, openWritable } from '../src/index.ts';
 import {
-  binaryFrame, chunked, endFrame, errorFrame, frame, installRuntime, join, jsonFrame,
+  binaryFrame, chunked, endFrame, errorFrame, frame, installRuntime, join, jsonFrame, quiet,
 } from './fake-runtime.mjs';
 
 // stream id -> reply; control calls are answered with {}.
@@ -93,7 +93,7 @@ test('aborting the signal closes the stream', async () => {
   const controller = new AbortController();
   await openReadable(6, { signal: controller.signal });
   controller.abort();
-  await new Promise(resolve => setTimeout(resolve, 20));
+  await quiet(runtime);
   assert.deepEqual(sent('runtime.stream.close').filter(args => args.id === 6), [{ id: 6 }]);
   await assert.rejects(openReadable(6, { signal: controller.signal }), { name: 'AbortError' });
 });

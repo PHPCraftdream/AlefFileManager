@@ -126,6 +126,7 @@ const ARGS = {
   'socket.connect': [{ host: '127.0.0.1', port: 1 }],
   'socket.listen': [{ port: 0 }],
   'socket.udp': [{}],
+  'websocket.connect': ['ws://127.0.0.1/'],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -146,8 +147,9 @@ installRuntime({
     if (request.url === 'native://stream/9') return { chunks: [endFrame()] };
     if (request.url === 'native://call/socket.connect') return { json: { socket: 1, read: 11, write: 12, localAddress: { host: '127.0.0.1', port: 2 }, remoteAddress: { host: '127.0.0.1', port: 1 } } };
     if (request.url === 'native://call/socket.listen') return { json: { server: 2, accept: 21, localAddress: { host: '127.0.0.1', port: 3 } } };
+    if (request.url === 'native://call/websocket.connect') return { json: { socket: 5, messages: 41, protocol: '', url: 'ws://127.0.0.1/' } };
     if (request.url === 'native://call/socket.udp') return { json: { socket: 3, messages: 31, localAddress: { host: '127.0.0.1', port: 4 } } };
-    if (/^native:\/\/stream\/(11|21|31)$/.test(request.url)) return { chunks: [endFrame()] };
+    if (/^native:\/\/stream\/(11|21|31|41)$/.test(request.url)) return { chunks: [endFrame()] };
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
     if (request.url === 'native://call/secrets.get') return { json: null };
     if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
@@ -182,5 +184,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'HttpResponse', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'HttpResponse', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
 });
