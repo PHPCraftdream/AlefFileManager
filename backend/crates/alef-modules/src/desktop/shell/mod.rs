@@ -4,6 +4,7 @@
 //! access. `openPath` never starts a program: what the desktop would run instead of show (an
 //! executable, a script, a shortcut, an application bundle) is refused, otherwise "read and open"
 //! would be a way around `cli.exec`.
+pub mod dialog;
 #[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::{

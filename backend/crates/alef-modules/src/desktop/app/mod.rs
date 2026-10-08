@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `app`: identity, command line, environment, working directory, quit (which documents may
 //! veto), relaunch and the single instance.
+pub mod args;
 pub mod console;
+mod instance;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -25,7 +27,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Notify;
 
-use crate::desktop::instance::{Endpoint, Instance};
+use self::instance::{Endpoint, Instance};
 use crate::{json, ModuleContext};
 
 /// The event a document that asked for it gets before the application quits.

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Desktop modules.
 pub mod app;
-pub mod args;
-
-pub mod dialog;
-mod instance;
 pub mod shell;
-pub mod window;
+pub mod ui;
+
+pub use app::args;
+pub use shell::dialog;
+pub use ui::window;
 
 use std::sync::Arc;
 
