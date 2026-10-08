@@ -41,7 +41,16 @@ export {
 } from './data/sqlite.ts';
 export { secrets } from './data/secrets.ts';
 export { Store, store } from './data/store.ts';
-export { http, HttpResponse, type DownloadOptions, type HttpRequestOptions } from './net/http.ts';
+export {
+  http,
+  HttpResponse,
+  HttpServer,
+  ServerRequest,
+  type DownloadOptions,
+  type HttpRequestOptions,
+  type ServeOptions,
+  type ServerResponse,
+} from './net/http.ts';
 export {
   socket,
   TcpServer,

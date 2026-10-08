@@ -74,9 +74,9 @@ websocket.connect(url, { protocols?, headers? }): Promise<WebSocketConnection>  
 ### Серверы: `http.serve` и `websocket.serve` (net)
 
 ```ts
-const server = await http.serve({ host?: '127.0.0.1', port: 0, tls?, files?: '$APP/public' });  // port 0 — порт выберет ОС
-server.address                                              // { host, port }
-for await (const req of server) {                           // { method, url, headers, body: ReadableStream, upgrade(), respond({ status, headers, body }) }
+const server = await http.serve({ host?: '127.0.0.1', port?: 0, tls?: { cert, key }, files?: '/папка', hosts?, origins?, answerTimeout? });  // port 0 — порт выберет ОС
+server.address; server.url; server.secure                   // { host, port }; 'http://127.0.0.1:port'; true для TLS
+for await (const req of server) {                           // { method, url, headers: Headers, body: ReadableStream | null, bytes(), text(), json(), respond({ status?, headers?, body? }), upgrade() — в M4.4b }
   await req.respond({ status: 200, headers: { 'content-type': 'text/plain' }, body: 'hi' });
 }
 const sockets = websocket.serve({ host?, port, path?, protocols?, origins? });   // AsyncIterable<WebSocketConnection>
@@ -88,6 +88,17 @@ const connection = await req.upgrade();                      // WebSocket на �
 - Scope — `listen:host:port` в `permissions.net.socket` (общий для `socket.listen`, `http.serve`, `websocket.serve` и MCP); привязка по умолчанию **только к loopback**, другой адрес — явное право и отдельная строка в окне согласия (M2b). Для HTTP-серверов проверяются `Host` и `Origin` (против DNS-rebinding и CSRF), список допустимых `Origin` задаёт разработчик.
 - Подмена права `listen` (§6.4): вызов успешен и выдаёт порт, но сокет не открывается и входящих нет.
 - Граница: каждый запрос — событие через мост Servo; для API, WebSocket-каналов, MCP и локальных инструментов этого достаточно, высокой нагрузки (тысячи запросов в секунду) это не потянет — для неё нужен Rust-хост.
+
+**Как сделано (M4.4a, `http.serve`)** — `alef-modules/src/net/http/{serve,guard,files}.rs`, `packages/api/src/net/http.ts`:
+
+- Команды `http.serve`, `http.respond`, `http.respondStream`. `http.serve` берёт порт (право `listen:host:port` в `permissions.net.socket`; по умолчанию `127.0.0.1`, порт 0 — любой свободный) и возвращает `{ server, requests, address, secure }`: ресурс-сервер, поток запросов и адрес. Закрывается `socket.close` (тот же ресурс, что у `socket.listen`): задача приёма уходит, а с ней и соединения; закрытие документа закрывает всё вместе с сессией.
+- Запрос приходит в поток `requests` кадром JSON `{ id, method, url, headers, body }`: заголовки — пары в порядке прихода (повторы не склеиваются), `body` — номер потока с credit либо `null`, если тела нет. Страница отвечает в любом порядке: `http.respond` (тело — в самом вызове, в обёртке до 192 KiB) или `http.respondStream` (тело потоком вверх, любой длины). Запрос отвечается один раз; отказ в аргументах (статус вне 200–599, заголовки, которыми ведает сервер: `host`, `content-length`, `connection`…) запрос не тратит. Страница не ответила за `answerTimeout` (60 с) — клиент получает 504; перестала принимать запросы (закрыла поток) — 503; место запроса пропало вместе с документом — 500. Клиент ушёл — запрос забыт: ответ на него `NOT_FOUND`.
+- `Host` проверяется всегда: имя этой машины и порт сервера (для loopback — `localhost` и любой адрес loopback; при привязке ко всем адресам — любой адрес, но не имя; иначе — адрес привязки) либо имя из `hosts`; чужой — 421, без `Host` — 400. `Origin`, если он есть, — это сам сервер (те же имена и порт) либо один из `origins`; чужой, `null` и повторный — 403. Страница о таких запросах не узнаёт.
+- `files` — папка, которую сервер отдаёт сам, без захода в JS (GET и HEAD). Право `fs.read` на папку проверяется при запуске и на каждый файл отдельно. Путь раскладывается по сегментам: проценты раскодируются, `.`, `..`, разделители, `:`, NUL, точка или пробел в конце — отказ; файл после разрешения ссылок должен лежать внутри папки (ссылка наружу — не выход). У папки отдаётся `index.html`; тип — по расширению, `x-content-type-options: nosniff`; тело идёт кусками по 64 KiB. Чего в папке нет — идёт к странице. Папка или файл, для которых пользователь выбрал подмену, не отдаются.
+- `tls: { cert, key }` — PEM; сервер говорит только по TLS (rustls, aws-lc-rs); обычный клиент до страницы не доходит.
+- Подмена `listen`: вызов успешен и возвращает адрес, порт не открыт, запросов нет, поток открыт и молчит.
+- Не сделано: `req.upgrade()` и `websocket.serve` (M4.4b), HTTP/2, `Range` и условные запросы для `files`, сжатие, клиентские сертификаты, предел числа соединений и таймаут простоя соединения (есть только 10 с на заголовок запроса).
+- Проверки: 11 модульных тестов (охрана `Host` и `Origin`, разбор пути файла, тип по расширению, длинный путь Windows), 16 тестов через реестр с клиентом HTTP на loopback (запрос кадром и ответ, ответы не по порядку и тело запроса потоком, 8 MiB потоком вниз, `Host`/`Origin`/`hosts`/`origins`, ответ один раз и что ответом быть может, 504, закрытый сервер, 503, 500, права и аргументы, подмена, папка без слова странице, ссылка наружу, файл с подменой, папка без права, TLS), 13 тестов JS-обёртки, e2e `serve` (6 проверок: страница отвечает сама себе потоками, клиент раннера с телом 3 MiB вверх и 8 MiB вниз, чужие `Host` и `Origin`, папка и пути наружу, TLS с центром теста, scope `listen`) и `serve-substitute` (раннер следит за портом: никто не слушает). Мутации: Rust 82 из 82 и JS 53 из 53 пойманы. Мутации нашли дыры в тестах (порты по умолчанию у `Origin`, происхождение без схемы, чужое имя на порту сервера, подмена папки, которой нет, тип ресурса в `http.respond`) и лишний код: проверки `/` и `@` в `Origin`, `.` и `..` как отдельные сегменты (их закрывает проверка точки в конце), пустая цепочка сертификатов (её отвергает rustls). Ответ на запрос теперь забирает ресурс целиком (`take`), а не флаг в нём: второй ответ всегда `NOT_FOUND`, и чужой ресурс (сервер) не затрагивается.
 
 ### `cli` (system)
 
@@ -122,7 +133,7 @@ app.exit(code): Promise<never>
 ## Структура кода
 
 ```
-alef-modules/src/net/      mod.rs, http/ (mod.rs, client.rs, body.rs, spec.rs), socket/ (mod.rs, tcp.rs, udp.rs, tls.rs), websocket/ (mod.rs), headers.rs
+alef-modules/src/net/      mod.rs, http/ (mod.rs, client.rs, body.rs, spec.rs, serve.rs, guard.rs, files.rs), socket/ (mod.rs, tcp.rs, udp.rs, tls.rs), websocket/ (mod.rs), headers.rs
 alef-modules/src/system/   cli/ (mod.rs, exec.rs, spawn.rs, pty.rs, tree.rs)
 packages/api/src/net/      http.ts, socket.ts, websocket.ts
 packages/api/src/system/   cli.ts
@@ -136,6 +147,7 @@ packages/api/src/system/   cli.ts
 | URL вне `net.http` → `PERMISSION_DENIED` | e2e |
 | TCP эхо (connect/listen), UDP эхо, TLS к тестовому серверу | e2e |
 | WebSocket эхо | e2e |
+| `http.serve`: клиент снаружи доходит до страницы и получает ответ, большие тела в обе стороны, чужие `Host` и `Origin` отвергнуты, файлы папки, TLS | e2e (клиент раннера) |
 | `cli.exec('git --version')` с правом → код 0 и stdout; без права → отказ | e2e |
 | `cli.spawn` с потоковым stdout, запись в stdin, `kill`; reload → процесс убит | e2e |
 | `cli.pty` — интерактивная оболочка, `resize` | e2e (полуручной) |

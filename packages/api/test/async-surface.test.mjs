@@ -123,6 +123,7 @@ const ARGS = {
   'secrets.delete': ['service', 'account'],
   'http.request': ['http://127.0.0.1/'],
   'http.download': ['http://127.0.0.1/', '/probe'],
+  'http.serve': [{}],
   'socket.connect': [{ host: '127.0.0.1', port: 1 }],
   'socket.listen': [{ port: 0 }],
   'socket.udp': [{}],
@@ -145,11 +146,12 @@ installRuntime({
     if (request.url === 'native://call/http.request') return { json: { status: 200, statusText: 'OK', url: 'http://127.0.0.1/', redirected: false, headers: [], stream: null } };
     if (request.url === 'native://call/http.download') return { json: { stream: 9 } };
     if (request.url === 'native://stream/9') return { chunks: [endFrame()] };
+    if (request.url === 'native://call/http.serve') return { json: { server: 6, requests: 51, address: { host: '127.0.0.1', port: 5 }, secure: false } };
     if (request.url === 'native://call/socket.connect') return { json: { socket: 1, read: 11, write: 12, localAddress: { host: '127.0.0.1', port: 2 }, remoteAddress: { host: '127.0.0.1', port: 1 } } };
     if (request.url === 'native://call/socket.listen') return { json: { server: 2, accept: 21, localAddress: { host: '127.0.0.1', port: 3 } } };
     if (request.url === 'native://call/websocket.connect') return { json: { socket: 5, messages: 41, protocol: '', url: 'ws://127.0.0.1/' } };
     if (request.url === 'native://call/socket.udp') return { json: { socket: 3, messages: 31, localAddress: { host: '127.0.0.1', port: 4 } } };
-    if (/^native:\/\/stream\/(11|21|31|41)$/.test(request.url)) return { chunks: [endFrame()] };
+    if (/^native:\/\/stream\/(11|21|31|41|51)$/.test(request.url)) return { chunks: [endFrame()] };
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
     if (request.url === 'native://call/secrets.get') return { json: null };
     if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
@@ -184,5 +186,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'HttpResponse', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'HttpResponse', 'HttpServer', 'ServerRequest', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
 });

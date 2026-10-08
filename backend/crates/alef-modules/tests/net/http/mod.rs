@@ -129,6 +129,7 @@ async fn until(mut condition: impl FnMut() -> bool) -> bool {
 mod download;
 mod failures;
 mod redirects;
+mod serve;
 
 #[tokio::test]
 async fn an_answer_has_its_head_and_its_body_and_some_have_no_body() {

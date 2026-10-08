@@ -1,0 +1,48 @@
+id: org.alef.e2e.modules.serve
+name: Alef e2e serve
+version:: 1.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 800
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: [ {{ROOT}}/** ]
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: [ http://127.0.0.1:{{PORT}}/* ]
+        socket: [ listen:127.0.0.1:{{PORT}}, listen:127.0.0.1:{{SECURE}} ]
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}

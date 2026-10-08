@@ -35,6 +35,11 @@ pub fn acceptor(tls12_only: bool) -> TlsAcceptor {
     ))
 }
 
+/// The private key of the server, as a text.
+pub fn key() -> String {
+    String::from_utf8(KEY.to_vec()).unwrap()
+}
+
 /// The certificate of the server, as a text (a test that wants a wrong authority gives this one).
 pub fn certificate() -> String {
     String::from_utf8(CERTIFICATE.to_vec()).unwrap()

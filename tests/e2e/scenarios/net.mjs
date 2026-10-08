@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Scenarios of the network modules (docs/stages/m4-net-cli.md, "Приёмка"): `http`, `socket` and `websocket`
+// Scenarios of the network modules (docs/stages/m4-net-cli.md, "Приёмка"): `http`, `socket`, `websocket` and `http.serve`
 // against servers of the runner on the loopback, with the right allowed and with a stand-in the user chose.
 import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
 import { dirname, join } from 'node:path';
@@ -35,6 +36,15 @@ const WEBSOCKET_CHECKS = [
   'websocket-the-scope-holds-and-a-closed-port-is-the-network',
 ];
 const WEBSOCKET_SUBSTITUTE_CHECKS = ['websocket-a-substituted-network-hangs-until-its-time-is-up'];
+const SERVE_CHECKS = [
+  'serve-the-page-answers-requests-of-its-own-with-streams-both-ways',
+  'serve-a-client-outside-reaches-the-page-and-big-bodies-go-both-ways',
+  'serve-the-host-and-the-origin-of-a-request-are-held',
+  'serve-a-folder-is-given-without-the-page-and-the-way-out-is-closed',
+  'serve-tls-speaks-https-and-only-https',
+  'serve-the-scope-of-listen-holds',
+];
+const SERVE_SUBSTITUTE_CHECKS = ['serve-a-substituted-port-is-given-and-nobody-comes-to-it'];
 /** The certificates of the tests of the runtime: an authority and a server for localhost and the loopback. */
 const TLS_FILES = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'backend', 'crates', 'alef-modules', 'tests', 'fixtures', 'tls');
 
@@ -210,6 +220,124 @@ async function eventually(condition, ms) {
   return condition();
 }
 
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/** Ports nothing listens on, all different. */
+async function freePorts(count) {
+  const servers = Array.from({ length: count }, () => http.createServer());
+  await Promise.all(servers.map(server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve))));
+  const ports = servers.map(server => server.address().port);
+  await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
+  return ports;
+}
+
+/** Whether something takes a connection on the port. */
+const listening = port => new Promise(resolve => {
+  const probe = net.connect(port, '127.0.0.1');
+  probe.on('connect', () => { probe.destroy(); resolve(true); });
+  probe.on('error', () => resolve(false));
+});
+
+/** A request to the server of the page, whole: its status, headers and body. */
+function reach(options, payload) {
+  return new Promise((resolve, reject) => {
+    const request = (options.ca ? https : http).request({ host: '127.0.0.1', agent: false, ...options }, response => {
+      const pieces = [];
+      response.on('data', piece => pieces.push(piece));
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(pieces) }));
+    });
+    request.on('error', reject);
+    request.setTimeout(30000, () => request.destroy(new Error('no answer in 30 s')));
+    request.end(payload);
+  });
+}
+
+/**
+ * The client of the runner for the server of the page: it comes once the port takes connections, sends
+ * what the page must see (big bodies both ways, the folder, TLS) and what it must not (another Host or
+ * Origin, a way out of the folder), and says it is finished. `problems()` waits for that.
+ */
+function serveClient({ port, secure, authority, size }) {
+  const problems = [];
+  const body = Buffer.allocUnsafe(3 * 1024 * 1024);
+  for (let at = 0; at < body.length; at += 1) body[at] = bigByte(at);
+  const expect = (what, condition) => { if (!condition) problems.push(what); };
+  const at = path => ({ port, path });
+  const attempt = async (what, steps) => {
+    try {
+      await steps();
+    } catch (error) {
+      problems.push(`${what}: ${error?.message ?? error}`);
+    }
+  };
+  const finished = (async () => {
+    const deadline = Date.now() + 60000;
+    while (!(await listening(port))) {
+      if (Date.now() > deadline) {
+        problems.push('the server of the page did not take connections in a minute');
+        return;
+      }
+      await pause(50);
+    }
+    await attempt('the first request', async () => {
+      const answer = await reach({ ...at('/from-runner?x=1'), headers: { origin: `http://127.0.0.1:${port}` } });
+      expect('a request of the client is answered by the page', answer.status === 200 && answer.body.toString() === 'page: GET /from-runner?x=1');
+    });
+    await attempt('a big body both ways', async () => {
+      const echoed = await reach({ ...at('/echo'), method: 'POST' }, body);
+      expect('the body came back whole through the page', echoed.status === 200 && echoed.headers['x-method'] === 'POST' && Buffer.compare(echoed.body, body) === 0);
+      const big = await reach(at(`/big?size=${size}`));
+      let wrong = big.body.length !== size;
+      for (let place = 0; !wrong && place < size; place += 1) wrong = big.body[place] !== bigByte(place);
+      expect('a big answer of the page came whole', !wrong);
+    });
+    await attempt('a Host that is not the server\'s', async () => {
+      const answer = await reach({ ...at('/evil-host'), headers: { host: 'evil.test' } });
+      expect(`another Host got ${answer.status}, expected 421`, answer.status === 421);
+    });
+    await attempt('an Origin that is not the server\'s', async () => {
+      for (const claimed of ['http://evil.test', 'null', `http://127.0.0.1:${port + 1}`]) {
+        const answer = await reach({ ...at('/evil-origin'), headers: { origin: claimed } });
+        expect(`the Origin ${claimed} got ${answer.status}, expected 403`, answer.status === 403);
+      }
+    });
+    await attempt('the folder', async () => {
+      const file = await reach(at('/hello.txt'));
+      expect('a file of the folder was given', file.status === 200 && file.body.toString() === 'static hello');
+      expect('the media type of the file', file.headers['content-type'] === 'text/plain; charset=utf-8' && file.headers['x-content-type-options'] === 'nosniff');
+      const home = await reach(at('/'));
+      expect('the index of the folder', home.status === 200 && home.body.toString() === '<h1>home</h1>');
+      const head = await reach({ ...at('/hello.txt'), method: 'HEAD' });
+      expect('HEAD gives the length and no body', head.status === 200 && head.headers['content-length'] === '12' && head.body.length === 0);
+      for (const path of ['/..%2fsecret.txt', '/%2e%2e/secret.txt']) {
+        const out = await reach(at(path));
+        expect(`${path} did not leave the folder`, out.status === 404 && out.body.toString() === 'the page does not know that');
+      }
+    });
+    await attempt('TLS', async () => {
+      const answer = await reach({ port: secure, path: '/secure', ca: authority });
+      expect('the page answers over TLS', answer.status === 200 && answer.body.toString() === 'page: GET /secure');
+      const plain = await reach({ port: secure, path: '/plain' }).then(() => 'answered', () => 'refused');
+      expect('a server with TLS does not answer in plain', plain === 'refused');
+    });
+  })().finally(() => reach(at('/finish')).catch(() => {}));
+  return { problems: async () => { await finished; return problems; }, stop: () => {} };
+}
+
+/** The runner looks for a listener on the ports while the page runs: for a port the user substituted there must be none. */
+function watchPorts(ports) {
+  const heard = new Set();
+  const state = { watching: true };
+  const loop = (async () => {
+    while (state.watching) {
+      for (const port of ports) if (await listening(port)) heard.add(port);
+      await pause(50);
+    }
+  })();
+  const stop = async () => { state.watching = false; await loop; };
+  return { problems: async () => { await stop(); return [...heard].map(port => `something listens on the port ${port} the user substituted`); }, stop };
+}
+
 export function netScenarios({ drive }) {
   async function run(name, mode, expectedChecks, env, judge) {
     const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-http-'));
@@ -273,7 +401,46 @@ export function netScenarios({ drive }) {
     }
   }
 
+  /** The page is the server; `watch` is the client of the runner (or the watcher of the ports) beside it. */
+  async function runServe(name, mode, expectedChecks, env, watch) {
+    const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-serve-'));
+    const root = join(base, 'root');
+    mkdirSync(join(root, 'public'), { recursive: true });
+    writeFileSync(join(root, 'secret.txt'), 'the secret');
+    writeFileSync(join(root, 'public', 'hello.txt'), 'static hello');
+    writeFileSync(join(root, 'public', 'index.html'), '<h1>home</h1>');
+    const [port, secure, closed] = await freePorts(3);
+    const authority = readFileSync(join(TLS_FILES, 'ca.pem'), 'utf8');
+    const client = watch({ port, secure, authority, size: SIZE });
+    try {
+      return await drive({
+        name, app: 'modules/net/serve',
+        replacements: { PORT: String(port), SECURE: String(secure), ROOT: root.replaceAll('\\', '/') },
+        targets: {
+          mode, port, secure, closed, size: SIZE, root: root.replaceAll('\\', '/'),
+          cert: readFileSync(join(TLS_FILES, 'server.pem'), 'utf8'), key: readFileSync(join(TLS_FILES, 'server.key'), 'utf8'),
+        },
+        env: { ALEF_HOME: join(base, 'home'), ...(typeof env === 'function' ? env({ port, secure }) : env) },
+        expectedChecks,
+        judge: () => client.problems(),
+      });
+    } finally {
+      await client.stop();
+      rmSync(base, { recursive: true, force: true });
+    }
+  }
+
   return {
+    // The page is a server: a client of the runner comes to it, the runner looks at what it got.
+    serve: () => runServe('serve', 'allowed', SERVE_CHECKS, {}, serveClient),
+
+    // The user chose a stand-in for the port: the page gets an address, and nobody listens there.
+    'serve-substitute': () => runServe(
+      'serve-substitute', 'substituted', SERVE_SUBSTITUTE_CHECKS,
+      ({ port }) => ({ ALEF_E2E_CONSENT: `net.socket:listen:127.0.0.1:${port}=substitute;*=allow` }),
+      ({ port, secure }) => watchPorts([port, secure]),
+    ),
+
     // The user allowed the addresses: everything is real, and the runner looks at what its servers saw.
     http: () => run('http', 'allowed', HTTP_CHECKS, {}, async ({ root, main, aside }) => {
       const problems = [];

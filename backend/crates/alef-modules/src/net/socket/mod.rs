@@ -30,7 +30,7 @@ mod udp;
 pub(in crate::net) use tcp::{open, Io, TlsOptions};
 
 /// Where a server or a UDP socket listens when the page names no host: only this machine reaches it.
-const LOOPBACK: &str = "127.0.0.1";
+pub(in crate::net) const LOOPBACK: &str = "127.0.0.1";
 /// How long a connection the user substituted hangs when it names no timeout.
 const HANG: Duration = Duration::from_secs(30);
 /// How long a socket that is closed has to write what the page sent before.
@@ -58,7 +58,7 @@ pub(super) struct Socket {
 }
 
 impl Socket {
-    fn adopt(&self, tasks: impl IntoIterator<Item = JoinHandle<()>>) {
+    pub(in crate::net) fn adopt(&self, tasks: impl IntoIterator<Item = JoinHandle<()>>) {
         self.tasks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -100,6 +100,14 @@ impl Resource for Socket {
     }
 }
 
+/// What a server the user substituted is: nothing listens, and the stream of what would come stays open.
+pub(in crate::net) fn standing(writer: StreamWriter) -> Socket {
+    Socket {
+        _held: vec![writer],
+        ..Socket::default()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CloseArgs {
@@ -115,7 +123,7 @@ fn invalid(message: &str) -> AlefError {
 }
 
 /// What a right is checked against: `tcp:host:port`, with an IPv6 literal in brackets.
-fn target(proto: &str, host: &str, port: u16) -> String {
+pub(in crate::net) fn target(proto: &str, host: &str, port: u16) -> String {
     if host.contains(':') && !host.starts_with('[') {
         format!("{proto}:[{host}]:{port}")
     } else {

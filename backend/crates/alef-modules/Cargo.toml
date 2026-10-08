@@ -28,7 +28,7 @@ argon2 = "=0.5.3"
 scrypt = "=0.11.0"
 keyring-core = "=1.0.0"
 notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
-hyper = { version = "=1.11.1", default-features = false, features = ["client", "http1", "http2"] }
+hyper = { version = "=1.11.1", default-features = false, features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "=0.1.21", default-features = false, features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls = { version = "=0.27.10", default-features = false, features = ["http1", "http2", "webpki-tokio", "aws-lc-rs", "tls12"] }
 http-body-util = { version = "=0.1.5", features = ["channel"] }

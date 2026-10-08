@@ -79,24 +79,7 @@ export class HttpResponse {
   /** The whole body. */
   async bytes(): Promise<Uint8Array<ArrayBuffer>> {
     if (this.#used) throw new AlefError('INVALID_ARGUMENT', 'The body was read already.');
-    const body = this.body;
-    if (body === null) return new Uint8Array(0);
-    const pieces: Uint8Array[] = [];
-    let length = 0;
-    const reader = body.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      pieces.push(value);
-      length += value.length;
-    }
-    const all = new Uint8Array(length);
-    let at = 0;
-    for (const piece of pieces) {
-      all.set(piece, at);
-      at += piece.length;
-    }
-    return all;
+    return collect(this.body);
   }
 
   /** The body as UTF-8 text. */
@@ -134,9 +117,170 @@ async function upload(id: number, body: Body, options: Cancelable): Promise<void
   }
 }
 
+export interface ServeOptions extends Cancelable {
+  /** The address to listen on; this machine alone (`127.0.0.1`) when omitted. */
+  host?: string;
+  /** `0` or omitted: any free port, which `address` tells. */
+  port?: number;
+  /** PEM certificate chain and private key: the server speaks HTTPS and nothing else. */
+  tls?: { cert: string; key: string };
+  /** A folder (it needs `permissions.fs.read`) whose files the server gives by itself, `GET` and `HEAD` alone; what is not one of them comes to the page. */
+  files?: string;
+  /** Names besides the ones of this machine that a `Host` may carry. */
+  hosts?: string[];
+  /** Origins besides the ones of this server that a request may come from. */
+  origins?: string[];
+  /** Milliseconds the page has to answer a request, before the client gets a 504; 60 000 when omitted. */
+  answerTimeout?: number;
+}
+
+export interface ServerResponse {
+  /** 200 to 599; 200 when omitted. */
+  status?: number;
+  headers?: HeadersInit;
+  /** A text, bytes, or a stream that goes down as it is read; none when omitted. */
+  body?: Body | null;
+}
+
+interface ServerFrame {
+  id: number;
+  method: string;
+  url: string;
+  headers: Array<[string, string]>;
+  body: number | null;
+}
+
+/** A request to the server of the page. It is answered once, with `respond`. */
+export class ServerRequest {
+  readonly method: string;
+  /** The path and the query, as the client wrote them. */
+  readonly url: string;
+  readonly headers: Headers;
+  #id: number;
+  #stream: number | null;
+  #used = false;
+  #answered = false;
+
+  constructor(frame: ServerFrame) {
+    this.#id = frame.id;
+    this.method = frame.method;
+    this.url = frame.url;
+    this.headers = new Headers();
+    for (const [name, value] of frame.headers) this.headers.append(name, value);
+    this.#stream = frame.body;
+  }
+
+  get bodyUsed(): boolean {
+    return this.#used;
+  }
+
+  /** The body as a stream with backpressure; `null` when the request has none. */
+  get body(): ReadableStream<Uint8Array> | null {
+    if (this.#stream === null || this.#used) return null;
+    this.#used = true;
+    return bytesOf(this.#stream);
+  }
+
+  /** The whole body. */
+  async bytes(): Promise<Uint8Array<ArrayBuffer>> {
+    if (this.#used) throw new AlefError('INVALID_ARGUMENT', 'The body was read already.');
+    return collect(this.body);
+  }
+
+  async text(): Promise<string> {
+    return decoder.decode(await this.bytes());
+  }
+
+  async json(): Promise<unknown> {
+    return JSON.parse(await this.text());
+  }
+
+  /**
+   * Answers the request. A request the client gave up on is `NOT_FOUND`; a request is answered once.
+   */
+  async respond(response: ServerResponse = {}): Promise<void> {
+    if (this.#answered) throw new AlefError('INVALID_ARGUMENT', 'The request was answered already.');
+    const { status, headers, body } = response;
+    const args = { request: this.#id, status, headers: pairs(headers) };
+    const small = typeof body === 'string' ? encoder.encode(body) : body instanceof Uint8Array ? body : undefined;
+    if (body === undefined || body === null || (small !== undefined && small.length <= UNARY_BODY)) {
+      await call<null>('http.respond', args, { body: small && small.length > 0 ? small : undefined });
+      this.#answered = true;
+      return;
+    }
+    const { upload: stream } = await call<{ upload: number }>('http.respondStream', args);
+    this.#answered = true;
+    await upload(stream, body, {});
+  }
+}
+
+/**
+ * A server of HTTP: iterate it once for the requests, answer each with `respond` in any order. The
+ * iteration ends when the server is closed.
+ */
+export class HttpServer implements AsyncIterable<ServerRequest> {
+  readonly address: { host: string; port: number };
+  readonly secure: boolean;
+  #id: number;
+  #requests: number;
+  #closed = false;
+
+  constructor(opened: { server: number; requests: number; address: { host: string; port: number }; secure: boolean }) {
+    this.#id = opened.server;
+    this.#requests = opened.requests;
+    this.address = opened.address;
+    this.secure = opened.secure;
+  }
+
+  /** The address clients use: `http://127.0.0.1:port`, or `https://` for a server with TLS. */
+  get url(): string {
+    const host = this.address.host.includes(':') ? `[${this.address.host}]` : this.address.host;
+    return `${this.secure ? 'https' : 'http'}://${host}:${this.address.port}`;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<ServerRequest> {
+    try {
+      for await (const frame of await openReadable(this.#requests)) {
+        if (frame.kind === 'json') yield new ServerRequest(frame.value as ServerFrame);
+      }
+    } catch (error) {
+      if (!this.#closed) throw error;
+    }
+  }
+
+  /** Stops taking connections and requests; the requests it had are dropped. Safe to call repeatedly. */
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    await call<null>('socket.close', { socket: this.#id });
+  }
+}
+
+/** The bytes of a stream, whole. */
+async function collect(body: ReadableStream<Uint8Array> | null): Promise<Uint8Array<ArrayBuffer>> {
+  if (body === null) return new Uint8Array(0);
+  const pieces: Uint8Array[] = [];
+  let length = 0;
+  const reader = body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    pieces.push(value);
+    length += value.length;
+  }
+  const all = new Uint8Array(length);
+  let at = 0;
+  for (const piece of pieces) {
+    all.set(piece, at);
+    at += piece.length;
+  }
+  return all;
+}
+
 /**
  * Requests to servers on the network, which no CORS restricts: the manifest lists the addresses
  * (`permissions.net.http`, patterns like `https://api.example.com/*`) and the user allows them.
+ * `serve` takes a port of this machine instead (`permissions.net.socket`: `listen:127.0.0.1:*`).
  */
 export const http = {
   request: async (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> => {
@@ -150,6 +294,13 @@ export const http = {
     const { request, upload: stream } = await call<{ request: number; upload: number }>('http.start', args, { signal });
     await upload(stream, body, { signal });
     return new HttpResponse(await call<Head>('http.response', { request }, { signal }));
+  },
+
+  /** Takes a port of this machine and gives the requests that come to it; see `HttpServer`. */
+  serve: async (options: ServeOptions = {}): Promise<HttpServer> => {
+    const { host, port, tls, files, hosts, origins, answerTimeout, signal } = options;
+    const args = { host, port, tls, files, hosts, origins, answerTimeoutMs: answerTimeout };
+    return new HttpServer(await call<ConstructorParameters<typeof HttpServer>[0]>('http.serve', args, { signal }));
   },
 
   /** Fills the file at `path` (it needs `permissions.fs.write`); a download that fails or is aborted leaves no file. */
