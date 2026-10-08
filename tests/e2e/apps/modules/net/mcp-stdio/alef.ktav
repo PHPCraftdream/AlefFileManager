@@ -1,0 +1,43 @@
+id: org.alef.e2e.modules.mcpstdio
+name: Alef e2e MCP stdio
+version:: 1.0.0
+windows: []
+console: true
+entry: /index.html
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+}

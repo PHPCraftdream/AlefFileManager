@@ -14,6 +14,9 @@
     "isolatedModules": true,
     "allowImportingTsExtensions": true,
     "paths": {
+      "@alef-tron/mcp": [
+        "./packages/mcp/src/index.ts"
+      ],
       "@alef-tron/api": [
         "./packages/api/src/index.ts"
       ]
@@ -30,6 +33,7 @@
   "include": [
     "frontend/src",
     "packages/api/src",
+    "packages/mcp/src",
     "rsbuild.config.ts"
   ]
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,quit,relaunch,instance,restore,system,window,desktop,consent,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,arguments,startup]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,quit,relaunch,instance,restore,system,window,desktop,consent,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,mcp,mcp-stdio,arguments,startup]
 //                          [--timeout-s 150] [--verbose]
 // Exit code 0 = every selected scenario passed.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { countingServer, exeName, field, interesting, makeDriver, root, scratch, staticServer, startApp } from './lib.mjs';
 import { consentScenarios } from './scenarios/consent.mjs';
 import { dataScenarios } from './scenarios/data.mjs';
+import { mcpScenarios } from './scenarios/mcp.mjs';
 import { netScenarios } from './scenarios/net.mjs';
 import { manifestCases } from './scenarios/manifests.mjs';
 import { moduleScenarios } from './scenarios/modules.mjs';
@@ -70,6 +71,7 @@ const scenarios = {
   ...moduleScenarios({ drive, exe, verbose }),
   ...consentScenarios({ drive, exe, verbose }),
   ...dataScenarios({ drive, exe, verbose }),
+  ...mcpScenarios({ exe, verbose, timeoutMs }),
   ...netScenarios({ drive }),
   ...startupScenarios({ exe }),
   core: () => drive({ name: 'core', app: 'core', expectedChecks: CORE_CHECKS, judge: judgeCore }),

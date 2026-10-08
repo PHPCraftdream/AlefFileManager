@@ -21,7 +21,7 @@ export function startupScenarios({ exe }) {
       const site = prepareSite('startup', 'startup');
       const pictures = join(scratch, 'startup-pictures');
       const run = spawnSync('powershell', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(here, 'scenarios', 'startup-probe.ps1'),
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(here, 'apps', 'startup', 'startup-probe.ps1'),
         '-Exe', exe, '-Arguments', `--app "${site}"`, '-OutDir', pictures, '-Seconds', '60', '-Assert',
       ], { encoding: 'utf8', timeout: 150000 });
       const output = `${run.stdout ?? ''}${run.stderr ?? ''}`;

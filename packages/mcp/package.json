@@ -1,0 +1,11 @@
+{
+  "name": "@alef-tron/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dependency-free MCP over Alef streams and HTTP",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "exports": { ".": "./src/index.ts" },
+  "files": ["src", "README.md", "CHANGELOG.md"]
+}

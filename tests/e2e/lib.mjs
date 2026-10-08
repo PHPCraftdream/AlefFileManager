@@ -47,6 +47,26 @@ export function transpileApi() {
   return out;
 }
 
+let transpiledMcp;
+
+/** Emits MCP with the packages layout, then redirects its runtime imports to the shared site API. */
+export function transpileMcp() {
+  if (transpiledMcp) return transpiledMcp;
+  const packages = join(root, 'packages');
+  const out = join(scratch, 'mcp-packages');
+  const tsc = join(dirname(createRequire(import.meta.url).resolve('typescript/package.json')), 'bin', 'tsc');
+  const result = spawnSync(process.execPath, [
+    tsc, '--ignoreConfig', '--strict', '--skipLibCheck', '--target', 'ES2022', '--module', 'ESNext',
+    '--moduleResolution', 'bundler', '--rewriteRelativeImportExtensions',
+    '--rootDir', packages, '--outDir', out, join(packages, 'mcp', 'src', 'index.ts'),
+  ], { cwd: root, stdio: 'inherit', timeout: 30000 });
+  if (result.status !== 0) throw new Error('could not transpile @alef-tron/mcp for the scenarios');
+  const adapter = join(out, 'mcp', 'src', 'transports', 'runtime.js');
+  writeFileSync(adapter, readFileSync(adapter, 'utf8').replaceAll('../../../api/src/', '../../../src/'));
+  transpiledMcp = join(out, 'mcp');
+  return transpiledMcp;
+}
+
 /**
  * Builds the directory a scenario runs from: the application files of `apps/<app>` (`{{KEY}}` in
  * alef.ktav replaced), the shared harness, the transpiled API and `targets.json` for the page.
@@ -58,6 +78,7 @@ export function prepareSite(name, app, { replacements = {}, targets = {} } = {})
   copyFileSync(join(here, 'harness.js'), join(site, 'harness.js'));
   const api = transpileApi();
   for (const folder of ['src', 'types']) cpSync(join(api, folder), join(site, folder), { recursive: true });
+  if (app.startsWith('modules/net/mcp')) cpSync(transpileMcp(), join(site, 'mcp'), { recursive: true });
   const manifest = join(site, 'alef.ktav');
   let text = readFileSync(manifest, 'utf8');
   for (const [key, value] of Object.entries(replacements)) text = text.replaceAll(`{{${key}}}`, value);
@@ -90,16 +111,14 @@ const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '
  * Starts the runtime; its stderr and stdout are kept line by line and can be awaited. `input` (text or bytes)
  * is written to its stdin, which is then closed; without it stdin is closed from the start.
  */
-export function startApp({ exe, args, env = {}, verbose = false, input }) {
+export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false }) {
   assertQuiet(exe);
   const child = spawn(exe, args, {
     env: { ...process.env, ALEF_E2E: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env },
-    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    stdio: [input === undefined && !interactive ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
-  if (input !== undefined) {
-    child.stdin.on('error', () => {});
-    child.stdin.end(input);
-  }
+  if (input !== undefined || interactive) child.stdin.on('error', () => {});
+  if (input !== undefined) child.stdin.end(input);
   const output = [];
   child.stdout.on('data', chunk => output.push(Buffer.from(chunk)));
   const lines = [];
@@ -157,6 +176,9 @@ export function startApp({ exe, args, env = {}, verbose = false, input }) {
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
     waitForClosed: ms => Promise.race([closed.then(() => true), new Promise(resolvePromise => setTimeout(resolvePromise, ms, false))]),
+    /** Writes to the stdin of an `interactive` run; `endInput` closes it. */
+    write: text => child.stdin.write(text),
+    endInput: () => child.stdin.end(),
     stop: () => child.kill(),
     pid: child.pid,
     get exit() { return exit; },

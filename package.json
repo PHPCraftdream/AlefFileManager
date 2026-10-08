@@ -13,6 +13,7 @@
     "check:types": "node scripts/gen-types.mjs --check",
     "test:types": "node --test scripts/gen-types.test.mjs",
     "test:api": "node --experimental-strip-types --test packages/api/test/*.test.mjs packages/api/test/*/*.test.mjs packages/api/test/*/*/*.test.mjs frontend/test/*.test.mjs",
+    "test:mcp": "node --experimental-strip-types --test packages/mcp/test/*.test.mjs",
     "test:e2e": "node tests/e2e/run.mjs",
     "dev:web": "rsbuild dev",
     "typecheck": "tsc --noEmit",
