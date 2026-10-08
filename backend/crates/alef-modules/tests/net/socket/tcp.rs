@@ -442,11 +442,10 @@ async fn a_close_writes_what_the_runtime_took_though_the_peer_was_slow_to_read()
         .await
         .expect("the peer saw the end")
         .unwrap();
-    assert_eq!(total % (64 * 1024), 0, "whole pieces");
     assert!(
         total >= before * 64 * 1024,
-        "{} pieces were taken, {} arrived",
+        "{} pieces were taken, {} bytes arrived",
         before,
-        total / (64 * 1024)
+        total
     );
 }

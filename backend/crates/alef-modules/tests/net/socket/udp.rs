@@ -81,8 +81,8 @@ async fn datagrams_go_out_and_come_in_with_their_senders() {
         .unwrap();
     assert_eq!(count, 0);
 
-    // The biggest datagram goes and comes back whole.
-    let big = pattern(65_507);
+    // A big datagram goes and comes back whole (macOS takes 9216 bytes by default, so no more here).
+    let big = pattern(8_000);
     send(&app, page.id, peer_port, &big).await.unwrap();
     let (count, _) = tokio::time::timeout(Duration::from_secs(10), peer.recv_from(&mut buffer))
         .await

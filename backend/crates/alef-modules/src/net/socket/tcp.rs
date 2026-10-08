@@ -128,7 +128,9 @@ async fn write_pump<W: AsyncWrite + Unpin>(
                 _ => break,
             },
             _ = finish.notified() => {
-                while let Ok(Some(Ok(bytes))) = tokio::time::timeout(Duration::ZERO, reader.recv()).await {
+                while let Ok(Some(Ok(bytes))) =
+                    tokio::time::timeout(Duration::ZERO, tokio::task::unconstrained(reader.recv())).await
+                {
                     if half.write_all(&bytes).await.is_err() {
                         return;
                     }

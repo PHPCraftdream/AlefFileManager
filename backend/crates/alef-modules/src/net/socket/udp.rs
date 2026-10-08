@@ -39,6 +39,11 @@ struct SendArgs {
     port: u16,
 }
 
+/// Whether a datagram of this length is one UDP over IPv4 can carry (a system may take less).
+fn fits(length: usize) -> bool {
+    length <= MAX_DATAGRAM
+}
+
 /// Hands every datagram that arrives to the page, with whom it came from.
 async fn receive_pump(socket: Arc<UdpSocket>, writer: StreamWriter) {
     let mut buffer = vec![0_u8; MAX_DATAGRAM + 1];
@@ -116,7 +121,7 @@ pub(super) fn register(registry: &mut Registry) -> Result<(), AlefError> {
                 .resources()
                 .with_as::<Socket, _>(id, |socket| socket.udp.clone())?;
             let data = ctx.body().cloned().unwrap_or_default();
-            if data.len() > MAX_DATAGRAM {
+            if !fits(data.len()) {
                 return Err(invalid("a datagram is at most 65507 bytes"));
             }
             let socket = match udp {
@@ -138,4 +143,19 @@ pub(super) fn register(registry: &mut Registry) -> Result<(), AlefError> {
                 .map_err(|error| network(format!("the datagram was not sent: {error}")))?;
             Ok(Reply::Json(Value::Null))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_datagram_of_65507_bytes_fits_and_one_byte_more_does_not() {
+        assert!(fits(0));
+        assert!(fits(1));
+        assert!(fits(65506));
+        assert!(fits(65507));
+        assert!(!fits(65508));
+        assert!(!fits(usize::MAX));
+    }
 }
