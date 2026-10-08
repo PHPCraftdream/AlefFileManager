@@ -26,9 +26,7 @@ use spec::spec;
 
 mod body;
 mod client;
-mod files;
-mod guard;
-mod serve;
+mod server;
 mod spec;
 
 /// How long a request the user substituted hangs when it names no timeout.
@@ -361,7 +359,7 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
             }
         })?;
 
-    serve::register(registry)
+    server::register(registry)
 }
 
 #[cfg(test)]

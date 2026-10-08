@@ -1,10 +1,11 @@
 // The module http.serve through the real transport: the page is a server on the loopback, and a client of
 // the runner comes to it from outside (big bodies both ways, a Host and an Origin that are not the server's,
-// the files of a folder, TLS). In `substituted` mode the user chose a stand-in for the port: the page gets
+// the files of a folder, TLS, WebSockets taken from the port of the server of HTTP and from a server of their
+// own). In `substituted` mode the user chose a stand-in for the port: the page gets
 // an address, and the runner sees that nobody listens there.
 import { api, guard, pattern, rejection, report, same, sleep, suite, verdict } from './harness.js';
 
-const { http } = api;
+const { http, websocket } = api;
 
 const expectCode = async (what, promise, code) => {
   const error = await rejection(promise);
@@ -27,8 +28,37 @@ function streamOf(size) {
   });
 }
 
+/** The sum of the bytes of a message: what the page tells of a big message it took. */
+const checksum = bytes => bytes.reduce((sum, byte) => sum + byte, 0);
+
+/** The next message of an iterator, or an error when none comes in time. */
+const next = async (iterator, ms = 10000) => {
+  const outcome = await Promise.race([iterator.next(), sleep(ms).then(() => 'late')]);
+  if (outcome === 'late') throw new Error('no message came');
+  return outcome.done ? null : outcome.value;
+};
+
+/** Answers a connection: text comes back as `echo:text`, a binary message as its length and sum, `bye` closes with 4000. */
+async function echoLoop(connection, heard) {
+  for await (const message of connection) {
+    if (message.type === 'binary') {
+      heard.push(`binary ${message.data.length}`);
+      await connection.send(`got ${message.data.length} ${checksum(message.data)}`);
+    } else if (message.data === 'bye') {
+      heard.push('bye');
+      await connection.close(4000, 'done');
+      return;
+    } else {
+      heard.push(message.data);
+      await connection.send(`echo:${message.data}`);
+    }
+  }
+}
+
+const logged = what => error => console.error(`ALEF_E2E-page ${what} failed ${error?.message ?? error}`);
+
 /** Answers every request of a server the way the runner's client expects; `asked` is what the page was asked. */
-async function answer(server, asked, finish) {
+async function answer(server, asked, finish, viaHttp) {
   for await (const request of server) {
     asked.push(request.url);
     const path = new URL(request.url, 'http://page').pathname;
@@ -47,6 +77,13 @@ async function answer(server, asked, finish) {
           await request.respond({ body: 'bye' });
           finish();
           return;
+        case '/socket':
+          if (!request.upgradable) {
+            await request.respond({ status: 426, body: 'a WebSocket, please' });
+            return;
+          }
+          echoLoop(await request.upgrade({ protocol: request.protocols.includes('superchat') ? 'superchat' : undefined }), viaHttp).catch(logged('a WebSocket of the server of HTTP'));
+          return;
         case '/from-runner':
         case '/secure':
           await request.respond({ body: `page: ${request.method} ${request.url}` });
@@ -64,10 +101,16 @@ async function allowed(t, check) {
   const askedSecure = [];
   let finish;
   const finished = new Promise(resolve => { finish = resolve; });
+  const viaHttp = [];
+  const viaServe = [];
   const server = await http.serve({ port: t.port, files: `${t.root}/public`, answerTimeout: 30000 });
   const secure = await http.serve({ port: t.secure, tls: { cert: t.cert, key: t.key } });
-  answer(server, asked, finish).catch(error => console.error(`ALEF_E2E-page the server failed ${error?.message ?? error}`));
-  answer(secure, askedSecure, () => {}).catch(error => console.error(`ALEF_E2E-page the secure server failed ${error?.message ?? error}`));
+  const sockets = await websocket.serve({ port: t.wsport, path: '/ws', protocols: ['chat', 'superchat'], origins: ['https://app.test'] });
+  answer(server, asked, finish, viaHttp).catch(logged('the server'));
+  answer(secure, askedSecure, () => {}, []).catch(logged('the secure server'));
+  (async () => {
+    for await (const connection of sockets) echoLoop(connection, viaServe).catch(logged('a WebSocket of the server of WebSocket'));
+  })().catch(logged('the server of WebSocket'));
   const waitForClient = () => Promise.race([finished, sleep(90000).then(() => { throw new Error('the client of the runner did not finish'); })]);
 
   await check('serve-the-page-answers-requests-of-its-own-with-streams-both-ways', async () => {
@@ -105,12 +148,46 @@ async function allowed(t, check) {
     if (askedSecure.length !== 1) throw new Error(`more than the one request came over TLS: ${JSON.stringify(askedSecure)}`);
   });
 
+  await check('serve-a-websocket-is-taken-from-the-port-of-the-server-of-http', async () => {
+    const mine = await websocket.connect(`ws://127.0.0.1:${t.port}/socket`, { protocols: ['chat', 'superchat'] });
+    if (mine.protocol !== 'superchat') throw new Error(`the subprotocol is ${JSON.stringify(mine.protocol)}`);
+    const messages = mine[Symbol.asyncIterator]();
+    await mine.send('self');
+    const echoed = await next(messages);
+    if (echoed?.data !== 'echo:self') throw new Error(JSON.stringify(echoed));
+    await mine.close();
+    await waitForClient();
+    for (const wanted of ['héllo', 'binary 4194304']) {
+      if (!viaHttp.includes(wanted)) throw new Error(`the client of the runner was not heard: ${JSON.stringify(viaHttp)}`);
+    }
+  });
+
+  await check('serve-websocket-serve-gives-the-connections-and-holds-the-origin-the-path-and-the-subprotocol', async () => {
+    if (sockets.address.port !== t.wsport || sockets.url !== `ws://127.0.0.1:${t.wsport}/ws`) throw new Error(JSON.stringify([sockets.address, sockets.url]));
+    const address = `ws://127.0.0.1:${t.wsport}/ws`;
+    const mine = await websocket.connect(address, { protocols: ['superchat'], headers: { Origin: 'https://app.test' } });
+    if (mine.protocol !== 'superchat') throw new Error(`the subprotocol is ${JSON.stringify(mine.protocol)}`);
+    const messages = mine[Symbol.asyncIterator]();
+    await mine.send('self');
+    const echoed = await next(messages);
+    if (echoed?.data !== 'echo:self') throw new Error(JSON.stringify(echoed));
+    await mine.close();
+    await expectCode('another origin', websocket.connect(address, { headers: { Origin: 'http://evil.test' } }), 'NETWORK');
+    await expectCode('another path', websocket.connect(`ws://127.0.0.1:${t.wsport}/other`), 'NETWORK');
+    await expectCode('no subprotocol in common', websocket.connect(address, { protocols: ['other'] }), 'NETWORK');
+    await waitForClient();
+    for (const wanted of ['one', 'bye']) {
+      if (!viaServe.includes(wanted)) throw new Error(`the client of the runner was not heard: ${JSON.stringify(viaServe)}`);
+    }
+  });
+
   await check('serve-the-scope-of-listen-holds', async () => {
     await expectCode('a port that is not listed', http.serve({ port: t.closed }), 'PERMISSION_DENIED');
     await expectCode('an address that is not the loopback', http.serve({ host: '0.0.0.0', port: t.port }), 'PERMISSION_DENIED');
     await expectCode('a folder outside the scope of fs.read', http.serve({ port: t.port, files: `${t.root}/..` }), 'PERMISSION_DENIED');
     await server.close();
     await secure.close();
+    await sockets.close();
     await server.close();
   });
 }
@@ -119,12 +196,15 @@ async function substituted(t, check) {
   await check('serve-a-substituted-port-is-given-and-nobody-comes-to-it', async () => {
     const server = await http.serve({ port: t.port });
     if (server.address.port !== t.port || server.address.host !== '127.0.0.1') throw new Error(JSON.stringify(server.address));
+    const sockets = await websocket.serve({ port: t.wsport });
+    if (sockets.address.port !== t.wsport) throw new Error(JSON.stringify(sockets.address));
     const outcome = await Promise.race([
       server[Symbol.asyncIterator]().next().then(() => 'a request came'),
       sleep(1500).then(() => 'quiet'),
     ]);
     if (outcome !== 'quiet') throw new Error(outcome);
     await server.close();
+    await sockets.close();
   });
 }
 

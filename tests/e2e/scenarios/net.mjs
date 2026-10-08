@@ -42,6 +42,8 @@ const SERVE_CHECKS = [
   'serve-the-host-and-the-origin-of-a-request-are-held',
   'serve-a-folder-is-given-without-the-page-and-the-way-out-is-closed',
   'serve-tls-speaks-https-and-only-https',
+  'serve-a-websocket-is-taken-from-the-port-of-the-server-of-http',
+  'serve-websocket-serve-gives-the-connections-and-holds-the-origin-the-path-and-the-subprotocol',
   'serve-the-scope-of-listen-holds',
 ];
 const SERVE_SUBSTITUTE_CHECKS = ['serve-a-substituted-port-is-given-and-nobody-comes-to-it'];
@@ -252,12 +254,54 @@ function reach(options, payload) {
   });
 }
 
+/** A WebSocket of the runner: the messages come one by one, and a close is a message of its own. */
+function dialSocket(url, protocols) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, protocols);
+    socket.binaryType = 'arraybuffer';
+    const queue = [];
+    const waiting = [];
+    const push = item => (waiting.length > 0 ? waiting.shift()(item) : queue.push(item));
+    socket.onmessage = event => push({ data: event.data });
+    socket.onclose = event => {
+      push({ closed: { code: event.code, reason: event.reason } });
+      reject(new Error('the WebSocket did not open'));
+    };
+    socket.onerror = () => {};
+    socket.onopen = () => resolve({
+      protocol: socket.protocol,
+      send: data => socket.send(data),
+      close: (code, reason) => socket.close(code, reason),
+      next: (ms = 20000) => new Promise((done, fail) => {
+        if (queue.length > 0) {
+          done(queue.shift());
+          return;
+        }
+        const timer = setTimeout(() => fail(new Error('no message in time')), ms);
+        waiting.push(item => {
+          clearTimeout(timer);
+          done(item);
+        });
+      }),
+    });
+  });
+}
+
+/** A request that asks for a WebSocket, with the Origin it is given: the status of the answer. */
+const asking = (port, path, claimed) => reach({
+  port,
+  path,
+  headers: {
+    connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', ...(claimed === undefined ? {} : { origin: claimed }),
+  },
+}).then(answer => answer.status);
+
 /**
  * The client of the runner for the server of the page: it comes once the port takes connections, sends
  * what the page must see (big bodies both ways, the folder, TLS) and what it must not (another Host or
  * Origin, a way out of the folder), and says it is finished. `problems()` waits for that.
  */
-function serveClient({ port, secure, authority, size }) {
+function serveClient({ port, secure, wsport, authority, size }) {
   const problems = [];
   const body = Buffer.allocUnsafe(3 * 1024 * 1024);
   for (let at = 0; at < body.length; at += 1) body[at] = bigByte(at);
@@ -313,6 +357,36 @@ function serveClient({ port, secure, authority, size }) {
         const out = await reach(at(path));
         expect(`${path} did not leave the folder`, out.status === 404 && out.body.toString() === 'the page does not know that');
       }
+    });
+    await attempt('a WebSocket on the port of the server of HTTP', async () => {
+      const socket = await dialSocket(`ws://127.0.0.1:${port}/socket`, ['chat', 'superchat']);
+      expect('the page chose superchat', socket.protocol === 'superchat');
+      socket.send('héllo');
+      expect('a text message came back', (await socket.next()).data === 'echo:héllo');
+      const big = Buffer.allocUnsafe(4 * 1024 * 1024);
+      let sum = 0;
+      for (let place = 0; place < big.length; place += 1) {
+        big[place] = bigByte(place);
+        sum += big[place];
+      }
+      socket.send(big);
+      expect('the page took 4 MiB whole', (await socket.next()).data === `got ${big.length} ${sum}`);
+      socket.close(4001, 'bye');
+      const closed = (await socket.next()).closed;
+      expect('the close came back with its code', closed?.code === 4001 && closed?.reason === 'bye');
+      expect('an Origin that is not the server\'s is refused on the upgrade too', (await asking(port, '/socket', 'http://evil.test')) === 403);
+    });
+    await attempt('a WebSocket on the server of WebSocket', async () => {
+      const socket = await dialSocket(`ws://127.0.0.1:${wsport}/ws`, ['chat']);
+      expect('the page chose chat', socket.protocol === 'chat');
+      socket.send('one');
+      expect('a text message came back', (await socket.next()).data === 'echo:one');
+      socket.send('bye');
+      const closed = (await socket.next()).closed;
+      expect('the page closed with its code and reason', closed?.code === 4000 && closed?.reason === 'done');
+      expect('another Origin is refused', (await asking(wsport, '/ws', 'http://evil.test')) === 403);
+      expect('another path is a 404', (await asking(wsport, '/other')) === 404);
+      expect('what is no offer is a 426', (await reach({ port: wsport, path: '/ws' })).status === 426);
     });
     await attempt('TLS', async () => {
       const answer = await reach({ port: secure, path: '/secure', ca: authority });
@@ -409,18 +483,18 @@ export function netScenarios({ drive }) {
     writeFileSync(join(root, 'secret.txt'), 'the secret');
     writeFileSync(join(root, 'public', 'hello.txt'), 'static hello');
     writeFileSync(join(root, 'public', 'index.html'), '<h1>home</h1>');
-    const [port, secure, closed] = await freePorts(3);
+    const [port, secure, closed, wsport] = await freePorts(4);
     const authority = readFileSync(join(TLS_FILES, 'ca.pem'), 'utf8');
-    const client = watch({ port, secure, authority, size: SIZE });
+    const client = watch({ port, secure, wsport, authority, size: SIZE });
     try {
       return await drive({
         name, app: 'modules/net/serve',
-        replacements: { PORT: String(port), SECURE: String(secure), ROOT: root.replaceAll('\\', '/') },
+        replacements: { PORT: String(port), SECURE: String(secure), WSPORT: String(wsport), ROOT: root.replaceAll('\\', '/') },
         targets: {
-          mode, port, secure, closed, size: SIZE, root: root.replaceAll('\\', '/'),
+          mode, port, secure, wsport, closed, size: SIZE, root: root.replaceAll('\\', '/'),
           cert: readFileSync(join(TLS_FILES, 'server.pem'), 'utf8'), key: readFileSync(join(TLS_FILES, 'server.key'), 'utf8'),
         },
-        env: { ALEF_HOME: join(base, 'home'), ...(typeof env === 'function' ? env({ port, secure }) : env) },
+        env: { ALEF_HOME: join(base, 'home'), ...(typeof env === 'function' ? env({ port, secure, wsport }) : env) },
         expectedChecks,
         judge: () => client.problems(),
       });
@@ -437,8 +511,8 @@ export function netScenarios({ drive }) {
     // The user chose a stand-in for the port: the page gets an address, and nobody listens there.
     'serve-substitute': () => runServe(
       'serve-substitute', 'substituted', SERVE_SUBSTITUTE_CHECKS,
-      ({ port }) => ({ ALEF_E2E_CONSENT: `net.socket:listen:127.0.0.1:${port}=substitute;*=allow` }),
-      ({ port, secure }) => watchPorts([port, secure]),
+      ({ port, wsport }) => ({ ALEF_E2E_CONSENT: `net.socket:listen:127.0.0.1:${port}=substitute;net.socket:listen:127.0.0.1:${wsport}=substitute;*=allow` }),
+      ({ port, secure, wsport }) => watchPorts([port, secure, wsport]),
     ),
 
     // The user allowed the addresses: everything is real, and the runner looks at what its servers saw.

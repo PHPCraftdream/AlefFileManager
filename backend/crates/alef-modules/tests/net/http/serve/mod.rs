@@ -92,6 +92,8 @@ struct Seen {
     url: String,
     headers: Vec<(String, String)>,
     body: Option<u64>,
+    upgrade: bool,
+    protocols: Vec<String>,
 }
 
 impl Seen {
@@ -129,6 +131,13 @@ async fn next_request(requests: &mut Pipe) -> Option<Seen> {
             })
             .collect(),
         body: frame["body"].as_u64(),
+        upgrade: frame["upgrade"].as_bool().unwrap(),
+        protocols: frame["protocols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|protocol| protocol.as_str().unwrap().to_owned())
+            .collect(),
     })
 }
 
@@ -528,5 +537,29 @@ async fn what_the_user_substituted_is_a_port_that_nobody_comes_to() {
         .unwrap();
 }
 
+/// A connection with TLS to the loopback that trusts the authority of the tests.
+async fn secure_connect(port: u16) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+    let mut roots = rustls::RootCertStore::empty();
+    for certificate in CertificateDer::pem_slice_iter(tls::AUTHORITY.as_bytes()) {
+        roots.add(certificate.unwrap()).unwrap();
+    }
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let tcp = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .map_err(|e| e.to_string())?;
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+    connector
+        .connect(name, tcp)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 mod files;
 mod held;
+mod upgrade;

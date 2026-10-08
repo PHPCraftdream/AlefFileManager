@@ -128,6 +128,7 @@ const ARGS = {
   'socket.listen': [{ port: 0 }],
   'socket.udp': [{}],
   'websocket.connect': ['ws://127.0.0.1/'],
+  'websocket.serve': [{}],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -186,5 +187,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'HttpResponse', 'HttpServer', 'ServerRequest', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'FileHandle', 'HttpResponse', 'HttpServer', 'ServerRequest', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
 });

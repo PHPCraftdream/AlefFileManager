@@ -29,8 +29,8 @@ permissions: {
         exec: []
     }
     net: {
-        http: [ http://127.0.0.1:{{PORT}}/* ]
-        socket: [ listen:127.0.0.1:{{PORT}}, listen:127.0.0.1:{{SECURE}} ]
+        http: [ http://127.0.0.1:{{PORT}}/*, ws://127.0.0.1:{{PORT}}/*, ws://127.0.0.1:{{WSPORT}}/* ]
+        socket: [ listen:127.0.0.1:{{PORT}}, listen:127.0.0.1:{{SECURE}}, listen:127.0.0.1:{{WSPORT}} ]
     }
     shell: {
         openExternal: []

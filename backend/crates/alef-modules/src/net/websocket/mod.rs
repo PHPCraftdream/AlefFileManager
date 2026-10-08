@@ -8,8 +8,8 @@
 use std::{sync::Arc, time::Duration};
 
 use alef_core::{
-    ids::ResourceId,
-    registry::{command::Reply, dispatch::Registry},
+    ids::{ResourceId, StreamId},
+    registry::{command::Reply, context::CallContext, dispatch::Registry},
     security::{consent::Decision, permissions::Permission},
     session::{resources::Resource, streams::StreamWriter},
     AlefError, ErrorCode,
@@ -18,7 +18,7 @@ use async_tungstenite::{
     tokio::{client_async_with_config, TokioAdapter},
     tungstenite::{
         error::ProtocolError,
-        protocol::{frame::coding::CloseCode, CloseFrame, WebSocketConfig},
+        protocol::{frame::coding::CloseCode, CloseFrame, Role, WebSocketConfig},
         ClientRequestBuilder, Error as WsError, Message,
     },
     WebSocketReceiver, WebSocketSender, WebSocketStream,
@@ -115,7 +115,7 @@ fn close_code_allowed(code: u16) -> bool {
 }
 
 /// A subprotocol is a token (RFC 7230): no separators, no spaces.
-fn protocol_is_token(protocol: &str) -> bool {
+pub(in crate::net) fn protocol_is_token(protocol: &str) -> bool {
     !protocol.is_empty()
         && protocol
             .bytes()
@@ -248,14 +248,45 @@ async fn read_pump(mut stream: WebSocketReceiver<Wire>, writer: StreamWriter) {
     }
 }
 
+fn config() -> WebSocketConfig {
+    let mut config = WebSocketConfig::default();
+    config.max_message_size = Some(MAX_INCOMING);
+    config.max_frame_size = Some(MAX_INCOMING);
+    config
+}
+
+/// The connection of a client that a server of HTTP took over: the handshake is done, the bytes that follow
+/// are frames, and this end is the server's.
+pub(in crate::net) async fn server_stream(io: impl Io) -> Ws {
+    let wire: Box<dyn Io> = Box::new(io);
+    WebSocketStream::from_raw_socket(TokioAdapter::new(wire), Role::Server, Some(config())).await
+}
+
+/// Gives a connection to the page: a resource for it, and the stream of the messages that arrive.
+pub(in crate::net) fn adopt(
+    ctx: &CallContext,
+    stream: Ws,
+) -> Result<(ResourceId, StreamId), AlefError> {
+    let (sink, reading) = stream.split();
+    let sink = Arc::new(Mutex::new(sink));
+    let link = Link {
+        sink: sink.clone(),
+        reading: std::sync::Mutex::new(None),
+    };
+    let id = ctx.resources().insert(Box::new(link))?;
+    let (writer, messages) = ctx.streams().open_outgoing();
+    let task = tokio::spawn(read_pump(reading, writer));
+    ctx.resources().with_as::<Link, _>(id, |link| {
+        *link.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
+    })?;
+    Ok((id, messages))
+}
+
 async fn handshake(args: ConnectArgs) -> Result<(Ws, Option<String>), AlefError> {
     let (builder, host, port, secure) = request(&args)?;
     let tls = secure.then(|| TlsOptions::trusting(args.ca));
     let (io, _, _) = open(&host, port, tls).await?;
-    let mut config = WebSocketConfig::default();
-    config.max_message_size = Some(MAX_INCOMING);
-    config.max_frame_size = Some(MAX_INCOMING);
-    let (stream, response) = client_async_with_config(builder, io, Some(config))
+    let (stream, response) = client_async_with_config(builder, io, Some(config()))
         .await
         .map_err(|error| match error {
             WsError::Http(response) => network(format!(
@@ -292,18 +323,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
                     })??,
                 None => connecting.await?,
             };
-            let (sink, reading) = stream.split();
-            let sink = Arc::new(Mutex::new(sink));
-            let link = Link {
-                sink: sink.clone(),
-                reading: std::sync::Mutex::new(None),
-            };
-            let id = ctx.resources().insert(Box::new(link))?;
-            let (writer, messages) = ctx.streams().open_outgoing();
-            let task = tokio::spawn(read_pump(reading, writer));
-            ctx.resources().with_as::<Link, _>(id, |link| {
-                *link.reading.lock().unwrap_or_else(|e| e.into_inner()) = Some(task);
-            })?;
+            let (id, messages) = adopt(&ctx, stream)?;
             json(&json!({
                 "socket": id.0,
                 "messages": messages.0,

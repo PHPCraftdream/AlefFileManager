@@ -16,7 +16,7 @@ use hyper::{
 };
 use tokio::io::AsyncReadExt;
 
-use super::body::RequestBody;
+use crate::net::http::body::RequestBody;
 
 /// How much of a file one piece of its body carries.
 const PIECE: usize = 64 * 1024;

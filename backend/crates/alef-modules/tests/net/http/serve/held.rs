@@ -89,25 +89,7 @@ async fn the_host_and_the_origin_of_a_request_are_held_against_the_server() {
 
 /// A client of HTTP over TLS that trusts the authority of the tests.
 async fn fetch_secure(port: u16, path: &str) -> Result<Reply, String> {
-    let mut roots = rustls::RootCertStore::empty();
-    for certificate in CertificateDer::pem_slice_iter(tls::AUTHORITY.as_bytes()) {
-        roots.add(certificate.unwrap()).unwrap();
-    }
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-    let tcp = TcpStream::connect(("127.0.0.1", port))
-        .await
-        .map_err(|e| e.to_string())?;
-    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
-    let secure = connector
-        .connect(name, tcp)
-        .await
-        .map_err(|e| e.to_string())?;
+    let secure = secure_connect(port).await?;
     let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(secure))
         .await
         .map_err(|e| e.to_string())?;

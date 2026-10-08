@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { AlefError } from '../core/errors.ts';
-import { openReadable } from '../core/stream.ts';
 import { call } from '../core/transport.ts';
 import type { Cancelable } from '../desktop/app.ts';
+import { http } from './http.ts';
+import type { HttpServer, ServeOptions, ServerRequest } from './http-server.ts';
+import { type Opened, WebSocketConnection } from './websocket-connection.ts';
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-/** A message the page sends travels in the body of a call: at most this many bytes. */
-const MAX_SEND = 192 * 1024;
+export { WebSocketConnection, type CloseInfo, type WebSocketMessage } from './websocket-connection.ts';
 
 export interface WebSocketOptions extends Cancelable {
   /** Subprotocols to offer, in order of preference; the server chooses one (`protocol`). */
@@ -21,113 +19,85 @@ export interface WebSocketOptions extends Cancelable {
   timeout?: number;
 }
 
-export type WebSocketMessage = { type: 'text'; data: string } | { type: 'binary'; data: Uint8Array<ArrayBuffer> };
-
-export interface CloseInfo {
-  /** 1005 when the peer sent no code, 1006 when the connection ended without a close. */
-  code: number;
-  reason: string;
-  /** Whether the closing handshake was done. */
-  clean: boolean;
-}
-
-interface Opened {
-  socket: number;
-  messages: number;
-  protocol: string;
-  url: string;
+export interface WebSocketServeOptions extends Pick<ServeOptions, 'host' | 'port' | 'tls' | 'hosts' | 'origins' | 'signal'> {
+  /** The path the server takes WebSockets on; a client that asks for another is answered with a 404. Any path when omitted. */
+  path?: string;
+  /** The subprotocols the server speaks, in order of preference: the first one the client offers is chosen. A client that offers some and none of these is answered with a 400. */
+  protocols?: string[];
 }
 
 /**
- * A connection to a server of WebSocket: iterate it once for the messages it brings. The iteration ends
- * with the connection, and leaving it early (a `break`) closes the connection.
+ * A server of WebSocket: iterate it once for the connections it takes, each already open. What is no offer of a
+ * WebSocket is answered with a 426, and the connections stay open when the server is closed.
  */
-export class WebSocketConnection implements AsyncIterable<WebSocketMessage> {
-  readonly url: string;
-  /** The subprotocol the server chose, or an empty string. */
-  readonly protocol: string;
-  /** Resolves with how the connection ended, once the iteration saw it end (it never rejects). */
-  readonly closed: Promise<CloseInfo>;
-  #id: number;
-  #messages: number;
-  #done = false;
-  #settle!: (info: CloseInfo) => void;
+export class WebSocketServer implements AsyncIterable<WebSocketConnection> {
+  readonly address: { host: string; port: number };
+  readonly secure: boolean;
+  #server: HttpServer;
+  #path: string | undefined;
+  #protocols: string[];
 
-  constructor(opened: Opened) {
-    this.#id = opened.socket;
-    this.#messages = opened.messages;
-    this.url = opened.url;
-    this.protocol = opened.protocol;
-    this.closed = new Promise(resolve => {
-      this.#settle = resolve;
-    });
+  constructor(server: HttpServer, options: { path?: string; protocols?: string[] }) {
+    this.#server = server;
+    this.#path = options.path;
+    this.#protocols = options.protocols ?? [];
+    this.address = server.address;
+    this.secure = server.secure;
   }
 
-  /** Sends a message: a string as a text message, bytes as a binary one (at most 196608 bytes). */
-  async send(data: string | Uint8Array<ArrayBuffer>, options: Cancelable = {}): Promise<void> {
-    const text = typeof data === 'string';
-    const body = text ? encoder.encode(data) : data;
-    if (body.length > MAX_SEND) throw new AlefError('INVALID_ARGUMENT', `A message to send is at most ${MAX_SEND} bytes.`);
-    await call<null>('websocket.send', { socket: this.#id, text }, { signal: options.signal, body: body.length > 0 ? body : undefined });
+  /** Where clients come: `ws://127.0.0.1:port`, or `wss://` for a server with TLS, with the path if there is one. */
+  get url(): string {
+    return `${this.#server.url.replace(/^http/, 'ws')}${this.#path ?? ''}`;
   }
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<WebSocketMessage> {
-    let kind: 'text' | 'binary' | null = null;
-    let pieces: Uint8Array[] = [];
-    let missing = 0;
-    const finish = (): Uint8Array<ArrayBuffer> => {
-      const bytes = new Uint8Array(pieces.reduce((total, piece) => total + piece.length, 0));
-      let at = 0;
-      for (const piece of pieces) {
-        bytes.set(piece, at);
-        at += piece.length;
-      }
-      pieces = [];
-      return bytes;
-    };
-    try {
-      for await (const frame of await openReadable(this.#messages)) {
-        if (frame.kind === 'json') {
-          const header = frame.value as { type: string; length?: number; code?: number; reason?: string; clean?: boolean };
-          if (header.type === 'close') {
-            this.#settle({ code: header.code ?? 1005, reason: header.reason ?? '', clean: header.clean ?? false });
-            continue;
-          }
-          kind = header.type === 'text' ? 'text' : 'binary';
-          missing = header.length ?? 0;
-          pieces = [];
-        } else if (kind !== null) {
-          pieces.push(frame.data);
-          missing -= frame.data.length;
-        }
-        if (kind !== null && missing <= 0) {
-          const bytes = finish();
-          const type = kind;
-          kind = null;
-          yield type === 'text' ? { type, data: decoder.decode(bytes) } : { type, data: bytes };
-        }
-      }
-    } catch (error) {
-      if (!this.#done) throw error;
-    } finally {
-      this.#settle({ code: 1006, reason: '', clean: false });
-      await this.close().catch(() => undefined);
+  async *[Symbol.asyncIterator](): AsyncGenerator<WebSocketConnection> {
+    for await (const request of this.#server) {
+      const connection = await this.#take(request);
+      if (connection !== null) yield connection;
     }
   }
 
-  /** Closes the connection: `code` is 1000 (the default) or 3000 to 4999, `reason` at most 123 bytes. Safe to call repeatedly. */
-  async close(code?: number, reason?: string): Promise<void> {
-    if (this.#done) return;
-    this.#done = true;
-    await call<null>('websocket.close', { socket: this.#id, code, reason });
+  /** Stops taking connections; the ones it gave stay open. Safe to call repeatedly. */
+  close(): Promise<void> {
+    return this.#server.close();
+  }
+
+  /** The connection a request makes, or `null` when it was refused (or the client went away). */
+  async #take(request: ServerRequest): Promise<WebSocketConnection | null> {
+    const refuse = async (status: number, body: string, headers?: HeadersInit): Promise<null> => {
+      await request.respond({ status, headers, body });
+      return null;
+    };
+    try {
+      if (this.#path !== undefined && new URL(request.url, 'http://server').pathname !== this.#path) return await refuse(404, 'No WebSocket here.');
+      if (!request.upgradable) return await refuse(426, 'This server speaks WebSocket.', { 'sec-websocket-version': '13' });
+      let protocol: string | undefined;
+      if (this.#protocols.length > 0 && request.protocols.length > 0) {
+        protocol = this.#protocols.find(wanted => request.protocols.includes(wanted));
+        if (protocol === undefined) return await refuse(400, 'No subprotocol in common.');
+      }
+      return await request.upgrade({ protocol });
+    } catch {
+      return null;
+    }
   }
 }
 
-/** Connections to servers of WebSocket (RFC 6455), held against `permissions.net.http` (patterns like `wss://chat.example.com/*`). */
+/**
+ * Connections to servers of WebSocket (RFC 6455), held against `permissions.net.http` (patterns like
+ * `wss://chat.example.com/*`). `serve` takes a port of this machine instead (`permissions.net.socket`:
+ * `listen:127.0.0.1:*`); a server of HTTP takes the same offers with `ServerRequest.upgrade`.
+ */
 export const websocket = {
   connect: async (url: string, options: WebSocketOptions = {}): Promise<WebSocketConnection> => {
     const { protocols, headers, ca, timeout, signal } = options;
     const pairs = headers === undefined ? undefined : [...new Headers(headers)];
     return new WebSocketConnection(await call<Opened>('websocket.connect', { url, protocols, headers: pairs, ca, timeoutMs: timeout }, { signal }));
+  },
+
+  serve: async (options: WebSocketServeOptions = {}): Promise<WebSocketServer> => {
+    const { path, protocols, ...listen } = options;
+    if (path !== undefined && !path.startsWith('/')) throw new AlefError('INVALID_ARGUMENT', 'A path starts with a slash.');
+    return new WebSocketServer(await http.serve(listen), { path, protocols });
   },
 };

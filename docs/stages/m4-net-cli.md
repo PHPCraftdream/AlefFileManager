@@ -76,11 +76,11 @@ websocket.connect(url, { protocols?, headers? }): Promise<WebSocketConnection>  
 ```ts
 const server = await http.serve({ host?: '127.0.0.1', port?: 0, tls?: { cert, key }, files?: '/папка', hosts?, origins?, answerTimeout? });  // port 0 — порт выберет ОС
 server.address; server.url; server.secure                   // { host, port }; 'http://127.0.0.1:port'; true для TLS
-for await (const req of server) {                           // { method, url, headers: Headers, body: ReadableStream | null, bytes(), text(), json(), respond({ status?, headers?, body? }), upgrade() — в M4.4b }
+for await (const req of server) {                           // { method, url, headers: Headers, body: ReadableStream | null, bytes(), text(), json(), respond({ status?, headers?, body? }), upgradable, protocols, upgrade({ protocol? }) }
   await req.respond({ status: 200, headers: { 'content-type': 'text/plain' }, body: 'hi' });
 }
-const sockets = websocket.serve({ host?, port, path?, protocols?, origins? });   // AsyncIterable<WebSocketConnection>
-const connection = await req.upgrade();                      // WebSocket на том же порту, что и HTTP
+const sockets = await websocket.serve({ host?, port?, tls?, path?, protocols?, origins?, hosts? });   // AsyncIterable<WebSocketConnection>; address, url, close()
+const connection = await req.upgrade({ protocol? });         // WebSocket на том же порту, что и HTTP
 ```
 
 - Разбор HTTP, TLS и сокеты — в Rust (`hyper`, `rustls`, `tokio-tungstenite`), обработчик — в JS; запросы идут потоком в документ с credit (транспорт v2 дополняется потоком на сервер, а не только одним потоком событий на документ). Сервер — ресурс сессии: закрытие документа закрывает сервер и все его соединения.
@@ -89,7 +89,7 @@ const connection = await req.upgrade();                      // WebSocket на �
 - Подмена права `listen` (§6.4): вызов успешен и выдаёт порт, но сокет не открывается и входящих нет.
 - Граница: каждый запрос — событие через мост Servo; для API, WebSocket-каналов, MCP и локальных инструментов этого достаточно, высокой нагрузки (тысячи запросов в секунду) это не потянет — для неё нужен Rust-хост.
 
-**Как сделано (M4.4a, `http.serve`)** — `alef-modules/src/net/http/{serve,guard,files}.rs`, `packages/api/src/net/http.ts`:
+**Как сделано (M4.4a, `http.serve`)** — `alef-modules/src/net/http/server/{mod,guard,files}.rs`, `packages/api/src/net/http.ts`:
 
 - Команды `http.serve`, `http.respond`, `http.respondStream`. `http.serve` берёт порт (право `listen:host:port` в `permissions.net.socket`; по умолчанию `127.0.0.1`, порт 0 — любой свободный) и возвращает `{ server, requests, address, secure }`: ресурс-сервер, поток запросов и адрес. Закрывается `socket.close` (тот же ресурс, что у `socket.listen`): задача приёма уходит, а с ней и соединения; закрытие документа закрывает всё вместе с сессией.
 - Запрос приходит в поток `requests` кадром JSON `{ id, method, url, headers, body }`: заголовки — пары в порядке прихода (повторы не склеиваются), `body` — номер потока с credit либо `null`, если тела нет. Страница отвечает в любом порядке: `http.respond` (тело — в самом вызове, в обёртке до 192 KiB) или `http.respondStream` (тело потоком вверх, любой длины). Запрос отвечается один раз; отказ в аргументах (статус вне 200–599, заголовки, которыми ведает сервер: `host`, `content-length`, `connection`…) запрос не тратит. Страница не ответила за `answerTimeout` (60 с) — клиент получает 504; перестала принимать запросы (закрыла поток) — 503; место запроса пропало вместе с документом — 500. Клиент ушёл — запрос забыт: ответ на него `NOT_FOUND`.
@@ -97,8 +97,17 @@ const connection = await req.upgrade();                      // WebSocket на �
 - `files` — папка, которую сервер отдаёт сам, без захода в JS (GET и HEAD). Право `fs.read` на папку проверяется при запуске и на каждый файл отдельно. Путь раскладывается по сегментам: проценты раскодируются, `.`, `..`, разделители, `:`, NUL, точка или пробел в конце — отказ; файл после разрешения ссылок должен лежать внутри папки (ссылка наружу — не выход). У папки отдаётся `index.html`; тип — по расширению, `x-content-type-options: nosniff`; тело идёт кусками по 64 KiB. Чего в папке нет — идёт к странице. Папка или файл, для которых пользователь выбрал подмену, не отдаются.
 - `tls: { cert, key }` — PEM; сервер говорит только по TLS (rustls, aws-lc-rs); обычный клиент до страницы не доходит.
 - Подмена `listen`: вызов успешен и возвращает адрес, порт не открыт, запросов нет, поток открыт и молчит.
-- Не сделано: `req.upgrade()` и `websocket.serve` (M4.4b), HTTP/2, `Range` и условные запросы для `files`, сжатие, клиентские сертификаты, предел числа соединений и таймаут простоя соединения (есть только 10 с на заголовок запроса).
+- Не сделано: HTTP/2, `Range` и условные запросы для `files`, сжатие, клиентские сертификаты, предел числа соединений и таймаут простоя соединения (есть только 10 с на заголовок запроса).
 - Проверки: 11 модульных тестов (охрана `Host` и `Origin`, разбор пути файла, тип по расширению, длинный путь Windows), 16 тестов через реестр с клиентом HTTP на loopback (запрос кадром и ответ, ответы не по порядку и тело запроса потоком, 8 MiB потоком вниз, `Host`/`Origin`/`hosts`/`origins`, ответ один раз и что ответом быть может, 504, закрытый сервер, 503, 500, права и аргументы, подмена, папка без слова странице, ссылка наружу, файл с подменой, папка без права, TLS), 13 тестов JS-обёртки, e2e `serve` (6 проверок: страница отвечает сама себе потоками, клиент раннера с телом 3 MiB вверх и 8 MiB вниз, чужие `Host` и `Origin`, папка и пути наружу, TLS с центром теста, scope `listen`) и `serve-substitute` (раннер следит за портом: никто не слушает). Мутации: Rust 82 из 82 и JS 53 из 53 пойманы. Мутации нашли дыры в тестах (порты по умолчанию у `Origin`, происхождение без схемы, чужое имя на порту сервера, подмена папки, которой нет, тип ресурса в `http.respond`) и лишний код: проверки `/` и `@` в `Origin`, `.` и `..` как отдельные сегменты (их закрывает проверка точки в конце), пустая цепочка сертификатов (её отвергает rustls). Ответ на запрос теперь забирает ресурс целиком (`take`), а не флаг в нём: второй ответ всегда `NOT_FOUND`, и чужой ресурс (сервер) не затрагивается.
+
+**Как сделано (M4.4b, `req.upgrade()` и `websocket.serve`)** — `alef-modules/src/net/http/server/{upgrade,mod}.rs`, `net/websocket/mod.rs`, `packages/api/src/net/{http-server,websocket,websocket-connection,body}.ts`:
+
+- Запрос, который просит WebSocket (`GET` по HTTP/1.1, `Connection: upgrade`, `Upgrade: websocket`, один `Sec-WebSocket-Version: 13`, один ключ из 24 символов base64), приходит странице как обычный, с признаком `upgrade: true` и списком `protocols` (подпротоколы клиента в порядке предпочтения, без повторов, только токены). Всё остальное — обычный запрос: страница отвечает на него сама (например, 426). `Host` и `Origin` проверяются так же, как у любого запроса: чужой `Origin` — 403, страница о нём не узнаёт.
+- `http.upgrade { request, protocol? }` принимает предложение: запрос уходит из таблицы (как при ответе), клиенту идёт 101 с `Sec-WebSocket-Accept` и выбранным подпротоколом (расширения не принимаются), а соединение после записи 101 становится соединением `websocket` страницы — тем же ресурсом, потоком сообщений и командами `websocket.send` и `websocket.close`, что у клиента; роль серверная, сообщения до 16 MiB. Запрос, не предлагающий WebSocket, и подпротокол, которого клиент не предлагал, — `INVALID_ARGUMENT`, запрос остаётся неотвеченным; клиент ушёл — `NOT_FOUND` или `NETWORK`. Соединение не зависит от сервера: после закрытия сервера принятые соединения живут до закрытия документа.
+- JS: `ServerRequest.upgradable`, `ServerRequest.protocols` и `ServerRequest.upgrade({ protocol? })` → `WebSocketConnection` (его адрес — путь запроса). `websocket.serve({ host?, port?, tls?, path?, protocols?, origins?, hosts? })` → `WebSocketServer` (`address`, `secure`, `url`, `close()`); итерация даёт открытые соединения. Запрос без предложения получает 426 с `Sec-WebSocket-Version: 13`, чужой путь — 404, клиент, чьи подпротоколы не совпали ни с одним из `protocols` сервера, — 400; выбирается первый подпротокол сервера из предложенных клиентом.
+- Обёртка разложена слоями без кольца импортов: `body.ts` → `websocket-connection.ts` → `http-server.ts` → `http.ts` → `websocket.ts`.
+- Не сделано: расширения (`permessage-deflate`), upgrade по HTTP/2 (RFC 8441), заголовок `Upgrade` в ответе 426 (это обрамление, страница его не ставит), предел числа соединений.
+- Проверки: 7 модульных тестов (предложение WebSocket в запросе: метод, версия, токены списков, версия, ключ, подпротоколы, ответ 101 с примером RFC 6455), 9 тестов через реестр с клиентом WebSocket на loopback (предложение доходит до страницы, сообщения в обе стороны и закрытие со стороны страницы, 8 MiB вверх и 250 KiB вниз и закрытие клиентом, что можно принять и что нельзя, не-рукопожатие как обычный запрос, чужой `Origin` до страницы не доходит, сообщение больше предела целиком и кусками, TLS, соединение переживает сервер и уходит с документом, клиент ушёл до принятия), 14 тестов JS-обёртки (`http-upgrade`, `websocket-serve`) и e2e `serve`, расширенный двумя проверками (WebSocket на порту сервера HTTP: подпротокол, 4 MiB вверх, закрытие с кодом, чужой `Origin`; `websocket.serve`: подпротокол, путь, `Origin`, 426). Мутации: Rust 34 из 34 и JS 35 из 35 пойманы. Мутации нашли дыры в тестах (длина и алфавит ключа, подпротоколы в кадре страницы, сообщение больше предела кусками, текст отказа сервера) и лишний код (повторный `catch` вокруг ответа с отказом); мутация предела времени передачи соединения (10 с) недостижима тестом: передача занимает миллисекунды, и ограничение остаётся страховкой от зависшей передачи. Обёртка разложена слоями (`body`, `websocket-connection`, `http-server`, `http`, `websocket`), поведение прежнее: 154 прежних теста JS прошли без правок.
 
 ### `cli` (system)
 
@@ -133,9 +142,9 @@ app.exit(code): Promise<never>
 ## Структура кода
 
 ```
-alef-modules/src/net/      mod.rs, http/ (mod.rs, client.rs, body.rs, spec.rs, serve.rs, guard.rs, files.rs), socket/ (mod.rs, tcp.rs, udp.rs, tls.rs), websocket/ (mod.rs), headers.rs
+alef-modules/src/net/      mod.rs, http/ (mod.rs, client.rs, body.rs, spec.rs, server/ (mod.rs, guard.rs, files.rs, upgrade.rs)), socket/ (mod.rs, tcp.rs, udp.rs, tls.rs), websocket/ (mod.rs), headers.rs
 alef-modules/src/system/   cli/ (mod.rs, exec.rs, spawn.rs, pty.rs, tree.rs)
-packages/api/src/net/      http.ts, socket.ts, websocket.ts
+packages/api/src/net/      body.ts, http.ts, http-server.ts, socket.ts, websocket.ts, websocket-connection.ts
 packages/api/src/system/   cli.ts
 ```
 
@@ -148,6 +157,7 @@ packages/api/src/system/   cli.ts
 | TCP эхо (connect/listen), UDP эхо, TLS к тестовому серверу | e2e |
 | WebSocket эхо | e2e |
 | `http.serve`: клиент снаружи доходит до страницы и получает ответ, большие тела в обе стороны, чужие `Host` и `Origin` отвергнуты, файлы папки, TLS | e2e (клиент раннера) |
+| `req.upgrade()` и `websocket.serve`: клиент раннера говорит с страницей по WebSocket (подпротокол, 4 MiB вверх, закрытие с кодом), чужой `Origin` и путь отвергнуты | e2e (клиент раннера) |
 | `cli.exec('git --version')` с правом → код 0 и stdout; без права → отказ | e2e |
 | `cli.spawn` с потоковым stdout, запись в stdin, `kill`; reload → процесс убит | e2e |
 | `cli.pty` — интерактивная оболочка, `resize` | e2e (полуручной) |

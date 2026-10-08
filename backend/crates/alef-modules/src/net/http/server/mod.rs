@@ -4,7 +4,8 @@
 //! host), the `Host` and the `Origin` of a request are held against the names and the origins of the
 //! server, and what comes goes to the page as frames of a stream with credit, one frame for each request,
 //! with the body of the request as a stream of its own. The page answers with `http.respond` (a body that
-//! is small) or `http.respondStream` (a stream). A folder (`files`) is served from the disk without a
+//! is small) or `http.respondStream` (a stream), or takes the offer of a WebSocket with `http.upgrade`, which
+//! hands it the connection as the ones of `websocket.connect` are handed. A folder (`files`) is served from the disk without a
 //! word to the page. The right the user substituted gives a port that nobody comes to.
 use std::{
     any::Any, convert::Infallible, future::Future, net::SocketAddr, pin::Pin, sync::Arc,
@@ -27,6 +28,7 @@ use hyper::{
     body::{Body, Incoming},
     server::conn::http1,
     service::service_fn,
+    upgrade::Upgraded,
     HeaderMap, Request, Response, StatusCode,
 };
 use hyper_util::rt::{TokioIo, TokioTimer};
@@ -43,16 +45,22 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-use super::{
-    body::{from_stream, pump, RequestBody},
+mod files;
+mod guard;
+mod upgrade;
+
+use self::{
     files::{plain, Files},
     guard::Guard,
+    upgrade::Offer,
 };
+use super::body::{from_stream, pump, RequestBody};
 use crate::{
     json,
     net::{
         headers,
         socket::{standing, target, Socket, LOOPBACK},
+        websocket,
     },
 };
 
@@ -61,6 +69,8 @@ use crate::{
 const ANSWER_TIME: Duration = Duration::from_secs(60);
 /// How long a client has to send the head of a request.
 const HEAD_TIME: Duration = Duration::from_secs(10);
+/// How long the page has, once it took an offer of a WebSocket, to be handed the connection.
+const UPGRADE_TIME: Duration = Duration::from_secs(10);
 /// How long an accept that fails waits before it tries again.
 const ACCEPT_PAUSE: Duration = Duration::from_millis(50);
 
@@ -92,6 +102,14 @@ struct ServeArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct UpgradeArgs {
+    request: u64,
+    #[serde(default)]
+    protocol: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RespondArgs {
     request: u64,
     #[serde(default = "ok")]
@@ -108,16 +126,27 @@ fn invalid(message: &str) -> AlefError {
     AlefError::new(ErrorCode::InvalidArgument, message)
 }
 
+/// The connection a client is left with after it was told the WebSocket was taken.
+type Taken = Result<TokioIo<Upgraded>, String>;
+
 /// What the page answers a request with.
-struct Answer {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: RequestBody,
+enum Answer {
+    Response {
+        status: StatusCode,
+        headers: HeaderMap,
+        body: RequestBody,
+    },
+    /// The offer of a WebSocket is taken, with the subprotocol chosen; the connection comes through `ready`.
+    Upgrade {
+        protocol: Option<String>,
+        ready: oneshot::Sender<Taken>,
+    },
 }
 
-/// A request the page has not answered yet: where its answer goes.
+/// A request the page has not answered yet: where its answer goes, and the WebSocket it offers, if any.
 struct Exchange {
     answer: oneshot::Sender<Answer>,
+    offer: Option<Offer>,
 }
 
 impl Resource for Exchange {
@@ -162,7 +191,7 @@ fn text(status: StatusCode, message: &'static str) -> Response<RequestBody> {
 }
 
 /// The request as the page sees it, once its head is let in and the page has room for it.
-async fn answer_request(shared: &Shared, request: Request<Incoming>) -> Response<RequestBody> {
+async fn answer_request(shared: &Shared, mut request: Request<Incoming>) -> Response<RequestBody> {
     if let Some((status, message)) = shared.guard.check(request.headers()) {
         return text(status, message);
     }
@@ -173,13 +202,14 @@ async fn answer_request(shared: &Shared, request: Request<Incoming>) -> Response
     {
         return file;
     }
+    let offer = upgrade::offer(request.method(), request.version(), request.headers());
+    let on_upgrade = offer.is_some().then(|| hyper::upgrade::on(&mut request));
     let (parts, incoming) = request.into_parts();
     let (sender, receiver) = oneshot::channel();
-    let Ok(id) = shared
-        .session
-        .resources()
-        .insert(Box::new(Exchange { answer: sender }))
-    else {
+    let Ok(id) = shared.session.resources().insert(Box::new(Exchange {
+        answer: sender,
+        offer: offer.clone(),
+    })) else {
         return text(
             StatusCode::SERVICE_UNAVAILABLE,
             "the application has no room for another request",
@@ -216,6 +246,8 @@ async fn answer_request(shared: &Shared, request: Request<Incoming>) -> Response
         "url": url,
         "headers": headers,
         "body": body,
+        "upgrade": offer.is_some(),
+        "protocols": offer.as_ref().map_or(&[][..], |offer| &offer.protocols[..]),
     });
     match tokio::time::timeout(shared.answer_time, shared.requests.send_json(frame)).await {
         Ok(Ok(())) => {}
@@ -227,11 +259,32 @@ async fn answer_request(shared: &Shared, request: Request<Incoming>) -> Response
         }
     }
     match tokio::time::timeout(shared.answer_time, receiver).await {
-        Ok(Ok(answer)) => {
-            let mut response = Response::new(answer.body);
-            *response.status_mut() = answer.status;
-            *response.headers_mut() = answer.headers;
+        Ok(Ok(Answer::Response {
+            status,
+            headers,
+            body,
+        })) => {
+            let mut response = Response::new(body);
+            *response.status_mut() = status;
+            *response.headers_mut() = headers;
             response
+        }
+        Ok(Ok(Answer::Upgrade { protocol, ready })) => {
+            let (Some(offer), Some(on_upgrade)) = (offer, on_upgrade) else {
+                return text(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the request offered no WebSocket",
+                );
+            };
+            // The connection is ours once the 101 is written; the page waits for it.
+            tokio::spawn(async move {
+                let taken = on_upgrade
+                    .await
+                    .map(TokioIo::new)
+                    .map_err(|error| error.to_string());
+                let _ = ready.send(taken);
+            });
+            upgrade::accepted(&offer, protocol.as_deref())
         }
         Ok(Err(_)) => text(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -256,6 +309,7 @@ where
         .timer(TokioTimer::new())
         .header_read_timeout(HEAD_TIME)
         .serve_connection(io, service)
+        .with_upgrades()
         .await;
 }
 
@@ -324,15 +378,25 @@ fn files_root(ctx: &CallContext, folder: &str) -> Result<Option<std::path::PathB
     Ok(Some(plain(real)))
 }
 
-/// The place where the answer of a request goes, taken for good: a request is answered once.
-fn take_answer(ctx: &CallContext, request: u64) -> Result<oneshot::Sender<Answer>, AlefError> {
+/// A request taken for good: a request is answered once. `check` looks at it first, and a request it
+/// refuses is left to be answered.
+fn take_exchange(
+    ctx: &CallContext,
+    request: u64,
+    check: impl FnOnce(&Exchange) -> Result<(), AlefError>,
+) -> Result<Exchange, AlefError> {
     let id = ResourceId(request);
     // Only a request is taken: the id of a server is no request, and is left as it is.
-    ctx.resources().with_as::<Exchange, _>(id, |_| ())?;
+    ctx.resources().with_as::<Exchange, _>(id, check)??;
     let any: Box<dyn Any> = ctx.resources().take(id)?;
     any.downcast::<Exchange>()
-        .map(|exchange| exchange.answer)
+        .map(|exchange| *exchange)
         .map_err(|_| AlefError::new(ErrorCode::NotFound, "resource not found"))
+}
+
+/// The place where the answer of a request goes.
+fn take_answer(ctx: &CallContext, request: u64) -> Result<oneshot::Sender<Answer>, AlefError> {
+    take_exchange(ctx, request, |_| Ok(())).map(|exchange| exchange.answer)
 }
 
 fn status_of(code: u16) -> Result<StatusCode, AlefError> {
@@ -404,7 +468,7 @@ pub(super) fn register(registry: &mut Registry) -> Result<(), AlefError> {
                 None => Empty::new().map_err(|never| match never {}).boxed(),
             };
             // A client that went away is no failure of the page.
-            let _ = sender.send(Answer {
+            let _ = sender.send(Answer::Response {
                 status,
                 headers,
                 body,
@@ -419,11 +483,55 @@ pub(super) fn register(registry: &mut Registry) -> Result<(), AlefError> {
             let headers = headers::parse(&args.headers, &[])?;
             let sender = take_answer(&ctx, args.request)?;
             let (reader, upload) = ctx.streams().open_incoming_reader();
-            let _ = sender.send(Answer {
+            let _ = sender.send(Answer::Response {
                 status,
                 headers,
                 body: from_stream(reader),
             });
             json(&json!({ "upload": upload.0 }))
+        })?;
+
+    registry
+        .command::<UpgradeArgs>("http.upgrade")?
+        .handler(|ctx, args| async move {
+            let chosen = args.protocol.as_deref();
+            let exchange = take_exchange(&ctx, args.request, |exchange| {
+                match (&exchange.offer, chosen) {
+                    (None, _) => Err(invalid("the request does not offer a WebSocket")),
+                    (Some(offer), Some(protocol))
+                        if !offer.protocols.iter().any(|offered| offered == protocol) =>
+                    {
+                        Err(invalid("the subprotocol was not offered"))
+                    }
+                    _ => Ok(()),
+                }
+            })?;
+            let (ready, taken) = oneshot::channel();
+            exchange
+                .answer
+                .send(Answer::Upgrade {
+                    protocol: args.protocol.clone(),
+                    ready,
+                })
+                .map_err(|_| AlefError::new(ErrorCode::NotFound, "the client went away"))?;
+            let io = tokio::time::timeout(UPGRADE_TIME, taken)
+                .await
+                .map_err(|_| {
+                    AlefError::new(
+                        ErrorCode::Timeout,
+                        "the connection was not handed over in time",
+                    )
+                })?
+                .map_err(|_| AlefError::new(ErrorCode::Network, "the client went away"))?
+                .map_err(|error| {
+                    AlefError::new(ErrorCode::Network, format!("the upgrade failed: {error}"))
+                })?;
+            let stream = websocket::server_stream(io).await;
+            let (id, messages) = websocket::adopt(&ctx, stream)?;
+            json(&json!({
+                "socket": id.0,
+                "messages": messages.0,
+                "protocol": args.protocol.unwrap_or_default(),
+            }))
         })
 }
