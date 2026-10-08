@@ -348,37 +348,39 @@ async fn a_message_over_the_limit_ends_the_connection_whether_it_comes_whole_or_
         let (_, mut messages) = take(&app, seen.id, None).await.unwrap();
         let (mut peer, _) = joining.await.unwrap().unwrap();
         let total = 17 * 1024 * 1024;
-        let sent = if fragments == 1 {
-            peer.send(Message::binary(vec![7_u8; total])).await
-        } else {
-            let piece = total / fragments;
-            let mut outcome = Ok(());
-            for index in 0..fragments {
-                let opcode = if index == 0 {
-                    OpData::Binary
-                } else {
-                    OpData::Continue
-                };
-                let frame = WsFrame::message(
-                    vec![7_u8; piece],
-                    OpCode::Data(opcode),
-                    index + 1 == fragments,
-                );
-                outcome = peer.send(Message::Frame(frame)).await;
-                if outcome.is_err() {
-                    break;
+        // The client writes on its own: the page stops reading at the limit, and a client with megabytes left
+        // to write would block once the buffers of the connection are full.
+        let sending = tokio::spawn(async move {
+            if fragments == 1 {
+                let _ = peer.send(Message::binary(vec![7_u8; total])).await;
+            } else {
+                let piece = total / fragments;
+                for index in 0..fragments {
+                    let opcode = if index == 0 {
+                        OpData::Binary
+                    } else {
+                        OpData::Continue
+                    };
+                    let frame = WsFrame::message(
+                        vec![7_u8; piece],
+                        OpCode::Data(opcode),
+                        index + 1 == fragments,
+                    );
+                    if peer.send(Message::Frame(frame)).await.is_err() {
+                        break;
+                    }
                 }
             }
-            outcome
-        };
-        // The peer may be cut off while it still writes: the page's stream tells the rest.
-        let _ = sent;
+            // Kept open until the test ends: a connection that is cut would hide the cause.
+            std::future::pending::<()>().await;
+        });
         match messages.frame().await {
             Some(Frame::Error(error)) => assert_eq!(error.code, ErrorCode::Network, "{fragments}"),
             other => {
                 panic!("a message over the limit was taken ({fragments} fragments): {other:?}")
             }
         }
+        sending.abort();
     }
 }
 
