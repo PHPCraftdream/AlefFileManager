@@ -151,6 +151,17 @@ app.exit(code): Promise<never>
 - Windows: бинарник GUI-subsystem → `AttachConsole(ATTACH_PARENT_PROCESS)`, перенаправление stdio; при запуске двойным кликом консоли нет — stdout в никуда, это документировать.
 - Код выхода процесса = `app.exit(code)`.
 
+**Как сделано (M4.6)** — `alef-core/src/security/manifest.rs`, `alef-runtime/src/headless.rs`, `alef-modules/src/desktop/app/{mod,console}.rs`, `alef/src/{main,plan}.rs`, `packages/api/src/desktop/app.ts`:
+
+- Манифест: `console: bool` (по умолчанию `false`) и `entry` (путь документа приложения, по умолчанию `/`; начинается с `/`, не с `//`, без `\`). Оба допустимы только при `windows: []`, иначе манифест не принимается. Приложение без окон больше не ошибка: `Plan::windowless()` и `Plan::entry()` решают режим, процесс пишет в stderr строку `ALEF_MODE windowless console=<true|false>`.
+- Рантайм без окон (`run_headless`, бывший спайк M0.5, теперь основной код): контекст `SoftwareRenderingContext` 1×1, Servo с нашими протоколами, скрытый `WebView` на `entry`; цикл ждёт общий будильник (`Condvar`) не дольше 250 мс, `Host::quit` будит его сразу (в спайке выход замечался с задержкой). Навигация за пределы приложения отказывается, падение страницы завершает процесс с кодом 1, `console.*` страницы идёт в stderr. `RuntimeHandle::windowless(wake)` делает все вызовы окна и диалогов ошибкой `Unsupported` → `NOT_AVAILABLE` (`window.*`, `screen.*`, `dialog.*`).
+- `app.stdin` — читаемый поток (его берут один раз, повторный вызов — `BUSY`); `app.stdout` и `app.stderr` — записываемые потоки; что страница записала, уходит целиком и по порядку, каждый кусок сбрасывается. Без `console: true` все три — `NOT_AVAILABLE`. Закрытый читателем stdout закрывает поток страницы (следующая запись падает). Перед выходом `Console::drain` ждёт, пока записанное уйдёт (до 5 с), и перестаёт читать stdin.
+- `app.exit(code)` — `Promise<never>`: это `app.quit(code)`, после которого обещание не завершается, потому что процесс уходит (обработчик `before-quit`, запретивший выход, оставляет приложение работать, обещание остаётся ждать).
+- Завершение (`Termination`): сигнал спрашивает документы так же, как `app.quit` (событие `before-quit`, страница может помешать), затем выходит; второй сигнал завершает сразу. Коды: Unix — SIGINT 130, SIGTERM 143, SIGHUP 129; Windows — Ctrl+C 130, Ctrl+Break/закрытие консоли/выключение 143.
+- Windows без видеодрайвера: `SoftwareRenderingContext` не создаётся (на раннере CI — `RequiredExtensionUnavailable`), процесс завершается с кодом 1 и сообщением `no software rendering context (…)`; сценарии e2e там пропускаются с пояснением. Запасной путь (ANGLE/WARP, Mesa `opengl32.dll`) не выбран, это же вопрос M7. Бинарник на Windows остаётся консольным (подсистема GUI с `AttachConsole` — M7).
+- Спайк убран: `experiments/headless/` и два шага CI «Headless spike»; сценарии `console`, `service`, `service-signal` проверяют режим на Linux в CI (xvfb и Mesa).
+- Не сделано: регистрация службы ОС (Windows Service, systemd, launchd) — M5, M7b; `AttachConsole` — M7.
+
 ## Структура кода
 
 ```

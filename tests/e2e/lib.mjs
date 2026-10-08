@@ -86,13 +86,22 @@ export function assertQuiet(exe) {
  */
 const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '*=allow' };
 
-/** Starts the runtime; its stderr and stdout are kept line by line and can be awaited. */
-export function startApp({ exe, args, env = {}, verbose = false }) {
+/**
+ * Starts the runtime; its stderr and stdout are kept line by line and can be awaited. `input` (text or bytes)
+ * is written to its stdin, which is then closed; without it stdin is closed from the start.
+ */
+export function startApp({ exe, args, env = {}, verbose = false, input }) {
   assertQuiet(exe);
   const child = spawn(exe, args, {
     env: { ...process.env, ALEF_E2E: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
+  if (input !== undefined) {
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
+  }
+  const output = [];
+  child.stdout.on('data', chunk => output.push(Buffer.from(chunk)));
   const lines = [];
   const watchers = new Set();
   let exit = null;
@@ -142,11 +151,14 @@ export function startApp({ exe, args, env = {}, verbose = false }) {
   });
   return {
     lines,
+    /** Everything the runtime wrote to its stdout, as bytes. */
+    stdout: () => Buffer.concat(output),
     waitFor,
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
     waitForClosed: ms => Promise.race([closed.then(() => true), new Promise(resolvePromise => setTimeout(resolvePromise, ms, false))]),
     stop: () => child.kill(),
+    pid: child.pid,
     get exit() { return exit; },
   };
 }
@@ -217,9 +229,9 @@ const missing = (lines, expected) => expected.filter(name => !okNames(lines).has
  * running)` adds scenario-specific checks and may wait for the runtime to exit.
  */
 export function makeDriver({ exe, verbose, timeoutMs }) {
-  return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, judge, appArgs }) {
+  return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, judge, appArgs, input }) {
     const site = prepareSite(name, app, { replacements, targets });
-    const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose });
+    const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose, input });
     const problems = [];
     try {
       await running.waitFor(line => line.includes('ALEF_E2E RESULT'), timeoutMs, 'the verdict of the page');

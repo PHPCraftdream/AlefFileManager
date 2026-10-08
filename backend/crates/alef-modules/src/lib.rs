@@ -21,6 +21,7 @@ pub mod system;
 
 pub use data::secrets::{MemorySecrets, SecretsBackend, SystemSecrets};
 pub use desktop::{
+    app::{console::Console, Termination},
     args::{ArgValue, ParsedArgs},
     shell::{PretendShell, ShellBackend, ShellRequest, SystemShell},
 };
@@ -110,6 +111,10 @@ pub struct ModuleContext {
     /// Where the stand-ins of this application keep their content: a folder of the runtime, outside
     /// every scope of every application.
     pub shadow: PathBuf,
+    /// The standard streams of a console utility (`console: true`); `None` for every other application.
+    pub console: Option<Console>,
+    /// How the process is asked to end from outside, by a signal.
+    pub termination: Termination,
 }
 
 /// Registers every module of this crate.

@@ -3,6 +3,7 @@ import type { AppInfo, ParsedArgs } from '../../types/index.ts';
 import { AlefError } from '../core/errors.ts';
 import { on } from '../core/events.ts';
 import { call } from '../core/transport.ts';
+import { bytesOf, sinkOf } from '../core/web-stream.ts';
 import type { Unlisten } from './window.ts';
 
 export interface Cancelable {
@@ -93,6 +94,44 @@ async function listenForQuit(handler: QuitHandler, options: Cancelable): Promise
   return stop;
 }
 
+/** A stream of the runtime that is asked for when the first piece is wanted, as the web platform has a stream of a file. */
+function lazyReadable(open: () => Promise<number>): ReadableStream<Uint8Array> {
+  let inner: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      inner ??= bytesOf(await open()).getReader();
+      const { done, value } = await inner.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    async cancel(reason) {
+      await inner?.cancel(reason);
+    },
+  });
+}
+
+/** A sink to a stream of the runtime that is asked for when the first piece is written. */
+function lazyWritable(open: () => Promise<number>): WritableStream<Uint8Array> {
+  let inner: WritableStreamDefaultWriter<Uint8Array> | undefined;
+  return new WritableStream<Uint8Array>({
+    async write(chunk) {
+      inner ??= sinkOf(await open()).getWriter();
+      await inner.write(chunk);
+    },
+    async close() {
+      await inner?.close();
+    },
+    async abort(reason) {
+      await inner?.abort(reason);
+    },
+  });
+}
+
+const opened = async (command: string): Promise<number> => (await call<{ stream: number }>(command, null)).stream;
+let standardInput: ReadableStream<Uint8Array> | undefined;
+let standardOutput: WritableStream<Uint8Array> | undefined;
+let standardError: WritableStream<Uint8Array> | undefined;
+
 /** The running application: identity, command line, environment, lifetime. */
 export const app = {
   /** `id`, `name` and `version` come from the manifest, `runtimeVersion` from the Alef runtime. */
@@ -104,6 +143,36 @@ export const app = {
    */
   quit: (code?: number, options: Cancelable = {}): Promise<void> =>
     call<void>('app.quit', code === undefined ? {} : { code }, options),
+
+  /**
+   * Quits with `code` and never comes back: the promise stays pending, for the process is ending (a
+   * `before-quit` handler that vetoes keeps the application running, and the promise pending).
+   */
+  exit: async (code?: number, options: Cancelable = {}): Promise<never> => {
+    await call<void>('app.quit', code === undefined ? {} : { code }, options);
+    return new Promise<never>(() => undefined);
+  },
+
+  /**
+   * What arrives on the standard input, for a console utility (`console: true` in the manifest): the stream
+   * ends with the input, and is read once. Any other application gets `NOT_AVAILABLE` when it reads.
+   */
+  get stdin(): ReadableStream<Uint8Array> {
+    standardInput ??= lazyReadable(() => opened('app.stdin'));
+    return standardInput;
+  },
+
+  /** The standard output of a console utility: what is written leaves whole and in order; `NOT_AVAILABLE` for any other application. */
+  get stdout(): WritableStream<Uint8Array> {
+    standardOutput ??= lazyWritable(() => opened('app.stdout'));
+    return standardOutput;
+  },
+
+  /** The standard error of a console utility, as `stdout`. */
+  get stderr(): WritableStream<Uint8Array> {
+    standardError ??= lazyWritable(() => opened('app.stderr'));
+    return standardError;
+  },
 
   /** Starts a new instance with the same arguments and quits this one (also vetoed by `before-quit`). */
   relaunch: (options: Cancelable = {}): Promise<void> => call<void>('app.relaunch', null, options),

@@ -24,8 +24,8 @@ use alef_core::{
     AlefError,
 };
 use alef_modules::{
-    desktop::args, register_all, AppInfo, Backends, MemoryClipboard, MemorySecrets, ModuleContext,
-    PretendNotifications, PretendShell,
+    desktop::args, register_all, AppInfo, Backends, Console, MemoryClipboard, MemorySecrets,
+    ModuleContext, PretendNotifications, PretendShell, Termination,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -139,6 +139,33 @@ impl Fixture {
         command_line: &[&str],
         secrets: Arc<MemorySecrets>,
     ) -> Self {
+        Self::build(root, manifest, command_line, secrets, None).await
+    }
+
+    /// A console utility: the standard streams of the process are `console`'s.
+    pub async fn new_console(console: Console, manifest: Option<&str>) -> Self {
+        let root = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("alef-modules-paths");
+        Self::build(
+            &root,
+            manifest,
+            &[],
+            Arc::new(MemorySecrets::default()),
+            Some(console),
+        )
+        .await
+    }
+
+    async fn build(
+        root: &std::path::Path,
+        manifest: Option<&str>,
+        command_line: &[&str],
+        secrets: Arc<MemorySecrets>,
+        console: Option<Console>,
+    ) -> Self {
         let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
         let manifest = Manifest::from_ktav_str(&text).expect("manifest");
         let root = root.to_path_buf();
@@ -182,6 +209,8 @@ impl Fixture {
                 "shadow-{}",
                 SHADOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )),
+            console,
+            termination: Termination::default(),
         };
         let host = Arc::new(FakeHost {
             quits: Mutex::new(Vec::new()),

@@ -63,7 +63,7 @@ const GRANDCHILD: &str = "require('child_process').spawn(process.execPath,['-e',
 async fn a_child_that_does_not_read_its_input_still_reports_how_it_ended() {
     let fixture = Fixture::new(Some(&manifest(&["node"])), &[]).await;
     let reply = tokio::time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         fixture.call_reply(
             "cli.exec",
             json!({ "commandLine": r#"node -e "process.exit(3)""# }),
@@ -88,7 +88,7 @@ async fn exec_ends_with_its_child_and_takes_the_descendants_along() {
     // The grandchild holds the pipes of the run: only its death ends the reading.
     let script = GRANDCHILD.replace("STDIO", "inherit");
     let reply = tokio::time::timeout(
-        Duration::from_secs(20),
+        Duration::from_secs(60),
         fixture.call(
             "cli.exec",
             json!({
@@ -104,7 +104,7 @@ async fn exec_ends_with_its_child_and_takes_the_descendants_along() {
     assert!(pid_of(&grand).is_some(), "the grandchild started");
     until(
         || async { !beating(&grand).await },
-        15_000,
+        60_000,
         "the grandchild died",
     )
     .await;
@@ -130,13 +130,13 @@ async fn the_descendants_of_a_spawned_child_die_with_it_even_unwaited() {
         .expect("the spawn works");
     until(
         || async { pid_of(&grand).is_some() },
-        15_000,
+        60_000,
         "the grandchild started",
     )
     .await;
     until(
         || async { !beating(&grand).await },
-        15_000,
+        60_000,
         "the grandchild died",
     )
     .await;

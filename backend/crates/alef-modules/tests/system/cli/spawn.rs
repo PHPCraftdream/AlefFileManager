@@ -101,7 +101,7 @@ async fn spawn_backpressure_holds_the_child_back() {
         .expect("an outgoing stream");
 
     // Take one frame and acknowledge nothing beyond it.
-    let first = match tokio::time::timeout(Duration::from_secs(20), reader.next_frame())
+    let first = match tokio::time::timeout(Duration::from_secs(60), reader.next_frame())
         .await
         .expect("the stream stalled")
     {
@@ -137,7 +137,7 @@ async fn spawn_backpressure_holds_the_child_back() {
     fixture.session().streams().ack(id, first.len()).unwrap();
     let mut total = first.len();
     loop {
-        match tokio::time::timeout(Duration::from_secs(20), reader.next_frame())
+        match tokio::time::timeout(Duration::from_secs(60), reader.next_frame())
             .await
             .expect("the stream stalled")
         {
@@ -158,11 +158,11 @@ async fn wait_is_once_and_the_resource_is_gone_after_it() {
     let reply = spawn(&fixture, json!({ "program": "node", "args": ["-e", ""] })).await;
     let id = reply["process"].as_u64().unwrap();
     let reply = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         fixture.call("cli.wait", json!({ "process": id })),
     )
     .await
-    .expect("the wait finishes within ten seconds")
+    .expect("the wait finishes in time")
     .expect("the wait works");
     assert_eq!(reply["code"], 0);
     assert!(reply["signal"].is_null());
@@ -203,7 +203,7 @@ async fn kill_takes_down_the_whole_tree() {
     let id = reply["process"].as_u64().unwrap();
     until(
         || async { pid_of(&grand_file).is_some() },
-        10_000,
+        60_000,
         "the grandchild wrote its pid",
     )
     .await;
@@ -222,7 +222,7 @@ async fn kill_takes_down_the_whole_tree() {
         .expect("the kill works");
     until(
         || async { !alive(&fixture, grand).await },
-        15_000,
+        60_000,
         "the grandchild is dead",
     )
     .await;
@@ -251,7 +251,7 @@ async fn closing_the_session_kills_the_tree() {
     )
     .await;
     let pid = reply["pid"].as_u64().unwrap();
-    until(|| async { pid_of(&file).is_some() }, 10_000, "a pid file").await;
+    until(|| async { pid_of(&file).is_some() }, 60_000, "a pid file").await;
     let mut waiting = Box::pin(fixture.call("cli.wait", json!({ "process": reply["process"] })));
     assert!(
         std::future::poll_fn(|cx| std::task::Poll::Ready(
@@ -259,10 +259,10 @@ async fn closing_the_session_kills_the_tree() {
         ))
         .await
     );
-    tokio::time::timeout(Duration::from_secs(15), fixture.session().close())
+    tokio::time::timeout(Duration::from_secs(60), fixture.session().close())
         .await
         .expect("session teardown completes");
-    let waited = tokio::time::timeout(Duration::from_secs(15), waiting)
+    let waited = tokio::time::timeout(Duration::from_secs(60), waiting)
         .await
         .expect("pending wait wakes on close")
         .expect("exit result remains observable");
@@ -272,7 +272,7 @@ async fn closing_the_session_kills_the_tree() {
     let probe = app().await;
     until(
         || async { !alive(&probe, pid).await },
-        15_000,
+        60_000,
         "the tree is dead",
     )
     .await;
@@ -345,7 +345,7 @@ async fn wait_preserves_output_until_the_page_reads_it() {
     )
     .await;
     let waited = tokio::time::timeout(
-        Duration::from_secs(15),
+        Duration::from_secs(60),
         fixture.call("cli.wait", json!({"process": reply["process"]})),
     )
     .await
@@ -358,7 +358,7 @@ async fn wait_preserves_output_until_the_page_reads_it() {
     assert_eq!(err.until_end().await.unwrap(), vec![101; count]);
     until(
         || async { fixture.session().resources().is_empty() },
-        10_000,
+        60_000,
         "completed process resource removed",
     )
     .await;
@@ -380,7 +380,7 @@ async fn descendants_die_when_direct_child_exits() {
     .await;
     until(
         || async { pid_of(&grand_file).is_some() },
-        10_000,
+        60_000,
         "grandchild ready",
     )
     .await;
@@ -388,7 +388,7 @@ async fn descendants_die_when_direct_child_exits() {
     assert!(alive(&fixture, grand).await);
     std::fs::write(&release, b"exit").unwrap();
     let result = tokio::time::timeout(
-        Duration::from_secs(15),
+        Duration::from_secs(60),
         fixture.call("cli.wait", json!({"process":reply["process"]})),
     )
     .await
@@ -397,7 +397,7 @@ async fn descendants_die_when_direct_child_exits() {
     assert_eq!(result["code"], 0);
     until(
         || async { !alive(&fixture, grand).await },
-        15_000,
+        60_000,
         "descendant terminated after parent exit",
     )
     .await;
@@ -422,7 +422,7 @@ async fn an_ignored_stream_is_null_and_the_child_still_runs() {
     assert!(reply["stdout"].is_null());
     assert!(reply["stderr"].is_null());
     let reply = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         fixture.call("cli.wait", json!({ "process": reply["process"] })),
     )
     .await

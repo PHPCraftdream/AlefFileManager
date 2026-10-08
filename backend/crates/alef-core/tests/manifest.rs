@@ -247,6 +247,44 @@ fn empty_windows_and_literal_version_parse() {
     assert_eq!(Manifest::from_ktav_str(MINIMAL).unwrap().version, "1.0.0");
 }
 
+fn without_windows(extra: &str) -> String {
+    let mut s = MINIMAL.to_string();
+    let start = s.find("windows: [").unwrap();
+    let end = s[start..].find("]\nexternal").unwrap() + start + 1;
+    s.replace_range(start..end, &format!("windows: []\n{extra}"));
+    s
+}
+
+#[test]
+fn an_application_without_windows_may_be_a_console_utility_with_an_entry_document() {
+    let plain = Manifest::from_ktav_str(&without_windows("")).unwrap();
+    assert!(!plain.console, "a service by default");
+    assert_eq!(plain.entry, None);
+    let console =
+        Manifest::from_ktav_str(&without_windows("console: true\nentry: /tool.html")).unwrap();
+    assert!(console.console);
+    assert_eq!(console.entry.as_deref(), Some("/tool.html"));
+    let service = Manifest::from_ktav_str(&without_windows("console: false")).unwrap();
+    assert!(!service.console);
+}
+
+#[test]
+fn console_and_entry_are_for_applications_without_windows_and_the_entry_is_a_path_of_the_app() {
+    for extra in ["console: true", "entry: /tool.html"] {
+        let text = MINIMAL.replace("windows: [", &format!("{extra}\nwindows: ["));
+        let message = error(&text).message;
+        assert!(
+            message.contains(extra.split(':').next().unwrap()),
+            "{message}"
+        );
+        assert!(message.contains("windows: []"), "{message}");
+    }
+    for entry in ["tool.html", "//evil.example/x", "/a\\b"] {
+        let message = error(&without_windows(&format!("entry: {entry}"))).message;
+        assert!(message.contains("entry"), "{entry}: {message}");
+    }
+}
+
 fn with_position(position: &str) -> String {
     MINIMAL.replace(
         "height: 600",

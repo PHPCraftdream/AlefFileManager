@@ -14,7 +14,7 @@ use alef_launch::{
 };
 use alef_modules::{
     desktop::args::{parse, Parsed},
-    register_all, AppInfo, Backends, ModuleContext,
+    register_all, AppInfo, Backends, Console, ModuleContext, Termination,
 };
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 
@@ -69,6 +69,70 @@ fn install_tls() -> Result<(), Failure> {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| Failure::Runtime("Failed to configure the Servo TLS provider".to_owned()))
+}
+
+/// Waits for the signals that ask a process to end (Ctrl+C, SIGTERM, Ctrl+Break, the closing of the
+/// console) and asks the application to quit the way `app.quit` does; the code is 128 and the number of the
+/// signal where there is one. When the documents veto, or when another signal comes, the process ends.
+async fn end_on_signals(termination: Termination, handle: alef_runtime::RuntimeHandle) {
+    let Ok(mut signals) = signals() else {
+        eprintln!("alef: the signals cannot be watched");
+        return;
+    };
+    let mut asked = false;
+    while let Some(code) = signals.recv().await {
+        if asked {
+            alef_core::registry::host::Host::quit(&handle, code);
+            return;
+        }
+        if termination.request(code).await {
+            return;
+        }
+        asked = true;
+    }
+}
+
+/// The signals as exit codes, one by one.
+fn signals() -> std::io::Result<tokio::sync::mpsc::Receiver<i32>> {
+    use tokio::sync::mpsc;
+    let (sender, receiver) = mpsc::channel(4);
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        for (kind, code) in [
+            (SignalKind::interrupt(), 130),
+            (SignalKind::terminate(), 143),
+            (SignalKind::hangup(), 129),
+        ] {
+            let mut stream = signal(kind)?;
+            let sender = sender.clone();
+            tokio::spawn(async move {
+                while stream.recv().await.is_some() {
+                    let _ = sender.send(code).await;
+                }
+            });
+        }
+    }
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown};
+        macro_rules! watch {
+            ($stream:expr, $code:expr) => {{
+                let mut stream = $stream?;
+                let sender = sender.clone();
+                tokio::spawn(async move {
+                    while stream.recv().await.is_some() {
+                        let _ = sender.send($code).await;
+                    }
+                });
+            }};
+        }
+        watch!(ctrl_c(), 130);
+        watch!(ctrl_break(), 143);
+        watch!(ctrl_close(), 143);
+        watch!(ctrl_shutdown(), 143);
+    }
+    Ok(receiver)
 }
 
 /// Runs the application; the result is the exit code the application asked for.
@@ -149,6 +213,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     let _following = watch(granted.clone(), store(), identity, WATCH_EVERY);
     // Where the windows that ask for it (`restore: true`) are written down between runs.
     let window_state = vars.app_data.join("window-state.json");
+    let termination = Termination::default();
     let context = ModuleContext {
         app: AppInfo {
             id: plan.manifest.id.clone(),
@@ -161,7 +226,10 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         process_args,
         backends: Backends::from_environment(&plan.manifest.name),
         shadow,
+        console: plan.manifest.console.then(Console::process),
+        termination: termination.clone(),
     };
+    let console = context.console.clone();
 
     install_tls()?;
     let icon = std::fs::read(app_dir.join("icon.png")).unwrap_or_else(|_| DEFAULT_ICON.to_vec());
@@ -170,6 +238,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         .map(|url| url.origin().ascii_serialization())
         .collect();
     let assets = dev_url.is_none().then_some(plan.assets.as_path());
+    let (entry, windowless) = (plan.entry(), plan.windowless());
     let mut bridge = Bridge::with_options(
         Commands::new(),
         assets,
@@ -181,7 +250,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             allowed_origins,
             csp: Some(plan.csp),
             permissions: Some(granted),
-            entry: Some(plan.manifest.windows[0].url.clone()),
+            entry: Some(entry),
             ..BridgeOptions::default()
         },
     )
@@ -191,9 +260,14 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         plan.manifest.id,
         std::process::id()
     );
+    if windowless {
+        eprintln!("ALEF_MODE windowless console={}", plan.manifest.console);
+    }
     let handle = bridge.handle();
-    // M0.5 spike: the application in a hidden WebView, no window (docs/stages/m0-spikes.md).
-    let result = if std::env::var("ALEF_SPIKE_HEADLESS").is_ok_and(|value| value == "1") {
+    // A signal asks the application to end as `app.quit` does; a second one ends it.
+    let _signals = tokio::spawn(end_on_signals(termination, handle.clone()));
+    let result = if windowless {
+        // No window: the entry document runs in a hidden WebView.
         alef_runtime::run_headless(&mut bridge)
     } else {
         alef_runtime::run(
@@ -206,6 +280,10 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         )
     };
     bridge.shutdown().await?;
+    if let Some(console) = &console {
+        // What the page wrote to stdout and stderr leaves before the process does.
+        console.drain().await;
+    }
     result.map_err(|error| Failure::Runtime(error.to_string()))?;
     Ok(u8::try_from(handle.exit_code()).unwrap_or(1))
 }

@@ -28,6 +28,25 @@ pub struct Plan {
     pub assets: PathBuf,
 }
 
+impl Plan {
+    /// An application without windows (a console utility or a service) runs in a hidden WebView.
+    pub fn windowless(&self) -> bool {
+        self.manifest.windows.is_empty()
+    }
+
+    /// The entry document: the URL of the first window, or the `entry` of an application without windows.
+    pub fn entry(&self) -> String {
+        match self.manifest.windows.first() {
+            Some(window) => window.url.clone(),
+            None => self
+                .manifest
+                .entry
+                .clone()
+                .unwrap_or_else(|| "/".to_owned()),
+        }
+    }
+}
+
 /// Reads and validates `<app_dir>/alef.ktav`.
 pub fn load_manifest(app_dir: &Path) -> Result<Manifest, AlefError> {
     let path = app_dir.join(MANIFEST_FILE);
@@ -42,12 +61,6 @@ pub fn load_manifest(app_dir: &Path) -> Result<Manifest, AlefError> {
 
 /// Derives the launch plan; `vars` are the directories behind the `$NAME` scope variables.
 pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<Plan, AlefError> {
-    if manifest.windows.is_empty() {
-        return Err(AlefError::new(
-            ErrorCode::ManifestInvalid,
-            "windows: the manifest declares no window",
-        ));
-    }
     let permissions = Arc::new(PermissionSet::from_manifest(&manifest.permissions, vars)?);
     let csp = build_csp(&manifest.external, CSP_APP_ORIGIN)?;
     Ok(Plan {
@@ -228,12 +241,21 @@ permissions: {{
     }
 
     #[test]
-    fn a_window_is_required() {
+    fn an_application_without_windows_is_windowless_and_its_entry_is_its_own_or_the_root() {
+        let windowed = plan_of(manifest(SIZE, "[]")).expect("plan");
+        assert!(!windowed.windowless());
+        assert_eq!(
+            windowed.entry(),
+            "/index.html",
+            "the url of the first window"
+        );
         let mut none = manifest(SIZE, "[]");
         none.windows.clear();
-        let error = plan_of(none).err().expect("no window");
-        assert_eq!(error.code, ErrorCode::ManifestInvalid);
-        assert!(error.message.starts_with("windows:"));
+        let service = plan_of(none.clone()).expect("a service has no window");
+        assert!(service.windowless());
+        assert_eq!(service.entry(), "/");
+        none.entry = Some("/tool.html".to_owned());
+        assert_eq!(plan_of(none).expect("plan").entry(), "/tool.html");
     }
 
     #[test]

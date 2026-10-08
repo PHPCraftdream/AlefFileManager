@@ -58,6 +58,7 @@ const ARGS = {
   'app.args': [],
   'app.env': [],
   'app.cwd': [],
+  'app.exit': [],
   'app.requestSingleInstance': [],
   'app.on': ['second-instance', () => {}],
   ...Object.fromEntries(['appData', 'appConfig', 'appCache', 'temp', 'home', 'documents', 'downloads', 'desktop', 'executable'].map(name => [`path.${name}`, []])),
@@ -164,6 +165,8 @@ installRuntime({
   },
 });
 
+const NEVER_SETTLES = new Set(['app.exit']);
+
 test('every function exported by @alef-tron/api is asynchronous', async () => {
   const functions = functionsOf(api);
   assert.ok(functions.length >= 60, `the walk must see the whole surface, saw ${functions.length}`);
@@ -171,6 +174,8 @@ test('every function exported by @alef-tron/api is asynchronous', async () => {
   assert.deepEqual(unlisted, [], 'add the new export to ARGS so its asynchrony is checked');
   for (const [name, fn] of functions) {
     const result = expectAsync(name, fn, ARGS[name]);
+    // app.exit never settles: the process is ending.
+    if (NEVER_SETTLES.has(name)) continue;
     const settled = isThenable(result) ? await result : result;
     if (typeof settled === 'function') settled(); // an unsubscribe function
     else if (typeof settled?.close === 'function') await settled.close();

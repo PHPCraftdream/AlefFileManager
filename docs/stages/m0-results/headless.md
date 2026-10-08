@@ -1,6 +1,6 @@
 # M0.5 — Безоконный режим Servo: результаты
 
-Вопрос и среды — `../m0-spikes.md`, раздел «M0.5». Код спайка одноразовый: `alef-runtime/src/spikes/headless.rs` (включается `ALEF_SPIKE_HEADLESS=1`), страница и раннер — `experiments/headless/` (`node experiments/headless/run.mjs [--raf] [--throttle] [--windowed] [--hold-ms N]`).
+Вопрос и среды — `../m0-spikes.md`, раздел «M0.5». Код спайка был одноразовым (`ALEF_SPIKE_HEADLESS=1`, `experiments/headless/`); в M4.6 он стал режимом самого рантайма (`alef-runtime/src/headless.rs`, приложение без окон в манифесте), а проверяют его сценарии e2e `console`, `service` и `service-signal`. Ниже — результаты спайка как они были. На раннере Windows в CI контекст не создаётся (`software context: RequiredExtensionUnavailable`): нужен драйвер OpenGL, которого там нет.
 
 ## Как устроено
 

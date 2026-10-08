@@ -2,6 +2,7 @@
 //! Desktop modules.
 pub mod app;
 pub mod args;
+
 pub mod dialog;
 mod instance;
 pub mod shell;
@@ -22,6 +23,7 @@ pub(crate) fn register(
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
     app::register(registry, host.clone(), context)?;
+    app::console::register(registry, context)?;
     dialog::register(registry, host.clone())?;
     shell::register(registry, context.backends.shell.clone())?;
     window::register(registry, host)

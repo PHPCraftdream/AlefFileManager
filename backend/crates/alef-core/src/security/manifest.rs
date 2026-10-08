@@ -208,8 +208,17 @@ pub struct Manifest {
     pub name: String,
     /// Non-empty version string.
     pub version: String,
-    /// Declared windows; an empty list is allowed.
+    /// Declared windows; an empty list is allowed (a console utility or a service).
     pub windows: Vec<WindowDef>,
+    /// A console utility: no window, and the process has stdin, stdout and stderr (`app.stdin`...).
+    /// Needs `windows: []`.
+    #[serde(default)]
+    pub console: bool,
+    /// The entry document of an application without windows (a root-relative path, `/` when omitted).
+    /// Needs `windows: []`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub entry: Option<String>,
     /// External-resource policy.
     pub external: External,
     /// Permissions policy.
@@ -272,6 +281,25 @@ impl Manifest {
                 return Err(invalid(
                     &format!("windows[{index}].label"),
                     "duplicate label",
+                ));
+            }
+        }
+        if !manifest.windows.is_empty() {
+            if manifest.console {
+                return Err(invalid("console", "needs windows: []"));
+            }
+            if manifest.entry.is_some() {
+                return Err(invalid("entry", "needs windows: []"));
+            }
+        }
+        if let Some(entry) = &manifest.entry {
+            if !entry.starts_with('/') {
+                return Err(invalid("entry", "must start with /"));
+            }
+            if entry.starts_with("//") || entry.contains('\\') {
+                return Err(invalid(
+                    "entry",
+                    "must be a path of the application, not another host",
                 ));
             }
         }

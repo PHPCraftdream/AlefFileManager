@@ -155,9 +155,19 @@ export type Manifest = {
    */
   version: string,
   /**
-   * Declared windows; an empty list is allowed.
+   * Declared windows; an empty list is allowed (a console utility or a service).
    */
   windows: Array<WindowDef>,
+  /**
+   * A console utility: no window, and the process has stdin, stdout and stderr (`app.stdin`...).
+   * Needs `windows: []`.
+   */
+  console: boolean,
+  /**
+   * The entry document of an application without windows (a root-relative path, `/` when omitted).
+   * Needs `windows: []`.
+   */
+  entry?: string,
   /**
    * External-resource policy.
    */

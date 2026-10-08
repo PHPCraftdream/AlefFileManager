@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alef_core::registry::{
     host::{Host, HostFuture, Theme},
@@ -29,6 +29,10 @@ pub(crate) struct Wake;
 struct HostState {
     quit: AtomicI64,
     dark: AtomicBool,
+    /// The process has no window (a console utility, a service): what needs one is `NOT_AVAILABLE`.
+    windowless: AtomicBool,
+    /// Wakes the loop of a process without winit when the application asks to quit.
+    waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 #[derive(Clone)]
@@ -115,6 +119,8 @@ impl RuntimeHandle {
                 host: Arc::new(HostState {
                     quit: AtomicI64::new(NO_QUIT),
                     dark: AtomicBool::new(false),
+                    windowless: AtomicBool::new(false),
+                    waker: Mutex::new(None),
                 }),
             },
             receiver,
@@ -127,6 +133,13 @@ impl RuntimeHandle {
             NO_QUIT => 0,
             code => i32::try_from(code).unwrap_or(0),
         }
+    }
+
+    /// The process has no window: requests that need one are refused, and `wake` is called when the
+    /// application asks to quit.
+    pub(crate) fn windowless(&self, wake: impl Fn() + Send + Sync + 'static) {
+        *self.host.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(wake));
+        self.host.windowless.store(true, Ordering::SeqCst);
     }
 
     pub(crate) fn quit_requested(&self) -> bool {
@@ -227,6 +240,12 @@ impl RuntimeHandle {
         &self,
         build: impl FnOnce(UiReply) -> io::Result<UiRequest>,
     ) -> io::Result<Value> {
+        if self.host.windowless.load(Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "There is no window in this mode",
+            ));
+        }
         if self.admission.is_closed() {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
@@ -265,6 +284,15 @@ impl Host for RuntimeHandle {
         self.host.quit.store(i64::from(code), Ordering::SeqCst);
         if let Some(proxy) = self.proxy.borrow().as_ref() {
             let _ = proxy.send_event(Wake);
+        }
+        if let Some(wake) = self
+            .host
+            .waker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            wake();
         }
     }
 
@@ -328,6 +356,45 @@ mod tests {
                 .expect_err("unattached")
                 .kind(),
             io::ErrorKind::NotConnected
+        );
+    }
+
+    #[tokio::test]
+    async fn a_process_without_a_window_refuses_window_calls_as_unsupported_and_wakes_on_quit() {
+        let (handle, _receiver) = RuntimeHandle::channel();
+        let woken = Arc::new(AtomicBool::new(false));
+        let flag = woken.clone();
+        handle.windowless(move || flag.store(true, Ordering::SeqCst));
+        assert_eq!(
+            handle
+                .window(1, WindowAction::GetState)
+                .await
+                .expect_err("no window")
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            AlefError::from(
+                handle
+                    .window(1, WindowAction::GetState)
+                    .await
+                    .expect_err("no window")
+            )
+            .code,
+            alef_core::ErrorCode::NotAvailable
+        );
+        handle
+            .emit("example", &1)
+            .await
+            .expect("events need no window");
+        assert!(!handle.quit_requested());
+        assert!(!woken.load(Ordering::SeqCst));
+        handle.quit(7);
+        assert!(handle.quit_requested());
+        assert_eq!(handle.exit_code(), 7);
+        assert!(
+            woken.load(Ordering::SeqCst),
+            "the loop is woken to see the quit"
         );
     }
 

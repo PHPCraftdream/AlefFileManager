@@ -4,6 +4,7 @@
 mod common;
 
 mod consent;
+mod console;
 mod dialog;
 mod lifecycle;
 mod shell;

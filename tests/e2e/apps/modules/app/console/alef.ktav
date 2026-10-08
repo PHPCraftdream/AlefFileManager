@@ -1,14 +1,9 @@
-id: org.alef.spike.headless
-name: Alef headless spike
-version:: 0.0.1
-windows: [
-    {
-        label: main
-        url: /index.html
-        width: 400
-        height: 300
-    }
-]
+id: org.alef.e2e.modules.console
+name: Alef e2e console
+version:: 1.0.0
+windows: []
+console: true
+entry: /index.html
 external: {
     connect: []
     load: {
@@ -45,18 +40,4 @@ permissions: {
     app: {
         env: []
     }
-}
-arguments: {
-    options: [
-        {
-            name: hold-ms
-            type: number
-            description: How long to stay alive after the checks
-        }
-        {
-            name: raf
-            type: boolean
-            description: Keep a requestAnimationFrame loop running
-        }
-    ]
 }

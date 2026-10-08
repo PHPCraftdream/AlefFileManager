@@ -453,3 +453,41 @@ async fn bad_arguments_are_refused() {
     }
     assert!(quit_calls(&fixture).is_empty());
 }
+
+#[tokio::test]
+async fn a_signal_quits_with_its_code_when_nobody_is_asked_and_asks_the_documents_that_want_to_be()
+{
+    let fixture = Arc::new(Fixture::new(None, &[]).await);
+    let termination = fixture.context.termination.clone();
+    assert!(termination.request(143).await, "nobody to ask");
+    assert_eq!(quit_calls(&fixture), [143]);
+
+    let main = fixture.session();
+    asked(&fixture, &main).await;
+    let terminating = {
+        let termination = termination.clone();
+        tokio::spawn(async move { termination.request(130).await })
+    };
+    events_after(&fixture, 1).await;
+    assert_eq!(
+        quit_calls(&fixture),
+        [143],
+        "nothing quits before the answer"
+    );
+    let id = before_quit(&fixture)[0].1;
+    fixture
+        .call_as(
+            &main,
+            "app.quitAnswer",
+            json!({ "id": id, "prevent": true }),
+        )
+        .await
+        .expect("answer");
+    assert!(!terminating.await.unwrap(), "a veto keeps the application");
+    assert_eq!(quit_calls(&fixture), [143]);
+}
+
+#[tokio::test]
+async fn a_signal_before_the_modules_are_registered_quits_nothing() {
+    assert!(!alef_modules::Termination::default().request(143).await);
+}

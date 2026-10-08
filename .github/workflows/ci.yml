@@ -187,21 +187,6 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1280x1024x24" sh -c 'openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose'
 
-      # M0.5 spike (docs/stages/m0-spikes.md): the application in a hidden WebView on a software rendering
-      # context, with no window. Informational; the numbers go to docs/stages/m0-results/headless.md.
-      - name: Headless spike (no window)
-        continue-on-error: true
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: node experiments/headless/run.mjs --hold-ms 8000 --verbose
-
-      - name: Headless spike (virtual display)
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-        run: xvfb-run -a node experiments/headless/run.mjs --hold-ms 8000 --verbose
-
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:

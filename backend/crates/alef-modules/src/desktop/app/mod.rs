@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `app`: identity, command line, environment, working directory, quit (which documents may
 //! veto), relaunch and the single instance.
+pub mod console;
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ffi::OsString,
+    fmt,
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, Weak,
+        Arc, Mutex, OnceLock, Weak,
     },
     time::Duration,
 };
@@ -22,7 +25,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Notify;
 
-use super::instance::{Endpoint, Instance};
+use crate::desktop::instance::{Endpoint, Instance};
 use crate::{json, ModuleContext};
 
 /// The event a document that asked for it gets before the application quits.
@@ -163,6 +166,38 @@ impl Quitting {
     }
 }
 
+#[derive(Default)]
+struct TerminationInner {
+    quitting: Arc<Quitting>,
+    host: OnceLock<Arc<dyn Host>>,
+}
+
+/// How the process is asked to end from outside (a signal): the documents are asked as `app.quit` asks them,
+/// and the process quits unless one of them vetoed.
+#[derive(Clone, Default)]
+pub struct Termination(Arc<TerminationInner>);
+
+impl fmt::Debug for Termination {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Termination").finish_non_exhaustive()
+    }
+}
+
+impl Termination {
+    /// Asks the documents and quits with `code`; `false` when one of them vetoed, or the modules are not
+    /// registered yet.
+    pub async fn request(&self, code: i32) -> bool {
+        let Some(host) = self.0.host.get() else {
+            return false;
+        };
+        if !self.0.quitting.may_quit(host.as_ref()).await {
+            return false;
+        }
+        host.quit(code);
+        true
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EnvArgs {
@@ -264,7 +299,8 @@ pub(crate) fn register(
             json(&directory.to_string_lossy())
         })?;
 
-    let quitting = Arc::new(Quitting::default());
+    let quitting = context.termination.0.quitting.clone();
+    let _ = context.termination.0.host.set(host.clone());
     let (quit_host, quit_state) = (host.clone(), quitting.clone());
     registry
         .command::<QuitArgs>("app.quit")?

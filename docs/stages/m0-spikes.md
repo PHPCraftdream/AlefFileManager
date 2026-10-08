@@ -90,7 +90,7 @@
 
 **Вопрос.** Может ли Servo исполнять JS приложения без окна и без дисплея: скрытый `WebView` на `SoftwareRenderingContext` (программный GL, есть в Servo 0.6), без winit? От ответа зависят режимы «консоль» и «служба», серверы (M4, M4b) и формулировка M4/M7.
 
-**Минимум кода** (за `ALEF_SPIKE_HEADLESS=1` или в `experiments/headless/`): процесс без winit создаёт `SoftwareRenderingContext` 1×1, `Servo` и `WebView` с нашим `native://` транспортом, сам крутит `spin_event_loop` по `EventLoopWaker`, `webview.hide()`, кадры не рисуются; страница делает `app.info()` и `fetch` и печатает результат в stdout; завершение по SIGTERM/Ctrl+C.
+**Минимум кода** (в спайке за `ALEF_SPIKE_HEADLESS=1`, теперь `alef-runtime/src/headless.rs`): процесс без winit создаёт `SoftwareRenderingContext` 1×1, `Servo` и `WebView` с нашим `native://` транспортом, сам крутит `spin_event_loop` по `EventLoopWaker`, `webview.hide()`, кадры не рисуются; страница делает `app.info()` и `fetch` и печатает результат в stdout; завершение по SIGTERM/Ctrl+C.
 
 **Среды:** Windows (обычный сеанс), Windows-служба (session 0, нет рабочего стола — главный риск: у нас GL через WGL с патченным `surfman`), Linux под `xvfb`, Linux **без `DISPLAY`** (EGL surfaceless / Mesa), macOS (без сеанса `WindowServer`, например по SSH).
 

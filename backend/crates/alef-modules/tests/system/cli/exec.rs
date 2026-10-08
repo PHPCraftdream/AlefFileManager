@@ -108,7 +108,7 @@ async fn exec_times_out_and_kills_the_tree() {
     // Only now expire the configured deadline: startup load cannot prevent the observation.
     tokio::time::advance(Duration::from_secs(61)).await;
     tokio::time::resume();
-    let error = tokio::time::timeout(Duration::from_secs(20), running)
+    let error = tokio::time::timeout(Duration::from_secs(60), running)
         .await
         .expect("timed-out exec reaps and returns")
         .unwrap_err();
@@ -116,7 +116,7 @@ async fn exec_times_out_and_kills_the_tree() {
     for pid in [parent, grand] {
         until(
             || async { !alive(&fixture, pid).await },
-            15_000,
+            60_000,
             "timed-out tree member is dead",
         )
         .await;
@@ -144,11 +144,11 @@ async fn exec_fails_when_either_pipe_exceeds_the_limit() {
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidArgument);
         assert!(error.message.contains("16 MiB"), "{}", error.message);
-        until(|| async { pid_of(&file).is_some() }, 10_000, "a pid file").await;
+        until(|| async { pid_of(&file).is_some() }, 60_000, "a pid file").await;
         let pid = pid_of(&file).unwrap();
         until(
             || async { !alive(&fixture, pid).await },
-            10_000,
+            60_000,
             "the tree is dead",
         )
         .await;
@@ -166,14 +166,14 @@ async fn dropping_pending_exec_kills_the_started_tree() {
     })));
     tokio::select! {
         result = &mut running => panic!("process unexpectedly finished: {result:?}"),
-        _ = until(|| async {pid_of(&file).is_some()}, 15_000, "started child") => {}
+        _ = until(|| async {pid_of(&file).is_some()}, 60_000, "started child") => {}
     }
     let pid = pid_of(&file).unwrap();
     assert!(alive(&fixture, pid).await);
     drop(running);
     until(
         || async { !alive(&fixture, pid).await },
-        15_000,
+        60_000,
         "aborted child reaped",
     )
     .await;

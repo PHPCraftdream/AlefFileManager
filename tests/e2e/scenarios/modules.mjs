@@ -2,6 +2,7 @@
 // Scenarios of the framework modules (docs/stages/m2-desktop.md, "Приёмка"): `app` (+ `quit`, `relaunch`,
 // the generated usage text, `instance`), the system modules `path` and `os`, `window` and `desktop` (`dialog`, `shell`, `clipboard`).
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -13,6 +14,42 @@ const APP_CHECKS = [
   'app-env-without-a-name-lists-only-the-listed-variables',
   'app-cwd-is-the-working-directory-of-the-process', 'app-quit-rejects-a-code-outside-0-255',
 ];
+
+const CONSOLE_CHECKS = [
+  'console-stdin-comes-whole-and-goes-out-changed-on-stdout', 'console-stderr-carries-a-line-of-its-own',
+  'console-the-windows-and-the-dialogs-are-not-available', 'console-stdin-is-taken-once',
+];
+
+const SERVICE_CHECKS = [
+  'service-serves-without-a-window', 'service-is-asked-before-it-ends-on-a-signal',
+  'service-has-no-console-and-no-window',
+];
+
+/** A process without a window needs OpenGL for its hidden WebView; a machine with no driver (a runner of Windows) has none. */
+const withoutOpenGl = lines => process.platform === 'win32' && lines.some(line => line.includes('no software rendering context'));
+
+/** A port nothing listens on. */
+async function freePort() {
+  const server = net.createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+
+/** Asks the service on `port` for `path` until it answers (a few seconds at most). */
+async function ask(port, path) {
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    try {
+      const answer = await fetch(`http://127.0.0.1:${port}${path}`);
+      return { status: answer.status, text: await answer.text() };
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+}
 
 const SYSTEM_CHECKS = [
   'path-directories-are-absolute-and-the-app-ones-end-with-the-id', 'path-join-normalize-dirname-basename',
@@ -77,6 +114,49 @@ const CLI_CHECKS = [
 const CLI_SUBSTITUTE_CHECKS = ['cli-exec-substituted-hangs-and-times-out-quickly'];
 
 export function moduleScenarios({ drive, exe, verbose }) {
+  async function service({ signal }) {
+    const port = await freePort();
+    const site = prepareSite(signal ? 'service-signal' : 'service', 'modules/app/service', { replacements: { PORT: String(port) }, targets: { port } });
+    const running = startApp({ exe, args: ['--app', site], verbose });
+    const problems = [];
+    try {
+      try {
+        await running.waitFor(line => line.includes('ALEF_E2E RESULT'), 120000, 'the verdict of the page');
+      } catch (error) {
+        if (withoutOpenGl(running.lines)) {
+          console.log('    skipped: this machine has no OpenGL driver for a process without a window');
+          return { problems: [], lines: running.lines, site };
+        }
+        throw error;
+      }
+      const result = verdictOf(running.lines);
+      if (result?.[1] !== 'PASS') problems.push(`verdict ${result?.[1]}: ${result?.[2]}`);
+      const done = new Set(running.lines.map(line => / check (\S+) ok /.exec(line)?.[1]));
+      const absent = SERVICE_CHECKS.filter(name => !done.has(name));
+      if (absent.length > 0) problems.push(`checks without an ok line: ${absent}`);
+      const pong = await ask(port, '/ping');
+      if (pong.status !== 200 || pong.text !== 'pong') problems.push(`/ping answered ${pong.status} ${pong.text}`);
+      if (!running.lines.some(line => line === 'ALEF_MODE windowless console=false')) problems.push('the runtime did not say it runs without a window');
+      if (signal) {
+        process.kill(running.pid, 'SIGTERM');
+      } else {
+        const bye = await ask(port, '/quit');
+        if (bye.text !== 'bye') problems.push(`/quit answered ${bye.text}`);
+      }
+      const exit = await running.waitForExit(30000);
+      const expected = signal ? 143 : 5;
+      if (exit?.code !== expected) problems.push(`the exit code is ${exit ? exit.code : 'none'}, expected ${expected}`);
+      const heard = running.lines.some(line => / check service-heard-before-quit ok /.test(line));
+      // `app.exit` is `app.quit`: the page is asked either way.
+      if (!heard) problems.push(`the page was not asked before ${signal ? 'the signal' : 'its own exit'} ended the process`);
+    } catch (error) {
+      problems.push(error.message);
+    } finally {
+      running.stop();
+    }
+    return { problems, lines: running.lines, site };
+  }
+
   return {
     app: () => drive({
       name: 'app', app: 'modules/app', targets: { cwd: process.cwd() },
@@ -295,6 +375,58 @@ export function moduleScenarios({ drive, exe, verbose }) {
       } finally {
         rmSync(directory, { recursive: true, force: true });
       }
+    },
+
+    // A console utility: no window, the input on stdin comes back changed on stdout, the exit code is the page's.
+    async console() {
+      const size = 3 * 1024 * 1024 + 17;
+      const input = Buffer.alloc(size);
+      for (let at = 0; at < size; at += 1) input[at] = (at * 31 + (at >> 8)) & 255;
+      const site = prepareSite('console', 'modules/app/console', { targets: { size } });
+      const running = startApp({ exe, args: ['--app', site], input, verbose });
+      const problems = [];
+      try {
+        try {
+          await running.waitFor(line => line.includes('ALEF_E2E RESULT'), 120000, 'the verdict of the page');
+        } catch (error) {
+          if (withoutOpenGl(running.lines)) {
+            console.log('    skipped: this machine has no OpenGL driver for a process without a window');
+            return { problems: [], lines: running.lines, site };
+          }
+          throw error;
+        }
+        const result = verdictOf(running.lines);
+        if (result?.[1] !== 'PASS') problems.push(`verdict ${result?.[1]}: ${result?.[2]}`);
+        const done = new Set(running.lines.map(line => / check (\S+) ok /.exec(line)?.[1]));
+        const absent = CONSOLE_CHECKS.filter(name => !done.has(name));
+        if (absent.length > 0) problems.push(`checks without an ok line: ${absent}`);
+        const exit = await running.waitForExit(30000);
+        if (exit?.code !== 7) problems.push(`the exit code is ${exit ? exit.code : 'none'}, expected 7`);
+        const out = running.stdout();
+        const expected = Buffer.from(input.map(byte => byte ^ 0x5a));
+        if (out.length !== expected.length || Buffer.compare(out, expected) !== 0) problems.push(`stdout is ${out.length} bytes and not the changed input (${expected.length})`);
+        if (!running.lines.some(line => line.includes('ALEF_CONSOLE a line for stderr'))) problems.push('the line for stderr did not arrive');
+        if (!running.lines.some(line => line === 'ALEF_MODE windowless console=true')) problems.push('the runtime did not say it runs without a window');
+      } catch (error) {
+        problems.push(error.message);
+      } finally {
+        running.stop();
+      }
+      return { problems, lines: running.lines, site };
+    },
+
+    // A service: no window and no console; it answers on a port, and ends by its own word (a request).
+    async service() {
+      return service({ signal: false });
+    },
+
+    // The same service ends on a signal: the page is asked as for `app.quit`, and the code is 128 and the signal.
+    async 'service-signal'() {
+      if (process.platform === 'win32') {
+        console.log('    skipped: a process of Windows ends on a signal without being asked');
+        return { problems: [], lines: [] };
+      }
+      return service({ signal: true });
     },
 
     system: () => drive({
