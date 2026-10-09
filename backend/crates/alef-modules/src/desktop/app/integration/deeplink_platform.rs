@@ -61,8 +61,9 @@ fn without_default(old: &str, mime: &str, name: &str) -> String {
 }
 
 /// Takes the association of `name` out of those of `files` that exist; every other line stays.
+/// Whether any file held it.
 #[cfg(any(target_os = "linux", test))]
-fn forget_default(files: &[std::path::PathBuf], mime: &str, name: &str) -> Result<(), AlefError> {
+fn forget_default(files: &[std::path::PathBuf], mime: &str, name: &str) -> Result<bool, AlefError> {
     use std::{fs, io::Write};
     let mut forgotten = false;
     for file in files {
@@ -86,13 +87,7 @@ fn forget_default(files: &[std::path::PathBuf], mime: &str, name: &str) -> Resul
         pending.persist(file).map_err(unavailable)?;
         forgotten = true;
     }
-    if forgotten {
-        Ok(())
-    } else {
-        Err(unavailable(
-            "owned default is in no file of default applications",
-        ))
-    }
+    Ok(forgotten)
 }
 
 #[cfg(target_os = "linux")]
@@ -190,7 +185,15 @@ mod linux {
         // Each subset uses the same full identity entry; changing a declaration set is deliberately
         // refused rather than overwriting an entry whose ownership cannot be established exactly.
         let expected = desktop(launch, schemes)?;
+        let default_of =
+            |scheme: &String| xdg(&["query", "default", &format!("x-scheme-handler/{scheme}")]);
+        // The entry declares the schemes, so once it exists it answers for the default by itself:
+        // what was the default before has to be asked first.
+        let mut before = Vec::new();
         if register {
+            for scheme in schemes {
+                before.push(default_of(scheme)?);
+            }
             integration::files::change(&path, &expected, true)?;
         } else if !integration::files::enabled(&path, &expected)? {
             if std::fs::symlink_metadata(&path).is_ok() {
@@ -198,31 +201,42 @@ mod linux {
             }
             return Ok(());
         }
-        for scheme in schemes {
+        let head = format!("{expected}\nPrevious=");
+        for (index, scheme) in schemes.iter().enumerate() {
             let mime = format!("x-scheme-handler/{scheme}");
             let backup = root.join(format!("{}.{}.previous", launch.name, scheme));
-            let current = xdg(&["query", "default", &mime])?;
+            let saved = match fs::read_to_string(&backup) {
+                Ok(text) if text.starts_with(&head) => Some(text),
+                Ok(_) => return Err(unavailable("foreign default backup")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(unavailable(e)),
+            };
             if register {
-                if current != name {
-                    // An existing backup is never overwritten; exact contents tie it to this launch.
-                    let saved = format!("{expected}\nPrevious={current}\n");
-                    integration::files::change(&backup, &saved, true)?;
+                if saved.is_none() {
+                    let previous: &str = if before[index] == name {
+                        ""
+                    } else {
+                        &before[index]
+                    };
+                    integration::files::change(&backup, &format!("{head}{previous}\n"), true)?;
                     xdg(&["default", &name, &mime])?;
                 }
-            } else if current == name {
-                let bytes = fs::read_to_string(&backup)
-                    .map_err(|e| unavailable(format!("default backup: {e}")))?;
-                let previous = bytes
-                    .strip_prefix(&format!("{expected}\nPrevious="))
+            } else if let Some(saved) = saved {
+                let previous = saved
+                    .strip_prefix(&head)
                     .and_then(|s| s.strip_suffix('\n'))
                     .ok_or_else(|| unavailable("foreign default backup"))?;
-                if previous.is_empty() {
-                    super::forget_default(&default_files(&home)?, &mime, &name)?;
-                } else {
-                    integration::text(previous)?;
-                    xdg(&["default", previous, &mime])?;
+                // A default the user has changed since is theirs and stays.
+                if default_of(scheme)? == name {
+                    if previous.is_empty() {
+                        // Nothing to take out when the answer was only our entry declaring it.
+                        super::forget_default(&default_files(&home)?, &mime, &name)?;
+                    } else {
+                        integration::text(previous)?;
+                        xdg(&["default", previous, &mime])?;
+                    }
                 }
-                integration::files::change(&backup, &bytes, false)?;
+                integration::files::change(&backup, &saved, false)?;
             }
         }
         if !register {
@@ -272,20 +286,20 @@ mod tests {
         let absent = scratch.path().join("absent.list");
         std::fs::create_dir(second.parent().unwrap()).unwrap();
         std::fs::write(&second, own).unwrap();
-        forget_default(
+        assert!(forget_default(
             &[first.clone(), second.clone(), absent.clone()],
             mime,
             "n.desktop",
         )
-        .unwrap();
+        .unwrap());
         assert_eq!(std::fs::read_to_string(&second).unwrap(), kept);
         assert!(!first.exists() && !absent.exists());
         std::fs::write(&first, own).unwrap();
         std::fs::write(&second, own).unwrap();
-        forget_default(&[first.clone(), second.clone()], mime, "n.desktop").unwrap();
+        assert!(forget_default(&[first.clone(), second.clone()], mime, "n.desktop").unwrap());
         assert_eq!(std::fs::read_to_string(&first).unwrap(), kept);
         assert_eq!(std::fs::read_to_string(&second).unwrap(), kept);
-        assert!(forget_default(&[first.clone(), absent], mime, "n.desktop").is_err());
+        assert!(!forget_default(&[first.clone(), absent], mime, "n.desktop").unwrap());
         std::fs::write(&first, own).unwrap();
         let directory = scratch.path().to_path_buf();
         assert!(forget_default(&[directory, first.clone()], mime, "n.desktop").is_err());
