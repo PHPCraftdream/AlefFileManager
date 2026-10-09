@@ -46,10 +46,11 @@ function identity(id, scheme, site, exe, kind) {
 }
 function paths(j) {
   const applications = join(j.home, '.local', 'share', 'applications');
+  const data = process.env.XDG_DATA_HOME || join(j.home, '.local', 'share');
   return {
     entry: j.kind === 'deeplink' ? join(applications, `${j.name}.desktop`) : process.platform === 'darwin' ? join(j.home, 'Library', 'LaunchAgents', `${j.name}.plist`) : join(j.config, 'autostart', `${j.name}.desktop`),
     backup: join(applications, `${j.name}.${j.scheme}.previous`),
-    defaults: join(j.config, 'mimeapps.list'),
+    defaults: [join(j.config, 'mimeapps.list'), join(data, 'applications', 'mimeapps.list'), join(data, 'applications', 'defaults.list')],
   };
 }
 const expectedFile = j => j.kind === 'deeplink' ? `${j.desktop.replace('\nTerminal=false', ' %u\nTerminal=false')}MimeType=x-scheme-handler/${j.scheme};\n` : process.platform === 'darwin' ? j.plist : j.desktop;
@@ -102,10 +103,10 @@ function cleanup(j) {
       if (existsSync(backup)) {
         const saved = readFileSync(backup, 'utf8');
         expect(saved === `${expected}\nPrevious=\n`, 'refusing unexpected previous scheme association');
-        if (existsSync(defaults)) {
-          expect(lstatSync(defaults).isFile(), 'foreign mimeapps symlink');
+        for (const file of defaults.filter(existsSync)) {
+          expect(lstatSync(file).isFile(), 'foreign mimeapps symlink');
           const mime = `x-scheme-handler/${j.scheme}=${j.name}.desktop`;
-          const old = readFileSync(defaults, 'utf8');
+          const old = readFileSync(file, 'utf8');
           let section = false;
           const next = old.split(/(?<=\n)/).filter(raw => {
             const line = raw.replace(/[\r\n]+$/, '');
@@ -113,8 +114,8 @@ function cleanup(j) {
             return !(section && (line === mime || line === `${mime};`));
           }).join('');
           if (next !== old) {
-            expect(readFileSync(defaults, 'utf8') === old, 'mimeapps changed during owned cleanup');
-            writeFileSync(defaults, next);
+            expect(readFileSync(file, 'utf8') === old, 'mimeapps changed during owned cleanup');
+            writeFileSync(file, next);
           }
         }
         removeExact(backup, saved);

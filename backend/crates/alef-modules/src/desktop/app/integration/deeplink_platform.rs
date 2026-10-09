@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Platform registration. No native calls in formatting/ownership tests.
-#[cfg(not(windows))]
+#[cfg(any(not(windows), test))]
 use super::unavailable;
 use super::Launch;
 #[cfg(any(windows, target_os = "linux", test))]
@@ -60,12 +60,47 @@ fn without_default(old: &str, mime: &str, name: &str) -> String {
     new
 }
 
+/// Takes the association of `name` out of those of `files` that exist; every other line stays.
+#[cfg(any(target_os = "linux", test))]
+fn forget_default(files: &[std::path::PathBuf], mime: &str, name: &str) -> Result<(), AlefError> {
+    use std::{fs, io::Write};
+    let mut forgotten = false;
+    for file in files {
+        match fs::symlink_metadata(file) {
+            Ok(meta) if meta.file_type().is_file() => (),
+            Ok(_) => return Err(unavailable("a file of default applications is not regular")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(unavailable(e)),
+        }
+        let old = fs::read_to_string(file).map_err(unavailable)?;
+        let new = without_default(&old, mime, name);
+        if new == old {
+            continue;
+        }
+        let parent = file
+            .parent()
+            .ok_or_else(|| unavailable("file of default applications has no parent"))?;
+        let mut pending = tempfile::NamedTempFile::new_in(parent).map_err(unavailable)?;
+        pending.write_all(new.as_bytes()).map_err(unavailable)?;
+        pending.as_file().sync_all().map_err(unavailable)?;
+        pending.persist(file).map_err(unavailable)?;
+        forgotten = true;
+    }
+    if forgotten {
+        Ok(())
+    } else {
+        Err(unavailable(
+            "owned default is in no file of default applications",
+        ))
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         process::{Command, Stdio},
         time::{Duration, Instant},
     };
@@ -116,6 +151,28 @@ mod linux {
         Ok(result.trim().to_owned())
     }
 
+    /// The files of the user where `xdg-mime default` may have written an association: which one
+    /// it takes depends on the version of xdg-utils and on the desktop.
+    fn default_files(home: &Path) -> Result<Vec<PathBuf>, AlefError> {
+        let place = |variable: &str, fallback: &str| -> Result<PathBuf, AlefError> {
+            let path = std::env::var_os(variable)
+                .filter(|value| !value.is_empty())
+                .map_or_else(|| home.join(fallback), PathBuf::from);
+            if path.is_absolute() {
+                Ok(path)
+            } else {
+                Err(unavailable(format!("{variable} must be absolute")))
+            }
+        };
+        let config = place("XDG_CONFIG_HOME", ".config")?;
+        let data = place("XDG_DATA_HOME", ".local/share")?;
+        Ok(vec![
+            config.join("mimeapps.list"),
+            data.join("applications/mimeapps.list"),
+            data.join("applications/defaults.list"),
+        ])
+    }
+
     pub(super) fn apply(
         launch: &Launch,
         schemes: &[String],
@@ -153,41 +210,14 @@ mod linux {
                     xdg(&["default", &name, &mime])?;
                 }
             } else if current == name {
-                let bytes = fs::read_to_string(&backup).map_err(unavailable)?;
+                let bytes = fs::read_to_string(&backup)
+                    .map_err(|e| unavailable(format!("default backup: {e}")))?;
                 let previous = bytes
                     .strip_prefix(&format!("{expected}\nPrevious="))
                     .and_then(|s| s.strip_suffix('\n'))
                     .ok_or_else(|| unavailable("foreign default backup"))?;
                 if previous.is_empty() {
-                    // Remove only our own default from the user config; preserve all foreign lines.
-                    let config = std::env::var_os("XDG_CONFIG_HOME")
-                        .map(PathBuf::from)
-                        .unwrap_or_else(|| home.join(".config"));
-                    if !config.is_absolute() {
-                        return Err(unavailable("XDG_CONFIG_HOME must be absolute"));
-                    }
-                    let defaults = config.join("mimeapps.list");
-                    if !fs::symlink_metadata(&defaults)
-                        .map_err(unavailable)?
-                        .file_type()
-                        .is_file()
-                    {
-                        return Err(unavailable("mimeapps.list is not a regular file"));
-                    }
-                    let old = fs::read_to_string(&defaults).map_err(unavailable)?;
-                    let new = super::without_default(&old, &mime, &name);
-                    if new == old {
-                        return Err(unavailable("owned default was not in user mimeapps.list"));
-                    }
-                    use std::io::Write;
-                    let mut pending =
-                        tempfile::NamedTempFile::new_in(&config).map_err(unavailable)?;
-                    pending.write_all(new.as_bytes()).map_err(unavailable)?;
-                    pending.as_file().sync_all().map_err(unavailable)?;
-                    if fs::read_to_string(&defaults).map_err(unavailable)? != old {
-                        return Err(unavailable("mimeapps.list changed before replacement"));
-                    }
-                    pending.persist(&defaults).map_err(unavailable)?;
+                    super::forget_default(&default_files(&home)?, &mime, &name)?;
                 } else {
                     integration::text(previous)?;
                     xdg(&["default", previous, &mime])?;
@@ -228,5 +258,37 @@ mod tests {
         );
         assert_eq!(without_default(old, mime, "none.desktop"), old);
         assert_eq!(without_default("", mime, "n.desktop"), "");
+    }
+
+    #[test]
+    fn our_default_is_taken_from_whichever_file_of_the_user_holds_it() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mime = "x-scheme-handler/a";
+        let own =
+            "[Default Applications]\nx-scheme-handler/a=n.desktop\nx-scheme-handler/b=o.desktop\n";
+        let kept = "[Default Applications]\nx-scheme-handler/b=o.desktop\n";
+        let first = scratch.path().join("mimeapps.list");
+        let second = scratch.path().join("legacy/mimeapps.list");
+        let absent = scratch.path().join("absent.list");
+        std::fs::create_dir(second.parent().unwrap()).unwrap();
+        std::fs::write(&second, own).unwrap();
+        forget_default(
+            &[first.clone(), second.clone(), absent.clone()],
+            mime,
+            "n.desktop",
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), kept);
+        assert!(!first.exists() && !absent.exists());
+        std::fs::write(&first, own).unwrap();
+        std::fs::write(&second, own).unwrap();
+        forget_default(&[first.clone(), second.clone()], mime, "n.desktop").unwrap();
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), kept);
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), kept);
+        assert!(forget_default(&[first.clone(), absent], mime, "n.desktop").is_err());
+        std::fs::write(&first, own).unwrap();
+        let directory = scratch.path().to_path_buf();
+        assert!(forget_default(&[directory, first.clone()], mime, "n.desktop").is_err());
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), own);
     }
 }
