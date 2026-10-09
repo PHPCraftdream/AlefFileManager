@@ -1,0 +1,61 @@
+id: {{ID}}
+name: Alef e2e native deeplink
+version:: 1.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 900
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: [ $APP/** ]
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: [ ALEF_E2E_RELEASE ]
+        autostart: false
+    }
+}
+deepLinks: [
+    :: {{SCHEME}}
+]
+arguments: {
+    options: [
+        {
+            name: role
+            type: string
+        }
+    ]
+    positional: { name: files }
+}

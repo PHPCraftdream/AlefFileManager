@@ -83,7 +83,7 @@ fn the_rights_of_a_manifest_are_listed_once_each_in_a_stable_order() {
             "net": {"http": ["https://example.com/*"], "socket": []},
             "shell": {"openExternal": ["https://example.com/docs/*"]},
             "clipboard": {"read": true}, "secrets": true,
-            "app": {"env": ["PATH", "HOME", "PATH"]}
+            "app": {"env": ["PATH", "HOME", "PATH"], "autostart": true}
         }),
     )
     .with_window_create();
@@ -98,6 +98,7 @@ fn the_rights_of_a_manifest_are_listed_once_each_in_a_stable_order() {
     assert_eq!(
         named,
         [
+            "app.autostart",
             "app.env HOME",
             "app.env PATH",
             "cli.exec git",

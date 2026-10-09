@@ -24,8 +24,8 @@ use alef_core::{
     AlefError,
 };
 use alef_modules::{
-    desktop::args, register_all, AppInfo, Backends, Console, MemoryClipboard, MemorySecrets,
-    ModuleContext, PretendNotifications, PretendShell, Termination,
+    desktop::args, register_all, AppInfo, Backends, Console, MemoryAutostart, MemoryClipboard,
+    MemoryDeepLinks, MemorySecrets, ModuleContext, PretendNotifications, PretendShell, Termination,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -75,6 +75,8 @@ impl Host for FakeHost {
 }
 
 pub struct Fixture {
+    pub deep_links: Arc<MemoryDeepLinks>,
+    pub autostart: Arc<MemoryAutostart>,
     pub registry: Registry,
     pub host: Arc<FakeHost>,
     /// The clipboard and the shell behind the modules: in memory, and doing nothing.
@@ -199,17 +201,24 @@ impl Fixture {
         let root = root.to_path_buf();
         let vars = path_vars(&root);
         let permissions = Arc::new(
-            PermissionSet::from_manifest(&manifest.permissions, &vars).expect("permissions"),
+            PermissionSet::from_manifest(&manifest.permissions, &vars)
+                .expect("permissions")
+                .with_deep_links(&manifest.deep_links)
+                .expect("deep links"),
         );
         let raw: Vec<OsString> = command_line.iter().map(OsString::from).collect();
+        let deep_links = Arc::new(MemoryDeepLinks::default());
+        let autostart = Arc::new(MemoryAutostart::default());
         let clipboard = Arc::new(MemoryClipboard::default());
         let shell = Arc::new(PretendShell::default());
         let notifications = Arc::new(PretendNotifications::default());
+        let (application_args, startup_urls) =
+            args::extract_deep_links(&manifest.deep_links, &raw).expect("deep-link arguments");
         let args = match args::parse(
             manifest.arguments.as_ref(),
             &manifest.name,
             &manifest.version,
-            &raw,
+            &application_args,
         )
         .expect("command line")
         {
@@ -225,8 +234,12 @@ impl Fixture {
             },
             paths: vars,
             args,
+            deep_link_schemes: manifest.deep_links.clone(),
+            startup_urls,
             process_args: raw,
             backends: Backends {
+                deep_links: deep_links.clone(),
+                autostart: autostart.clone(),
                 clipboard: clipboard.clone(),
                 shell: shell.clone(),
                 notification: notifications.clone(),
@@ -253,6 +266,8 @@ impl Fixture {
         let manager = SessionManager::new(tokens, limits);
         let session = manager.begin_document(1).await;
         Self {
+            deep_links,
+            autostart,
             registry,
             host,
             clipboard,
@@ -319,5 +334,136 @@ impl Fixture {
             Reply::Json(value) => Ok(value),
             other => panic!("expected JSON, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod deep_link_registration_tests {
+    use super::*;
+    use alef_core::{
+        security::consent::{Consent, Decision, Right},
+        ErrorCode,
+    };
+    use serde_json::json;
+
+    fn manifest() -> String {
+        format!("{MANIFEST}\ndeepLinks: [\n    :: sample\n    :: other\n]\n")
+    }
+    fn consent(first: Decision, second: Decision) -> Consent {
+        let mut consent = Consent::undecided();
+        consent.set(Right::scoped("app.deepLinks", "sample"), first);
+        consent.set(Right::scoped("app.deepLinks", "other"), second);
+        consent
+    }
+    #[tokio::test]
+    async fn deep_link_registration_checks_all_scopes_before_any_backend_call() {
+        for (first, second) in [
+            (Decision::Allow, Decision::Deny),
+            (Decision::Substitute, Decision::Deny),
+            (Decision::Deny, Decision::Allow),
+        ] {
+            let fixture = Fixture::new(Some(&manifest()), &[])
+                .await
+                .with_consent(consent(first, second));
+            for command in ["app.registerDeepLinks", "app.unregisterDeepLinks"] {
+                assert_eq!(
+                    fixture.call(command, Value::Null).await.unwrap_err().code,
+                    ErrorCode::PermissionDenied
+                );
+            }
+            assert!(fixture.deep_links.calls().is_empty());
+        }
+    }
+    #[tokio::test]
+    async fn deep_link_registration_diverts_substituted_scopes_and_rejects_arguments() {
+        for (first, second, expected) in [
+            (Decision::Allow, Decision::Allow, vec!["sample", "other"]),
+            (Decision::Allow, Decision::Substitute, vec!["sample"]),
+            (Decision::Substitute, Decision::Allow, vec!["other"]),
+            (Decision::Substitute, Decision::Substitute, vec![]),
+        ] {
+            let fixture = Fixture::new(Some(&manifest()), &[])
+                .await
+                .with_consent(consent(first, second));
+            for args in [
+                json!({"schemes": ["injected"]}),
+                json!(["sample"]),
+                json!(true),
+            ] {
+                assert_eq!(
+                    fixture
+                        .call("app.registerDeepLinks", args)
+                        .await
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::InvalidArgument
+                );
+            }
+            assert!(fixture.deep_links.calls().is_empty());
+            fixture
+                .call("app.registerDeepLinks", Value::Null)
+                .await
+                .unwrap();
+            fixture
+                .call("app.unregisterDeepLinks", json!({}))
+                .await
+                .unwrap();
+            let calls = fixture.deep_links.calls();
+            if expected.is_empty() {
+                assert!(calls.is_empty());
+            } else {
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0].2, expected);
+                assert!(calls[0].3);
+                assert!(!calls[1].3);
+            }
+        }
+    }
+    #[tokio::test]
+    async fn deep_link_registration_empty_and_narrowed_declarations_are_denied() {
+        let fixture = Fixture::new(None, &[]).await;
+        assert_eq!(
+            fixture
+                .call("app.registerDeepLinks", Value::Null)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PermissionDenied
+        );
+        let mut fixture = Fixture::new(Some(&manifest()), &[]).await;
+        fixture.permissions = Arc::new(
+            PermissionSet::from_manifest(
+                &Manifest::from_ktav_str(MANIFEST).unwrap().permissions,
+                &fixture.context.paths,
+            )
+            .unwrap()
+            .with_deep_links(&["sample".into()])
+            .unwrap()
+            .with_consent(consent(Decision::Allow, Decision::Allow)),
+        );
+        assert_eq!(
+            fixture
+                .call("app.registerDeepLinks", Value::Null)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::PermissionDenied
+        );
+        assert!(fixture.deep_links.calls().is_empty());
+    }
+    #[test]
+    fn memory_deep_links_keeps_only_256_entries() {
+        use alef_modules::DeepLinkBackend;
+        let memory = MemoryDeepLinks::default();
+        let folder = std::env::current_dir().unwrap();
+        for _ in 0..300 {
+            memory
+                .apply("example", &folder, &["sample".into()], true)
+                .unwrap();
+        }
+        assert_eq!(memory.calls().len(), 256);
+        assert!(memory
+            .apply("example", &folder, &["https".into()], true)
+            .is_err());
     }
 }

@@ -50,6 +50,10 @@ pub enum Permission {
     Secrets,
     /// Read an environment variable listed in `app.env`.
     AppEnv,
+    /// Manage application autostart (`app.autostart`).
+    AppAutostart,
+    /// Manage declared deep-link schemes (`app.deepLinks`); the target is a scheme.
+    AppDeepLinks,
     /// Create windows at runtime (`permissions.window.create` in the manifest, or the embedder).
     WindowCreate,
 }
@@ -70,6 +74,8 @@ impl Permission {
             Self::ShortcutGlobal => "shortcut.global",
             Self::Secrets => "secrets",
             Self::AppEnv => "app.env",
+            Self::AppDeepLinks => "app.deepLinks",
+            Self::AppAutostart => "app.autostart",
             Self::WindowCreate => "window.create",
         }
     }
@@ -165,6 +171,8 @@ pub struct PermissionSet {
     clipboard: bool,
     shortcut: bool,
     secrets: bool,
+    deep_links: Vec<String>,
+    autostart: bool,
     window: bool,
     /// Shared by the clones of the set: narrowing it narrows the rights of every holder.
     consent: Arc<RwLock<Consent>>,
@@ -282,10 +290,20 @@ impl PermissionSet {
             clipboard: policy.clipboard.read,
             shortcut: policy.shortcut.global,
             secrets: policy.secrets,
+            deep_links: Vec::new(),
+            autostart: policy.app.autostart,
             window: policy.window.as_ref().is_some_and(|window| window.create),
             consent: Arc::new(RwLock::new(Consent::allow_all())),
             protected: Vec::new(),
         })
+    }
+
+    /// Validates and attaches the manifest's top-level deep-link declarations. A substitute
+    /// decision requires a module stand-in; it never authorizes native registration.
+    pub fn with_deep_links(mut self, schemes: &[String]) -> Result<Self, AlefError> {
+        super::manifest::validate_deep_links(schemes)?;
+        self.deep_links = schemes.to_vec();
+        Ok(self)
     }
 
     /// The decisions of the user replace the default of giving everything the manifest lists.
@@ -354,12 +372,18 @@ impl PermissionSet {
             .chain(rights_of("net.http", &self.http))
             .chain(rights_of("net.socket", &self.socket))
             .chain(rights_of("shell.openExternal", &self.shell))
+            .chain(
+                self.deep_links
+                    .iter()
+                    .map(|scheme| Right::scoped("app.deepLinks", scheme)),
+            )
             .chain(self.env.iter().map(|name| Right::scoped("app.env", name)))
             .collect();
         for (asked, name) in [
             (self.clipboard, "clipboard.read"),
             (self.shortcut, "shortcut.global"),
             (self.secrets, "secrets"),
+            (self.autostart, "app.autostart"),
             (self.window, "window.create"),
         ] {
             if asked {
@@ -418,6 +442,13 @@ impl PermissionSet {
             Permission::ClipboardRead => flag(self.clipboard, "clipboard.read"),
             Permission::ShortcutGlobal => flag(self.shortcut, "shortcut.global"),
             Permission::Secrets => flag(self.secrets, "secrets"),
+            Permission::AppDeepLinks => target
+                .filter(|scheme| self.deep_links.iter().any(|declared| declared == *scheme))
+                .map(|scheme| {
+                    self.decided_by_user()
+                        .decision(&Right::scoped("app.deepLinks", scheme))
+                }),
+            Permission::AppAutostart => flag(self.autostart, "app.autostart"),
             Permission::WindowCreate => flag(self.window, "window.create"),
             Permission::AppEnv => target.filter(|name| self.env.contains(*name)).map(|name| {
                 self.decided_by_user()

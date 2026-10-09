@@ -136,7 +136,10 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         clipboard: ClipboardPermissions { read: false },
         shortcut: ShortcutPermissions { global: false },
         secrets: false,
-        app: AppPermissions { env: Vec::new() },
+        app: AppPermissions {
+            env: Vec::new(),
+            autostart: false,
+        },
         window: None,
     };
     let root = std::env::temp_dir();

@@ -14,6 +14,7 @@ use tokio::{
     sync::Mutex,
 };
 
+use super::deeplink::DeepLinks;
 use crate::{ModuleContext, ParsedArgs};
 
 /// The event the first instance raises when another one starts.
@@ -30,6 +31,8 @@ const RETRY_AFTER: Duration = Duration::from_millis(100);
 struct Hello {
     args: ParsedArgs,
     cwd: String,
+    #[serde(default)]
+    urls: Vec<String>,
 }
 
 trait Duplex: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -117,6 +120,8 @@ pub(crate) struct Instance {
     endpoint: Endpoint,
     args: ParsedArgs,
     host: Arc<dyn Host>,
+    deep_links: Arc<DeepLinks>,
+    startup_urls: Vec<String>,
     state: Mutex<State>,
 }
 
@@ -125,11 +130,19 @@ fn unavailable(error: impl std::fmt::Display) -> AlefError {
 }
 
 impl Instance {
-    pub(crate) fn new(endpoint: Endpoint, args: ParsedArgs, host: Arc<dyn Host>) -> Self {
+    pub(crate) fn new(
+        endpoint: Endpoint,
+        args: ParsedArgs,
+        host: Arc<dyn Host>,
+        deep_links: Arc<DeepLinks>,
+        startup_urls: Vec<String>,
+    ) -> Self {
         Self {
             endpoint,
             args,
             host,
+            deep_links,
+            startup_urls,
             state: Mutex::new(State::Unasked),
         }
     }
@@ -149,16 +162,18 @@ impl Instance {
             match platform::claim(&self.endpoint).await.map_err(unavailable)? {
                 Claim::First(mut listener) => {
                     let host = self.host.clone();
+                    let deep_links = self.deep_links.clone();
+                    // fire-and-forget: detached by design for the process lifetime.
+                    // Serve serially: at most one bounded, deadline-limited handshake is admitted.
                     tokio::spawn(async move {
                         loop {
                             match listener.accept().await {
                                 Ok(connection) => {
-                                    let host = host.clone();
-                                    tokio::spawn(async move {
-                                        let _ =
-                                            tokio::time::timeout(IO_LIMIT, serve(connection, host))
-                                                .await;
-                                    });
+                                    let _ = tokio::time::timeout(
+                                        IO_LIMIT,
+                                        serve(connection, host.clone(), deep_links.clone()),
+                                    )
+                                    .await;
                                 }
                                 Err(_) => tokio::time::sleep(RETRY_AFTER).await,
                             }
@@ -172,6 +187,7 @@ impl Instance {
                     let hello = Hello {
                         args: self.args.clone(),
                         cwd: cwd.to_string_lossy().into_owned(),
+                        urls: self.startup_urls.clone(),
                     };
                     match deliver(&self.endpoint, &hello).await {
                         Ok(()) => {
@@ -197,11 +213,22 @@ impl Instance {
 }
 
 /// Reads what a later instance says and raises the event; whoever sends anything else is ignored.
-async fn serve(mut connection: Connection, host: Arc<dyn Host>) -> io::Result<()> {
+/// cancel-safe: NO — timeout is terminal and closes the partially read connection.
+async fn serve(
+    mut connection: Connection,
+    host: Arc<dyn Host>,
+    deep_links: Arc<DeepLinks>,
+) -> io::Result<()> {
     let mut line = Vec::new();
     BufReader::new((&mut connection).take(MAX_MESSAGE))
         .read_until(b'\n', &mut line)
         .await?;
+    if line.last() != Some(&b'\n') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "missing message newline within limit",
+        ));
+    }
     let hello: Hello = serde_json::from_slice(&line)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if hello.args.raw.len() > MAX_ARGUMENTS {
@@ -210,6 +237,9 @@ async fn serve(mut connection: Connection, host: Arc<dyn Host>) -> io::Result<()
             "too many arguments",
         ));
     }
+    deep_links
+        .receive(&hello.urls, host.as_ref())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     host.emit(
         None,
         SECOND_INSTANCE,
@@ -219,6 +249,7 @@ async fn serve(mut connection: Connection, host: Arc<dyn Host>) -> io::Result<()
     connection.flush().await
 }
 
+/// cancel-safe: NO — timeout is terminal and closes the partially written connection.
 async fn send(endpoint: &Endpoint, message: &[u8]) -> io::Result<()> {
     let mut connection = platform::connect(endpoint).await?;
     connection.write_all(message).await?;
@@ -239,6 +270,12 @@ async fn send(endpoint: &Endpoint, message: &[u8]) -> io::Result<()> {
 async fn deliver(endpoint: &Endpoint, hello: &Hello) -> io::Result<()> {
     let mut message = serde_json::to_vec(hello)?;
     message.push(b'\n');
+    if message.len() as u64 > MAX_MESSAGE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Hello exceeds message limit",
+        ));
+    }
     let mut last = io::Error::from(io::ErrorKind::TimedOut);
     for attempt in 0..DELIVERY_ATTEMPTS {
         if attempt > 0 {
@@ -438,7 +475,13 @@ mod tests {
     }
 
     async fn first(endpoint: &Endpoint, host: &Arc<Recorder>) -> Instance {
-        let instance = Instance::new(endpoint.clone(), ParsedArgs::default(), host.clone());
+        let instance = Instance::new(
+            endpoint.clone(),
+            ParsedArgs::default(),
+            host.clone(),
+            Arc::new(DeepLinks::empty(Vec::new())),
+            Vec::new(),
+        );
         assert!(instance.request().await.unwrap(), "the endpoint was free");
         instance
     }
@@ -457,6 +500,11 @@ mod tests {
         reply
     }
 
+    mod regression {
+        use super::*;
+        include!("integration/instance_tests.rs");
+    }
+
     #[tokio::test]
     async fn what_is_not_a_hello_raises_no_event_and_does_not_stop_the_endpoint() {
         let (_directory, endpoint) = endpoint("garbage");
@@ -470,6 +518,7 @@ mod tests {
             let hello = Hello {
                 args,
                 cwd: "/".to_owned(),
+                urls: Vec::new(),
             };
             let mut text = serde_json::to_vec(&hello).unwrap();
             text.push(b'\n');
@@ -489,17 +538,17 @@ mod tests {
         assert_eq!(host.count(), 0, "nothing of that was an announcement");
 
         let later_host = Arc::new(Recorder::default());
-        let later = Instance::new(endpoint.clone(), ParsedArgs::default(), later_host);
+        let later = Instance::new(
+            endpoint.clone(),
+            ParsedArgs::default(),
+            later_host,
+            Arc::new(DeepLinks::empty(Vec::new())),
+            Vec::new(),
+        );
         assert!(
             !later.request().await.unwrap(),
             "a real later instance is still heard"
         );
-        for _ in 0..200 {
-            if host.count() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
         assert_eq!(host.count(), 1);
     }
 
@@ -547,7 +596,13 @@ mod tests {
         std::fs::create_dir_all(&endpoint.folder).unwrap();
         let _deaf = std::os::unix::net::UnixListener::bind(platform::socket(&endpoint)).unwrap();
         let host = Arc::new(Recorder::default());
-        let instance = Instance::new(endpoint, ParsedArgs::default(), host);
+        let instance = Instance::new(
+            endpoint,
+            ParsedArgs::default(),
+            host,
+            Arc::new(DeepLinks::empty(Vec::new())),
+            Vec::new(),
+        );
         let error = instance.request().await.unwrap_err();
         assert_eq!(error.code, ErrorCode::NotAvailable);
     }

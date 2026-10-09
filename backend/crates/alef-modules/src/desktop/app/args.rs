@@ -81,6 +81,40 @@ fn typed(option: &ArgOption, shown: &str, value: &str) -> Result<ArgValue, AlefE
     })
 }
 
+/// Removes only URLs naming declared schemes, including after `--`, before schema parsing.
+/// Undeclared URLs remain ordinary arguments; malformed declared URLs fail closed.
+pub fn extract_deep_links(
+    schemes: &[String],
+    raw: &[OsString],
+) -> Result<(Vec<OsString>, Vec<String>), AlefError> {
+    let mut args = Vec::new();
+    let mut urls = Vec::new();
+    for argument in raw {
+        let declared = argument
+            .to_str()
+            .and_then(|text| text.split_once(':'))
+            .is_some_and(|(scheme, _)| {
+                schemes
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(scheme))
+            });
+        if declared {
+            let text = argument
+                .to_str()
+                .ok_or_else(|| usage_error("deep-link URL is not Unicode".to_owned()))?;
+            super::deeplink::validate(schemes, text)?;
+            // As with delivery, retain the newest 32 URLs in FIFO order.
+            if urls.len() == super::deeplink::MAX_URLS {
+                urls.remove(0);
+            }
+            urls.push(text.to_owned());
+        } else {
+            args.push(argument.clone());
+        }
+    }
+    Ok((args, urls))
+}
+
 /// Parses `raw` (the arguments after the program name) by `schema`; errors are usage errors.
 pub fn parse(
     schema: Option<&Arguments>,
@@ -240,6 +274,37 @@ mod tests {
         let error = run(arguments).expect_err("must be refused");
         assert_eq!(error.code, ErrorCode::InvalidArgument);
         error.message
+    }
+
+    #[test]
+    fn declared_urls_are_extracted_before_schema_parsing_even_after_double_dash() {
+        let schemes = vec!["alef".to_owned()];
+        let raw: Vec<_> = ["alef://first", "--", "ALEF:second", "https://example.org"]
+            .iter()
+            .map(OsString::from)
+            .collect();
+        let (args, urls) = extract_deep_links(&schemes, &raw).unwrap();
+        assert_eq!(urls, ["alef://first", "ALEF:second"]);
+        assert_eq!(
+            args,
+            [OsString::from("--"), OsString::from("https://example.org")]
+        );
+        assert!(extract_deep_links(&schemes, &[OsString::from("alef://bad\n")]).is_err());
+        assert!(extract_deep_links(&schemes, &[OsString::from("alef://[broken")]).is_err());
+        assert!(extract_deep_links(
+            &schemes,
+            &[OsString::from(format!("alef:{}", "x".repeat(8192)))]
+        )
+        .is_err());
+        let raw: Vec<_> = (0..35)
+            .map(|i| OsString::from(format!("alef:{i}")))
+            .collect();
+        let (_, urls) = extract_deep_links(&schemes, &raw).unwrap();
+        assert_eq!(urls.len(), 32);
+        assert_eq!(urls.first().unwrap(), "alef:3");
+        assert_eq!(urls.last().unwrap(), "alef:34");
+        let (args, _) = extract_deep_links(&schemes, &[OsString::from("alef:only")]).unwrap();
+        assert!(matches!(parse(None, "A", "1", &args), Ok(Parsed::Run(_))));
     }
 
     #[test]

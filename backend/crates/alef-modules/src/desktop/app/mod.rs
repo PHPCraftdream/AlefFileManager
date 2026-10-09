@@ -2,8 +2,11 @@
 //! `app`: identity, command line, environment, working directory, quit (which documents may
 //! veto), relaunch and the single instance.
 pub mod args;
+pub mod autostart;
 pub mod console;
+pub mod deeplink;
 mod instance;
+mod integration;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -241,6 +244,8 @@ pub(crate) fn register(
     host: Arc<dyn Host>,
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
+    autostart::register(registry, context)?;
+    deeplink::register(registry, context)?;
     let info = Arc::new(context.app.clone());
     registry
         .command::<()>("app.info")?
@@ -337,10 +342,23 @@ pub(crate) fn register(
             }
         })?;
 
+    let deep_links = Arc::new(deeplink::DeepLinks::new(context)?);
+    let (links, link_host) = (deep_links.clone(), host.clone());
+    registry
+        .command::<InterceptArgs>("app.openUrlIntercept")?
+        .handler(move |ctx, args| {
+            let (links, host) = (links.clone(), link_host.clone());
+            async move {
+                links.intercept(&ctx.session, args.enabled, host.as_ref());
+                json(&())
+            }
+        })?;
     let instance = Arc::new(Instance::new(
         Endpoint::of(context),
         context.args.clone(),
         host.clone(),
+        deep_links,
+        context.startup_urls.clone(),
     ));
     registry
         .command::<()>("app.requestSingleInstance")?

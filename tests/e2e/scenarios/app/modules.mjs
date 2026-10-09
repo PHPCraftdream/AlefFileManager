@@ -6,7 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { prepareSite, root, scratch, startApp, verdictOf } from '../lib.mjs';
+import { prepareSite, root, scratch, startApp, verdictOf } from '../../lib.mjs';
 
 const APP_CHECKS = [
   'app-info-matches-the-manifest', 'app-args-are-parsed-by-the-manifest-schema',

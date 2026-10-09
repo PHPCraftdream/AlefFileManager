@@ -61,7 +61,10 @@ pub fn load_manifest(app_dir: &Path) -> Result<Manifest, AlefError> {
 
 /// Derives the launch plan; `vars` are the directories behind the `$NAME` scope variables.
 pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<Plan, AlefError> {
-    let permissions = Arc::new(PermissionSet::from_manifest(&manifest.permissions, vars)?);
+    let permissions = Arc::new(
+        PermissionSet::from_manifest(&manifest.permissions, vars)?
+            .with_deep_links(&manifest.deep_links)?,
+    );
     let csp = build_csp(&manifest.external, CSP_APP_ORIGIN)?;
     Ok(Plan {
         permissions,
@@ -178,7 +181,16 @@ permissions: {{
 
     #[test]
     fn a_plain_manifest_becomes_a_permission_set_and_a_csp() {
-        let plan = plan_of(manifest(SIZE, "[ $APP/data/* ]")).expect("plan");
+        let mut declaration = manifest(SIZE, "[ $APP/data/* ]");
+        declaration.deep_links = vec!["alef".into()];
+        let plan = plan_of(declaration).expect("plan");
+        assert!(plan
+            .permissions
+            .rights()
+            .contains(&alef_core::security::consent::Right::scoped(
+                "app.deepLinks",
+                "alef"
+            )));
         assert_eq!(plan.manifest.windows.len(), 1);
         assert_eq!(plan.manifest.windows[0].url, "/index.html");
         assert!(plan

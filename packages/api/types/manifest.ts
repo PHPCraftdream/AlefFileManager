@@ -6,7 +6,11 @@ export type AppPermissions = {
   /**
    * Exposed environment variables.
    */
-  env: Array<string>, };
+  env: Array<string>,
+  /**
+   * Whether the application may manage autostart.
+   */
+  autostart?: boolean, };
 
 /**
  * Value type of a command-line option.
@@ -206,7 +210,11 @@ export type Manifest = {
   /**
    * Command-line schema; an application without it takes no arguments.
    */
-  arguments?: Arguments, };
+  arguments?: Arguments,
+  /**
+   * Declared deep-link schemes; at most eight unique lowercase schemes of 1–64 bytes.
+   */
+  deepLinks?: Array<string>, };
 
 /**
  * Window monitor selection.

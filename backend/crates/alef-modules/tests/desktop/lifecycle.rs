@@ -40,6 +40,63 @@ async fn events_after(fixture: &Fixture, count: usize) -> Vec<Event> {
     panic!("expected {count} events, got {:?}", events(fixture));
 }
 
+async fn single(f: &Fixture) -> Value {
+    f.call("app.requestSingleInstance", Value::Null)
+        .await
+        .unwrap()
+}
+
+async fn links_on(f: &Fixture, enabled: bool) {
+    f.call("app.openUrlIntercept", json!({"enabled": enabled}))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn deep_links_wait_for_handler_and_ipc_preserves_args_without_duplicates() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let m = format!(
+            "{}\ndeepLinks: [\n    :: alef\n]\n",
+            manifest_of("org.example.lifecycle.urls")
+        );
+        let mut first = Fixture::new(Some(&m), &["--", "alef:startup"]).await;
+        assert!(events(&first).is_empty());
+        assert!(first.context.args.positional.is_empty());
+        links_on(&first, true).await;
+        links_on(&first, true).await;
+        assert_eq!(events(&first)[0].2, json!({"url": "alef:startup"}));
+        assert_eq!(events(&first).len(), 1);
+        assert_eq!(single(&first).await, json!(true));
+        first.reload_document().await;
+        let later = Fixture::new(Some(&m), &["alef:queued", "file.txt"]).await;
+        for _ in 0..2 {
+            assert_eq!(single(&later).await, json!(false));
+        }
+        let seen = events(&first);
+        assert_eq!(seen.len(), 2, "no duplicate or dead-session delivery");
+        assert_eq!(seen[1].2["args"]["positional"], json!(["file.txt"]));
+        assert_eq!(
+            seen[1].2["cwd"],
+            json!(std::env::current_dir().unwrap().to_string_lossy())
+        );
+        links_on(&first, true).await;
+        assert_eq!(events(&first)[2].2, json!({"url": "alef:queued"}));
+        links_on(&first, false).await;
+        for i in 0..34 {
+            let url = format!("alef:{i}");
+            single(&Fixture::new(Some(&m), &[&url]).await).await;
+        }
+        let before = events(&first).len();
+        links_on(&first, true).await;
+        let seen = events(&first);
+        assert_eq!(seen.len() - before, 32);
+        assert_eq!(seen[before].2, json!({"url": "alef:2"}));
+        assert_eq!(seen.last().unwrap().2, json!({"url": "alef:33"}));
+    })
+    .await
+    .expect("bounded deep-link lifecycle");
+}
+
 #[tokio::test]
 async fn the_first_instance_is_told_so_and_hears_of_a_later_one() {
     let first = instance("org.example.lifecycle.first", &["--port", "1", "a.txt"]).await;
@@ -48,13 +105,7 @@ async fn the_first_instance_is_told_so_and_hears_of_a_later_one() {
         &["--port", "2", "b.txt", "c.txt"],
     )
     .await;
-    assert_eq!(
-        first
-            .call("app.requestSingleInstance", Value::Null)
-            .await
-            .unwrap(),
-        json!(true)
-    );
+    assert_eq!(single(&first).await, json!(true));
     assert_eq!(
         first
             .call("app.requestSingleInstance", Value::Null)
@@ -63,20 +114,8 @@ async fn the_first_instance_is_told_so_and_hears_of_a_later_one() {
         json!(true),
         "asking again does not change the answer"
     );
-    assert_eq!(
-        later
-            .call("app.requestSingleInstance", Value::Null)
-            .await
-            .unwrap(),
-        json!(false)
-    );
-    assert_eq!(
-        later
-            .call("app.requestSingleInstance", Value::Null)
-            .await
-            .unwrap(),
-        json!(false)
-    );
+    assert_eq!(single(&later).await, json!(false));
+    assert_eq!(single(&later).await, json!(false));
     let seen = events_after(&first, 1).await;
     assert_eq!(
         seen.len(),
@@ -105,13 +144,7 @@ async fn the_first_instance_is_told_so_and_hears_of_a_later_one() {
 #[tokio::test]
 async fn every_later_instance_is_announced_and_other_applications_do_not_meet() {
     let first = instance("org.example.lifecycle.many", &["a.txt"]).await;
-    assert_eq!(
-        first
-            .call("app.requestSingleInstance", Value::Null)
-            .await
-            .unwrap(),
-        json!(true)
-    );
+    assert_eq!(single(&first).await, json!(true));
     for file in ["b.txt", "c.txt", "d.txt"] {
         let later = instance("org.example.lifecycle.many", &[file]).await;
         assert_eq!(
@@ -490,4 +523,163 @@ async fn a_signal_quits_with_its_code_when_nobody_is_asked_and_asks_the_document
 #[tokio::test]
 async fn a_signal_before_the_modules_are_registered_quits_nothing() {
     assert!(!alef_modules::Termination::default().request(143).await);
+}
+
+fn autostart_consent(
+    decision: alef_core::security::consent::Decision,
+) -> alef_core::security::consent::Consent {
+    use alef_core::security::consent::{Consent, Right};
+    let mut consent = Consent::undecided();
+    consent.set(Right::plain("app.autostart"), decision);
+    consent
+}
+
+async fn autostart_fixture(decision: alef_core::security::consent::Decision) -> Fixture {
+    let manifest = MANIFEST.replace("env: [", "autostart: true\n        env: [");
+    Fixture::new(Some(&manifest), &[])
+        .await
+        .with_consent(autostart_consent(decision))
+}
+
+#[tokio::test]
+async fn autostart_undeclared_and_denied_never_call_the_backend() {
+    use alef_core::security::consent::Decision;
+    for fixture in [
+        Fixture::new(None, &[]).await,
+        autostart_fixture(Decision::Deny).await,
+    ] {
+        for command in [
+            "app.autostart.enable",
+            "app.autostart.isEnabled",
+            "app.autostart.disable",
+        ] {
+            assert_eq!(
+                fixture.call(command, Value::Null).await.unwrap_err().code,
+                ErrorCode::PermissionDenied
+            );
+        }
+        assert!(fixture.autostart.calls().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn autostart_allowed_enable_query_disable_and_failure() {
+    use alef_core::security::consent::Decision;
+    use alef_modules::AutostartOperation::{Disable, Enable, IsEnabled};
+    let fixture = autostart_fixture(Decision::Allow).await;
+    assert_eq!(
+        fixture
+            .call("app.autostart.isEnabled", Value::Null)
+            .await
+            .unwrap(),
+        json!(false)
+    );
+    assert_eq!(
+        fixture
+            .call("app.autostart.enable", Value::Null)
+            .await
+            .unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        fixture
+            .call("app.autostart.isEnabled", Value::Null)
+            .await
+            .unwrap(),
+        json!(true)
+    );
+    fixture
+        .call("app.autostart.disable", Value::Null)
+        .await
+        .unwrap();
+    fixture
+        .call("app.autostart.disable", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .call("app.autostart.isEnabled", Value::Null)
+            .await
+            .unwrap(),
+        json!(false)
+    );
+    assert_eq!(
+        fixture.autostart.calls(),
+        [IsEnabled, Enable, IsEnabled, Disable, Disable, IsEnabled]
+    );
+    fixture.autostart.fail_with(Some("injected failure".into()));
+    for command in [
+        "app.autostart.enable",
+        "app.autostart.isEnabled",
+        "app.autostart.disable",
+    ] {
+        let error = fixture.call(command, Value::Null).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotAvailable);
+        assert!(error.message.contains("injected failure"));
+    }
+}
+
+#[tokio::test]
+async fn autostart_substitute_is_isolated_and_never_calls_the_real_backend() {
+    use alef_core::security::consent::Decision;
+    let fixture = autostart_fixture(Decision::Substitute).await;
+    fixture
+        .autostart
+        .fail_with(Some("must not be called".into()));
+    fixture
+        .call("app.autostart.enable", Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .call("app.autostart.isEnabled", Value::Null)
+            .await
+            .unwrap(),
+        json!(true)
+    );
+    let other = autostart_fixture(Decision::Substitute).await;
+    assert_eq!(
+        other
+            .call("app.autostart.isEnabled", Value::Null)
+            .await
+            .unwrap(),
+        json!(false)
+    );
+    fixture
+        .call("app.autostart.disable", Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .call("app.autostart.isEnabled", Value::Null)
+            .await
+            .unwrap(),
+        json!(false)
+    );
+    assert!(fixture.autostart.calls().is_empty());
+    assert!(other.autostart.calls().is_empty());
+}
+
+#[tokio::test]
+async fn autostart_invalid_arguments_do_not_call_backend() {
+    use alef_core::security::consent::Decision;
+    let fixture = autostart_fixture(Decision::Allow).await;
+    for command in [
+        "app.autostart.enable",
+        "app.autostart.isEnabled",
+        "app.autostart.disable",
+    ] {
+        for args in [
+            json!({"exe": "foreign"}),
+            json!([]),
+            json!(true),
+            json!("yes"),
+        ] {
+            assert_eq!(
+                fixture.call(command, args).await.unwrap_err().code,
+                ErrorCode::InvalidArgument
+            );
+        }
+    }
+    assert!(fixture.autostart.calls().is_empty());
 }

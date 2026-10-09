@@ -18,6 +18,111 @@ fn error(src: &str) -> alef_core::AlefError {
 }
 
 #[test]
+fn autostart_and_deep_links_are_optional_and_round_trip_with_camel_case_names() {
+    let default = Manifest::from_ktav_str(MINIMAL).unwrap();
+    assert!(!default.permissions.app.autostart);
+    assert!(default.deep_links.is_empty());
+    for autostart in [false, true] {
+        let source = MINIMAL.replace('\r', "").replace(
+            "        env: []",
+            &format!("        env: []\n        autostart: {autostart}"),
+        ) + "\ndeepLinks: [\n    :: alef\n    :: alef2+notes-v1.dev\n]\n";
+        let manifest = Manifest::from_ktav_str(&source).unwrap();
+        assert_eq!(manifest.permissions.app.autostart, autostart);
+        assert_eq!(manifest.deep_links, ["alef", "alef2+notes-v1.dev"]);
+        let json = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(
+            json["deepLinks"],
+            serde_json::json!(["alef", "alef2+notes-v1.dev"])
+        );
+        assert!(json.get("deep_links").is_none());
+        assert_eq!(serde_json::from_value::<Manifest>(json).unwrap(), manifest);
+    }
+    assert!(
+        Manifest::from_ktav_str(&(MINIMAL.to_owned() + "\ndeepLinks: []\n"))
+            .unwrap()
+            .deep_links
+            .is_empty()
+    );
+    for value in ["null", "[]", "yes"] {
+        error(&MINIMAL.replace("env: []", &format!("env: []\n        autostart: {value}")));
+    }
+    error(&(MINIMAL.to_owned() + "\ndeep_links: []\n"));
+    let types = include_str!("../../../../packages/api/types/manifest.ts");
+    assert!(types.contains("autostart?: boolean"));
+    assert!(types.contains("deepLinks?: Array<string>"));
+}
+
+fn with_deep_links(schemes: &[&str]) -> String {
+    let items: String = schemes
+        .iter()
+        .map(|scheme| format!("    :: {scheme}\n"))
+        .collect();
+    format!("{MINIMAL}\ndeepLinks: [\n{items}]\n")
+}
+
+#[test]
+fn deep_link_schemes_reject_reserved_malformed_duplicate_and_excessive_declarations() {
+    for scheme in [
+        "http",
+        "https",
+        "file",
+        "ftp",
+        "ws",
+        "wss",
+        "data",
+        "blob",
+        "javascript",
+        "about",
+        "mailto",
+        "tel",
+        "",
+        "Alef",
+        "alEf",
+        "1alef",
+        "+alef",
+        "alef:",
+        "alef/path",
+        "alef space",
+        "aléf",
+        "alef\tbad",
+        "alef\0bad",
+        "alef\u{7f}",
+    ] {
+        let err = error(&with_deep_links(&[scheme]));
+        assert!(err.message.contains("deepLinks"), "{scheme:?}: {err:?}");
+    }
+    let err = error(&with_deep_links(&["alef", "alef"]));
+    assert_eq!(
+        err.details,
+        Some(serde_json::json!({"path": "deepLinks[1]"}))
+    );
+    let eight = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    assert_eq!(
+        Manifest::from_ktav_str(&with_deep_links(&eight))
+            .unwrap()
+            .deep_links,
+        eight
+    );
+    let err = error(&with_deep_links(&[
+        "a", "b", "c", "d", "e", "f", "g", "h", "i",
+    ]));
+    assert_eq!(err.details, Some(serde_json::json!({"path": "deepLinks"})));
+    let bound = "a".repeat(64);
+    assert_eq!(
+        Manifest::from_ktav_str(&with_deep_links(&[&bound]))
+            .unwrap()
+            .deep_links,
+        [bound]
+    );
+    let err = error(&with_deep_links(&[&"a".repeat(65)]));
+    assert_eq!(
+        err.details,
+        Some(serde_json::json!({"path": "deepLinks[0]"}))
+    );
+}
+
+#[test]
 fn crlf_manifest_parses_like_lf() {
     let lf = Manifest::from_ktav_str(MINIMAL).unwrap();
     let crlf = Manifest::from_ktav_str(&MINIMAL.replace('\n', "\r\n")).unwrap();

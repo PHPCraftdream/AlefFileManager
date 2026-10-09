@@ -169,6 +169,8 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     let manifest = load_manifest(&app_dir)?;
     let vars = path_vars(&app_dir, &manifest.id)?;
     let plan = make_plan(&app_dir, manifest, &vars)?;
+    let (app_args, startup_urls) =
+        alef_modules::desktop::args::extract_deep_links(&plan.manifest.deep_links, &app_args)?;
     let args = match parse(
         plan.manifest.arguments.as_ref(),
         &plan.manifest.name,
@@ -224,6 +226,8 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         },
         paths: vars,
         args,
+        deep_link_schemes: plan.manifest.deep_links.clone(),
+        startup_urls,
         process_args,
         backends: Backends::from_environment(&plan.manifest.name),
         shadow,

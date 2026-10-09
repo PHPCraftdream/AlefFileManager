@@ -31,7 +31,7 @@ permissions: what you decided for an application. RIGHT is `permission` or `perm
 pub struct Launch {
     pub app_dir: PathBuf,
     pub dev_url: Option<Url>,
-    /// The command line of the application: everything after `--`.
+    /// The command line of the application: trailing URLs and everything after `--`.
     pub app_args: Vec<OsString>,
     /// `--grant`: the decision for every right not decided yet.
     pub grant: Option<Decision>,
@@ -189,6 +189,13 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             }
             Some("--no-prompt") => no_prompt = true,
             Some("--help" | "-h") => return Ok(Command::Help),
+            Some(text)
+                if !text.starts_with('-')
+                    && !text.chars().any(char::is_control)
+                    && Url::parse(text).is_ok() =>
+            {
+                app_args.push(argument)
+            }
             _ => return Err(format!("unknown argument: {}", argument.to_string_lossy())),
         }
     }
@@ -208,6 +215,22 @@ mod tests {
 
     fn parse(arguments: &[&str]) -> Result<Command, String> {
         parse_args(arguments.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn trailing_urls_belong_to_the_application_but_unknown_options_and_strays_do_not() {
+        let Command::Run(launch) =
+            parse(&["--app", "site", "alef://open", "--", "alef:next"]).unwrap()
+        else {
+            panic!("run");
+        };
+        assert_eq!(
+            launch.app_args,
+            [OsString::from("alef://open"), OsString::from("alef:next")]
+        );
+        for bad in ["stray", "--unknown", "alef://[bad", "alef:bad\n"] {
+            assert!(parse(&["--app", "site", bad]).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

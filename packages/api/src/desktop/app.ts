@@ -25,6 +25,68 @@ export interface QuitRequest {
 export interface AppEvents {
   'second-instance': (info: SecondInstance) => void;
   'before-quit': (event: QuitRequest) => void | Promise<void>;
+  'open-url': (info: { url: string }) => void;
+}
+
+type OpenUrlHandler = AppEvents['open-url'];
+const openUrlHandlers = new Set<{ handler: OpenUrlHandler }>();
+let openUrlUnsubscribe: (() => void) | undefined;
+let openUrlOperations = Promise.resolve();
+
+// Serialize enable/disable, including their replies. A queued last-unlisten must not disable
+// a newly added handler, and two registrations of the same callback are independent leases.
+function changeOpenUrls(operation: () => Promise<void>): Promise<void> {
+  const result = openUrlOperations.then(operation);
+  openUrlOperations = result.catch(() => undefined);
+  return result;
+}
+
+async function listenForOpenUrl(handler: OpenUrlHandler, options: Cancelable): Promise<Unlisten> {
+  options.signal?.throwIfAborted();
+  const entry = { handler };
+  openUrlHandlers.add(entry);
+  let active = true;
+  const stop = (): void => {
+    active = false;
+    options.signal?.removeEventListener('abort', stop);
+    openUrlHandlers.delete(entry);
+    void changeOpenUrls(async () => {
+      if (openUrlHandlers.size !== 0 || !openUrlUnsubscribe) return;
+      const unsubscribe = openUrlUnsubscribe;
+      openUrlUnsubscribe = undefined;
+      unsubscribe();
+      await call<void>('app.openUrlIntercept', { enabled: false });
+    }).catch((error: unknown) => console.error('Alef open-url interception could not be lifted:', error));
+  };
+  options.signal?.addEventListener('abort', stop, { once: true });
+  try {
+    await changeOpenUrls(async () => {
+      if (!active || openUrlUnsubscribe) return;
+      const unsubscribe = await on<{ url: string }>('app.open-url', info => {
+        for (const known of [...openUrlHandlers]) {
+          try { known.handler(info); }
+          catch (error) { console.error('Alef open-url handler failed:', error); }
+        }
+      });
+      try {
+        if (openUrlHandlers.size === 0) {
+          unsubscribe();
+          return;
+        }
+        // Explicit readiness, not generic subscription: another event listener may exist first.
+        await call<void>('app.openUrlIntercept', { enabled: true });
+        openUrlUnsubscribe = unsubscribe;
+      } catch (error) {
+        unsubscribe();
+        throw error;
+      }
+    });
+    options.signal?.throwIfAborted();
+    return stop;
+  } catch (error) {
+    stop();
+    throw error;
+  }
 }
 
 type QuitHandler = AppEvents['before-quit'];
@@ -134,6 +196,17 @@ let standardError: WritableStream<Uint8Array> | undefined;
 
 /** The running application: identity, command line, environment, lifetime. */
 export const app = {
+  /** Register/unregister only current manifest schemes; each requires its scoped `app.deepLinks` right.
+   * macOS registration is unavailable until M7 signed bundles. No scheme or launch arguments accepted.
+   */
+  registerDeepLinks: (options: Cancelable = {}): Promise<void> => call<void>('app.registerDeepLinks', null, options),
+  unregisterDeepLinks: (options: Cancelable = {}): Promise<void> => call<void>('app.unregisterDeepLinks', null, options),
+  /** User-level login startup; requires `permissions.app.autostart`. Never saves grants or environment. */
+  autostart: {
+    enable: (options: Cancelable = {}): Promise<void> => call<void>('app.autostart.enable', null, options),
+    disable: (options: Cancelable = {}): Promise<void> => call<void>('app.autostart.disable', null, options),
+    isEnabled: (options: Cancelable = {}): Promise<boolean> => call<boolean>('app.autostart.isEnabled', null, options),
+  },
   /** `id`, `name` and `version` come from the manifest, `runtimeVersion` from the Alef runtime. */
   info: (options: Cancelable = {}): Promise<AppInfo> => call<AppInfo>('app.info', null, options),
 
@@ -204,6 +277,8 @@ export const app = {
     call<boolean>('app.requestSingleInstance', null, options),
 
   /**
+   * `open-url`: a URL using a declared manifest scheme, including retained launch URLs. Delivery
+   * starts only after this handler is ready; pending URLs are bounded to the newest 32.
    * `second-instance`: another instance started (only after `requestSingleInstance()` gave `true`).
    * `before-quit`: the application is about to quit by `quit()` or `relaunch()`; call
    * `event.preventDefault()` to keep it running. The handler has 3 seconds to finish; silence allows
@@ -213,6 +288,7 @@ export const app = {
     if (event === 'second-instance') {
       return await on<SecondInstance>('app.second-instance', handler as AppEvents['second-instance'], options);
     }
+    if (event === 'open-url') return await listenForOpenUrl(handler as OpenUrlHandler, options);
     if (event === 'before-quit') return await listenForQuit(handler as QuitHandler, options);
     throw new AlefError('INVALID_ARGUMENT', `Unknown application event "${String(event)}".`);
   },
