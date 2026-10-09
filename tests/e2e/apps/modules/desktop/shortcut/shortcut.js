@@ -2,7 +2,8 @@
 // Real OS registrations only. No synthetic pressed events or keyboard injection.
 import { api, guard, rejection, report, suite, until, verdict } from './harness.js';
 
-const KEY = 'Ctrl+Alt+Shift+F20';
+// F20 exists on Windows only; the keymaps of X11 and macOS have F12, and with three modifiers nobody binds it.
+const KEY = /Windows/.test(navigator.userAgent) ? 'Ctrl+Alt+Shift+F20' : 'Ctrl+Alt+Shift+F12';
 const options = () => ({ signal: AbortSignal.timeout(10000) });
 const expectCode = async (promise, code) => {
   const error = await rejection(promise);
