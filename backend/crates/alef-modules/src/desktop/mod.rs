@@ -26,5 +26,6 @@ pub(crate) fn register(
     app::console::register(registry, context)?;
     dialog::register(registry, host.clone())?;
     shell::register(registry, context.backends.shell.clone())?;
+    ui::shortcut::register(registry, host.clone())?;
     window::register(registry, host)
 }

@@ -104,6 +104,7 @@ struct App {
     ids: WindowRegistry,
     runtime: tokio::runtime::Handle,
     dialogs: host::dialogs::Dialogs,
+    shortcuts: crate::ui::integration::shortcut::Shortcuts,
     restore: Option<state::restore::Restore>,
 }
 
@@ -146,6 +147,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         ids: bridge.windows(),
         runtime: tokio::runtime::Handle::current(),
         dialogs: host::dialogs::Dialogs::new(),
+        shortcuts: crate::ui::integration::shortcut::Shortcuts::default(),
         restore: options.state_file.map(state::restore::Restore::load),
     };
     event_loop.run_app(&mut app)?;

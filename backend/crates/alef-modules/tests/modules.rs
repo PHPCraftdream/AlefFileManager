@@ -119,6 +119,8 @@ async fn the_command_surface_is_exactly_the_documented_one() {
             "shell.openPath",
             "shell.showInFolder",
             "shell.trash",
+            "shortcut.register",
+            "shortcut.unregister",
             "socket.close",
             "socket.connect",
             "socket.listen",

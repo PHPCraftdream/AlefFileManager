@@ -121,6 +121,7 @@ dependencies = [
  "fjall",
  "futures-util",
  "gethostname",
+ "global-hotkey",
  "http-body-util",
  "hyper",
  "hyper-rustls",

@@ -316,6 +316,7 @@ impl App {
             restore.flush();
         }
         let state = self.windows.remove(index);
+        self.shortcuts.release_window(state.window_id);
         self.ids.unbind(state.window_id);
         let (sessions, window) = (self.sessions.clone(), state.window_id);
         self.runtime
@@ -389,6 +390,7 @@ impl App {
                 let close = state.pending_close.as_ref().map(|pending| pending.deadline);
                 [animation, reveal, close].into_iter().flatten().min()
             })
+            .chain(self.shortcuts.next_wake())
             .chain(self.restore.as_ref().and_then(|restore| restore.due_at()))
             .min()
     }
@@ -482,6 +484,21 @@ impl App {
         call: UiCall,
     ) -> io::Result<Value> {
         match call {
+            UiCall::Shortcut(call) => {
+                if matches!(
+                    &call,
+                    alef_core::registry::window::shortcut::ShortcutCall::Register { .. }
+                ) {
+                    self.find(caller, None)?;
+                }
+                self.shortcuts.call(
+                    event_loop,
+                    self.waker.0.clone(),
+                    &self.sessions,
+                    caller,
+                    call,
+                )
+            }
             UiCall::Window(call) => self.call(event_loop, caller, call),
             UiCall::Create(definition) => self.create(event_loop, &definition),
             UiCall::Windows => {

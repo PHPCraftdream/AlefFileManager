@@ -123,7 +123,37 @@ const CLI_COMMAND_CHECKS = [
   'cli-declared-substituted-times-out',
 ];
 
+const SHORTCUT_CHECKS = [
+  'shortcut-native-register', 'shortcut-native-duplicate-is-already-exists',
+  'shortcut-invalid-accelerator', 'shortcut-unregister-and-register-again',
+  'shortcut-foreign-document-handle-is-denied', 'shortcut-child-close-releases-registration',
+  'shortcut-cleanup',
+];
+
 export function moduleScenarios({ drive, exe, verbose }) {
+  // Each consent mode gets a distinct manifest identity and run-local consent home.
+  const shortcutRun = async mode => {
+    const run = `${process.pid}-${Date.now()}-${mode}`;
+    const result = await drive({
+      name: `shortcut-${run}`, app: 'modules/desktop/shortcut',
+      replacements: { RUN: run }, targets: { mode },
+      env: {
+        ALEF_HOME: join(scratch, 'shortcut-home', run),
+        ALEF_E2E_CONSENT: `shortcut.global=${mode === 'denied' ? 'deny' : mode === 'substituted' ? 'substitute' : 'allow'};*=allow`,
+      },
+      expectedChecks: mode === 'allowed' ? SHORTCUT_CHECKS : [
+        mode === 'denied' ? 'shortcut-denied-registration' : 'shortcut-substituted-register-unregister',
+        'shortcut-cleanup',
+      ],
+      judge: async (_lines, _verdict, running) => {
+        running.stop();
+        const exit = await running.waitForExit(10000);
+        const closed = await running.waitForClosed(10000);
+        return exit && closed ? [] : ['shortcut runtime did not release the process/pipes within the cleanup bound'];
+      },
+    });
+    return result;
+  };
   async function service({ signal }) {
     const port = await freePort();
     const site = prepareSite(signal ? 'service-signal' : 'service', 'modules/app/service', { replacements: { PORT: String(port) }, targets: { port } });
@@ -168,6 +198,9 @@ export function moduleScenarios({ drive, exe, verbose }) {
   }
 
   return {
+    shortcut: () => shortcutRun('allowed'),
+    'shortcut-denied': () => shortcutRun('denied'),
+    'shortcut-substitute': () => shortcutRun('substituted'),
     app: () => drive({
       name: 'app', app: 'modules/app', targets: { cwd: process.cwd() },
       env: { ALEF_E2E_ENV_ALLOWED: 'yes', ALEF_E2E_ENV_SECRET: 'secret-value-31337' },

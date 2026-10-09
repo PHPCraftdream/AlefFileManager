@@ -22,6 +22,9 @@ impl App {
     /// what changed, close requests that were not answered.
     fn tick(&mut self, event_loop: &ActiveEventLoop) {
         self.process_requests(event_loop);
+        let windows: Vec<_> = self.windows.iter().map(|state| state.window_id).collect();
+        self.shortcuts
+            .tick(&self.sessions, self.handle.events(), &windows);
         if let Some(state) = self.windows.first() {
             state.servo.spin_event_loop();
         }
@@ -55,6 +58,7 @@ impl App {
     }
 
     fn detach(&mut self) {
+        self.shortcuts.shutdown();
         for state in &self.windows {
             let (sessions, window) = (self.sessions.clone(), state.window_id);
             self.ids.unbind(window);

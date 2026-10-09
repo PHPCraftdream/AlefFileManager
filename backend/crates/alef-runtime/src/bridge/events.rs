@@ -8,6 +8,7 @@ use std::sync::{
 
 use alef_core::{
     error::{AlefError, ErrorCode},
+    ids::SessionId,
     registry::{command::Reply, dispatch::Registry},
     session::streams::StreamWriter,
 };
@@ -19,6 +20,7 @@ const QUEUE: usize = 256;
 
 struct Subscriber {
     window: u64,
+    session: Option<SessionId>,
     queue: mpsc::Sender<Arc<Value>>,
     overflowed: Arc<AtomicBool>,
 }
@@ -34,7 +36,12 @@ pub struct EventBus {
 
 impl EventBus {
     /// Starts delivering events of `window` (`None` = every window's events) to `writer`.
+    #[cfg(test)]
     pub(crate) fn attach(&self, window: u64, writer: StreamWriter) {
+        self.attach_session(window, None, writer);
+    }
+
+    fn attach_session(&self, window: u64, session: Option<SessionId>, writer: StreamWriter) {
         let (queue, mut events) = mpsc::channel::<Arc<Value>>(QUEUE);
         let overflowed = Arc::new(AtomicBool::new(false));
         let flag = overflowed.clone();
@@ -55,6 +62,7 @@ impl EventBus {
             .expect("event subscribers")
             .push(Subscriber {
                 window,
+                session,
                 queue,
                 overflowed,
             });
@@ -63,13 +71,23 @@ impl EventBus {
     /// Publishes one event (already serialized as `{ "name", "payload" }`) to the subscribers of
     /// `window`, or of every window when `None`. Never blocks.
     pub(crate) fn publish(&self, window: Option<u64>, json: &str) {
+        self.publish_target(window, None, json);
+    }
+
+    pub(crate) fn publish_session(&self, window: u64, session: SessionId, json: &str) {
+        self.publish_target(Some(window), Some(session), json);
+    }
+
+    fn publish_target(&self, window: Option<u64>, session: Option<SessionId>, json: &str) {
         let Ok(event) = serde_json::from_str::<Value>(json) else {
             return;
         };
         let event = Arc::new(event);
         let mut subscribers = self.subscribers.lock().expect("event subscribers");
         subscribers.retain(|subscriber| {
-            if window.is_some_and(|window| window != subscriber.window) {
+            if window.is_some_and(|window| window != subscriber.window)
+                || session.is_some_and(|session| Some(session) != subscriber.session)
+            {
                 return true;
             }
             match subscriber.queue.try_send(event.clone()) {
@@ -98,7 +116,7 @@ impl EventBus {
                 let bus = bus.clone();
                 async move {
                     let (writer, id) = ctx.streams().open_outgoing();
-                    bus.attach(ctx.session.window(), writer);
+                    bus.attach_session(ctx.session.window(), Some(ctx.session.id()), writer);
                     Ok(Reply::Stream(id))
                 }
             })
@@ -162,6 +180,29 @@ mod tests {
             "after",
             "garbage is ignored"
         );
+    }
+
+    #[tokio::test]
+    async fn session_target_does_not_deliver_to_another_document_in_the_same_window() {
+        let bus = EventBus::default();
+        let document = session(1).await;
+        let (writer, id) = document.streams().open_outgoing();
+        bus.attach_session(1, Some(document.id()), writer);
+        let mut reader = document.streams().reader(id).expect("reader");
+        bus.publish_session(
+            1,
+            SessionId(document.id().0 + 1),
+            r#"{"name":"stale","payload":null}"#,
+        );
+        bus.publish_session(
+            2,
+            document.id(),
+            r#"{"name":"wrong-window","payload":null}"#,
+        );
+        bus.publish_session(1, document.id(), r#"{"name":"owned","payload":1}"#);
+        bus.publish(Some(1), r#"{"name":"sentinel","payload":null}"#);
+        assert_eq!(next_json(&mut reader).await["name"], "owned");
+        assert_eq!(next_json(&mut reader).await["name"], "sentinel");
     }
 
     #[tokio::test]

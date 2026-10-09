@@ -7,6 +7,7 @@ use super::dialog::DialogCall;
 use crate::security::window::{Length, WindowDef};
 
 pub mod geometry;
+pub mod shortcut;
 
 /// A point in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -248,6 +249,8 @@ pub enum UiCall {
     CursorPosition,
     /// `dialog.*`: a native dialog on top of the window of the caller; the options are checked.
     Dialog(DialogCall),
+    /// `shortcut.*`: owned by a document session, including teardown after reload.
+    Shortcut(shortcut::ShortcutCall),
 }
 
 #[cfg(test)]

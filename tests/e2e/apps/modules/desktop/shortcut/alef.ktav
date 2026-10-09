@@ -1,0 +1,51 @@
+id: org.alef.e2e.modules.shortcut.{{RUN}}
+name: Alef e2e shortcut {{RUN}}
+version:: 4.5.6
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 480
+        height: 320
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: true
+    }
+    secrets: false
+    app: {
+        env: []
+    }
+    window: {
+        create: true
+    }
+}

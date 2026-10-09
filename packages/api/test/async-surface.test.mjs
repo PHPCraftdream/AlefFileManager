@@ -78,6 +78,7 @@ const ARGS = {
   'dialog.save': [],
   'dialog.message': [{ message: 'probe' }],
   'dialog.confirm': [{ message: 'probe' }],
+  'shortcut.register': ['CommandOrControl+Shift+K'],
   'shell.openExternal': ['https://example.com/'],
   'shell.openPath': ['/probe'],
   'shell.showInFolder': ['/probe'],
@@ -149,6 +150,7 @@ installRuntime({
   handler(request) {
     if (request.url === 'native://call/runtime.events.subscribe') return { json: { stream: 5 } };
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
+    if (request.url === 'native://call/shortcut.register') return { json: { id: 's1:r1', owner: 1, token: 17 } };
     if (request.url === 'native://call/window.all') return { json: [] };
     if (request.url === 'native://call/http.request') return { json: { status: 200, statusText: 'OK', url: 'http://127.0.0.1/', redirected: false, headers: [], stream: null } };
     if (request.url === 'native://call/http.download') return { json: { stream: 9 } };
@@ -200,5 +202,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'ServerRequest', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'websocket', 'window']);
 });
