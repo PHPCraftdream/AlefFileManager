@@ -5,6 +5,7 @@
 pub mod commands;
 pub mod edges;
 pub mod exec;
+pub mod pty;
 pub mod sidecar;
 pub mod spawn;
 

@@ -15,7 +15,10 @@ use alef_core::{
 };
 use serde::Deserialize;
 
-use super::{cwd_of, dead, exec, json, run_reply, sidecar, spawn};
+use super::{
+    super::{cwd_of, dead, exec, json, run_reply, spawn},
+    sidecar,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -85,7 +88,10 @@ fn plan(
     })
 }
 
-pub(super) fn register(registry: &mut Registry, app: PathBuf) -> Result<(), AlefError> {
+pub(in crate::system::cli) fn register(
+    registry: &mut Registry,
+    app: PathBuf,
+) -> Result<(), AlefError> {
     let run_app = app.clone();
     registry
         .command::<RunArgs>("cli.run")?

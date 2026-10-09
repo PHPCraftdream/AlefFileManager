@@ -87,19 +87,17 @@ async fn exec_ends_with_its_child_and_takes_the_descendants_along() {
     let _leftovers = Leftovers(vec![grand.clone()]);
     // The grandchild holds the pipes of the run: only its death ends the reading.
     let script = GRANDCHILD.replace("STDIO", "inherit");
-    let reply = tokio::time::timeout(
-        Duration::from_secs(60),
-        fixture.call(
-            "cli.exec",
-            json!({
-                "commandLine": format!("node -e \"{script}\""),
-                "env": [["GRAND_PID", grand.to_string_lossy()]]
-            }),
-        ),
-    )
-    .await
-    .expect("the run ends with its child")
-    .expect("the run works");
+    let mut running = Box::pin(fixture.call(
+        "cli.exec",
+        json!({
+            "commandLine": format!("node -e \"{script}\""),
+            "env": [["GRAND_PID", grand.to_string_lossy()]]
+        }),
+    ));
+    let reply = tokio::time::timeout(Duration::from_secs(60), &mut running)
+        .await
+        .expect("the run ends with its child")
+        .expect("the run works");
     assert_eq!(reply["code"], 0);
     assert!(pid_of(&grand).is_some(), "the grandchild started");
     until(

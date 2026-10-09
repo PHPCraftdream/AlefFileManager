@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AlefError, ChildProcess, cli } from '../../../src/index.ts';
-import { binaryFrame, endFrame, installRuntime, join } from '../../fake-runtime.mjs';
+import { AlefError, ChildProcess, Pty, cli } from '../../../src/index.ts';
+import { binaryFrame, endFrame, installRuntime, join, liveStream } from '../../fake-runtime.mjs';
 
 const replies = new Map();
 const streams = new Map();
@@ -277,6 +277,132 @@ test('wait is consumed once by the runtime and subsequent errors propagate', asy
   });
   assert.equal(runtime.calls('cli.wait').length, before + 2, 'wait results are not cached by JS');
   assert.deepEqual(argsOf('cli.wait'), { process: 9 });
+});
+
+test('pty maps terminal streams, env entries, dimensions and process commands', async () => {
+  replies.set('cli.pty', { json: { process: 17, pid: 5252, output: 172, input: 171 } });
+  replies.set('cli.wait', { json: { code: 3, signal: null } });
+  streams.set(171, endless());
+  streams.set(172, { chunks: [join(binaryFrame(encode('terminal')), endFrame())] });
+  const terminal = await cli.pty('node', ['-e', 'probe'], { cols: 80, rows: 24, cwd: '/w', env: { A: 'b', B: 'c' } });
+  assert.ok(terminal instanceof Pty);
+  assert.equal(terminal.pid, 5252);
+  assert.ok(terminal.readable instanceof ReadableStream);
+  assert.ok(terminal.writable instanceof WritableStream);
+  assert.deepEqual(argsOf('cli.pty'), { program: 'node', args: ['-e', 'probe'], cols: 80, rows: 24, cwd: '/w', env: [['A', 'b'], ['B', 'c']] });
+  assert.deepEqual(await readAll(terminal.readable), ['terminal']);
+  const writer = terminal.writable.getWriter();
+  try {
+    const before = runtime.calls('runtime.stream.write').length;
+    await writer.write(encode('hello'));
+    const writes = runtime.calls('runtime.stream.write').slice(before);
+    assert.ok(writes.every(request => runtime.argsOf(request).id === 171));
+    assert.equal(writes.map(request => decode(request.body)).join(''), 'hello');
+    await writer.close();
+    assert.deepEqual(argsOf('runtime.stream.end'), { id: 171 });
+  } finally { writer.releaseLock(); }
+  await terminal.resize(1000, 1);
+  assert.deepEqual(argsOf('cli.resize'), { process: 17, cols: 1000, rows: 1 });
+  await terminal.kill();
+  assert.deepEqual(argsOf('cli.kill'), { process: 17 });
+  await terminal.kill('SIGINT');
+  assert.deepEqual(argsOf('cli.kill'), { process: 17, signal: 'SIGINT' });
+  assert.deepEqual(await terminal.wait(), { code: 3, signal: null });
+  assert.deepEqual(argsOf('cli.wait'), { process: 17 });
+});
+
+test('pty omits optional cwd and env from the wire', async () => {
+  replies.set('cli.pty', { json: { process: 17, pid: 5252, output: 172, input: 171 } });
+  streams.set(171, endless());
+  streams.set(172, endless());
+  const terminal = await cli.pty('node', [], { cols: 80, rows: 24 });
+  assert.deepEqual(argsOf('cli.pty'), { program: 'node', args: [], cols: 80, rows: 24 });
+  assert.ok(terminal.readable instanceof ReadableStream);
+  assert.ok(terminal.writable instanceof WritableStream);
+  assert.equal('output' in terminal, false);
+  assert.equal('input' in terminal, false);
+  await readAll(terminal.readable);
+  await terminal.writable.abort();
+});
+
+test('pty validates programs and integer dimensions before calling the runtime', async () => {
+  const options = { cols: 80, rows: 24, cwd: '/w', env: {} };
+  const before = runtime.calls('cli.pty').length;
+  const invalid = error => error instanceof AlefError && error.code === 'INVALID_ARGUMENT';
+  for (const program of ['', 42, null, undefined]) await assert.rejects(cli.pty(program, [], options), invalid);
+  for (const bad of [0, -1, 1001, 1.5, NaN, Infinity, '80', null, undefined]) {
+    for (const key of ['cols', 'rows']) await assert.rejects(cli.pty('node', [], { ...options, [key]: bad }), invalid);
+  }
+  assert.equal(runtime.calls('cli.pty').length, before);
+  streams.set(171, endless());
+  streams.set(172, endless());
+  const terminal = await cli.pty('node', undefined, { ...options, cols: 1, rows: 1000 });
+  assert.deepEqual(argsOf('cli.pty'), { program: 'node', cols: 1, rows: 1000, cwd: '/w', env: [] });
+  const resizes = runtime.calls('cli.resize').length;
+  for (const bad of [0, -1, 1001, 1.5, NaN, Infinity, '24', null, undefined]) {
+    await assert.rejects(terminal.resize(bad, 24), invalid);
+    await assert.rejects(terminal.resize(80, bad), invalid);
+  }
+  assert.equal(runtime.calls('cli.resize').length, resizes);
+  await terminal.resize(1, 1000);
+  assert.deepEqual(argsOf('cli.resize'), { process: 17, cols: 1, rows: 1000 });
+});
+
+test('an abort during pty is forwarded to the waiting runtime', async () => {
+  hold.add('cli.pty');
+  const controller = new AbortController();
+  const reached = new Promise(resolve => { onHold = resolve; });
+  const before = runtime.calls('cli.pty').length;
+  const outcome = cli.pty('node', [], { cols: 80, rows: 24, cwd: '/w', env: {}, signal: controller.signal }).then(() => 'it went through', error => error?.name);
+  try {
+    await soon(reached);
+    assert.equal(runtime.calls('cli.pty').length, before + 1);
+    assert.equal(runtime.calls('cli.pty').at(-1).signal, controller.signal);
+    controller.abort();
+    assert.equal(await soon(outcome), 'AbortError');
+  } finally {
+    controller.abort();
+    hold.delete('cli.pty');
+    onHold = () => {};
+  }
+});
+
+test('pty stream cancellation and input abort close their runtime streams', async () => {
+  streams.set(171, endless());
+  const live = liveStream();
+  streams.set(172, live.reply);
+  const terminal = await cli.pty('node', [], { cols: 80, rows: 24, cwd: '/w', env: {} });
+  const reader = terminal.readable.getReader();
+  live.push(binaryFrame(encode('ready')));
+  await reader.read();
+  const before = runtime.calls('runtime.stream.close').length;
+  await reader.cancel();
+  reader.releaseLock();
+  await terminal.writable.abort();
+  assert.deepEqual(runtime.calls('runtime.stream.close').slice(before).map(request => runtime.argsOf(request)), [{ id: 172 }, { id: 171 }]);
+});
+
+test('pty open, resize, kill and uncached wait propagate runtime errors', async () => {
+  const failure = { code: 'NOT_FOUND', message: 'terminal gone', details: { process: 17 } };
+  const errorReply = { status: 404, json: failure };
+  const matches = error => error instanceof AlefError && error.code === failure.code && error.status === 404 && error.message === failure.message;
+  replies.set('cli.pty', errorReply);
+  await assert.rejects(cli.pty('node', [], { cols: 80, rows: 24, cwd: '/w', env: {} }), matches);
+  replies.set('cli.pty', { json: { process: 17, pid: 5252, output: 172, input: 171 } });
+  const terminal = await cli.pty('node', [], { cols: 80, rows: 24, cwd: '/w', env: {} });
+  for (const command of ['cli.resize', 'cli.kill', 'cli.wait']) replies.set(command, errorReply);
+  try {
+    await assert.rejects(terminal.resize(80, 24), matches);
+    await assert.rejects(terminal.kill('SIGKILL'), matches);
+    const before = runtime.calls('cli.wait').length;
+    for (let i = 0; i < 2; i++) await assert.rejects(terminal.wait(), error => {
+      assert.deepEqual(error.details, failure.details);
+      return matches(error);
+    });
+    assert.equal(runtime.calls('cli.wait').length, before + 2);
+  } finally {
+    for (const command of ['cli.resize', 'cli.kill', 'cli.wait']) replies.delete(command);
+  }
 });
 
 test('spawn needs a program, and asks nothing of the runtime otherwise', async () => {

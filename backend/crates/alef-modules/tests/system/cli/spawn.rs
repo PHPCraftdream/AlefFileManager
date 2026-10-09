@@ -430,3 +430,47 @@ async fn an_ignored_stream_is_null_and_the_child_still_runs() {
     .expect("the wait works");
     assert_eq!(reply["code"], 2);
 }
+
+/// Arguments that need quoting on a Windows command line: spaces, quotes, trailing backslashes, nothing at all.
+pub(super) const TRICKY_ARGUMENTS: [&str; 10] = [
+    "a b",
+    "q\"x",
+    "back\\",
+    "two\\\\\"x",
+    "",
+    "plain",
+    "tab\tx",
+    "end\\\\",
+    "\\\\server\\share",
+    "caf\u{e9}",
+];
+
+#[tokio::test]
+async fn arguments_reach_the_child_exactly_as_given() {
+    let fixture = app().await;
+    let mut args = vec![
+        "-e".to_owned(),
+        "process.stdout.write('RESULT:'+JSON.stringify(process.argv.slice(1))+'\\n')".to_owned(),
+    ];
+    args.extend(
+        TRICKY_ARGUMENTS
+            .iter()
+            .map(|argument| (*argument).to_owned()),
+    );
+    let reply = spawn(
+        &fixture,
+        json!({ "program": "node", "args": args, "stdin": "ignore", "stdout": "pipe", "stderr": "ignore" }),
+    )
+    .await;
+    let mut pipe = Pipe::open(&fixture, reply["stdout"].as_u64().unwrap());
+    let received = tokio::time::timeout(Duration::from_secs(60), pipe.until_end())
+        .await
+        .expect("the child ends")
+        .expect("the pipe does not break");
+    let expected = format!(
+        "RESULT:{}",
+        serde_json::to_string(&TRICKY_ARGUMENTS).unwrap()
+    );
+    let text = String::from_utf8_lossy(&received);
+    assert!(text.contains(&expected), "{text}");
+}

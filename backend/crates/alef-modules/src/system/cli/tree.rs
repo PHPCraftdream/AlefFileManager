@@ -12,6 +12,7 @@ use std::{
 };
 
 use alef_core::AlefError;
+#[cfg(any(unix, test))]
 use tokio::process::Child;
 
 /// An owning handle that kills a whole process tree, and disarms itself once the direct child has
@@ -43,8 +44,29 @@ unsafe impl Sync for Handle {}
 impl Killer {
     /// Takes a newly created child under the tree-killer. Windows callers must keep its
     /// primary thread suspended until assignment completes; Unix callers set process_group(0).
+    #[cfg(any(unix, test))]
     pub(crate) fn adopt(child: &mut Child) -> Result<Self, AlefError> {
-        #[allow(unused_mut)]
+        #[cfg(windows)]
+        {
+            Self::adopt_handle(child.raw_handle().ok_or_else(|| {
+                AlefError::new(
+                    alef_core::ErrorCode::Internal,
+                    "child has no process handle",
+                )
+            })?)
+        }
+        #[cfg(unix)]
+        {
+            Self::adopt_group(child.id().ok_or_else(|| {
+                AlefError::new(alef_core::ErrorCode::Internal, "child has no process id")
+            })?)
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn adopt_handle(
+        process: std::os::windows::io::RawHandle,
+    ) -> Result<Self, AlefError> {
         let mut inner = Inner {
             handle: Mutex::new(None),
             disarmed: AtomicBool::new(false),
@@ -79,7 +101,7 @@ impl Killer {
                     &limits as *const _ as *const core::ffi::c_void,
                     std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
                 ) != 0
-                    && AssignProcessToJobObject(job, child.raw_handle().unwrap() as HANDLE) != 0;
+                    && AssignProcessToJobObject(job, process as HANDLE) != 0;
                 if !ok {
                     CloseHandle(job);
                     return Err(AlefError::new(
@@ -90,17 +112,21 @@ impl Killer {
                 inner.handle = Mutex::new(Some(Handle::Job(job)));
             }
         }
-        #[cfg(unix)]
-        {
-            let pid = child
-                .id()
-                .and_then(|pid| i32::try_from(pid).ok())
-                .ok_or_else(|| {
-                    AlefError::new(alef_core::ErrorCode::Internal, "child has no process id")
-                })?;
-            inner.handle = Mutex::new(Some(Handle::Group(pid)));
-        }
         Ok(Self(Arc::new(inner)))
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn adopt_group(pid: u32) -> Result<Self, AlefError> {
+        let pid = i32::try_from(pid)
+            .ok()
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| {
+                AlefError::new(alef_core::ErrorCode::Internal, "invalid process group")
+            })?;
+        Ok(Self(Arc::new(Inner {
+            handle: Mutex::new(Some(Handle::Group(pid))),
+            disarmed: AtomicBool::new(false),
+        })))
     }
 
     fn armed(&self) -> bool {
@@ -297,6 +323,7 @@ fn executable(path: &std::path::Path) -> bool {
 /// Spawn suspended on Windows: the primary thread cannot execute any user code until the job
 /// assignment succeeds. Tokio/std expose creation_flags but not the primary thread handle, so
 /// ToolHelp locates that sole suspended thread. Adoption/resume failures always kill and reap.
+#[cfg(any(unix, test))]
 pub(crate) async fn spawn(
     command: &mut tokio::process::Command,
 ) -> Result<(Child, Killer), AlefError> {
@@ -323,7 +350,7 @@ pub(crate) async fn spawn(
     Ok((child, killer))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn resume(child: &Child) -> Result<(), AlefError> {
     use windows_sys::Win32::{
         Foundation::{CloseHandle, INVALID_HANDLE_VALUE},

@@ -87,6 +87,7 @@ const ARGS = {
   'cli.start': ['hello'],
   'cli.exec': ['node -v'],
   'cli.spawn': ['node'],
+  'cli.pty': ['node', [], { cols: 80, rows: 24, cwd: '/probe', env: {} }],
   'clipboard.readText': [],
   'clipboard.writeText': ['probe'],
   'clipboard.readHtml': [],
@@ -158,6 +159,7 @@ installRuntime({
     if (request.url === 'native://call/websocket.connect') return { json: { socket: 5, messages: 41, protocol: '', url: 'ws://127.0.0.1/' } };
     if (request.url === 'native://call/socket.udp') return { json: { socket: 3, messages: 31, localAddress: { host: '127.0.0.1', port: 4 } } };
     if (/^native:\/\/call\/cli\.(exec|run)$/.test(request.url)) return { json: { code: 0, signal: null, stdout: '', stderr: '' } };
+    if (request.url === 'native://call/cli.pty') return { json: { process: 10, pid: 43, input: 91, output: 92 } };
     if (/^native:\/\/call\/cli\.(spawn|start)$/.test(request.url)) return { json: { process: 9, pid: 42, stdin: 91, stdout: 92, stderr: 93 } };
     if (/^native:\/\/stream\/(11|21|31|41|51|91|92|93)$/.test(request.url)) return { chunks: [endFrame()] };
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
@@ -198,5 +200,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'ServerRequest', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'ServerRequest', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'socket', 'sqlite', 'store', 'websocket', 'window']);
 });

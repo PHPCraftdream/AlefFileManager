@@ -5,12 +5,15 @@
 //! child starts goes with it, and a right the user substituted starts nothing at all.
 //! `cli.run` and `cli.start` do the same for a command the manifest declares, by name.
 //! `sidecar:<name>` is a program of the application (`bin/<name>`), never one found on `PATH`.
-mod commands;
+mod declared;
 pub(crate) mod exec;
-mod sidecar;
+#[cfg(windows)]
+mod native;
+pub(crate) mod pty;
 pub(crate) mod spawn;
 pub(crate) mod tree;
 
+use declared::{commands, sidecar};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -181,6 +184,7 @@ pub(crate) fn register(
     let app = context.paths.app.clone();
     let exec_app = app.clone();
     let spawn_app = app.clone();
+    pty::register(registry)?;
     registry
         .command::<ExecArgs>("cli.exec")?
         .permission(Permission::CliExec, |args| first_token(&args.command_line))

@@ -87,10 +87,12 @@ export { dialog } from './desktop/dialog.ts';
 export { shell } from './desktop/shell.ts';
 export {
   ChildProcess,
+  Pty,
   cli,
   type ExecOptions,
   type ExecResult as CliExecResult,
   type KillSignal,
+  type PtyOptions,
   type RunOptions,
   type SpawnOptions,
   type WaitResult,

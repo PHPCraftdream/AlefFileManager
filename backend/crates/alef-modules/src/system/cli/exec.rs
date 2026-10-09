@@ -200,7 +200,20 @@ pub(crate) async fn run(
     } else {
         Stdio::null()
     });
+    #[cfg(unix)]
     let (mut child, killer) = super::tree::spawn(&mut command).await?;
+    #[cfg(windows)]
+    let (mut child, killer) = super::native::spawn(
+        &program,
+        &args,
+        &cwd,
+        &env,
+        super::spawn::Pipes {
+            stdin: body.is_some(),
+            stdout: true,
+            stderr: true,
+        },
+    )?;
     // A dropped run drops every clone of the killer with it: the last one kills the tree.
     let stdin = child.stdin.take();
     let stdout = child.stdout.take().expect("stdout was piped");

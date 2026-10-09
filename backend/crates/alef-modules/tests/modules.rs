@@ -33,6 +33,8 @@ async fn the_command_surface_is_exactly_the_documented_one() {
             "app.stdout",
             "cli.exec",
             "cli.kill",
+            "cli.pty",
+            "cli.resize",
             "cli.run",
             "cli.spawn",
             "cli.start",

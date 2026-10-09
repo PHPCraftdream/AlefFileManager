@@ -110,13 +110,18 @@ const CLI_CHECKS = [
   'cli-exec-runs-a-program-and-reports-its-code-and-output', 'cli-exec-feeds-stdin-and-captures-stderr',
   'cli-exec-through-a-shell', 'cli-exec-times-out-and-kills-the-tree', 'cli-spawn-pipes-streams-both-ways',
   'cli-kill-takes-down-the-grandchild', 'cli-rights-are-held', 'cli-exec-resolution-ignores-the-page-env',
+  'cli-pty-is-interactive-and-resizes', 'cli-pty-kill-takes-down-the-grandchild',
+  'cli-pty-validates-dimensions-and-rights',
+];
+const CLI_SUBSTITUTE_CHECKS = [
+  'cli-exec-substituted-hangs-and-times-out-quickly',
+  'cli-pty-substituted-stays-pending-without-starting-and-aborts',
 ];
 const CLI_COMMAND_CHECKS = [
   'cli-run-declared-params-and-body', 'cli-start-declared-params-and-streams',
   'cli-sidecar-declared-and-direct-launch', 'cli-declared-command-rights-are-separate',
   'cli-declared-substituted-times-out',
 ];
-const CLI_SUBSTITUTE_CHECKS = ['cli-exec-substituted-hangs-and-times-out-quickly'];
 
 export function moduleScenarios({ drive, exe, verbose }) {
   async function service({ signal }) {

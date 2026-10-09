@@ -20,13 +20,17 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    process::{Child, Command},
+    process::Command,
     task::JoinHandle,
 };
 
 #[cfg(unix)]
 use super::exec;
+#[cfg(windows)]
+use super::native::Child;
 use super::tree::Killer;
+#[cfg(unix)]
+use tokio::process::Child;
 
 /// How many bytes one read of a pipe of the child takes at the most.
 const READ_CHUNK: usize = 32 * 1024;
@@ -147,23 +151,31 @@ async fn write_pump<W: AsyncWrite + Unpin>(mut half: W, mut reader: IncomingRead
 
 /// The child and its tree-killer, shared by the resource and the wait.
 pub(crate) struct Shared {
-    result: tokio::sync::watch::Receiver<Option<Result<std::process::ExitStatus, AlefError>>>,
+    pub(crate) result:
+        tokio::sync::watch::Receiver<Option<Result<std::process::ExitStatus, AlefError>>>,
     pub killer: Killer,
     pub claimed: std::sync::atomic::AtomicBool,
-    claimed_notify: tokio::sync::Notify,
-    shutdown: tokio::sync::watch::Sender<bool>,
+    pub(crate) claimed_notify: tokio::sync::Notify,
+    pub(crate) shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 /// The session owns the supervisor until both output pumps have reached EOF.
 /// A completed wait does not cancel pumps blocked on the page's credit.
 pub(crate) struct Process {
     pub shared: Arc<Shared>,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    pub(crate) tasks: Mutex<Vec<JoinHandle<()>>>,
+    pub(crate) terminal: Option<Arc<super::pty::Terminal>>,
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
         self.shared.killer.kill();
+        if let Some(terminal) = &self.terminal {
+            terminal.stop();
+            self.shared.shutdown.send_replace(true);
+            // fire-and-forget: terminal supervisor finishes draining ConPTY on resource drop.
+            return;
+        }
         for task in self.tasks.get_mut().unwrap_or_else(|e| e.into_inner()) {
             task.abort();
         }
@@ -174,6 +186,9 @@ impl Resource for Process {
     fn close(self: Box<Self>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(async move {
             self.shared.killer.kill();
+            if let Some(terminal) = &self.terminal {
+                terminal.stop();
+            }
             self.shared.shutdown.send_replace(true);
             // The supervisor reaps the child and observes stream shutdown before returning.
             let tasks = std::mem::take(&mut *self.tasks.lock().unwrap_or_else(|e| e.into_inner()));
@@ -190,7 +205,7 @@ pub(crate) async fn wait(shared: Arc<Shared>) -> Result<(Option<i32>, Option<Str
     let mut result = shared.result.clone();
     let status = loop {
         if let Some(status) = result.borrow().clone() {
-            break status?;
+            break status;
         }
         result
             .changed()
@@ -207,6 +222,7 @@ pub(crate) async fn wait(shared: Arc<Shared>) -> Result<(Option<i32>, Option<Str
         ));
     }
     shared.claimed_notify.notify_one();
+    let status = status?;
     #[cfg(unix)]
     let signal = std::os::unix::process::ExitStatusExt::signal(&status).map(exec::signal_name);
     #[cfg(windows)]
@@ -295,7 +311,10 @@ pub(crate) async fn spawn_command(
     for (name, value) in &env {
         command.env(name, value);
     }
+    #[cfg(unix)]
     let (mut child, killer) = super::tree::spawn(&mut command).await?;
+    #[cfg(windows)]
+    let (mut child, killer) = super::native::spawn(&program, &args, &cwd, &env, pipes)?;
     let mut tasks = tokio::task::JoinSet::new();
     let mut input = tokio::task::JoinSet::new();
     let (stdin, stdout, stderr) = (
@@ -345,6 +364,7 @@ pub(crate) async fn spawn_command(
     let process = Process {
         shared: shared.clone(),
         tasks: Mutex::new(Vec::new()),
+        terminal: None,
     };
     let id = match session.resources().insert(Box::new(process)) {
         Ok(id) => id,

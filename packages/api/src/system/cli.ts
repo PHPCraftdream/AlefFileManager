@@ -89,6 +89,54 @@ function commandParams(name: string, params?: Record<string, string>): void {
   }
 }
 
+export interface PtyOptions extends Cancelable {
+  cols: number;
+  rows: number;
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+interface PtyOpened {
+  process: number;
+  pid: number;
+  output: number;
+  input: number;
+}
+
+function dimensions(cols: number, rows: number): void {
+  if (![cols, rows].every(value => Number.isInteger(value) && value >= 1 && value <= 1000)) {
+    throw new AlefError('INVALID_ARGUMENT', 'PTY dimensions must be integers from 1 to 1000.');
+  }
+}
+
+/** A process attached to a terminal, with merged output and byte input. */
+export class Pty {
+  readonly pid: number;
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+  #id: number;
+
+  constructor(opened: PtyOpened) {
+    this.#id = opened.process;
+    this.pid = opened.pid;
+    this.readable = bytesOf(opened.output);
+    this.writable = sinkOf(opened.input);
+  }
+
+  async resize(cols: number, rows: number): Promise<void> {
+    dimensions(cols, rows);
+    await call<null>('cli.resize', { process: this.#id, cols, rows });
+  }
+
+  async kill(signal?: KillSignal): Promise<void> {
+    await call<null>('cli.kill', { process: this.#id, signal });
+  }
+
+  async wait(): Promise<WaitResult> {
+    return call<WaitResult>('cli.wait', { process: this.#id });
+  }
+}
+
 /**
  * Running other programs. `permissions.cli.exec` lists the programs they may run: `exec` takes a
  * command line (a shell splits it, when `shell` says so), `spawn` a program and its arguments, and
@@ -125,6 +173,13 @@ export const cli = {
       throw new AlefError('INVALID_ARGUMENT', 'input above 192 KiB does not fit a call: pass it through cli.spawn streams.');
     }
     return call<ExecResult>('cli.exec', { commandLine, shell, cwd, env: env && Object.entries(env), timeoutMs: timeout }, { signal, body });
+  },
+
+  pty: async (program: string, args: string[] | undefined, options: PtyOptions): Promise<Pty> => {
+    const { cols, rows, cwd, env, signal } = options;
+    if (typeof program !== 'string' || program === '') throw new AlefError('INVALID_ARGUMENT', 'pty needs a program.');
+    dimensions(cols, rows);
+    return new Pty(await call<PtyOpened>('cli.pty', { program, args, cols, rows, cwd, env: env && Object.entries(env) }, { signal }));
   },
 
   spawn: async (program: string, args?: string[], options: SpawnOptions = {}): Promise<ChildProcess> => {

@@ -8,7 +8,7 @@ use alef_core::{
     AlefError, ErrorCode,
 };
 
-use super::{invalid, tree};
+use super::super::{invalid, tree};
 
 /// `bin/<name>` of the application; on Windows `bin/<name>.exe` when `bin/<name>` is not there.
 /// Never searched for on `PATH`.
