@@ -107,10 +107,12 @@ async fn a_terminal_reports_its_size_echoes_input_and_resizes() {
     );
     close(&app).await;
 }
+/// ConPTY hands over the state of the screen, not every byte: the rows must fit the 1000 of the terminal, or those
+/// that scroll away between two paints are never sent (CI lost row 90 of 1200 that way).
 #[tokio::test]
 async fn terminal_wait_keeps_output_for_a_reader_delayed_more_than_two_seconds() {
     let app = Fixture::new(Some(&manifest(&["node"])), &[]).await;
-    let opened = call(&app, "cli.pty", json!({"program":"node","cols":1000,"rows":1000,"args":["-e","process.stdout.write('BEGIN:'+Array.from({length:1200},(_,i)=>'ROW'+String(i).padStart(4,'0')+':'+ 'x'.repeat(80)+'\\n').join('')+':END',()=>process.exit(0))"]})).await.unwrap();
+    let opened = call(&app, "cli.pty", json!({"program":"node","cols":1000,"rows":1000,"args":["-e","process.stdout.write('BEGIN:'+Array.from({length:900},(_,i)=>'ROW'+String(i).padStart(4,'0')+':'+ 'x'.repeat(80)+'\\n').join('')+':END',()=>process.exit(0))"]})).await.unwrap();
     let mut pipe = Pipe::open(&app, opened["output"].as_u64().unwrap());
     assert_eq!(
         call(&app, "cli.wait", json!({"process":opened["process"]}))
@@ -126,7 +128,7 @@ async fn terminal_wait_keeps_output_for_a_reader_delayed_more_than_two_seconds()
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("BEGIN:"), "missing beginning");
     assert!(text.contains(":END"), "missing ending");
-    for i in 0..1200 {
+    for i in 0..900 {
         assert!(
             text.contains(&format!("ROW{i:04}:{}", "x".repeat(80))),
             "missing row {i}"
@@ -435,10 +437,16 @@ async fn a_terminal_nobody_reads_holds_its_child_back() {
 /// The output of a finished terminal waits for the page, and a terminal that was waited for is no more resized.
 #[tokio::test]
 async fn a_terminal_waited_for_keeps_its_output_and_is_no_more_resized() {
-    use alef_core::protocol::credit::DEFAULT_STREAM_WINDOW;
-    let app = Fixture::new(Some(&manifest(&["node"])), &[]).await;
-    let count = DEFAULT_STREAM_WINDOW + 64 * 1024;
-    let script = format!("process.stdout.write('o'.repeat({count}),()=>process.exit(0))");
+    use alef_core::protocol::call::Limits;
+    // A small window: the output is far beyond it whatever ConPTY makes of the screen, and the rows fit the screen.
+    let window = 8 * 1024;
+    let limits = Limits {
+        stream_window: window,
+        chunk_size: 4 * 1024,
+        ..Limits::default()
+    };
+    let app = Fixture::new_limited(Some(&manifest(&["node"])), limits).await;
+    let script = "const t=Array.from({length:40},(_,r)=>Array.from({length:1000},(_,c)=>String.fromCharCode(97+(r*7+c*13+(c>>3))%26)).join('')).join('\\r\\n');process.stdout.write(t,()=>process.exit(0))";
     let opened = call(
         &app,
         "cli.pty",
@@ -471,7 +479,7 @@ async fn a_terminal_waited_for_keeps_its_output_and_is_no_more_resized() {
     );
     assert_eq!(resized.unwrap_err().code, ErrorCode::NotFound);
     let bytes = output.expect("the output ends").unwrap();
-    assert!(bytes.len() >= count, "{} bytes of {count}", bytes.len());
+    assert!(bytes.len() > window, "{} bytes", bytes.len());
     gone.expect("the finished terminal is no more a resource");
 }
 

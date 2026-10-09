@@ -139,7 +139,33 @@ impl Fixture {
         command_line: &[&str],
         secrets: Arc<MemorySecrets>,
     ) -> Self {
-        Self::build(root, manifest, command_line, secrets, None).await
+        Self::build(
+            root,
+            manifest,
+            command_line,
+            secrets,
+            None,
+            Limits::default(),
+        )
+        .await
+    }
+
+    /// As `new`, with the limits of the sessions given: a small stream window shows a flow control that the default one hides.
+    pub async fn new_limited(manifest: Option<&str>, limits: Limits) -> Self {
+        let root = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("alef-modules-paths");
+        Self::build(
+            &root,
+            manifest,
+            &[],
+            Arc::new(MemorySecrets::default()),
+            None,
+            limits,
+        )
+        .await
     }
 
     /// A console utility: the standard streams of the process are `console`'s.
@@ -155,6 +181,7 @@ impl Fixture {
             &[],
             Arc::new(MemorySecrets::default()),
             Some(console),
+            Limits::default(),
         )
         .await
     }
@@ -165,6 +192,7 @@ impl Fixture {
         command_line: &[&str],
         secrets: Arc<MemorySecrets>,
         console: Option<Console>,
+        limits: Limits,
     ) -> Self {
         let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
         let manifest = Manifest::from_ktav_str(&text).expect("manifest");
@@ -222,7 +250,7 @@ impl Fixture {
         let mut registry = Registry::default();
         register_all(&mut registry, host.clone(), &context).expect("register");
         let tokens: TokenSource = Arc::new(|| "token".to_owned());
-        let manager = SessionManager::new(tokens, Limits::default());
+        let manager = SessionManager::new(tokens, limits);
         let session = manager.begin_document(1).await;
         Self {
             registry,

@@ -153,8 +153,9 @@ impl Terminal {
 }
 impl Child {
     pub(super) async fn wait(mut self) -> Result<std::process::ExitStatus, AlefError> {
-        let child = self
-            .child
+        // The downcast methods exist on `dyn Child` only, not on the `Send + Sync` object.
+        let child: &mut dyn portable_pty::Child = &mut *self.child;
+        let child = child
             .downcast_mut::<std::process::Child>()
             .ok_or_else(|| error("portable-pty did not return a native Unix child"))?;
         loop {
