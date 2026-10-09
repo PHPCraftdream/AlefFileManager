@@ -27,6 +27,64 @@ async fn refused(app: &Fixture, name: &str, args: Value) -> ErrorCode {
         }
     }
 }
+/// The text a terminal would show for the bytes: escape sequences gone, a repeat of the last character (`CSI n b`)
+/// spelled out, line ends dropped. ConPTY may write a run of one character either way.
+fn plain(bytes: &[u8]) -> String {
+    let chars: Vec<char> = String::from_utf8_lossy(bytes).chars().collect();
+    let mut out = String::new();
+    let mut at = 0;
+    while at < chars.len() {
+        match (chars[at], chars.get(at + 1)) {
+            ('\u{1b}', Some('[')) => {
+                let mut end = at + 2;
+                while end < chars.len() && !('@'..='~').contains(&chars[end]) {
+                    end += 1;
+                }
+                if chars.get(end) == Some(&'b') {
+                    let count = chars[at + 2..end]
+                        .iter()
+                        .collect::<String>()
+                        .parse()
+                        .unwrap_or(1);
+                    if let Some(last) = out.chars().last() {
+                        out.extend(std::iter::repeat_n(last, count));
+                    }
+                }
+                at = end + 1;
+            }
+            ('\u{1b}', Some(']')) => {
+                let mut end = at + 2;
+                while end < chars.len()
+                    && chars[end] != '\u{7}'
+                    && !(chars[end] == '\u{1b}' && chars.get(end + 1) == Some(&'\\'))
+                {
+                    end += 1;
+                }
+                at = if chars.get(end) == Some(&'\u{7}') {
+                    end + 1
+                } else {
+                    end + 2
+                };
+            }
+            ('\u{1b}', _) => at += 2,
+            ('\r' | '\n', _) => at += 1,
+            (c, _) => {
+                out.push(c);
+                at += 1;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn plain_spells_out_repeats_and_drops_sequences_and_line_ends() {
+    assert_eq!(
+        plain(b"\x1b[31mab\x1b[3bc\x1b]0;title\x07\r\nd\x1b[2;1He"),
+        "abbbbcde"
+    );
+}
+
 #[tokio::test]
 async fn terminal_output_respects_credit_and_shutdown_does_not_wait_for_the_page() {
     use alef_core::protocol::credit::DEFAULT_STREAM_WINDOW;
@@ -125,16 +183,30 @@ async fn terminal_wait_keeps_output_for_a_reader_delayed_more_than_two_seconds()
         .await
         .unwrap()
         .unwrap();
-    let text = String::from_utf8_lossy(&bytes);
-    assert!(text.contains("BEGIN:"), "missing beginning");
-    assert!(text.contains(":END"), "missing ending");
-    for i in 0..900 {
-        assert!(
-            text.contains(&format!("ROW{i:04}:{}", "x".repeat(80))),
-            "missing row {i}"
-        );
-    }
+    let text = plain(&bytes);
+    let around = |label: String| {
+        let at = bytes
+            .windows(label.len())
+            .position(|window| window == label.as_bytes())?;
+        Some(
+            String::from_utf8_lossy(&bytes[at.saturating_sub(60)..(at + 200).min(bytes.len())])
+                .into_owned(),
+        )
+    };
+    let missing = (0..900).find(|i| !text.contains(&format!("ROW{i:04}:{}", "x".repeat(80))));
+    let report = missing.map(|i| {
+        format!(
+            "missing row {i} of {} bytes; around it {:?}; around the next {:?}",
+            bytes.len(),
+            around(format!("ROW{i:04}")),
+            around(format!("ROW{:04}", i + 1))
+        )
+    });
+    let (begin, end) = (text.contains("BEGIN:"), text.contains(":END"));
     close(&app).await;
+    assert!(begin, "missing beginning");
+    assert!(end, "missing ending");
+    assert!(report.is_none(), "{}", report.unwrap_or_default());
 }
 
 #[tokio::test]

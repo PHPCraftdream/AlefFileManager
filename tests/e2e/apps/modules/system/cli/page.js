@@ -231,7 +231,7 @@ async function main() {
       ].join(' ');
       const program = [
         "const { spawn } = require('child_process');",
-        `spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { detached: true, stdio: 'ignore', env: process.env });`,
+        `spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { detached: process.platform === 'win32', stdio: 'ignore', env: process.env });`,
         "console.log('PTY_TREE_READY'); setInterval(() => {}, 1e5);",
       ].join(' ');
       const terminal = await api.cli.pty('node', ['-e', program], { cols: 80, rows: 24, cwd: work, env: { GRAND_BEAT: beat, GRAND_STOP: stop } });
