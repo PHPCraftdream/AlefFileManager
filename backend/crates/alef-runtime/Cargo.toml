@@ -35,6 +35,10 @@ muda = { version = "=0.19.3", optional = true }
 global-hotkey = "=0.8.0"
 crossbeam-channel = "=0.5.17"
 
+# Native menus: muda needs GTK on Linux, which a winit loop does not own, so only here.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+muda = "=0.19.3"
+
 [features]
 spike-integration = ["dep:tray-icon", "dep:muda"]
 

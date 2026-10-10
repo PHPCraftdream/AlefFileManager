@@ -315,6 +315,7 @@ impl App {
             restore.observe(&info, Instant::now());
             restore.flush();
         }
+        self.menus.release_window(self.windows[index].window_id);
         let state = self.windows.remove(index);
         self.shortcuts.release_window(state.window_id);
         self.ids.unbind(state.window_id);
@@ -391,6 +392,7 @@ impl App {
                 [animation, reveal, close].into_iter().flatten().min()
             })
             .chain(self.shortcuts.next_wake())
+            .chain(self.menus.next_wake())
             .chain(self.restore.as_ref().and_then(|restore| restore.due_at()))
             .min()
     }
@@ -498,6 +500,28 @@ impl App {
                     caller,
                     call,
                 )
+            }
+            UiCall::Menu(call) => {
+                use alef_core::registry::window::menu::MenuCall;
+                // Platform/spike rejection applies even to clear/release.
+                let windows = self
+                    .windows
+                    .iter()
+                    .map(|s| (s.window_id, s.window.clone()))
+                    .collect();
+                self.menus
+                    .prepare(event_loop, self.waker.0.clone(), windows)?;
+                let target = match &call {
+                    MenuCall::Release { .. } => caller, // original owner may already be stale/closed
+                    MenuCall::SetApplication { .. } => {
+                        self.windows[self.find(caller, None)?].window_id
+                    }
+                    MenuCall::SetWindow { label, .. } | MenuCall::Popup { label, .. } => {
+                        self.find(caller, None)?;
+                        self.windows[self.find(caller, label.as_deref())?].window_id
+                    }
+                };
+                self.menus.call(&self.sessions, caller, target, call)
             }
             UiCall::Window(call) => self.call(event_loop, caller, call),
             UiCall::Create(definition) => self.create(event_loop, &definition),

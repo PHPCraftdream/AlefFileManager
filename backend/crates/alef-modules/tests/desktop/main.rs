@@ -8,4 +8,8 @@ mod console;
 mod dialog;
 mod lifecycle;
 mod shell;
-mod window;
+mod ui {
+    mod menu;
+    mod shortcut;
+    mod window;
+}

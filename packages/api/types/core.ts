@@ -43,6 +43,12 @@ export type FileFilter = {
    */
   extensions: Array<string>, };
 
+export type MenuItem = { kind?: MenuKind, id?: string, label?: string, role?: MenuRole, enabled?: boolean, checked?: boolean, accelerator?: string, items?: Array<MenuItem>, };
+
+export type MenuKind = "normal" | "check" | "separator" | "submenu";
+
+export type MenuRole = "copy" | "paste" | "cut" | "undo" | "redo" | "selectAll" | "quit" | "about" | "minimize";
+
 /**
  * The weight a message dialog gives its text.
  */

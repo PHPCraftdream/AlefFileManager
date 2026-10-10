@@ -123,6 +123,19 @@ const CLI_COMMAND_CHECKS = [
   'cli-declared-substituted-times-out',
 ];
 
+const MENU_VALIDATION_CHECKS = [
+  'menu-malformed-trees-are-rejected', 'menu-duplicate-ids-across-the-tree-are-rejected',
+  'menu-invalid-accelerators-are-rejected', 'menu-roles-with-custom-ids-are-rejected',
+  'menu-invalid-popup-coordinates-are-rejected', 'menu-invalid-popup-items-are-rejected-before-it-is-shown',
+];
+const MENU_NATIVE_CHECKS = [
+  'menu-native-nested-items-and-accelerator-are-accepted',
+  'menu-application-or-caller-window-menu-can-be-replaced',
+  'menu-explicit-own-window-menu-follows-platform-support', 'menu-missing-target-window-is-not-found',
+  'menu-empty-popup-returns-null', 'menu-edit-and-minimize-roles-are-accepted',
+  'menu-quit-and-about-roles-are-not-available', 'menu-application-menu-can-be-cleared',
+];
+
 const SHORTCUT_CHECKS = [
   'shortcut-native-register', 'shortcut-native-duplicate-is-already-exists',
   'shortcut-invalid-accelerator', 'shortcut-unregister-and-register-again',
@@ -198,6 +211,28 @@ export function moduleScenarios({ drive, exe, verbose }) {
   }
 
   return {
+    menu: () => drive({
+      name: 'menu', app: 'modules/desktop/menu', targets: { platform: process.platform },
+      expectedChecks: [
+        ...MENU_VALIDATION_CHECKS,
+        ...(process.platform === 'linux' ? ['menu-linux-native-operations-are-not-available'] : MENU_NATIVE_CHECKS),
+        ...(process.platform === 'darwin' ? ['menu-macos-application-roots-must-be-submenus', 'menu-macos-popup-is-not-available'] : []),
+        'menu-cleanup-clears-menus-or-confirms-platform-unavailability',
+      ],
+      judge: async (lines, _verdict, running) => {
+        const problems = [];
+        if (!lines.some(line => line.includes('MANUAL menu-click-accelerator-role-and-popup-not-tested'))) {
+          problems.push('menu scenario did not disclose untested real input');
+        }
+        running.stop();
+        const exit = await running.waitForExit(10000);
+        const closed = await running.waitForClosed(10000);
+        if (!exit || !closed) {
+          problems.push(`menu runtime did not release process/pipes within the cleanup bound (exit ${JSON.stringify(exit)}); last output: ${lines.slice(-6).join(' | ')}`);
+        }
+        return problems;
+      },
+    }),
     shortcut: () => shortcutRun('allowed'),
     'shortcut-denied': () => shortcutRun('denied'),
     'shortcut-substitute': () => shortcutRun('substituted'),

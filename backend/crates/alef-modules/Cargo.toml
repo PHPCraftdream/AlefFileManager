@@ -54,6 +54,11 @@ apple-native-keyring-store = { version = "=1.0.2", features = ["keychain"] }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus-secret-service-keyring-store = { version = "=1.0.1", features = ["crypto-rust"] }
 
+# The accelerators of the menus are parsed as muda parses them; on Linux muda needs GTK, so there the
+# parser of global-hotkey stands in (the menus are not available there anyway).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+muda = { version = "=0.19.3", default-features = false }
+
 [dev-dependencies]
 tempfile = "=3.27.0"
 hyper = { version = "=1.11.1", default-features = false, features = ["server", "http1"] }

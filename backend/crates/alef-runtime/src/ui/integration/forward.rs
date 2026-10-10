@@ -56,6 +56,12 @@ impl<T: Send + 'static> Forwarder<T> {
     pub(crate) fn drain(&self) -> impl Iterator<Item = T> + '_ {
         self.events.try_iter().take(CAPACITY)
     }
+
+    /// The next event, waiting for it up to `within`.
+    #[cfg(any(windows, target_os = "macos"))]
+    pub(crate) fn next_within(&self, within: Duration) -> Option<T> {
+        self.events.recv_timeout(within).ok()
+    }
 }
 
 impl<T> Drop for Forwarder<T> {
@@ -95,6 +101,17 @@ mod tests {
         wakes.recv_timeout(Duration::from_secs(2)).unwrap();
         wakes.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(forward.drain().collect::<Vec<_>>(), ["one", "two"]);
+        bounded_drop(forward);
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn next_within_waits_for_an_event_and_gives_up_without_one() {
+        let (send, receive) = bounded(8);
+        let forward = Forwarder::start(receive, || true).unwrap();
+        assert_eq!(forward.next_within(Duration::from_millis(20)), None::<u8>);
+        send.send_timeout(7_u8, WAIT).unwrap();
+        assert_eq!(forward.next_within(WAIT), Some(7));
+        assert_eq!(forward.next_within(Duration::from_millis(20)), None);
         bounded_drop(forward);
     }
     #[test]

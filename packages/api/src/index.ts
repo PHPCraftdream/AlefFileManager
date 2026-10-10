@@ -83,6 +83,7 @@ export {
   type ScryptOptions,
   type SealOptions,
 } from './data/crypto.ts';
+export { menu, type MenuItem, type MenuKind, type MenuRole } from './desktop/menu.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shortcut, Shortcut } from './desktop/shortcut.ts';
 export { shell } from './desktop/shell.ts';

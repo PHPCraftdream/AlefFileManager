@@ -114,7 +114,7 @@ const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '
 export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false }) {
   assertQuiet(exe);
   const child = spawn(exe, args, {
-    env: { ...process.env, ALEF_E2E: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env },
+    env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env },
     stdio: [input === undefined && !interactive ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
   if (input !== undefined || interactive) child.stdin.on('error', () => {});
@@ -162,7 +162,7 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
       } else if (exit && !survivesExit) {
         clearTimeout(timer);
         watchers.delete(look);
-        reject(new Error(`the runtime exited (${exit.code}) while waiting for ${what}`));
+        reject(new Error(`the runtime exited (${exit.code}) while waiting for ${what}; last output: ${lines.slice(-6).join(' | ')}`));
       }
     }
     watchers.add(look);

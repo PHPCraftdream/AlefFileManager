@@ -7,6 +7,7 @@ use super::dialog::DialogCall;
 use crate::security::window::{Length, WindowDef};
 
 pub mod geometry;
+pub mod menu;
 pub mod shortcut;
 
 /// A point in logical pixels.
@@ -251,6 +252,7 @@ pub enum UiCall {
     Dialog(DialogCall),
     /// `shortcut.*`: owned by a document session, including teardown after reload.
     Shortcut(shortcut::ShortcutCall),
+    Menu(menu::MenuCall),
 }
 
 #[cfg(test)]

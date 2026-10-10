@@ -105,6 +105,7 @@ struct App {
     runtime: tokio::runtime::Handle,
     dialogs: host::dialogs::Dialogs,
     shortcuts: crate::ui::integration::shortcut::Shortcuts,
+    menus: crate::ui::integration::menu::Menus,
     restore: Option<state::restore::Restore>,
 }
 
@@ -122,7 +123,31 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
     if quiet {
         eprintln!("ALEF_E2E quiet: the windows of this run are never shown");
     }
-    let event_loop = EventLoop::<Wake>::with_user_event().build()?;
+    let menus = crate::ui::integration::menu::Menus::default();
+    let mut builder = EventLoop::<Wake>::with_user_event();
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{TranslateAcceleratorW, MSG};
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+        let accelerators = menus.accelerators.clone();
+        builder.with_msg_hook(move |raw| {
+            // SAFETY: winit passes a live, aligned MSG for the duration of this hook.
+            let msg = unsafe { &*(raw as *const MSG) };
+            // Snapshot and release RefCell borrow BEFORE potentially reentrant FFI.
+            let snapshot = accelerators.borrow().get(&msg.hwnd).cloned();
+            let Some(snapshot) = snapshot else {
+                return false;
+            };
+            if snapshot.haccel == 0 {
+                return false;
+            }
+            // SAFETY: UI-thread-only cache; snapshot owns the immutable muda menu
+            // and Rc<Window>, keeping HACCEL and HWND live throughout translation.
+            // No muda/cache borrow is held across synchronous WM_COMMAND dispatch.
+            unsafe { TranslateAcceleratorW(msg.hwnd, snapshot.haccel, msg) != 0 }
+        });
+    }
+    let event_loop = builder.build()?;
     let handle = bridge.handle();
     handle.attach(event_loop.create_proxy());
     let mut app = App {
@@ -148,6 +173,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         runtime: tokio::runtime::Handle::current(),
         dialogs: host::dialogs::Dialogs::new(),
         shortcuts: crate::ui::integration::shortcut::Shortcuts::default(),
+        menus,
         restore: options.state_file.map(state::restore::Restore::load),
     };
     event_loop.run_app(&mut app)?;

@@ -9,7 +9,7 @@ use alef_core::{
 };
 use serde_json::{json, Value};
 
-const MANIFEST: &str = include_str!("../fixtures/app.ktav");
+const MANIFEST: &str = include_str!("../../fixtures/app.ktav");
 
 fn allowing_create() -> String {
     let open = MANIFEST.replace('\r', "");
