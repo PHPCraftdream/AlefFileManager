@@ -366,12 +366,15 @@ mod platform {
 }
 
 #[cfg(windows)]
+mod pipe_security;
+
+#[cfg(windows)]
 mod platform {
-    use std::time::Duration;
+    use std::{os::windows::io::AsRawHandle, time::Duration};
 
     use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
 
-    use super::{io, Claim, Connection, Endpoint};
+    use super::{io, pipe_security, Claim, Connection, Endpoint};
 
     const ERROR_ACCESS_DENIED: i32 = 5;
     const ERROR_PIPE_BUSY: i32 = 231;
@@ -380,9 +383,23 @@ mod platform {
         format!(r"\\.\pipe\alef-instance-{}", endpoint.key)
     }
 
+    /// The first instance of the pipe, which sets who may open it. Later instances share its
+    /// security, whatever they are created with.
+    pub(super) fn serve(
+        name: &str,
+        security: &mut pipe_security::OwnerOnly,
+    ) -> io::Result<NamedPipeServer> {
+        let mut options = ServerOptions::new();
+        options
+            .first_pipe_instance(true)
+            .reject_remote_clients(true);
+        // SAFETY: the attributes live through the call and the pipe keeps its own copy.
+        unsafe { options.create_with_security_attributes_raw(name, security.as_raw()) }
+    }
+
     pub(super) struct Listener {
         name: String,
-        server: NamedPipeServer,
+        pub(super) server: NamedPipeServer,
     }
 
     impl Listener {
@@ -397,11 +414,8 @@ mod platform {
 
     pub(super) async fn claim(endpoint: &Endpoint) -> io::Result<Claim> {
         let name = name(endpoint);
-        match ServerOptions::new()
-            .first_pipe_instance(true)
-            .reject_remote_clients(true)
-            .create(&name)
-        {
+        let mut security = pipe_security::OwnerOnly::new()?;
+        match serve(&name, &mut security) {
             Ok(server) => Ok(Claim::First(Listener { name, server })),
             Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => Ok(Claim::Taken),
             Err(error) => Err(error),
@@ -412,10 +426,26 @@ mod platform {
     pub(super) fn forget(_: &Endpoint) {}
 
     pub(super) async fn connect(endpoint: &Endpoint) -> io::Result<Connection> {
+        connect_as(endpoint, &pipe_security::own_sids()?).await
+    }
+
+    /// Opens the pipe if it belongs to one of `mine`.
+    pub(super) async fn connect_as(endpoint: &Endpoint, mine: &[String]) -> io::Result<Connection> {
         let name = name(endpoint);
         loop {
             match ClientOptions::new().open(&name) {
-                Ok(client) => return Ok(Box::new(client)),
+                // The name is public: whoever made the pipe first holds it, and the command line
+                // of this process is not for another user.
+                Ok(client) => {
+                    let owner = pipe_security::owner_of(client.as_raw_handle())?;
+                    if !pipe_security::is_mine(&owner, mine) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "the instance pipe belongs to another user",
+                        ));
+                    }
+                    return Ok(Box::new(client));
+                }
                 // Every instance of the pipe has a client: wait for the next one to be made.
                 Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -502,7 +532,7 @@ mod tests {
 
     mod regression {
         use super::*;
-        include!("integration/instance_tests.rs");
+        include!("../integration/instance_tests.rs");
     }
 
     #[tokio::test]
