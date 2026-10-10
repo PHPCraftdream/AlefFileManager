@@ -159,11 +159,46 @@ pub(in crate::desktop::app) fn deep_links(
     schemes: &[String],
     register: bool,
 ) -> Result<(), AlefError> {
+    deep_links_in(
+        launch,
+        schemes,
+        register,
+        (HKEY_LOCAL_MACHINE, "Software\\Classes"),
+    )
+}
+
+/// Whether a program of the whole machine handles `scheme`: the key of the scheme under `classes`
+/// of `root` says it is a URL protocol. The merged view of the system lets the entry of a user
+/// shadow it, so a scheme that only the machine knows would be taken over silently.
+fn handled_by_the_machine(root: HKEY, classes: &str, scheme: &str) -> Result<bool, AlefError> {
+    let path = wide(&format!("{classes}\\{scheme}"));
+    let mut handle = ptr::null_mut();
+    // SAFETY: a predefined or owned root, terminated path and writable output live through the call.
+    let code = unsafe { RegOpenKeyExW(root, path.as_ptr(), 0, KEY_QUERY_VALUE, &mut handle) };
+    if code == ERROR_FILE_NOT_FOUND {
+        return Ok(false);
+    }
+    check(code)?;
+    Key(handle)
+        .read(&wide("URL Protocol"))
+        .map(|value| value.is_some())
+}
+
+fn deep_links_in(
+    launch: &super::Launch,
+    schemes: &[String],
+    register: bool,
+    machine: (HKEY, &str),
+) -> Result<(), AlefError> {
     let command = deep_link_command(launch)?;
     let marker = format!("{}|{}", launch.name, super::path_text(&launch.folder)?);
     // Preflight the complete native subset before any mutation.
     for scheme in schemes {
-        if let Some(key) = Key::at(&format!("Software\\Classes\\{scheme}"), false)? {
+        let user = Key::at(&format!("Software\\Classes\\{scheme}"), false)?;
+        if register && user.is_none() && handled_by_the_machine(machine.0, machine.1, scheme)? {
+            return Err(unavailable("scheme is handled by another program"));
+        }
+        if let Some(key) = user {
             if !owned_marker(key.read(&wide("AlefOwner"))?, &marker) {
                 return Err(unavailable("scheme belongs to another application"));
             }
@@ -464,6 +499,84 @@ mod tests {
             Some(encoded("another|C:\\elsewhere"))
         );
         assert!(Key::at(&other_path, false).unwrap().is_some());
+    }
+
+    /// A fake "machine" under a key of the user, with one URL protocol in it.
+    struct FakeMachine(String);
+    impl FakeMachine {
+        fn with_protocol(scheme: &str) -> Self {
+            let root = format!("Software\\{}", unique());
+            let key = Key::at(&format!("{root}\\Classes\\{scheme}"), true)
+                .unwrap()
+                .unwrap();
+            key.set("URL Protocol", "").unwrap();
+            Self(root)
+        }
+        fn classes(&self) -> String {
+            format!("{}\\Classes", self.0)
+        }
+    }
+    impl Drop for FakeMachine {
+        fn drop(&mut self) {
+            let path = wide(&self.0);
+            // SAFETY: predefined HKCU and a terminated path of a key this test made.
+            unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, path.as_ptr()) };
+        }
+    }
+
+    #[test]
+    fn a_scheme_that_a_program_of_the_machine_handles_is_not_taken_over() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (launch, scheme, _cleanup, path, _) = registered(&scratch);
+        let machine = FakeMachine::with_protocol(&scheme);
+        let classes = machine.classes();
+        let schemes = std::slice::from_ref(&scheme);
+        let error =
+            deep_links_in(&launch, schemes, true, (HKEY_CURRENT_USER, &classes)).unwrap_err();
+        assert!(
+            error.message.contains("another program"),
+            "{}",
+            error.message
+        );
+        assert!(
+            Key::at(&path, false).unwrap().is_none(),
+            "nothing was written for a refused scheme"
+        );
+        // Taking a registration back asks nothing of the machine.
+        deep_links_in(&launch, schemes, false, (HKEY_CURRENT_USER, &classes)).unwrap();
+        // A scheme the machine does not know, and a key without the protocol mark, are free.
+        let (_, free, _free_cleanup, free_path, _) = registered(&scratch);
+        let unmarked = format!("{classes}\\{free}");
+        Key::at(&unmarked, true).unwrap().unwrap();
+        for scheme in [&free, &unique()] {
+            deep_links_in(
+                &launch,
+                std::slice::from_ref(scheme),
+                true,
+                (HKEY_CURRENT_USER, &classes),
+            )
+            .unwrap();
+            deep_links_in(
+                &launch,
+                std::slice::from_ref(scheme),
+                false,
+                (HKEY_CURRENT_USER, &classes),
+            )
+            .unwrap();
+        }
+        assert!(Key::at(&free_path, false).unwrap().is_none());
+        // A scheme that is ours already stays ours when the machine gets a handler later.
+        let (_, ours, _ours_cleanup, ours_path, _) = registered(&scratch);
+        let ours_schemes = std::slice::from_ref(&ours);
+        deep_links_in(&launch, ours_schemes, true, (HKEY_CURRENT_USER, &classes)).unwrap();
+        Key::at(&format!("{classes}\\{ours}"), true)
+            .unwrap()
+            .unwrap()
+            .set("URL Protocol", "")
+            .unwrap();
+        deep_links_in(&launch, ours_schemes, true, (HKEY_CURRENT_USER, &classes)).unwrap();
+        deep_links_in(&launch, ours_schemes, false, (HKEY_CURRENT_USER, &classes)).unwrap();
+        assert!(Key::at(&ours_path, false).unwrap().is_none());
     }
 
     #[test]
