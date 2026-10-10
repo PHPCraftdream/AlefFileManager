@@ -2,6 +2,7 @@
 //! What the user decided about the rights an application asks for. The manifest says what may be
 //! asked; the decision says what is given: the real thing, a stand-in that the application cannot
 //! tell from the real thing, or nothing.
+use super::risk::{any_address, reaches_everything, runs_other_programs};
 use std::{
     collections::BTreeMap,
     fmt, fs, io,
@@ -76,6 +77,9 @@ impl Right {
         let scope = self.scope.as_deref()?;
         match self.permission.as_str() {
             "cli.exec" if scope == "*" => Some("runs any program on this computer"),
+            "cli.exec" if runs_other_programs(scope) => {
+                Some("runs a shell or an interpreter, which runs any program on this computer")
+            }
             "fs.read" if reaches_everything(scope) => {
                 Some("reads anything in the home folder or on the whole disk")
             }
@@ -86,32 +90,6 @@ impl Right {
             _ => None,
         }
     }
-}
-
-/// A scope that is the whole disk or the whole home folder.
-fn reaches_everything(scope: &str) -> bool {
-    let scope = scope.replace('\\', "/");
-    let drive_root = {
-        let bytes = scope.as_bytes();
-        bytes.len() >= 4
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && bytes[2] == b'/'
-            && matches!(&scope[3..], "*" | "**")
-    };
-    drive_root
-        || matches!(
-            scope.as_str(),
-            "**" | "/**" | "/*" | "$HOME" | "$HOME/*" | "$HOME/**"
-        )
-}
-
-/// A URL scope whose host is a wildcard.
-fn any_address(scope: &str) -> bool {
-    let Some((_, rest)) = scope.split_once("://") else {
-        return false;
-    };
-    rest.split('/').next() == Some("*")
 }
 
 /// `permission` or `permission:scope` (a scope may contain colons: the first one separates).
@@ -516,6 +494,30 @@ mod tests {
             ("fs.read", r"D:\**"),
             ("net.http", "https://*/*"),
             ("net.http", "http://*"),
+            // The same reach said in other words.
+            ("fs.read", "$HOME/./**"),
+            ("fs.read", "$HOME//**"),
+            ("fs.read", "$HOME/*/**"),
+            ("fs.write", "$HOME/x/../**"),
+            ("fs.write", "$DOCUMENTS/../**"),
+            ("fs.write", "$APPDATA/../../**"),
+            ("fs.read", "C:/Users/**"),
+            ("fs.read", r"C:\Users\*"),
+            ("fs.read", "/home/**"),
+            ("fs.write", "/Users/**"),
+            ("fs.read", "/**/*.txt"),
+            // A shell or an interpreter runs whatever it is told to.
+            ("cli.exec", "powershell"),
+            ("cli.exec", "pwsh.exe"),
+            ("cli.exec", "cmd"),
+            ("cli.exec", r"C:\Windows\System32\cmd.exe"),
+            ("cli.exec", "bash"),
+            ("cli.exec", "/bin/sh"),
+            ("cli.exec", "python3"),
+            ("cli.exec", "/usr/bin/python3.12"),
+            ("cli.exec", "Node.EXE"),
+            ("cli.exec", "sidecar:node"),
+            ("cli.exec", "wscript"),
         ] {
             assert!(
                 right(risky.0, risky.1).risk().is_some(),
@@ -533,6 +535,18 @@ mod tests {
             ("net.http", "https://*.example.com/*"),
             ("app.env", "*"),
             ("shell.openExternal", "https://*/*"),
+            ("fs.read", "$HOME/.config/app/**"),
+            ("fs.write", "$HOME/notes/*.txt"),
+            ("fs.read", "/var/log/app/**"),
+            ("fs.read", "C:/Projects/app/**"),
+            ("fs.read", "$DOCUMENTS/./notes/**"),
+            ("cli.exec", "git"),
+            ("cli.exec", "/usr/bin/git"),
+            ("cli.exec", "sidecar:ffmpeg"),
+            ("cli.exec", "node-gyp"),
+            ("cli.exec", "pythonista"),
+            ("cli.exec", "ssh"),
+            ("fs.read", "/opt"),
         ] {
             assert!(
                 right(plain.0, plain.1).risk().is_none(),

@@ -367,6 +367,10 @@ fn variables_expand_only_as_the_first_segment_and_unknown_ones_fail() {
         "",
         "$HOME/a**b",
         "$HOME/**/../x",
+        "$HOME/../x",
+        "$HOME/docs/../**",
+        "$HOME/../**",
+        "$HOME/a/../../**",
         "$HOME/\0",
     ] {
         assert_eq!(

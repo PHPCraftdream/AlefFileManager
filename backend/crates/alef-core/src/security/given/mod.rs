@@ -3,3 +3,4 @@
 //! (`consent`) and the paths he picked in dialogs or dropped on a window (`grants`).
 pub mod consent;
 pub mod grants;
+mod risk;

@@ -135,8 +135,9 @@ impl PathPattern {
                     return Err(invalid("path scope must not embed a root after a variable"));
                 }
                 Component::CurDir => {}
-                Component::ParentDir if rest.is_empty() => base.push(".."),
-                Component::ParentDir => return Err(invalid("`..` after a wildcard in a scope")),
+                // The consent window shows the pattern as written: `$DOCUMENTS/../**` would read
+                // as a folder of documents while it is the home folder.
+                Component::ParentDir => return Err(invalid("`..` in a scope")),
                 Component::Normal(name) => {
                     let name = name.to_string_lossy();
                     if name.contains("**") && name != "**" {
