@@ -333,6 +333,53 @@ fn a_template_without_params_expands_to_its_literals() {
 }
 
 #[test]
+fn a_value_that_looks_like_an_option_needs_a_double_dash_before_it() {
+    let plain = declared(command("c", "git", &["log", "{ref}"]));
+    for value in ["-x", "--output=f", "-", "--", "-- x"] {
+        assert_eq!(
+            plain.expand(&params(&[("ref", value)])).unwrap_err(),
+            ExpandError::OptionLikeParam("ref".into()),
+            "{value}"
+        );
+    }
+    for value in ["main", "a-b", "x-", "", " -x", "./-x"] {
+        assert!(plain.expand(&params(&[("ref", value)])).is_ok(), "{value}");
+    }
+    let ended = declared(command("c", "git", &["log", "--", "{path}"]));
+    assert_eq!(
+        ended.expand(&params(&[("path", "-x")])).unwrap(),
+        ["log", "--", "-x"]
+    );
+    // Only a whole literal "--" ahead of the parameter ends the options.
+    for args in [
+        &["log", "{path}", "--"][..],
+        &["log", "--x", "{path}"],
+        &["log", "-- ", "{path}"],
+        &["log", "--={path}", "{path}"],
+    ] {
+        let template = declared(command("c", "git", args));
+        assert_eq!(
+            template.expand(&params(&[("path", "-x")])).unwrap_err(),
+            ExpandError::OptionLikeParam("path".into()),
+            "{args:?}"
+        );
+    }
+    let split = declared(command("c", "git", &["{flag}", "--", "{path}"]));
+    assert!(split
+        .expand(&params(&[("flag", "-x"), ("path", "-y")]))
+        .is_err());
+    assert_eq!(
+        split
+            .expand(&params(&[("flag", "x"), ("path", "-y")]))
+            .unwrap(),
+        ["x", "--", "-y"]
+    );
+    // What follows the double dash stays positional, whatever literals come in between.
+    let tail = declared(command("c", "git", &["log", "--", "{a}", "x", "{b}"]));
+    assert!(tail.expand(&params(&[("a", "-1"), ("b", "-2")])).is_ok());
+}
+
+#[test]
 fn a_missing_or_unknown_or_nul_param_is_an_invalid_argument() {
     let command = declared(status());
     let missing = command.expand(&params(&[])).unwrap_err();
@@ -343,7 +390,9 @@ fn a_missing_or_unknown_or_nul_param_is_an_invalid_argument() {
     assert_eq!(unknown, ExpandError::UnknownParam("extra".into()));
     let nul = command.expand(&params(&[("path", "a\0b")])).unwrap_err();
     assert_eq!(nul, ExpandError::NulInParam("path".into()));
-    for error in [missing, unknown, nul] {
+    let option = command.expand(&params(&[("path", "-x")])).unwrap_err();
+    assert_eq!(option, ExpandError::OptionLikeParam("path".into()));
+    for error in [missing, unknown, nul, option] {
         let alef: AlefError = error.clone().into();
         assert_eq!(alef.code, ErrorCode::InvalidArgument);
         assert!(alef.message.contains(&error.to_string()));

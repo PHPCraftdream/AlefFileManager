@@ -62,6 +62,9 @@ pub enum ExpandError {
     UnknownParam(String),
     /// The value contains a NUL character.
     NulInParam(String),
+    /// The value starts with a hyphen where the template has not ended the options with `--`: the
+    /// program would take it for an option of its own.
+    OptionLikeParam(String),
 }
 
 impl fmt::Display for ExpandError {
@@ -70,6 +73,10 @@ impl fmt::Display for ExpandError {
             Self::MissingParam(name) => write!(f, "missing parameter {name}"),
             Self::UnknownParam(name) => write!(f, "unknown parameter {name}"),
             Self::NulInParam(name) => write!(f, "parameter {name} contains a NUL character"),
+            Self::OptionLikeParam(name) => write!(
+                f,
+                "parameter {name} starts with a hyphen, which the program would read as an option"
+            ),
         }
     }
 }
@@ -80,7 +87,8 @@ impl From<ExpandError> for AlefError {
     fn from(error: ExpandError) -> Self {
         let (ExpandError::MissingParam(name)
         | ExpandError::UnknownParam(name)
-        | ExpandError::NulInParam(name)) = &error;
+        | ExpandError::NulInParam(name)
+        | ExpandError::OptionLikeParam(name)) = &error;
         let details = json!({ "param": name });
         Self::new(ErrorCode::InvalidArgument, error.to_string()).with_details(details)
     }
@@ -179,22 +187,30 @@ impl DeclaredCommand {
 
     /// The argument list for `params`: a parameter element is replaced by its value, a literal is
     /// kept. No parameter may be missing and none may be passed that the template does not use;
-    /// values with a NUL are refused.
+    /// values with a NUL are refused, and so are values starting with a hyphen unless a literal
+    /// `--` comes before the parameter in the template.
     pub fn expand(&self, params: &BTreeMap<String, String>) -> Result<Vec<String>, ExpandError> {
         let used = self.params();
         if let Some(name) = params.keys().find(|name| !used.contains(&name.as_str())) {
             return Err(ExpandError::UnknownParam(name.clone()));
         }
+        let mut options_ended = false;
         self.args
             .iter()
             .map(|arg| match arg {
-                ArgTemplate::Literal(text) => Ok(text.clone()),
+                ArgTemplate::Literal(text) => {
+                    options_ended |= text == "--";
+                    Ok(text.clone())
+                }
                 ArgTemplate::Param(name) => {
                     let value = params
                         .get(name)
                         .ok_or_else(|| ExpandError::MissingParam(name.clone()))?;
                     if value.contains('\0') {
                         return Err(ExpandError::NulInParam(name.clone()));
+                    }
+                    if !options_ended && value.starts_with('-') {
+                        return Err(ExpandError::OptionLikeParam(name.clone()));
                     }
                     Ok(value.clone())
                 }

@@ -59,6 +59,18 @@ async function main() {
     expect((await bounded(rejection(api.cli.run('undeclared'))))?.code, 'PERMISSION_DENIED');
     expect((await bounded(rejection(api.cli.exec('node -v'))))?.code, 'PERMISSION_DENIED');
   });
+  await check('cli-declared-takes-no-environment', async () => {
+    const lone = { name: 'echo', params: { prefix: 'p' } };
+    expect((await bounded(rejection(api.call('cli.run', { ...lone, env: [['GIT_CONFIG_GLOBAL', 'x']] }))))?.code, 'INVALID_ARGUMENT');
+    expect((await bounded(rejection(api.call('cli.start', { ...lone, env: [['A', 'b']] }))))?.code, 'INVALID_ARGUMENT');
+    expect((await bounded(rejection(api.cli.run('echo', { prefix: 'p' }, { env: { A: 'b' } }))))?.code, 'INVALID_ARGUMENT');
+  });
+  await check('cli-declared-value-starting-with-a-hyphen-needs-the-double-dash', async () => {
+    expect((await bounded(rejection(api.cli.run('echo', { prefix: '--upload-pack=x' }, { input: '' }))))?.code, 'INVALID_ARGUMENT');
+    expect((await bounded(rejection(api.cli.start('echo', { prefix: '-c' }))))?.code, 'INVALID_ARGUMENT');
+    const result = await bounded(api.cli.run('dashed', { value: '--version' }, { timeout: 10000 }));
+    expect(result.stdout, '--version');
+  });
   await check('cli-declared-substituted-times-out', async () => {
     expect((await bounded(rejection(api.cli.run('substituted', undefined, { timeout: 200 }))))?.code, 'TIMEOUT');
   });

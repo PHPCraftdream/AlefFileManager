@@ -28,9 +28,9 @@ test('run transports declared params, options and binary or string stdin without
   const result = { code: 3, signal: null, stdout: 'out', stderr: 'err' };
   replies.set('cli.run', { json: result });
   assert.deepEqual(await cli.run('hello', { value: 'a b' }, {
-    cwd: '/w', env: { A: 'b' }, timeout: 90, input: 'é', shell: true,
+    cwd: '/w', timeout: 90, input: 'é', shell: true,
   }), result);
-  assert.deepEqual(argsOf('cli.run'), { name: 'hello', params: { value: 'a b' }, cwd: '/w', env: [['A', 'b']], timeoutMs: 90 });
+  assert.deepEqual(argsOf('cli.run'), { name: 'hello', params: { value: 'a b' }, cwd: '/w', timeoutMs: 90 });
   assert.deepEqual(runtime.calls('cli.run').at(-1).body, encode('é'));
   await cli.run('hello');
   assert.deepEqual(argsOf('cli.run'), { name: 'hello' });
@@ -54,6 +54,9 @@ test('run and start validate names and string params before transport', async ()
     for (const params of [null, [], 42, 'x', { a: 1 }, { a: null }, { a: 'b\0c' }, { ['a\0b']: 'c' }]) {
       await assert.rejects(cli[method]('hello', params), { code: 'INVALID_ARGUMENT' });
     }
+    for (const env of [{ A: 'b' }, {}, undefined]) {
+      await assert.rejects(cli[method]('hello', undefined, { env }), { code: 'INVALID_ARGUMENT' });
+    }
     assert.equal(runtime.calls(`cli.${method}`).length, before);
   }
 });
@@ -63,11 +66,11 @@ test('start returns ChildProcess with stdin, output, wait and kill using the ope
   replies.set('cli.wait', { json: { code: 0, signal: null } });
   streams.set(71, endless());
   streams.set(72, { chunks: [join(binaryFrame(encode('declared')), endFrame())] });
-  const child = await cli.start('hello', { value: 'literal' }, { cwd: '/w', env: { A: 'b' }, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
+  const child = await cli.start('hello', { value: 'literal' }, { cwd: '/w', stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
   assert.ok(child instanceof ChildProcess);
   assert.equal(child.pid, 4245);
   assert.equal(child.stderr, null);
-  assert.deepEqual(argsOf('cli.start'), { name: 'hello', params: { value: 'literal' }, cwd: '/w', env: [['A', 'b']], stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
+  assert.deepEqual(argsOf('cli.start'), { name: 'hello', params: { value: 'literal' }, cwd: '/w', stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
   assert.deepEqual(await readAll(child.stdout), ['declared']);
   const writer = child.stdin.getWriter();
   await writer.write(encode('in'));

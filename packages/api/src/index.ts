@@ -97,6 +97,7 @@ export {
   type PtyOptions,
   type RunOptions,
   type SpawnOptions,
+  type StartOptions,
   type WaitResult,
 } from './system/cli.ts';
 export { clipboard } from './system/clipboard.ts';

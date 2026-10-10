@@ -29,8 +29,6 @@ struct RunArgs {
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
-    env: Option<Vec<(String, String)>>,
-    #[serde(default)]
     timeout_ms: Option<u64>,
 }
 
@@ -43,8 +41,6 @@ struct StartArgs {
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
-    env: Option<Vec<(String, String)>>,
-    #[serde(default)]
     stdin: Option<spawn::PipeArg>,
     #[serde(default)]
     stdout: Option<spawn::PipeArg>,
@@ -52,13 +48,12 @@ struct StartArgs {
     stderr: Option<spawn::PipeArg>,
 }
 
-/// What a declared command starts: the program, its arguments, the folder, the environment. A
-/// declared command has no `*`, so the variables that steer the search path are always refused.
+/// What a declared command starts: the program, its arguments and the folder. The environment is
+/// the one of the runtime: the page adds nothing to it, whatever the program reads from it.
 struct Plan {
     program: PathBuf,
     args: Vec<String>,
     cwd: PathBuf,
-    env: Vec<(String, String)>,
 }
 
 fn plan(
@@ -67,25 +62,18 @@ fn plan(
     name: &str,
     params: Option<BTreeMap<String, String>>,
     cwd: &Option<String>,
-    env: Option<Vec<(String, String)>>,
 ) -> Result<Plan, AlefError> {
     let command: &DeclaredCommand = ctx
         .permissions
         .command(name)
         .ok_or_else(|| refusal(Permission::CliCommand))?;
     let args = command.expand(&params.unwrap_or_default())?;
-    let env = spawn::check_env(env, false)?;
     let cwd = cwd_of(ctx, cwd)?;
     let program = match &command.program {
         Program::Sidecar(name) => sidecar::sidecar(app, name)?,
         Program::Plain(text) => sidecar::program(app, text)?,
     };
-    Ok(Plan {
-        program,
-        args,
-        cwd,
-        env,
-    })
+    Ok(Plan { program, args, cwd })
 }
 
 pub(in crate::system::cli) fn register(
@@ -104,12 +92,12 @@ pub(in crate::system::cli) fn register(
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(limit).await);
                 }
-                let plan = plan(&ctx, &app, &args.name, args.params, &args.cwd, args.env)?;
+                let plan = plan(&ctx, &app, &args.name, args.params, &args.cwd)?;
                 let (out, err, code, signal) = exec::run(exec::Spec {
                     program: plan.program,
                     args: plan.args,
                     cwd: plan.cwd,
-                    env: plan.env,
+                    env: Vec::new(),
                     body: ctx.body().cloned(),
                     limit,
                 })
@@ -128,13 +116,13 @@ pub(in crate::system::cli) fn register(
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(None).await);
                 }
-                let plan = plan(&ctx, &app, &args.name, args.params, &args.cwd, args.env)?;
+                let plan = plan(&ctx, &app, &args.name, args.params, &args.cwd)?;
                 let reply = spawn::spawn_command(
                     &ctx.session,
                     plan.program,
                     plan.args,
                     plan.cwd,
-                    plan.env,
+                    Vec::new(),
                     spawn::pipes_of(args.stdin, args.stdout, args.stderr),
                 )
                 .await?;

@@ -53,6 +53,12 @@ pub fn items() -> String {
             "Prints its arguments",
         ),
         item(
+            "dashed",
+            "node",
+            &["-e", ARGV, "--", ":: {value}"],
+            "Prints a value after the double dash",
+        ),
+        item(
             "cat",
             "node",
             &["-e", "process.stdin.pipe(process.stdout)"],
@@ -157,14 +163,14 @@ async fn run_passes_a_value_with_spaces_as_one_argument_and_keeps_the_literals()
     let fixture = app(&["node"]).await;
     let reply = run(
         &fixture,
-        json!({ "name": "argv", "params": { "first": "a b  c", "second": "--version" } }),
+        json!({ "name": "argv", "params": { "first": "a b  c", "second": "version" } }),
     )
     .await
     .unwrap();
     assert_eq!(reply["code"], 0);
     assert_eq!(
         serde_json::from_str::<Value>(reply["stdout"].as_str().unwrap()).unwrap(),
-        json!(["literal one", "a b  c", "--version"])
+        json!(["literal one", "a b  c", "version"])
     );
     // Shell syntax and quotes in a value are only text.
     let reply = run(
@@ -383,41 +389,67 @@ async fn a_substituted_start_hangs_for_the_default_time_and_starts_nothing() {
 }
 
 #[tokio::test]
-async fn the_environment_follows_the_rules_of_exec_and_has_no_star() {
+async fn a_page_adds_nothing_to_the_environment_of_a_command() {
     for exec in [&["node"][..], &["*"][..]] {
         let fixture = app(exec).await;
-        for name in [
-            "PATH",
-            "PATHEXT",
-            "COMSPEC",
-            "LD_PRELOAD",
-            "DYLD_INSERT_LIBRARIES",
+        for pair in [
+            json!(["ALEF_X", "marker"]),
+            json!(["GIT_CONFIG_GLOBAL", "x"]),
+            json!(["NODE_OPTIONS", "--require x"]),
+            json!(["PATH", "x"]),
         ] {
             for command in ["cli.run", "cli.start"] {
                 let error = fixture
-                    .call(command, json!({ "name": "env", "env": [[name, "x"]] }))
+                    .call(command, json!({ "name": "env", "env": [pair] }))
                     .await
                     .unwrap_err();
-                assert_eq!(error.code, ErrorCode::InvalidArgument, "{command} {name}");
-                assert!(error.message.contains(name), "{}", error.message);
+                assert_eq!(error.code, ErrorCode::InvalidArgument, "{command} {pair}");
             }
         }
-        let error = fixture
-            .call("cli.run", json!({ "name": "env", "env": [["A=B", "x"]] }))
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidArgument);
     }
     let fixture = app(&[]).await;
+    let reply = run(&fixture, json!({ "name": "env" })).await.unwrap();
+    assert_eq!(reply["stdout"], "unset");
+}
+
+#[tokio::test]
+async fn a_value_starting_with_a_hyphen_is_an_option_unless_the_template_ended_them() {
+    let fixture = app(&["node"]).await;
+    for params in [
+        json!({ "first": "-x", "second": "b" }),
+        json!({ "first": "a", "second": "--version" }),
+        json!({ "first": "-", "second": "b" }),
+        json!({ "first": "--", "second": "b" }),
+    ] {
+        for command in ["cli.run", "cli.start"] {
+            let error = fixture
+                .call(command, json!({ "name": "argv", "params": params }))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgument, "{command} {params}");
+            assert!(error.message.contains("hyphen"), "{}", error.message);
+        }
+    }
     let reply = run(
         &fixture,
-        json!({ "name": "env", "env": [["ALEF_X", "marker"]] }),
+        json!({ "name": "argv", "params": { "first": "a-b", "second": "b-" } }),
     )
     .await
     .unwrap();
-    assert_eq!(reply["stdout"], "marker");
-    let reply = run(&fixture, json!({ "name": "env" })).await.unwrap();
-    assert_eq!(reply["stdout"], "unset");
+    assert_eq!(reply["code"], 0);
+    for value in ["--version", "-x", "-"] {
+        let reply = run(
+            &fixture,
+            json!({ "name": "dashed", "params": { "value": value } }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(reply["stdout"].as_str().unwrap()).unwrap(),
+            json!([value]),
+            "after the double dash a value is an argument"
+        );
+    }
 }
 
 #[tokio::test]

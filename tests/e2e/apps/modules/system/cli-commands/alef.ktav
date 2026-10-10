@@ -49,6 +49,17 @@ permissions: {
                 description: Print a literal parameter using the bundled node
             }
             {
+                name: dashed
+                program: node
+                args: [
+                    -e
+                    process.stdout.write(process.argv[1])
+                    --
+                    :: {value}
+                ]
+                description: Print a parameter after the double dash
+            }
+            {
                 name: substituted
                 program: node
                 args: [ -e, process.exit(0) ]

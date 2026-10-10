@@ -120,7 +120,8 @@ const CLI_SUBSTITUTE_CHECKS = [
 const CLI_COMMAND_CHECKS = [
   'cli-run-declared-params-and-body', 'cli-start-declared-params-and-streams',
   'cli-sidecar-declared-and-direct-launch', 'cli-declared-command-rights-are-separate',
-  'cli-declared-substituted-times-out',
+  'cli-declared-substituted-times-out', 'cli-declared-takes-no-environment',
+  'cli-declared-value-starting-with-a-hyphen-needs-the-double-dash',
 ];
 
 const MENU_VALIDATION_CHECKS = [

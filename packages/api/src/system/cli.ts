@@ -20,7 +20,8 @@ export interface ExecOptions extends Cancelable {
   input?: string | Uint8Array;
 }
 
-export type RunOptions = Omit<ExecOptions, 'shell'>;
+/** A declared command takes no environment from the page: the manifest decides what runs. */
+export type RunOptions = Omit<ExecOptions, 'shell' | 'env'>;
 
 export interface ExecResult {
   code: number | null;
@@ -38,6 +39,8 @@ export interface SpawnOptions extends Cancelable {
   stdout?: 'pipe' | 'ignore';
   stderr?: 'pipe' | 'ignore';
 }
+
+export type StartOptions = Omit<SpawnOptions, 'env'>;
 
 export interface WaitResult {
   code: number | null;
@@ -79,9 +82,12 @@ export class ChildProcess {
   }
 }
 
-function commandParams(name: string, params?: Record<string, string>): void {
+function commandParams(name: string, params?: Record<string, string>, options?: object): void {
   if (typeof name !== 'string' || name === '' || name.includes('\0')) {
     throw new AlefError('INVALID_ARGUMENT', 'a declared command needs a nonempty name without NUL.');
+  }
+  if (options !== undefined && 'env' in options) {
+    throw new AlefError('INVALID_ARGUMENT', 'a declared command takes no environment: the manifest decides what runs.');
   }
   if (params !== undefined && (params === null || typeof params !== 'object' || Array.isArray(params)
     || Object.entries(params).some(([key, value]) => key.includes('\0') || typeof value !== 'string' || value.includes('\0')))) {
@@ -145,22 +151,22 @@ export class Pty {
 export const cli = {
   /** Runs a command declared in `permissions.cli.commands`, without a shell. */
   run: async (name: string, params?: Record<string, string>, options: RunOptions = {}): Promise<ExecResult> => {
-    commandParams(name, params);
-    const { cwd, env, timeout, input, signal } = options;
+    commandParams(name, params, options);
+    const { cwd, timeout, input, signal } = options;
     const body = (input === undefined
       ? undefined
       : typeof input === 'string' ? encoder.encode(input) : input) as Uint8Array<ArrayBuffer> | undefined;
     if (body !== undefined && body.length > MAX_INPUT) {
       throw new AlefError('INVALID_ARGUMENT', 'input above 192 KiB does not fit a call: pass it through cli.start streams.');
     }
-    return call<ExecResult>('cli.run', { name, params, cwd, env: env && Object.entries(env), timeoutMs: timeout }, { signal, body });
+    return call<ExecResult>('cli.run', { name, params, cwd, timeoutMs: timeout }, { signal, body });
   },
 
   /** Starts a declared command with the same streams and process resource as `spawn`. */
-  start: async (name: string, params?: Record<string, string>, options: SpawnOptions = {}): Promise<ChildProcess> => {
-    commandParams(name, params);
-    const { cwd, env, stdin, stdout, stderr, signal } = options;
-    return new ChildProcess(await call<Opened>('cli.start', { name, params, cwd, env: env && Object.entries(env), stdin, stdout, stderr }, { signal }));
+  start: async (name: string, params?: Record<string, string>, options: StartOptions = {}): Promise<ChildProcess> => {
+    commandParams(name, params, options);
+    const { cwd, stdin, stdout, stderr, signal } = options;
+    return new ChildProcess(await call<Opened>('cli.start', { name, params, cwd, stdin, stdout, stderr }, { signal }));
   },
 
   exec: async (commandLine: string, options: ExecOptions = {}): Promise<ExecResult> => {
