@@ -147,7 +147,8 @@ pub(in crate::desktop::app) fn apply(
 }
 
 fn deep_link_command(launch: &super::Launch) -> Result<String, AlefError> {
-    Ok(format!("{} \"%1\"", launch.windows_command()?))
+    // After `--` everything is an argument of the application: a quote in the URL cannot start options.
+    Ok(format!("{} \"--\" \"%1\"", launch.windows_command()?))
 }
 fn owned_marker(current: Option<Vec<u8>>, marker: &str) -> bool {
     current == Some(encoded(marker))
@@ -339,7 +340,7 @@ mod tests {
         let launch = super::super::Launch::resolve("org.example.deep", scratch.path()).unwrap();
         assert_eq!(
             deep_link_command(&launch).unwrap(),
-            format!("{} \"%1\"", launch.windows_command().unwrap())
+            format!("{} \"--\" \"%1\"", launch.windows_command().unwrap())
         );
         let marker = format!(
             "{}|{}",

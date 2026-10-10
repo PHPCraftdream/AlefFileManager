@@ -178,6 +178,16 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
                 app_args.extend(arguments.by_ref());
                 break;
             }
+            // A link can carry a quote that breaks out of its place in the command line: what
+            // comes after a URL is never an option of the runtime.
+            Some(flag @ ("--app" | "--dev-url" | "--grant" | "--no-prompt"))
+                if !app_args.is_empty() =>
+            {
+                return Err(format!("{flag} is not accepted after a URL"));
+            }
+            Some("--app") if app_dir.is_some() => return Err("--app is given twice".to_owned()),
+            Some("--dev-url") if dev.is_some() => return Err("--dev-url is given twice".to_owned()),
+            Some("--grant") if grant.is_some() => return Err("--grant is given twice".to_owned()),
             Some("--app") => app_dir = Some(PathBuf::from(value(&mut arguments, "--app")?)),
             Some("--dev-url") => {
                 let text = value(&mut arguments, "--dev-url")?;
@@ -231,6 +241,42 @@ mod tests {
         for bad in ["stray", "--unknown", "alef://[bad", "alef:bad\n"] {
             assert!(parse(&["--app", "site", bad]).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn no_option_of_the_runtime_follows_a_url_or_comes_twice() {
+        for after in [
+            ["--app", "other"].as_slice(),
+            &["--grant", "allow"],
+            &["--dev-url", "http://127.0.0.1:3000/"],
+            &["--no-prompt"],
+        ] {
+            let mut line = vec!["--app", "site", "alef://open"];
+            line.extend(after);
+            assert!(parse(&line).is_err(), "{line:?}");
+        }
+        for twice in [
+            ["--app", "a", "--app", "b"].as_slice(),
+            &["--app", "a", "--grant", "allow", "--grant", "deny"],
+            &[
+                "--app",
+                "a",
+                "--dev-url",
+                "http://127.0.0.1:1/",
+                "--dev-url",
+                "http://127.0.0.1:2/",
+            ],
+        ] {
+            assert!(parse(twice).is_err(), "{twice:?}");
+        }
+        // What the registration of a scheme passes: everything after the double dash is the application's.
+        let Command::Run(launch) =
+            parse(&["--app", "site", "--", "alef:x", "--grant", "allow"]).unwrap()
+        else {
+            panic!("run");
+        };
+        assert!(launch.grant.is_none());
+        assert_eq!(launch.app_args.len(), 3);
     }
 
     #[test]
