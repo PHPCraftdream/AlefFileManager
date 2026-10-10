@@ -273,6 +273,15 @@ async fn broken_options_are_refused_before_the_host_is_asked() {
         ("dialog.open", json!({ "bogus": 1 })),
         ("dialog.open", json!({ "multiple": "yes" })),
         ("dialog.open", json!({ "defaultPath": "relative/path" })),
+        ("dialog.open", json!({ "defaultPath": "//host/share/x" })),
+        (
+            "dialog.save",
+            json!({ "defaultPath": r"\\host@SSL\x\a.txt" }),
+        ),
+        (
+            "dialog.save",
+            json!({ "defaultPath": r"\\?\UNC\host\share" }),
+        ),
         (
             "dialog.open",
             json!({ "filters": [{ "name": "x", "extensions": [".png"] }] }),

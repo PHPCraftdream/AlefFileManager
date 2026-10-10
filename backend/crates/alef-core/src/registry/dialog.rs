@@ -167,10 +167,24 @@ fn label(name: &str, value: &Option<String>) -> Result<(), String> {
     }
 }
 
+/// Two separators at the start make a UNC, WebDAV or device path on Windows (`\\host\share`,
+/// `\\host@SSL\x`, `\\?\`, `\\.\`): the system would reach for the host, and sign in to it, just to
+/// look at the folder.
+fn on_network_or_device(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some('/' | '\\'), Some('/' | '\\'))
+    )
+}
+
 fn start(value: &Option<String>) -> Result<(), String> {
     match value {
         Some(text) if text.len() > PATH_LIMIT => {
             Err(format!("defaultPath is longer than {PATH_LIMIT} bytes"))
+        }
+        Some(text) if on_network_or_device(text) => {
+            Err("defaultPath is a network or device path".to_owned())
         }
         Some(text) if !plain(text) || !Path::new(text).is_absolute() => {
             Err("defaultPath is not an absolute path".to_owned())
@@ -325,6 +339,40 @@ mod tests {
             ..OpenOptions::default()
         };
         assert!(long.check().is_err());
+    }
+
+    #[test]
+    fn a_start_path_cannot_reach_a_network_host_or_a_device() {
+        for bad in [
+            r"\\host\share\x",
+            r"\\host@SSL\DavWWWRoot\x",
+            r"\\?\C:\Users",
+            r"\\?\UNC\host\share",
+            r"\\.\pipe\x",
+            "//host/share/x",
+            r"/\host\share",
+            r"\/host/share",
+        ] {
+            let message = OpenOptions {
+                default_path: Some(bad.to_owned()),
+                ..OpenOptions::default()
+            }
+            .check()
+            .unwrap_err();
+            assert!(message.contains("network or device"), "{bad:?}: {message}");
+            let save = SaveOptions {
+                default_path: Some(bad.to_owned()),
+                ..SaveOptions::default()
+            };
+            assert!(save.check().is_err(), "{bad:?}");
+        }
+        for fine in [absolute(), format!("{}/sub", absolute())] {
+            let options = OpenOptions {
+                default_path: Some(fine.clone()),
+                ..OpenOptions::default()
+            };
+            assert!(options.check().is_ok(), "{fine}");
+        }
     }
 
     #[test]
