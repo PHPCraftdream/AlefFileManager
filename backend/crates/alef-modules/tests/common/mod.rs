@@ -45,6 +45,8 @@ pub struct FakeHost {
     pub calls: Mutex<Vec<(u64, UiCall)>>,
     /// Answers of `Host::ui`, first in first out; `null` when none is queued.
     pub replies: Mutex<VecDeque<Result<Value, AlefError>>>,
+    /// When set, the next `Host::ui` waits for a notification before it answers.
+    pub hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     /// The events the modules sent: the window they went to (None: every window), name, payload.
     pub events: Mutex<Vec<(Option<u64>, String, Value)>>,
 }
@@ -70,7 +72,13 @@ impl Host for FakeHost {
             .unwrap()
             .pop_front()
             .unwrap_or(Ok(Value::Null));
-        Box::pin(async move { reply })
+        let hold = self.hold.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some(gate) = hold {
+                gate.notified().await;
+            }
+            reply
+        })
     }
 }
 
@@ -258,6 +266,7 @@ impl Fixture {
             theme: Mutex::new(Theme::Light),
             calls: Mutex::new(Vec::new()),
             replies: Mutex::new(VecDeque::new()),
+            hold: Mutex::new(None),
             events: Mutex::new(Vec::new()),
         });
         let mut registry = Registry::default();

@@ -141,7 +141,7 @@ pub struct WindowPermissions {
     pub create: bool,
 }
 
-/// Complete permission policy. Every subsection is required except `window`.
+/// Complete permission policy. Every subsection is required except `window`; `tray` defaults to false.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export, export_to = "manifest.ts")]
@@ -158,6 +158,10 @@ pub struct Permissions {
     pub clipboard: ClipboardPermissions,
     /// Global shortcuts.
     pub shortcut: ShortcutPermissions,
+    /// Whether the application may manage a tray icon; denied when omitted.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub tray: bool,
     /// Secret access.
     pub secrets: bool,
     /// Application environment access.

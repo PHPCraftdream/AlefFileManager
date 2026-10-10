@@ -11,5 +11,6 @@ mod shell;
 mod ui {
     mod menu;
     mod shortcut;
+    mod tray;
     mod window;
 }

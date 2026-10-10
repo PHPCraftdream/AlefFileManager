@@ -207,6 +207,15 @@ impl Drop for Tree {
         let _ = self.detach();
     }
 }
+/// Context/tray menu builder: no application-menu root restriction.
+pub(crate) fn build_menu(plan: &Plan) -> io::Result<Menu> {
+    let menu = Menu::with_id(plan.root.clone());
+    for node in &plan.nodes {
+        menu.append(item_ref(&build_node(node)?))
+            .map_err(io::Error::other)?;
+    }
+    Ok(menu)
+}
 impl Backend for Native {
     type Tree = Tree;
     fn build(&self, plan: &Plan) -> io::Result<Tree> {

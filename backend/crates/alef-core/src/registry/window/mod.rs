@@ -9,6 +9,7 @@ use crate::security::window::{Length, WindowDef};
 pub mod geometry;
 pub mod menu;
 pub mod shortcut;
+pub mod tray;
 
 /// A point in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -253,6 +254,7 @@ pub enum UiCall {
     /// `shortcut.*`: owned by a document session, including teardown after reload.
     Shortcut(shortcut::ShortcutCall),
     Menu(menu::MenuCall),
+    Tray(tray::TrayCall),
 }
 
 #[cfg(test)]

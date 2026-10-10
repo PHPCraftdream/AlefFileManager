@@ -137,6 +137,11 @@ const MENU_NATIVE_CHECKS = [
   'menu-quit-and-about-roles-are-not-available', 'menu-application-menu-can-be-cleared',
 ];
 
+const TRAY_NATIVE_CHECKS = [
+  'tray-create-set-and-destroy', 'tray-bad-updates-keep-the-tray-and-are-rejected',
+  'tray-quit-and-about-roles-are-not-available', 'tray-limit-is-eight-per-document',
+];
+
 const SHORTCUT_CHECKS = [
   'shortcut-native-register', 'shortcut-native-duplicate-is-already-exists',
   'shortcut-invalid-accelerator', 'shortcut-unregister-and-register-again',
@@ -230,6 +235,27 @@ export function moduleScenarios({ drive, exe, verbose }) {
         const closed = await running.waitForClosed(10000);
         if (!exit || !closed) {
           problems.push(`menu runtime did not release process/pipes within the cleanup bound (exit ${JSON.stringify(exit)}); last output: ${lines.slice(-6).join(' | ')}`);
+        }
+        return problems;
+      },
+    }),
+    tray: () => drive({
+      name: 'tray', app: 'modules/desktop/tray', targets: { platform: process.platform },
+      expectedChecks: [
+        'tray-invalid-arguments-are-rejected',
+        ...(process.platform === 'linux' ? ['tray-linux-native-operations-are-not-available'] : TRAY_NATIVE_CHECKS),
+        'tray-cleanup-leaves-no-icon',
+      ],
+      judge: async (lines, _verdict, running) => {
+        const problems = [];
+        if (!lines.some(line => line.includes('MANUAL tray-icon-click-menu-and-visibility-not-tested'))) {
+          problems.push('tray scenario did not disclose untested real input');
+        }
+        running.stop();
+        const exit = await running.waitForExit(10000);
+        const closed = await running.waitForClosed(10000);
+        if (!exit || !closed) {
+          problems.push(`tray runtime did not release process/pipes within the cleanup bound (exit ${JSON.stringify(exit)}); last output: ${lines.slice(-6).join(' | ')}`);
         }
         return problems;
       },

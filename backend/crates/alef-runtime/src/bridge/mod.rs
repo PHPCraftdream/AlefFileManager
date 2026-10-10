@@ -135,6 +135,7 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         },
         clipboard: ClipboardPermissions { read: false },
         shortcut: ShortcutPermissions { global: false },
+        tray: false,
         secrets: false,
         app: AppPermissions {
             env: Vec::new(),

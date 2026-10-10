@@ -19,7 +19,7 @@ use muda::MenuEvent;
 use native::Native;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     rc::Rc,
     time::{Duration, Instant},
@@ -47,6 +47,7 @@ pub(crate) struct Menus {
     forward: Option<Forwarder<MenuEvent>>,
     table: Table<Native>,
     next_sweep: Option<Instant>,
+    pending: VecDeque<MenuEvent>,
     #[cfg(target_os = "windows")]
     pub(crate) accelerators: Accelerators,
 }
@@ -90,7 +91,10 @@ impl Menus {
                 session: *owner,
             },
         };
-        let backend = self.backend.as_ref().expect("ensured");
+        let backend = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Menus are not prepared"))?;
         if !matches!(&call, MenuCall::Release { .. })
             && !sessions
                 .current(caller)
@@ -126,7 +130,7 @@ impl Menus {
     }
     /// A context menu of the window `window`; the call returns once the menu is closed.
     fn popup(
-        &self,
+        &mut self,
         window: u64,
         items: &[MenuItem],
         x: Option<f64>,
@@ -137,16 +141,30 @@ impl Menus {
         if items.is_empty() {
             return Ok(Value::Null);
         }
-        let backend = self.backend.as_ref().expect("ensured");
+        let backend = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Menus are not prepared"))?;
         if !backend.popup(window, &plan, at)? {
             return Ok(Value::Null);
         }
         // The choice is sent while the menu closes: it is in the queue of the forwarder in no time.
-        let forward = self.forward.as_ref().expect("ensured");
-        Ok(
-            model::chosen(&plan, || forward.next_within(CHOICE).map(|event| event.id))
-                .map_or(Value::Null, Value::from),
-        )
+        let forward = self
+            .forward
+            .as_ref()
+            .ok_or_else(|| io::Error::other("Menu receiver is not prepared"))?;
+        let deadline = Instant::now() + CHOICE;
+        Ok(model::chosen(&plan, || {
+            let event = forward.next_within(deadline.saturating_duration_since(Instant::now()))?;
+            if plan.action(&event.id).is_none() {
+                if self.pending.len() == 1024 {
+                    self.pending.pop_front();
+                }
+                self.pending.push_back(event.clone());
+            }
+            Some(event.id)
+        })
+        .map_or(Value::Null, Value::from))
     }
     pub(crate) fn prepare(
         &mut self,
@@ -170,7 +188,13 @@ impl Menus {
     fn sweep_due(&mut self, now: Instant) -> bool {
         sweep_due(self.table.is_empty(), &mut self.next_sweep, now)
     }
-    pub(crate) fn tick(&mut self, sessions: &SessionManager, events: &EventBus, windows: &[u64]) {
+    pub(crate) fn tick(
+        &mut self,
+        sessions: &SessionManager,
+        events: &EventBus,
+        windows: &[u64],
+        trays: &super::tray::Trays,
+    ) {
         let live = |owner| live_owner(sessions, windows, owner);
         if self.sweep_due(Instant::now()) {
             if let Some(backend) = &self.backend {
@@ -179,7 +203,7 @@ impl Menus {
             self.refresh_accelerators();
         }
         if let Some(forward) = &self.forward {
-            for event in forward.drain() {
+            for event in self.pending.drain(..).chain(forward.drain()) {
                 if let Some((owner, id)) = self.table.route(&event.id, live) {
                     if let Ok(json) = event_json(
                         "runtime.menu.clicked",
@@ -187,6 +211,8 @@ impl Menus {
                     ) {
                         events.publish_session(owner.window, owner.session, &json);
                     }
+                } else {
+                    trays.route_menu(&event.id, sessions, events, windows);
                 }
             }
         }
@@ -211,6 +237,7 @@ impl Menus {
         if let Some(backend) = &self.backend {
             self.table.sweep(backend, |_| false);
         }
+        self.pending.clear();
         self.forward.take();
         self.table = Table::default();
         self.backend.take();

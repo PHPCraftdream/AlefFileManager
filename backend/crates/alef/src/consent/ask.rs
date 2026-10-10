@@ -248,6 +248,27 @@ mod tests {
     }
 
     #[test]
+    fn tray_is_a_plain_non_risky_right_with_all_three_answers() {
+        let right = Right::plain("tray");
+        let request = request_for(
+            &app(),
+            std::slice::from_ref(&right),
+            &|_| None,
+            &Consent::undecided(),
+            None,
+        );
+        assert_eq!(request.rights[0].permission, "tray");
+        assert_eq!(request.rights[0].scope, None);
+        assert_eq!(request.rights[0].risk, None);
+        let page = include_str!("../../assets/consent/consent.js");
+        assert!(page.contains("['tray', 'Tray icon']"));
+        for decision in [Decision::Allow, Decision::Substitute, Decision::Deny] {
+            let answered = answer(&[(&right, decision, false)]);
+            assert_eq!(validate(&request, &answered).unwrap()[&right], decision);
+        }
+    }
+
+    #[test]
     fn a_right_is_shown_with_the_detail_the_manifest_gives_it() {
         let wanted = [
             Right::scoped("cli.command", "status"),

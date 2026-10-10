@@ -18,6 +18,34 @@ fn error(src: &str) -> alef_core::AlefError {
 }
 
 #[test]
+fn tray_is_optional_defaults_to_false_and_round_trips_as_a_boolean() {
+    let default = Manifest::from_ktav_str(MINIMAL).unwrap();
+    assert!(!default.permissions.tray);
+    let mut json = serde_json::to_value(&default).unwrap();
+    json["permissions"].as_object_mut().unwrap().remove("tray");
+    assert_eq!(serde_json::from_value::<Manifest>(json).unwrap(), default);
+    for tray in [false, true] {
+        let source = MINIMAL.replace(
+            "    secrets: false",
+            &format!("    tray: {tray}\n    secrets: false"),
+        );
+        let manifest = Manifest::from_ktav_str(&source).unwrap();
+        assert_eq!(manifest.permissions.tray, tray);
+        let json = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(json["permissions"]["tray"], tray);
+        assert_eq!(serde_json::from_value::<Manifest>(json).unwrap(), manifest);
+    }
+    for value in ["null", "[]", "yes", "1"] {
+        error(&MINIMAL.replace(
+            "    secrets: false",
+            &format!("    tray: {value}\n    secrets: false"),
+        ));
+    }
+    let types = include_str!("../../../../packages/api/types/manifest.ts");
+    assert!(types.contains("tray?: boolean"));
+}
+
+#[test]
 fn autostart_and_deep_links_are_optional_and_round_trip_with_camel_case_names() {
     let default = Manifest::from_ktav_str(MINIMAL).unwrap();
     assert!(!default.permissions.app.autostart);

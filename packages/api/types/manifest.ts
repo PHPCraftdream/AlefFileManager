@@ -235,7 +235,7 @@ export type NetPermissions = {
   socket: Array<string>, };
 
 /**
- * Complete permission policy. Every subsection is required except `window`.
+ * Complete permission policy. Every subsection is required except `window`; `tray` defaults to false.
  */
 export type Permissions = {
   /**
@@ -262,6 +262,10 @@ export type Permissions = {
    * Global shortcuts.
    */
   shortcut: ShortcutPermissions,
+  /**
+   * Whether the application may manage a tray icon; denied when omitted.
+   */
+  tray?: boolean,
   /**
    * Secret access.
    */

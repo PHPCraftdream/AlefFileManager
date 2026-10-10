@@ -52,6 +52,7 @@ permissions: {{
     shortcut: {{
         global: false
     }}
+    tray: false
     secrets: false
     app: {{
         env: [ HOME ]

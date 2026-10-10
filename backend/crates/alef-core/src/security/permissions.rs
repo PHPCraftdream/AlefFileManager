@@ -46,6 +46,8 @@ pub enum Permission {
     ClipboardRead,
     /// Register global shortcuts (`shortcut.global`).
     ShortcutGlobal,
+    /// Manage a tray icon (`tray`).
+    Tray,
     /// Use the secret store (`secrets`).
     Secrets,
     /// Read an environment variable listed in `app.env`.
@@ -72,6 +74,7 @@ impl Permission {
             Self::ShellOpenExternal => "shell.openExternal",
             Self::ClipboardRead => "clipboard.read",
             Self::ShortcutGlobal => "shortcut.global",
+            Self::Tray => "tray",
             Self::Secrets => "secrets",
             Self::AppEnv => "app.env",
             Self::AppDeepLinks => "app.deepLinks",
@@ -170,6 +173,7 @@ pub struct PermissionSet {
     env: HashSet<String>,
     clipboard: bool,
     shortcut: bool,
+    tray: bool,
     secrets: bool,
     deep_links: Vec<String>,
     autostart: bool,
@@ -289,6 +293,7 @@ impl PermissionSet {
             env,
             clipboard: policy.clipboard.read,
             shortcut: policy.shortcut.global,
+            tray: policy.tray,
             secrets: policy.secrets,
             deep_links: Vec::new(),
             autostart: policy.app.autostart,
@@ -382,6 +387,7 @@ impl PermissionSet {
         for (asked, name) in [
             (self.clipboard, "clipboard.read"),
             (self.shortcut, "shortcut.global"),
+            (self.tray, "tray"),
             (self.secrets, "secrets"),
             (self.autostart, "app.autostart"),
             (self.window, "window.create"),
@@ -441,6 +447,7 @@ impl PermissionSet {
             Permission::None => return Ok(Decision::Allow),
             Permission::ClipboardRead => flag(self.clipboard, "clipboard.read"),
             Permission::ShortcutGlobal => flag(self.shortcut, "shortcut.global"),
+            Permission::Tray => flag(self.tray, "tray"),
             Permission::Secrets => flag(self.secrets, "secrets"),
             Permission::AppDeepLinks => target
                 .filter(|scheme| self.deep_links.iter().any(|declared| declared == *scheme))

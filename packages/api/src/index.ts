@@ -86,6 +86,7 @@ export {
 export { menu, type MenuItem, type MenuKind, type MenuRole } from './desktop/menu.ts';
 export { dialog } from './desktop/dialog.ts';
 export { shortcut, Shortcut } from './desktop/shortcut.ts';
+export { tray, Tray, type TrayOptions, type TrayEvents } from './desktop/tray.ts';
 export { shell } from './desktop/shell.ts';
 export {
   ChildProcess,

@@ -82,7 +82,7 @@ fn the_rights_of_a_manifest_are_listed_once_each_in_a_stable_order() {
             "cli": {"exec": ["git"]},
             "net": {"http": ["https://example.com/*"], "socket": []},
             "shell": {"openExternal": ["https://example.com/docs/*"]},
-            "clipboard": {"read": true}, "secrets": true,
+            "clipboard": {"read": true}, "secrets": true, "tray": true,
             "app": {"env": ["PATH", "HOME", "PATH"], "autostart": true}
         }),
     )
@@ -109,6 +109,7 @@ fn the_rights_of_a_manifest_are_listed_once_each_in_a_stable_order() {
             "net.http https://example.com/*",
             "secrets",
             "shell.openExternal https://example.com/docs/*",
+            "tray",
             "window.create",
         ]
     );

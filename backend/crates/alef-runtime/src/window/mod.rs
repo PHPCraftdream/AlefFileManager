@@ -105,6 +105,7 @@ struct App {
     runtime: tokio::runtime::Handle,
     dialogs: host::dialogs::Dialogs,
     shortcuts: crate::ui::integration::shortcut::Shortcuts,
+    trays: crate::ui::integration::tray::Trays,
     menus: crate::ui::integration::menu::Menus,
     restore: Option<state::restore::Restore>,
 }
@@ -173,6 +174,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         runtime: tokio::runtime::Handle::current(),
         dialogs: host::dialogs::Dialogs::new(),
         shortcuts: crate::ui::integration::shortcut::Shortcuts::default(),
+        trays: crate::ui::integration::tray::Trays::default(),
         menus,
         restore: options.state_file.map(state::restore::Restore::load),
     };

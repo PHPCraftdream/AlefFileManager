@@ -30,17 +30,16 @@ servo-base = "=0.6.0"
 rfd = "=0.17.2"
 
 # M0.3 spike (docs/stages/m0-spikes.md): off by default, enabled with --features spike-integration.
-tray-icon = { version = "=0.24.2", optional = true }
-muda = { version = "=0.19.3", optional = true }
 global-hotkey = "=0.8.0"
 crossbeam-channel = "=0.5.17"
 
 # Native menus: muda needs GTK on Linux, which a winit loop does not own, so only here.
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 muda = "=0.19.3"
+tray-icon = "=0.24.2"
 
 [features]
-spike-integration = ["dep:tray-icon", "dep:muda"]
+spike-integration = []
 
 [dev-dependencies]
 tempfile = "=3.27.0"

@@ -42,6 +42,7 @@ impl Menus {
         _sessions: &SessionManager,
         _events: &EventBus,
         _windows: &[u64],
+        _trays: &super::tray::Trays,
     ) {
     }
     pub(crate) fn release_window(&mut self, _window: u64) {}

@@ -201,6 +201,36 @@ permissions: {{
     }
 
     #[test]
+    fn tray_is_denied_when_omitted_and_listed_when_explicitly_enabled() {
+        use alef_core::security::{
+            consent::{Decision, Right},
+            grants::Grants,
+            permissions::Permission,
+        };
+        let plain = manifest(SIZE, "[]");
+        assert!(!plain.permissions.tray);
+        let plan = plan_of(plain.clone()).unwrap();
+        assert!(!plan.permissions.rights().contains(&Right::plain("tray")));
+        assert_eq!(
+            plan.permissions
+                .check(Permission::Tray, None, &Grants::new())
+                .unwrap_err()
+                .code,
+            ErrorCode::PermissionDenied
+        );
+        let mut enabled = plain;
+        enabled.permissions.tray = true;
+        let plan = plan_of(enabled).unwrap();
+        assert_eq!(plan.permissions.rights(), [Right::plain("tray")]);
+        assert_eq!(
+            plan.permissions
+                .check(Permission::Tray, None, &Grants::new())
+                .unwrap(),
+            Decision::Allow
+        );
+    }
+
+    #[test]
     fn percentages_limits_monitor_and_position_are_the_window_module_s_to_resolve() {
         let plan = plan_of(manifest(
             "        width: 70%work

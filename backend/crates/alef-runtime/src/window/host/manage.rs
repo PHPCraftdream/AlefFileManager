@@ -315,6 +315,7 @@ impl App {
             restore.observe(&info, Instant::now());
             restore.flush();
         }
+        self.trays.release_window(self.windows[index].window_id);
         self.menus.release_window(self.windows[index].window_id);
         let state = self.windows.remove(index);
         self.shortcuts.release_window(state.window_id);
@@ -393,6 +394,7 @@ impl App {
             })
             .chain(self.shortcuts.next_wake())
             .chain(self.menus.next_wake())
+            .chain(self.trays.next_wake())
             .chain(self.restore.as_ref().and_then(|restore| restore.due_at()))
             .min()
     }
@@ -486,6 +488,18 @@ impl App {
         call: UiCall,
     ) -> io::Result<Value> {
         match call {
+            UiCall::Tray(call) => {
+                let windows = self
+                    .windows
+                    .iter()
+                    .map(|s| (s.window_id, s.window.clone()))
+                    .collect();
+                self.menus
+                    .prepare(event_loop, self.waker.0.clone(), windows)?;
+                let windows: Vec<_> = self.windows.iter().map(|s| s.window_id).collect();
+                self.trays
+                    .call(self.waker.0.clone(), &self.sessions, &windows, caller, call)
+            }
             UiCall::Shortcut(call) => {
                 if matches!(
                     &call,

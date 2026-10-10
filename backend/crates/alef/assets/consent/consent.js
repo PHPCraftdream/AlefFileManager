@@ -14,6 +14,7 @@ const GROUPS = [
   ['app', 'Environment'],
   ['clipboard', 'Clipboard'],
   ['window', 'Windows'],
+  ['tray', 'Tray icon'],
 ];
 
 // The transport of the runtime, as much of it as this page needs (see packages/api/src/core).

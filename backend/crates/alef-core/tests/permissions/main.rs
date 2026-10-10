@@ -13,7 +13,7 @@ use alef_core::{
 };
 use std::path::PathBuf;
 
-const ALL: [Permission; 15] = [
+const ALL: [Permission; 16] = [
     Permission::None,
     Permission::FsRead,
     Permission::FsWrite,
@@ -24,6 +24,7 @@ const ALL: [Permission; 15] = [
     Permission::ShellOpenExternal,
     Permission::ClipboardRead,
     Permission::ShortcutGlobal,
+    Permission::Tray,
     Permission::Secrets,
     Permission::AppEnv,
     Permission::AppDeepLinks,
@@ -77,9 +78,10 @@ fn closed_manifest_denies_everything_except_none() {
 #[test]
 fn each_boolean_permission_opens_only_itself() {
     type Open = fn(&mut Permissions);
-    let cases: [(Permission, Open); 4] = [
+    let cases: [(Permission, Open); 5] = [
         (Permission::ClipboardRead, |p| p.clipboard.read = true),
         (Permission::ShortcutGlobal, |p| p.shortcut.global = true),
+        (Permission::Tray, |p| p.tray = true),
         (Permission::Secrets, |p| p.secrets = true),
         (Permission::AppAutostart, |p| p.app.autostart = true),
     ];
@@ -96,6 +98,53 @@ fn each_boolean_permission_opens_only_itself() {
             );
         }
     }
+}
+
+#[test]
+fn tray_requires_declaration_and_obeys_allow_substitute_deny_and_narrowing() {
+    use alef_core::security::consent::{Consent, Decision, Right};
+    let right = Right::plain("tray");
+    assert_eq!(Permission::Tray.name(), "tray");
+    let undeclared = build(&closed());
+    let check = |set: &PermissionSet| set.check(Permission::Tray, None, &Grants::new());
+    let refused = check(&undeclared).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::PermissionDenied);
+    assert_eq!(
+        refused.details,
+        Some(serde_json::json!({"permission": "tray"}))
+    );
+    assert!(undeclared.rights().is_empty());
+    let mut policy = closed();
+    policy.tray = true;
+    let base = build(&policy);
+    assert_eq!(base.rights(), std::slice::from_ref(&right));
+    assert_eq!(check(&base).unwrap(), Decision::Allow);
+    let consent = |decision| {
+        let mut consent = Consent::undecided();
+        consent.set(right.clone(), decision);
+        consent
+    };
+    for decision in [Decision::Allow, Decision::Substitute, Decision::Deny] {
+        let permissions = base.clone().with_consent(consent(decision));
+        match decision {
+            Decision::Deny => assert_eq!(check(&permissions).unwrap_err(), refused),
+            _ => assert_eq!(check(&permissions).unwrap(), decision),
+        }
+        assert_eq!(
+            check(&undeclared.clone().with_consent(consent(decision))).unwrap_err(),
+            refused
+        );
+    }
+    assert_eq!(
+        check(&base.clone().with_consent(Consent::undecided())).unwrap_err(),
+        refused
+    );
+    let holder = base.clone();
+    assert!(base.narrow(&consent(Decision::Substitute)));
+    assert_eq!(check(&holder).unwrap(), Decision::Substitute);
+    assert!(!base.narrow(&consent(Decision::Allow)));
+    assert!(base.narrow(&consent(Decision::Deny)));
+    assert_eq!(check(&holder).unwrap_err(), refused);
 }
 
 #[test]
@@ -159,6 +208,7 @@ fn denial_names_the_permission_but_never_the_target() {
     policy.secrets = false;
     let set = build(&policy);
     for (permission, name) in [
+        (Permission::Tray, "tray"),
         (Permission::Secrets, "secrets"),
         (Permission::FsRead, "fs.read"),
         (Permission::NetHttp, "net.http"),

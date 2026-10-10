@@ -151,6 +151,37 @@ mod tests {
     }
 
     #[test]
+    fn tray_is_enumerated_and_each_decision_is_stored_without_a_scope() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = FileConsentStore::new(scratch.path().join("store"));
+        let folder = app(scratch.path(), "org.example.tray");
+        let file = folder.join(crate::plan::MANIFEST_FILE);
+        let text = std::fs::read_to_string(&file)
+            .unwrap()
+            .replace("tray: false", "tray: true");
+        std::fs::write(file, text).unwrap();
+        let list = PermissionsCommand::List {
+            app: Some(folder.clone()),
+        };
+        assert!(run(&list, &store).unwrap().contains("  undecided\ttray\n"));
+        for (decision, word) in [
+            (Decision::Allow, "allow"),
+            (Decision::Substitute, "substitute"),
+            (Decision::Deny, "deny"),
+        ] {
+            let set = PermissionsCommand::Set {
+                app: folder.clone(),
+                right: "tray".parse().unwrap(),
+                decision,
+            };
+            assert_eq!(run(&set, &store).unwrap(), format!("tray: {word}\n"));
+            assert!(run(&list, &store)
+                .unwrap()
+                .contains(&format!("  {word}\ttray\n")));
+        }
+    }
+
+    #[test]
     fn a_declared_command_is_listed_with_its_description_and_command_line() {
         let scratch = tempfile::tempdir().unwrap();
         let store = FileConsentStore::new(scratch.path().join("store"));

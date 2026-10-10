@@ -25,8 +25,10 @@ impl App {
         let windows: Vec<_> = self.windows.iter().map(|state| state.window_id).collect();
         self.shortcuts
             .tick(&self.sessions, self.handle.events(), &windows);
-        self.menus
+        self.trays
             .tick(&self.sessions, self.handle.events(), &windows);
+        self.menus
+            .tick(&self.sessions, self.handle.events(), &windows, &self.trays);
         if let Some(state) = self.windows.first() {
             state.servo.spin_event_loop();
         }
@@ -60,6 +62,7 @@ impl App {
     }
 
     fn detach(&mut self) {
+        self.trays.shutdown();
         self.menus.shutdown();
         self.shortcuts.shutdown();
         for state in &self.windows {
