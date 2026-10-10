@@ -271,6 +271,23 @@ async fn opening_a_path_never_starts_a_program() {
         "x.sh",
         "x.pkg",
         "x.desktop",
+        // The review found these missing: scripts run by an interpreter, packages, shell objects.
+        "x.py",
+        "x.PYW",
+        "x.ahk",
+        "x.rb",
+        "x.pl",
+        "x.scf",
+        "x.inf",
+        "x.ws",
+        "x.xbap",
+        "x.library-ms",
+        "x.theme",
+        "x.diagcab",
+        "x.msu",
+        "x.msix",
+        "x.chm",
+        "x.jnlp",
     ] {
         let file = directory.path().join(name);
         fs::write(&file, "x").unwrap();

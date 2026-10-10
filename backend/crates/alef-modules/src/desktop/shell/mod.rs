@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `shell`: hands a URL or a file to the desktop. `openExternal` needs the URL inside the
 //! `shell.openExternal` scope; `openPath` and `showInFolder` read access to the path, `trash` write
-//! access. `openPath` never starts a program: what the desktop would run instead of show (an
-//! executable, a script, a shortcut, an application bundle) is refused, otherwise "read and open"
-//! would be a way around `cli.exec`.
+//! access. `openPath` does not start a program: what the desktop would run instead of show (an
+//! executable, a script, a shortcut, an application bundle) is refused by its extension against a
+//! list, otherwise "read and open" would be a way around `cli.exec`. The list is a floor: an
+//! extension the user has bound to an interpreter of their own is not known to it.
 pub mod dialog;
 #[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
@@ -192,6 +193,63 @@ const WINDOWS_PROGRAMS: &[&str] = &[
     "appref-ms",
     "mht",
     "settingcontent-ms",
+    "py",
+    "pyw",
+    "pyz",
+    "pyzw",
+    "ahk",
+    "rb",
+    "pl",
+    "vb",
+    "wsc",
+    "sct",
+    "ws",
+    "job",
+    "msu",
+    "msix",
+    "msixbundle",
+    "appx",
+    "appxbundle",
+    "appinstaller",
+    "jnlp",
+    "vsto",
+    "xll",
+    "wll",
+    "scf",
+    "inf",
+    "ins",
+    "isp",
+    "xbap",
+    "library-ms",
+    "theme",
+    "themepack",
+    "diagcab",
+    "diagcfg",
+    "diagpkg",
+    "shs",
+    "shb",
+    "msh",
+    "msh1",
+    "msh2",
+    "mshxml",
+    "msh1xml",
+    "msh2xml",
+    "ps1xml",
+    "psc1",
+    "psc2",
+    "chm",
+    "hlp",
+    "mst",
+    "ops",
+    "prf",
+    "prg",
+    "pcd",
+    "ade",
+    "adp",
+    "mde",
+    "fxp",
+    "plg",
+    "xnk",
 ];
 
 const MAC_PROGRAMS: &[&str] = &[
