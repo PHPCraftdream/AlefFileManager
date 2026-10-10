@@ -357,6 +357,45 @@ async fn an_unlisted_env_pair_still_reaches_the_child() {
     assert_eq!(reply["stdout"], "marker");
 }
 
+/// cmd.exe looks in the working folder first; a program planted there by the application itself
+/// (it can write into a folder it also names as the working folder) must not run in place of the
+/// one on the path.
+#[cfg(windows)]
+#[tokio::test]
+async fn cmd_does_not_run_a_program_planted_in_the_working_folder() {
+    // The variable may be set for the whole machine; with it set the hole would not show.
+    std::env::remove_var("NoDefaultCurrentDirectoryInExePath");
+    let folder = tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("planted.cmd"),
+        "@echo off\r\necho planted-ran\r\n",
+    )
+    .unwrap();
+    let scope = format!("{}/**", folder.path().to_string_lossy().replace('\\', "/"));
+    let fixture = Fixture::new(
+        Some(&manifest_with_read(&["planted", "cmd.exe"], &scope)),
+        &[],
+    )
+    .await;
+    let reply = fixture
+        .call(
+            "cli.exec",
+            json!({
+                "commandLine": "planted",
+                "shell": true,
+                "cwd": folder.path().to_string_lossy()
+            }),
+        )
+        .await
+        .unwrap();
+    let said = format!("{}{}", reply["stdout"], reply["stderr"]);
+    assert!(
+        !said.contains("planted-ran"),
+        "the planted program ran: {said}"
+    );
+    assert_ne!(reply["code"], 0, "cmd.exe did not find the program: {said}");
+}
+
 #[tokio::test]
 async fn a_cwd_outside_fs_read_is_denied_and_a_missing_one_is_invalid() {
     let allowed = tempdir().unwrap();

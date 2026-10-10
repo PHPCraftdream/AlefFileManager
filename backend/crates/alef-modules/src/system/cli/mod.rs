@@ -197,7 +197,7 @@ pub(crate) fn register(
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(limit).await);
                 }
-                let env = spawn::check_env(args.env, wildcard(&ctx))?;
+                let mut env = spawn::check_env(args.env, wildcard(&ctx))?;
                 let (program_text, arguments) = match exec::shell_of(&args.shell)? {
                     Some(shell) => {
                         let shell_decision = ctx.permissions.check(
@@ -212,6 +212,7 @@ pub(crate) fn register(
                             return Err(dead(limit).await);
                         }
                         sidecar::refuse_in_shell(first_token(&args.command_line).as_deref())?;
+                        shell.guard(&mut env);
                         let (program, arguments) = shell.command(&args.command_line);
                         (program.to_owned(), arguments)
                     }

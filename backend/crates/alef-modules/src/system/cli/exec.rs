@@ -64,7 +64,21 @@ pub(crate) enum Shell {
     PowerShell,
 }
 
+/// When defined, `cmd.exe` does not look for the program of a line in the working folder.
+const NO_FOLDER_LOOKUP: &str = "NoDefaultCurrentDirectoryInExePath";
+
 impl Shell {
+    /// Puts into `env` what the shell needs besides the pairs of the page. `cmd.exe` looks for the
+    /// first word of a line in the working folder before the path, and the working folder is the
+    /// one the page named: a program planted there would run in place of the one the right names.
+    /// The pair goes last, so the page cannot take it back.
+    pub(crate) fn guard(&self, env: &mut Vec<(String, String)>) {
+        if matches!(self, Self::Cmd) {
+            env.retain(|(name, _)| !name.eq_ignore_ascii_case(NO_FOLDER_LOOKUP));
+            env.push((NO_FOLDER_LOOKUP.to_owned(), "1".to_owned()));
+        }
+    }
+
     /// The name the right is checked against.
     pub(crate) fn name(&self) -> &'static str {
         match self {
@@ -269,6 +283,30 @@ pub(crate) async fn run(
 mod tests {
     use super::*;
     use std::io;
+
+    #[test]
+    fn cmd_is_told_not_to_look_in_the_working_folder_and_the_page_cannot_undo_it() {
+        let mut env = vec![
+            ("A".to_owned(), "b".to_owned()),
+            (
+                "nodefaultcurrentdirectoryinexepath".to_owned(),
+                "0".to_owned(),
+            ),
+        ];
+        Shell::Cmd.guard(&mut env);
+        assert_eq!(
+            env,
+            [
+                ("A".to_owned(), "b".to_owned()),
+                (NO_FOLDER_LOOKUP.to_owned(), "1".to_owned())
+            ]
+        );
+        for other in [Shell::Sh, Shell::PowerShell] {
+            let mut env = vec![("A".to_owned(), "b".to_owned())];
+            other.guard(&mut env);
+            assert_eq!(env, [("A".to_owned(), "b".to_owned())]);
+        }
+    }
 
     #[test]
     fn a_line_splits_into_words_on_whitespace() {
