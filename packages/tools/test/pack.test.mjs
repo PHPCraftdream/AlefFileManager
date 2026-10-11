@@ -12,6 +12,12 @@ import { verify } from '../src/verify.mjs';
 import { readZip, writeZip } from '../src/zip.mjs';
 
 const bounded = { timeout: 20000 };
+// NTFS and the default APFS fold case: two names that differ in case are one file there.
+async function caseSensitive(dir) {
+  const probe = path.join(dir, 'case-probe');
+  await writeFile(probe, 'x');
+  try { await fs.stat(path.join(dir, 'CASE-PROBE')); return false; } catch { return true; } finally { await rm(probe); }
+}
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 async function scratch(run) {
   const root = await mkdtemp(path.join(tmpdir(), 'alef-pack-')); const dir = path.join(root, 'app'); const home = path.join(root, 'home');
@@ -114,6 +120,8 @@ test('unsafe_names_duplicates_symlinks_and_symlinked_output_are_refused', bounde
       await assert.rejects(pack(dir, options), error => error.message.startsWith(`${name}: ZIP:`));
       await rm(path.join(dir, name));
     }
+  }
+  if (await caseSensitive(dir)) {
     await writeFile(path.join(dir, 'A'), 'x'); await writeFile(path.join(dir, 'a'), 'x');
     await assert.rejects(pack(dir, options), /duplicate/); await rm(path.join(dir, 'A')); await rm(path.join(dir, 'a'));
   }
@@ -133,7 +141,7 @@ test('directories_are_validated_but_never_emitted_as_zip_entries', bounded, () =
   await assert.rejects(pack(dir, options), error => error.message.startsWith(`${invalid}: ZIP:`));
 }));
 test('case_insensitive_file_prefix_conflicts_are_rejected_during_metadata_preflight', bounded, () => scratch(async ({ dir, home }) => {
-  if (process.platform === 'win32') return;
+  if (!(await caseSensitive(dir))) return;
   await mkdir(path.join(dir, 'Asset')); await writeFile(path.join(dir, 'Asset', 'child'), 'x');
   await writeFile(path.join(dir, 'asset'), 'x');
   await assert.rejects(pack(dir, { home, unsigned: true }), /Pack: asset: file path-prefix conflict/);
