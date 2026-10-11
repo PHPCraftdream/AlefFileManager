@@ -1,0 +1,71 @@
+# Supply chain: the copies of crates in backend/patches against the published ones, the audit of the
+# dependencies (advisories, licenses, sources), and the lower bound of the compiler. These jobs do
+# not build Servo, so they are quick. Actions are pinned by SHA (the tag is in the comment).
+name: Supply
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: supply-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  patches:
+    name: patches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Patched crates = published crates + the recorded changes (docs/PATCHES.md)
+        run: |
+          node --test scripts/supply/check-patches.test.mjs
+          node scripts/supply/check-patches.mjs
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The version the configuration was written and checked with (backend/deny.toml).
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-deny@0.19.9
+      - name: Advisories, licenses, bans, sources
+        run: cargo deny --manifest-path backend/Cargo.toml check
+
+  # The declared lower bound of the compiler is only a claim until something builds with it. The
+  # crates that do not need Servo are checked on their own bound (alef-core 1.88; alef-modules 1.90
+  # because of fjall); alef-runtime and alef follow Servo and are built with the pinned compiler in ci.yml.
+  msrv:
+    name: msrv ${{ matrix.package }} ${{ matrix.toolchain }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: alef-core
+            toolchain: 1.88.0
+          - package: alef-modules
+            toolchain: 1.90.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable branch on 2026-10-11
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - name: System libraries of the desktop crates
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev libdbus-1-dev pkg-config
+      - name: cargo check on the declared lower bound
+        run: cargo check --manifest-path backend/Cargo.toml --locked -p ${{ matrix.package }}

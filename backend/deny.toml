@@ -1,0 +1,53 @@
+# cargo-deny: `cargo deny --manifest-path backend/Cargo.toml check` (CI: .github/workflows/supply.yml).
+# Every dependency is pinned (`=x.y.z`), so nothing updates by itself: this is where a new
+# advisory, a license outside the list below or a source other than crates.io shows up.
+
+[advisories]
+# A vulnerability or a withdrawn crate always fails. These are notices that a crate is no longer
+# maintained; all are transitive dependencies of Servo (or of what Servo pins), none has a
+# known vulnerability, and the pins stay until Servo moves off them.
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3, via webrender (Servo); declared complete, no known flaw" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, via Servo's build-time dependencies" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser, via Servo's font stack" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property, via Servo (servo-script)" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range, via Servo (servo-script)" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common, via Servo (servo-script)" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident, via Servo (servo-script)" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version, via Servo (servo-script)" },
+]
+
+[licenses]
+# Permissive licenses, plus MPL-2.0 (Servo and its crates: file-level copyleft; the files stay
+# MPL-2.0, the application code is not affected). A crate offered under "A OR B" passes when one
+# side is on this list (self_cell: Apache-2.0 OR GPL-2.0-only; r-efi: MIT OR Apache-2.0 OR LGPL-2.1-or-later).
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+# The same crate in several versions is normal under Servo; it is shown, not failed.
+multiple-versions = "warn"
+wildcards = "deny"
+# The crates of this workspace depend on each other by path, which has no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
