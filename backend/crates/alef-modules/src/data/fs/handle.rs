@@ -105,7 +105,9 @@ impl Inner {
         self.lock().file.sync_all().map_err(fault)
     }
 
-    fn put(&self, pump: Pump) -> Result<(), AlefError> {
+    /// Starts the pump `make` builds, unless one is running: nothing is opened or spawned for a
+    /// call that gets `BUSY`, so it cannot take a piece of the file from the stream that runs.
+    fn start<T>(&self, make: impl FnOnce() -> (Pump, T)) -> Result<T, AlefError> {
         let mut slot = self.pump.lock().unwrap_or_else(|e| e.into_inner());
         let running = match slot.as_ref() {
             Some(Pump::Read(task)) => !task.is_finished(),
@@ -115,8 +117,9 @@ impl Inner {
         if running {
             return Err(coded(ErrorCode::Busy));
         }
+        let (pump, started) = make();
         *slot = Some(pump);
-        Ok(())
+        Ok(started)
     }
 
     fn take_pump(&self) -> Option<Pump> {
@@ -346,44 +349,49 @@ pub(super) fn register(registry: &mut Registry, space: &Space) -> Result<(), Ale
             if !inner.readable {
                 return Err(coded(ErrorCode::PermissionDenied));
             }
-            let (writer, id) = ctx.streams().open_outgoing();
-            let mut position = args.position;
-            let mut left = args.length;
-            let reading = inner.clone();
-            let task = tokio::spawn(async move {
-                loop {
-                    let want = left.map_or(STREAM_PIECE, |left| left.min(STREAM_PIECE));
-                    if want == 0 {
-                        writer.end();
-                        return;
-                    }
-                    let source = reading.clone();
-                    let piece = tokio::task::spawn_blocking(move || source.read(want, position))
-                        .await
-                        .map_err(|error| AlefError::new(ErrorCode::Internal, error.to_string()))
-                        .and_then(|read| read);
-                    match piece {
-                        Ok(piece) if piece.is_empty() => {
+            let id = inner.start(|| {
+                let (writer, id) = ctx.streams().open_outgoing();
+                let mut position = args.position;
+                let mut left = args.length;
+                let reading = inner.clone();
+                let task = tokio::spawn(async move {
+                    loop {
+                        let want = left.map_or(STREAM_PIECE, |left| left.min(STREAM_PIECE));
+                        if want == 0 {
                             writer.end();
                             return;
                         }
-                        Ok(piece) => {
-                            let length = piece.len() as u64;
-                            position = position.map(|at| at + length);
-                            left = left.map(|left| left - length.min(left));
-                            // The page closed the stream, or the document went away: stop reading.
-                            if writer.send_binary(Bytes::from(piece)).await.is_err() {
+                        let source = reading.clone();
+                        let piece =
+                            tokio::task::spawn_blocking(move || source.read(want, position))
+                                .await
+                                .map_err(|error| {
+                                    AlefError::new(ErrorCode::Internal, error.to_string())
+                                })
+                                .and_then(|read| read);
+                        match piece {
+                            Ok(piece) if piece.is_empty() => {
+                                writer.end();
+                                return;
+                            }
+                            Ok(piece) => {
+                                let length = piece.len() as u64;
+                                position = position.map(|at| at + length);
+                                left = left.map(|left| left - length.min(left));
+                                // The page closed the stream, or the document went away: stop reading.
+                                if writer.send_binary(Bytes::from(piece)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                writer.error(error);
                                 return;
                             }
                         }
-                        Err(error) => {
-                            writer.error(error);
-                            return;
-                        }
                     }
-                }
-            });
-            inner.put(Pump::Read(task))?;
+                });
+                (Pump::Read(task), id)
+            })?;
             json(&json!({ "stream": id.0 }))
         })?;
 
@@ -394,21 +402,23 @@ pub(super) fn register(registry: &mut Registry, space: &Space) -> Result<(), Ale
             if !inner.writable {
                 return Err(coded(ErrorCode::PermissionDenied));
             }
-            let (mut reader, id) = ctx.streams().open_incoming_reader();
-            let mut position = args.position;
-            let writing = inner.clone();
-            let task = tokio::spawn(async move {
-                while let Some(piece) = reader.recv().await {
-                    let piece = piece?;
-                    let length = piece.len() as u64;
-                    let target = writing.clone();
-                    let at = position;
-                    blocking(move || target.write(&piece, at)).await?;
-                    position = position.map(|at| at + length);
-                }
-                Ok(())
-            });
-            inner.put(Pump::Write(task))?;
+            let id = inner.start(|| {
+                let (mut reader, id) = ctx.streams().open_incoming_reader();
+                let mut position = args.position;
+                let writing = inner.clone();
+                let task = tokio::spawn(async move {
+                    while let Some(piece) = reader.recv().await {
+                        let piece = piece?;
+                        let length = piece.len() as u64;
+                        let target = writing.clone();
+                        let at = position;
+                        blocking(move || target.write(&piece, at)).await?;
+                        position = position.map(|at| at + length);
+                    }
+                    Ok(())
+                });
+                (Pump::Write(task), id)
+            })?;
             json(&json!({ "stream": id.0 }))
         })?;
 

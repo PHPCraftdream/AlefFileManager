@@ -425,6 +425,55 @@ async fn a_stream_that_is_cut_off_ends_the_work_and_settle_says_so() {
 }
 
 #[tokio::test]
+async fn a_refused_second_stream_takes_no_piece_from_the_first_and_opens_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let app = fixture_in(directory.path(), Decision::Allow).await;
+    let path = directory.path().join("big.bin");
+    let data: Vec<u8> = (0..6 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&path, &data).unwrap();
+    let from = open(&app, &path, json!({})).await;
+    let first = app
+        .call("fs.readStream", json!({ "handle": from }))
+        .await
+        .unwrap();
+    // The first stream runs (the page has not read it yet); refused calls arrive meanwhile.
+    for position in [None, Some(0_u64)] {
+        let mut args = json!({ "handle": from });
+        if let Some(position) = position {
+            args["position"] = json!(position);
+        }
+        let refused = app.call("fs.readStream", args).await.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Busy, "{position:?}");
+    }
+    let writer = open(
+        &app,
+        &directory.path().join("out.bin"),
+        json!({ "write": true, "create": true }),
+    )
+    .await;
+    let running = app
+        .call("fs.writeStream", json!({ "handle": writer }))
+        .await
+        .unwrap();
+    let refused = app
+        .call("fs.writeStream", json!({ "handle": writer }))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Busy);
+    assert_eq!(
+        drain(&app, stream_of(&first)).await,
+        data,
+        "the file came whole: no piece went to a refused call"
+    );
+    // Only the two streams that were granted exist: a refused call opened none that stays.
+    assert_eq!(
+        stream_of(&running).0,
+        stream_of(&first).0 + 1,
+        "a refused call used no stream id"
+    );
+}
+
+#[tokio::test]
 async fn a_big_folder_comes_in_batches_and_a_missing_one_is_told_at_once() {
     let directory = tempfile::tempdir().unwrap();
     let app = fixture_in(directory.path(), Decision::Allow).await;
