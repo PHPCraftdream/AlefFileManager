@@ -326,9 +326,9 @@ async fn open_incoming_reader_keeps_writer_reachable_by_id() {
         Some(Ok(Bytes::from_static(b"chunk")))
     );
     assert!(h.incoming_reader(id).is_none());
-    assert!(h.incoming_writer(StreamId(999)).is_none());
+    assert!(h.incoming_writer(StreamId(999)).is_err());
     let (_, outgoing_id) = h.open_outgoing();
-    assert!(h.incoming_writer(outgoing_id).is_none());
+    assert!(h.incoming_writer(outgoing_id).is_err());
 }
 
 #[tokio::test]
@@ -372,4 +372,113 @@ async fn hub_close_cancels_incoming_reader_and_writer() {
     assert!(matches!(bounded(reader.recv()).await, Some(Err(e)) if e.code == ErrorCode::Closed));
     assert_eq!(bounded(reader.recv()).await, None);
     err(h.close(StreamId(999999)), ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn streams_that_are_over_leave_the_table_and_late_calls_answer_as_before() {
+    let h = StreamHub::new(512, 256);
+    let mut over = Vec::new();
+    for _ in 0..1000 {
+        let (w, id) = h.open_outgoing();
+        let mut r = h.reader(id).expect("reader");
+        w.end();
+        assert_eq!(frame(&mut r).await, Some(Frame::End));
+        over.push(id);
+    }
+    let first_incoming = over.len();
+    for _ in 0..200 {
+        let (w, id) = h.open_incoming_reader();
+        w_end_incoming(&h, id);
+        drop(w);
+        over.push(id);
+    }
+    let (_alive, live) = h.open_outgoing();
+    let held = h.state.lock().expect("state").entries.len();
+    assert!(
+        held <= 2 * SWEEP_FLOOR + 2,
+        "the table keeps no entry for a stream that is over: {held}"
+    );
+    // A stream that is still there is untouched by the sweep.
+    assert!(h.outstanding(live).is_some());
+    // Late calls on a stream that is gone answer as they did while it was kept.
+    h.ack(over[0], 5).expect("a late ack is for nothing");
+    h.close(over[0]).expect("a late close is for nothing");
+    assert!(h.reader(over[0]).is_none());
+    assert!(h.outstanding(over[0]).is_none());
+    assert_eq!(
+        code_of(h.incoming_writer(over[first_incoming])),
+        ErrorCode::Closed
+    );
+    // An id that was never handed out is still unknown.
+    err(h.ack(StreamId(1_000_000), 1), ErrorCode::NotFound);
+    err(h.close(StreamId(1_000_000)), ErrorCode::NotFound);
+    assert_eq!(
+        code_of(h.incoming_writer(StreamId(1_000_000))),
+        ErrorCode::NotFound
+    );
+    assert_eq!(code_of(h.incoming_writer(StreamId(0))), ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_stream_with_a_writer_or_an_unread_ending_stays_in_the_table() {
+    let h = StreamHub::new(512, 256);
+    // An outgoing stream that ended but whose reader was never taken: the page can still ask for it.
+    let (w, unread) = h.open_outgoing();
+    w.end();
+    // An incoming stream that ended while its reader has not been taken either.
+    let (iw, waiting) = h.open_incoming();
+    iw.end();
+    // An outgoing stream that is open (its writer lives).
+    let (open, running) = h.open_outgoing();
+    let _reader = h.reader(running).expect("reader");
+    // A stream into the runtime whose reader was handed out and whose writer is kept by the hub.
+    let (_live_reader, live) = h.open_incoming_reader();
+    for _ in 0..300 {
+        let (w, id) = h.open_outgoing();
+        let mut r = h.reader(id).expect("reader");
+        w.end();
+        assert_eq!(frame(&mut r).await, Some(Frame::End));
+    }
+    h.open_outgoing();
+    let mut reader = h
+        .reader(unread)
+        .expect("the reader of an ended stream is still there");
+    assert_eq!(frame(&mut reader).await, Some(Frame::End));
+    assert!(h.incoming_reader(waiting).is_some());
+    h.incoming_writer(live)
+        .expect("a stream that has not ended is still there")
+        .write(Bytes::from_static(b"x"))
+        .await
+        .expect("and takes writes");
+    h.ack(running, 1).expect("ack");
+    assert!(
+        h.outstanding(running).is_some(),
+        "a stream with a writer is never swept"
+    );
+    drop(open);
+}
+
+#[tokio::test]
+async fn the_sweep_waits_for_the_table_to_double_when_nothing_can_go() {
+    let h = StreamHub::new(512, 256);
+    let writers: Vec<_> = (0..200).map(|_| h.open_outgoing().0).collect();
+    let state = h.state.lock().expect("state");
+    assert_eq!(state.entries.len(), 200, "streams that run are all kept");
+    assert!(
+        state.sweep_at > state.entries.len(),
+        "the next sweep is not due at every open: {} kept, due at {}",
+        state.entries.len(),
+        state.sweep_at
+    );
+    drop(state);
+    drop(writers);
+}
+
+/// Ends an incoming stream from the side of the page, through the id, as the transport does.
+fn w_end_incoming(h: &StreamHub, id: StreamId) {
+    h.incoming_writer(id).expect("writer").end();
+}
+
+fn code_of(result: Result<IncomingWriter, AlefError>) -> ErrorCode {
+    result.err().expect("an error").code
 }

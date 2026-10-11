@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Per-session resource ownership and explicit asynchronous teardown.
-use std::{any::Any, future::Future, pin::Pin, sync::Mutex};
+use std::{any::Any, collections::BTreeMap, future::Future, pin::Pin, sync::Mutex};
 
 use crate::{
     error::{AlefError, ErrorCode},
@@ -15,7 +15,8 @@ pub trait Resource: Send + Any {
 }
 
 struct State {
-    slots: Vec<(ResourceId, Option<Box<dyn Resource>>)>,
+    /// The live resources by id; ids only grow, so the order of the map is the order of insertion.
+    live: BTreeMap<ResourceId, Box<dyn Resource>>,
     next_id: u64,
     closed: bool,
 }
@@ -32,7 +33,7 @@ impl ResourceTable {
         Self {
             limit,
             state: Mutex::new(State {
-                slots: Vec::new(),
+                live: BTreeMap::new(),
                 next_id: 1,
                 closed: false,
             }),
@@ -48,13 +49,7 @@ impl ResourceTable {
         if state.closed {
             return Err(AlefError::new(ErrorCode::Closed, "resource table closed"));
         }
-        if state
-            .slots
-            .iter()
-            .filter(|(_, value)| value.is_some())
-            .count()
-            >= self.limit
-        {
+        if state.live.len() >= self.limit {
             return Err(AlefError::new(ErrorCode::Busy, "resource limit reached"));
         }
         let id = ResourceId(state.next_id);
@@ -62,7 +57,7 @@ impl ResourceTable {
             .next_id
             .checked_add(1)
             .ok_or_else(|| AlefError::new(ErrorCode::Internal, "resource id exhausted"))?;
-        state.slots.push((id, Some(resource)));
+        state.live.insert(id, resource);
         Ok(id)
     }
     /// Runs `f` while the resource remains borrowed; returns NotFound if absent.
@@ -73,12 +68,10 @@ impl ResourceTable {
     ) -> Result<R, AlefError> {
         let state = self.state.lock().expect("resource mutex poisoned");
         let resource = state
-            .slots
-            .iter()
-            .find(|(key, _)| *key == id)
-            .and_then(|(_, value)| value.as_deref())
+            .live
+            .get(&id)
             .ok_or_else(|| AlefError::new(ErrorCode::NotFound, "resource not found"))?;
-        Ok(f(resource))
+        Ok(f(resource.as_ref()))
     }
     /// Runs `f` on the resource when it is a `T`; `NotFound` for an absent resource and for one of
     /// another kind, so that a handle of one module is nothing to the commands of another.
@@ -97,10 +90,8 @@ impl ResourceTable {
     pub fn take(&self, id: ResourceId) -> Result<Box<dyn Resource>, AlefError> {
         let mut state = self.state.lock().expect("resource mutex poisoned");
         state
-            .slots
-            .iter_mut()
-            .find(|(key, _)| *key == id)
-            .and_then(|(_, value)| value.take())
+            .live
+            .remove(&id)
             .ok_or_else(|| AlefError::new(ErrorCode::NotFound, "resource not found"))
     }
     /// Drops the resource without awaiting close; use `take` or `close_all` for asynchronous close.
@@ -116,11 +107,9 @@ impl ResourceTable {
                 return;
             }
             state.closed = true;
-            state
-                .slots
-                .iter_mut()
+            std::mem::take(&mut state.live)
+                .into_values()
                 .rev()
-                .filter_map(|(_, resource)| resource.take())
                 .collect::<Vec<_>>()
         };
         for resource in resources {
@@ -132,10 +121,8 @@ impl ResourceTable {
         self.state
             .lock()
             .expect("resource mutex poisoned")
-            .slots
-            .iter()
-            .filter(|(_, v)| v.is_some())
-            .count()
+            .live
+            .len()
     }
     /// Reports whether the table contains no live resources.
     pub fn is_empty(&self) -> bool {
@@ -219,6 +206,22 @@ mod tests {
         assert!(c.0 > b.0 && c != a);
         timeout_close(&table).await;
         assert_eq!(*log.lock().expect("log"), vec!["c", "b"]);
+    }
+    #[test]
+    fn a_table_that_opened_and_closed_many_resources_holds_none() {
+        let table = ResourceTable::new(4);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        for _ in 0..10_000 {
+            let id = table.insert(resource("a", &log)).expect("insert");
+            drop(table.take(id).expect("take"));
+        }
+        assert_eq!(
+            table.state.lock().expect("state").live.len(),
+            0,
+            "nothing is kept for a resource that is gone"
+        );
+        let next = table.insert(resource("b", &log)).expect("insert");
+        assert_eq!(next, ResourceId(10_001), "ids go on, none is reused");
     }
     #[test]
     fn enforces_limit_and_zero_limit() {

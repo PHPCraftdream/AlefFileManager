@@ -72,20 +72,14 @@ pub(super) fn register_runtime_commands(registry: &mut Registry) -> Result<(), A
                 .body()
                 .cloned()
                 .ok_or_else(|| AlefError::new(ErrorCode::InvalidArgument, "chunk body required"))?;
-            let writer = ctx
-                .streams()
-                .incoming_writer(args.id)
-                .ok_or_else(not_found)?;
+            let writer = ctx.streams().incoming_writer(args.id)?;
             writer.write(chunk).await?;
             done()
         })?;
     registry
         .register_runtime::<StreamArgs>("runtime.stream.end")?
         .handler(|ctx, args| async move {
-            let writer = ctx
-                .streams()
-                .incoming_writer(args.id)
-                .ok_or_else(not_found)?;
+            let writer = ctx.streams().incoming_writer(args.id)?;
             writer.end();
             done()
         })

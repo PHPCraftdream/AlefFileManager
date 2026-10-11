@@ -9,7 +9,10 @@ use crate::{
     },
 };
 use bytes::Bytes;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::{mpsc, watch};
 
 fn closed() -> AlefError {
@@ -55,6 +58,9 @@ struct Incoming {
     cancel: watch::Sender<bool>,
 }
 impl Incoming {
+    fn is_terminal(&self) -> bool {
+        self.tx.lock().expect("incoming mutex poisoned").is_none()
+    }
     /// Terminates once; the reason is stored before the channel closes so the reader always sees it.
     fn terminate(&self, reason: Option<AlefError>) {
         let mut tx = self.tx.lock().expect("incoming mutex poisoned");
@@ -70,10 +76,36 @@ struct Entry {
     input: Option<Arc<Incoming>>,
     taken: bool,
 }
+impl Entry {
+    /// Nothing can reach the stream any more: it has ended and its reader was handed out, so the
+    /// frames that are left live in the channel of the reader, not here; a writer that is still
+    /// held fails on it with `Closed` whether the entry is there or not.
+    fn retired(&self) -> bool {
+        self.taken
+            && self.out.as_ref().is_none_or(|o| o.is_terminal())
+            && self.input.as_ref().is_none_or(|i| i.is_terminal())
+    }
+}
+/// The entries are swept when they reach this many, and then at twice what is left.
+const SWEEP_FLOOR: usize = 64;
 struct State {
     next: u64,
     closed: bool,
-    entries: Vec<Entry>,
+    entries: HashMap<StreamId, Entry>,
+    sweep_at: usize,
+}
+impl State {
+    fn admit(&mut self, id: StreamId, entry: Entry) {
+        if self.entries.len() >= self.sweep_at {
+            self.entries.retain(|_, entry| !entry.retired());
+            self.sweep_at = (self.entries.len() * 2).max(SWEEP_FLOOR);
+        }
+        self.entries.insert(id, entry);
+    }
+    /// An id that was handed out and is no longer in the table belongs to a stream that is over.
+    fn is_over(&self, id: StreamId) -> bool {
+        id.0 >= 1 && id.0 < self.next && !self.entries.contains_key(&id)
+    }
 }
 /// Thread-safe per-session collection of streams.
 pub struct StreamHub {
@@ -91,7 +123,8 @@ impl StreamHub {
             state: Mutex::new(State {
                 next: 1,
                 closed: false,
-                entries: Vec::new(),
+                entries: HashMap::new(),
+                sweep_at: SWEEP_FLOOR,
             }),
         }
     }
@@ -115,11 +148,14 @@ impl StreamHub {
         if h.closed {
             o.terminate(Frame::Error(closed()));
         }
-        h.entries.push(Entry {
-            out: Some(o.clone()),
-            input: None,
-            taken: false,
-        });
+        h.admit(
+            id,
+            Entry {
+                out: Some(o.clone()),
+                input: None,
+                taken: false,
+            },
+        );
         (StreamWriter { o, done: false }, id)
     }
     /// Opens a bounded page-to-runtime stream.
@@ -137,11 +173,14 @@ impl StreamHub {
         if h.closed {
             i.terminate(Some(closed()));
         }
-        h.entries.push(Entry {
-            out: None,
-            input: Some(i.clone()),
-            taken: false,
-        });
+        h.admit(
+            id,
+            Entry {
+                out: None,
+                input: Some(i.clone()),
+                taken: false,
+            },
+        );
         (IncomingWriter { i, done: false }, id)
     }
     /// Opens a page-to-runtime stream, returning its reader; the writer stays reachable by id via [`StreamHub::incoming_writer`].
@@ -165,30 +204,33 @@ impl StreamHub {
             reason: i.reason.clone(),
             reported: false,
         };
-        h.entries.push(Entry {
-            out: None,
-            input: Some(i),
-            taken: true,
-        });
+        h.admit(
+            id,
+            Entry {
+                out: None,
+                input: Some(i),
+                taken: true,
+            },
+        );
         (reader, id)
     }
     /// Returns a disarmed writer for a hub-retained incoming stream; dropping it does not terminate the stream.
-    pub fn incoming_writer(&self, id: StreamId) -> Option<IncomingWriter> {
-        let h = self.state.lock().ok()?;
-        let i = h
-            .entries
-            .iter()
-            .find_map(|e| e.input.as_ref().filter(|i| i.id == id))?
-            .clone();
-        Some(IncomingWriter { i, done: true })
+    /// A stream that is over and gone from the table is `Closed`, an id never handed out is `NotFound`.
+    pub fn incoming_writer(&self, id: StreamId) -> Result<IncomingWriter, AlefError> {
+        let h = self.state.lock().map_err(|_| not_found())?;
+        match h.entries.get(&id).and_then(|e| e.input.as_ref()) {
+            Some(i) => Ok(IncomingWriter {
+                i: i.clone(),
+                done: true,
+            }),
+            None if h.is_over(id) => Err(closed()),
+            None => Err(not_found()),
+        }
     }
     /// Takes the outgoing reader once.
     pub fn reader(&self, id: StreamId) -> Option<StreamReader> {
         let mut h = self.state.lock().ok()?;
-        let e = h
-            .entries
-            .iter_mut()
-            .find(|e| e.out.as_ref().is_some_and(|o| o.id == id))?;
+        let e = h.entries.get_mut(&id).filter(|e| e.out.is_some())?;
         if e.taken {
             return None;
         }
@@ -204,10 +246,7 @@ impl StreamHub {
     /// Takes the incoming reader once.
     pub fn incoming_reader(&self, id: StreamId) -> Option<IncomingReader> {
         let mut h = self.state.lock().ok()?;
-        let e = h
-            .entries
-            .iter_mut()
-            .find(|e| e.input.as_ref().is_some_and(|i| i.id == id))?;
+        let e = h.entries.get_mut(&id).filter(|e| e.input.is_some())?;
         if e.taken {
             return None;
         }
@@ -222,34 +261,31 @@ impl StreamHub {
             reported: false,
         })
     }
-    /// Grants outgoing credit; unknown ids return NotFound.
+    /// Grants outgoing credit; unknown ids return NotFound, a stream that is over takes it for nothing.
     pub fn ack(&self, id: StreamId, n: usize) -> Result<(), AlefError> {
         let h = self.state.lock().expect("hub mutex poisoned");
-        h.entries
-            .iter()
-            .find_map(|e| e.out.as_ref().filter(|o| o.id == id))
-            .ok_or_else(not_found)?
-            .gate
-            .grant(n);
-        Ok(())
+        match h.entries.get(&id).and_then(|e| e.out.as_ref()) {
+            Some(o) => {
+                o.gate.grant(n);
+                Ok(())
+            }
+            None if h.is_over(id) => Ok(()),
+            None => Err(not_found()),
+        }
     }
     /// Cancels an outgoing or incoming stream after buffered frames; unknown ids return NotFound.
     pub fn close(&self, id: StreamId) -> Result<(), AlefError> {
         let h = self.state.lock().expect("hub mutex poisoned");
-        if let Some(o) = h
-            .entries
-            .iter()
-            .find_map(|e| e.out.as_ref().filter(|o| o.id == id))
-        {
+        let entry = h.entries.get(&id);
+        if let Some(o) = entry.and_then(|e| e.out.as_ref()) {
             o.terminate(Frame::Error(closed()));
             return Ok(());
         }
-        if let Some(i) = h
-            .entries
-            .iter()
-            .find_map(|e| e.input.as_ref().filter(|i| i.id == id))
-        {
+        if let Some(i) = entry.and_then(|e| e.input.as_ref()) {
             i.terminate(Some(closed()));
+            return Ok(());
+        }
+        if h.is_over(id) {
             return Ok(());
         }
         Err(not_found())
@@ -258,7 +294,7 @@ impl StreamHub {
     pub fn close_all(&self) {
         let mut h = self.state.lock().expect("hub mutex poisoned");
         h.closed = true;
-        for e in &h.entries {
+        for e in h.entries.values() {
             if let Some(o) = &e.out {
                 o.terminate(Frame::Error(closed()));
             }
@@ -270,12 +306,10 @@ impl StreamHub {
     /// Returns outgoing outstanding bytes.
     pub fn outstanding(&self, id: StreamId) -> Option<usize> {
         let h = self.state.lock().ok()?;
-        h.entries.iter().find_map(|e| {
-            e.out
-                .as_ref()
-                .filter(|o| o.id == id)
-                .map(|o| o.gate.outstanding())
-        })
+        h.entries
+            .get(&id)
+            .and_then(|e| e.out.as_ref())
+            .map(|o| o.gate.outstanding())
     }
     /// Reports whether the hub is closed.
     pub fn is_closed(&self) -> bool {
