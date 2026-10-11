@@ -17,7 +17,7 @@ use tempfile::tempdir;
 
 use crate::common::Fixture;
 
-use super::{manifest, pid_of, until};
+use super::{manifest, pid_of, pty::plain, until};
 
 /// The beat of a grandchild: it rewrites this file every 50 ms while it lives.
 fn beat_of(file: &Path) -> String {
@@ -207,4 +207,102 @@ async fn a_program_spawn_does_not_find_is_not_found() {
         .await
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
+}
+
+/// A terminal nobody reads is killed: the output kept so far is handed over, the loss is reported
+/// after it, and the end comes last.
+#[tokio::test]
+async fn a_terminal_killed_with_stalled_credit_keeps_its_prefix_and_reports_the_loss() {
+    use alef_core::{
+        ids::StreamId,
+        protocol::{call::Limits, frame::Frame},
+    };
+    let limits = Limits {
+        stream_window: 8192,
+        chunk_size: 4096,
+        ..Limits::default()
+    };
+    let app = Fixture::new_limited(Some(&manifest(&["node"])), limits).await;
+    // Rows of 1000 bytes. A thread of the child writes "<rows started> <beats>" every 50 ms, whatever
+    // the main thread is doing (a write to a pty may block it): rows that stop while the beats go on
+    // mean that the terminal holds the child back, however big its buffers are (a few KiB on Unix).
+    let script = r"const {Worker}=require('worker_threads');const shared=new Int32Array(new SharedArrayBuffer(4));new Worker(`const {workerData:{shared,file}}=require('worker_threads');let b=0;setInterval(()=>require('fs').writeFileSync(file,Atomics.load(shared,0)+' '+b++),50)`,{eval:true,workerData:{shared,file:process.argv[1]}});const row=Array.from({length:990},(_,c)=>String.fromCharCode(97+(c*13+(c>>3))%26)).join('');function pump(){const n=Atomics.add(shared,0,1);process.stdout.write('ROW'+String(n).padStart(4,'0')+':'+row+'\r\n',()=>setImmediate(pump))}process.stdout.write('BEGIN:',pump)";
+    let dir = tempdir().unwrap();
+    let state = dir.path().join("state");
+    let args = json!({"program":"node", "cols":1000, "rows":1000, "args":["-e", script, state.to_str().unwrap()]});
+    let opened = app.call("cli.pty", args).await.unwrap();
+    let id = StreamId(opened["output"].as_u64().unwrap());
+    let session = app.session();
+    let mut reader = session.streams().reader(id).unwrap();
+    // 250 rows are nearly what the buffer of 256 KiB holds; the rows stand for 6 beats (0.3 s).
+    let held = tokio::time::timeout(Duration::from_secs(30), async {
+        let (mut rows, mut since) = (0, 0);
+        loop {
+            let text = std::fs::read_to_string(&state).unwrap_or_default();
+            let mut numbers = text
+                .split_whitespace()
+                .filter_map(|n| n.parse::<usize>().ok());
+            if let (Some(now), Some(beat)) = (numbers.next(), numbers.next()) {
+                if now != rows {
+                    (rows, since) = (now, beat);
+                } else if rows >= 250 && beat >= since + 6 {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let process = json!({"process": opened["process"]});
+    let killed = app.call("cli.kill", process.clone()).await;
+    let waited = app.call("cli.wait", process).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let retained = !session.resources().is_empty();
+    let output = tokio::time::timeout(Duration::from_secs(20), async {
+        let (mut bytes, mut gaps) = (Vec::new(), Vec::new());
+        while let Some(frame) = reader.next_frame().await {
+            match frame {
+                Frame::Binary(chunk) => {
+                    session.streams().ack(id, chunk.len()).unwrap();
+                    bytes.extend_from_slice(&chunk);
+                }
+                Frame::Json(value) => {
+                    session.streams().ack(id, value.to_string().len()).unwrap();
+                    gaps.push((bytes.len(), value));
+                }
+                Frame::End => return (bytes, gaps, true),
+                Frame::Error(error) => panic!("output failed: {error}"),
+            }
+        }
+        (bytes, gaps, false)
+    })
+    .await;
+    let gone = tokio::time::timeout(Duration::from_secs(20), async {
+        while !session.resources().is_empty() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    // A terminal left open would keep the pseudo console, and with it the test binary, alive.
+    tokio::time::timeout(Duration::from_secs(20), session.close())
+        .await
+        .expect("cleanup completes");
+    assert!(
+        held.is_ok(),
+        "the terminal does not hold the child back; its state: {:?}",
+        std::fs::read_to_string(&state)
+    );
+    killed.unwrap();
+    waited.unwrap();
+    assert!(retained, "wait retains stalled output");
+    let (bytes, gaps, ended) = output.expect("output completes");
+    assert!(plain(&bytes).contains("BEGIN:"), "prefix retained");
+    assert!(!gaps.is_empty(), "the final drain reports the overflow");
+    for (at, gap) in gaps {
+        assert!(at > 0, "retained bytes precede gap");
+        assert_eq!(gap["kind"], "overflow");
+        assert!(gap["dropped"].as_u64().unwrap() > 0);
+    }
+    assert!(ended, "end follows retained bytes and overflow");
+    gone.expect("resource removed after replay");
 }
