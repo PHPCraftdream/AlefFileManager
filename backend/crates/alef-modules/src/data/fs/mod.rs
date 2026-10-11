@@ -4,7 +4,7 @@
 //! and only then held against the scopes of `permissions.fs.read` and `.write`, the paths the user
 //! picked in a dialog, and what the user decided about the scope. Where he chose a stand-in, the
 //! same command works on the place of the path in the stand-in (see `space`).
-use std::{fs, future::Future, path::PathBuf};
+use std::{fs, path::PathBuf};
 
 use alef_core::{
     registry::{command::Reply, dispatch::Registry},
@@ -51,7 +51,7 @@ pub(crate) fn write_target(
         .place(ctx, Permission::FsWrite, path, Reach::Through)
         .map(Target)
 }
-use fault::{fault as io_fault, invalid};
+use fault::invalid;
 use space::Space;
 
 /// The most `fs.readFile` returns and `fs.writeFile` takes: more goes through `fs.open`.
@@ -302,32 +302,17 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         })
 }
 
-fn scratch_path(
+async fn scratch_path(
     ctx: &alef_core::registry::context::CallContext,
     folder: PathBuf,
     directory: bool,
-) -> impl Future<Output = Result<Reply, AlefError>> {
-    let grants = ctx.grants();
-    async move {
-        let path = blocking(move || {
-            fs::create_dir_all(&folder).map_err(io_fault)?;
-            let mut builder = tempfile::Builder::new();
-            builder.prefix("alef-");
-            let path = if directory {
-                builder.tempdir_in(&folder).map_err(io_fault)?.keep()
-            } else {
-                let (_, path) = builder
-                    .tempfile_in(&folder)
-                    .map_err(io_fault)?
-                    .keep()
-                    .map_err(|error| io_fault(error.error))?;
-                path
-            };
-            Ok(path)
-        })
-        .await?;
-        grants.grant_read(&path)?;
-        grants.grant_write(&path)?;
-        json(&path.to_string_lossy())
-    }
+) -> Result<Reply, AlefError> {
+    // The owner removes the entry when it is dropped: a call cancelled while the entry is made, a
+    // refused insertion.
+    let scratch = blocking(move || ops::scratch::Scratch::create(&folder, directory)).await?;
+    let path = scratch.path().to_path_buf();
+    ctx.resources().insert(Box::new(scratch))?;
+    ctx.grants().grant_read(&path)?;
+    ctx.grants().grant_write(&path)?;
+    json(&path.to_string_lossy())
 }

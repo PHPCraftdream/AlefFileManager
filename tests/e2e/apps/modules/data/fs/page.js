@@ -110,6 +110,7 @@ async function real(t, check) {
     const scratch = await fs.tempFile();
     await fs.writeText(scratch, 'scratch');
     if (await fs.readText(scratch) !== 'scratch') throw new Error('the scratch file');
+    if (!await fs.exists(scratch)) throw new Error('the scratch file disappeared before session close');
     const folder = await fs.tempDir();
     await fs.writeText(join(folder, 'in.txt'), 'in');
     if ((await fs.readDir(folder)).length !== 1) throw new Error('the scratch folder');

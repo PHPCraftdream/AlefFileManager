@@ -264,9 +264,13 @@ export const fs = {
     }
   },
 
-  /** A new empty file of the application's own; it needs no scope while this document lives. */
+  /**
+   * An empty file in `$APPCACHE/tmp`, with read/write grants only for the creating session.
+   * Removed when the session closes; move or copy it to a place the application owns before that
+   * to keep it. A crash leaves it behind: there is no sweep at startup.
+   */
   tempFile: (options: Cancelable = {}): Promise<string> => call<string>('fs.tempFile', null, options),
 
-  /** A new empty folder of the application's own; it needs no scope while this document lives. */
+  /** An empty folder with the same lifetime, grants and removal as `tempFile` (its contents go too). */
   tempDir: (options: Cancelable = {}): Promise<string> => call<string>('fs.tempDir', null, options),
 };

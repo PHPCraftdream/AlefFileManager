@@ -18,6 +18,8 @@ use super::{
     space::Place,
 };
 
+pub(super) mod scratch;
+
 /// Opens without truncation; the open-step seam also drives deterministic race tests.
 /// `authorized` is the frozen authorization result, never canonicalized again here.
 /// Creating a missing file can still leave an empty file outside the scope on a race.

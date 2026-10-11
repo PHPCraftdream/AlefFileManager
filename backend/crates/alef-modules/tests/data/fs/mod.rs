@@ -2,6 +2,7 @@
 //! What `fs` does to the disk when the user allowed everything the manifest asks for.
 mod handles;
 mod rights;
+mod temp;
 
 use std::fs;
 
