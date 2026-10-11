@@ -39,6 +39,8 @@ async function main() {
   const register = async (accelerator = KEY) => {
     const handle = await api.shortcut.register(accelerator, options());
     registrations.add(handle);
+    if (Reflect.ownKeys(handle).length !== 1 || Reflect.ownKeys(handle)[0] !== 'id'
+      || 'owner' in handle || 'token' in handle) throw new Error('shortcut exposes wire identity');
     return handle;
   };
   const unregister = async handle => {
@@ -52,14 +54,23 @@ async function main() {
     } else if (mode === 'substituted') {
       await check('shortcut-substituted-register-unregister', async () => {
         const reply = await api.call('shortcut.register', { accelerator: KEY }, options());
-        const handle = new api.Shortcut(reply);
-        registrations.add(handle);
-        if (typeof reply.id !== 'string' || !Number.isInteger(reply.owner) || reply.token !== null) {
-          throw new Error(`not an inert registration: ${JSON.stringify(reply)}`);
+        try {
+          if (typeof reply.id !== 'string' || !Number.isSafeInteger(reply.owner)
+            || !Number.isSafeInteger(reply.token) || reply.token < 1) {
+            throw new Error(`bad registration shape: ${JSON.stringify(reply)}`);
+          }
+        } finally {
+          await api.call('shortcut.unregister', { id: reply.id }, options());
         }
-        const off = await handle.on('pressed', () => { throw new Error('inert callback fired'); }, options());
-        try { await unregister(handle); } finally { off(); }
-        return 'token=null; no OS press claimed (no-host coverage is in fixture tests)';
+        const handle = await register();
+        let pressed = 0;
+        const off = await handle.on('pressed', () => pressed++, options());
+        try {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          await unregister(handle);
+          if (pressed !== 0) throw new Error('substituted shortcut emitted pressed');
+        } finally { off(); }
+        return 'numeric wire token; opaque class; no events observed for 100ms (no-host coverage is in fixture tests)';
       });
     } else {
       let first;

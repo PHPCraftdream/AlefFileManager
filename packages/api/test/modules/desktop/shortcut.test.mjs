@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { API } from 'typescript/unstable/sync';
+import { fileURLToPath } from 'node:url';
 import { AlefError, Shortcut, shortcut } from '../../../src/index.ts';
 import { installRuntime, jsonFrame, liveStream, quiet } from '../../fake-runtime.mjs';
 
@@ -27,7 +29,11 @@ test('register returns a Shortcut and sends only the accelerator with its signal
   const handle = await shortcut.register('CommandOrControl+Shift+K', { signal: controller.signal });
   assert.ok(handle instanceof Shortcut);
   assert.equal(handle.id, 's31:r8');
-  assert.deepEqual(Object.keys(handle), ['id']);
+  assert.deepEqual(Reflect.ownKeys(handle), ['id']);
+  assert.equal('owner' in handle, false);
+  assert.equal('token' in handle, false);
+  assert.equal(handle.owner, undefined);
+  assert.equal(handle.token, undefined);
   const request = runtime.calls('shortcut.register').at(-1);
   assert.equal(request.method, 'POST');
   assert.equal(request.body, JSON.stringify({ accelerator: 'CommandOrControl+Shift+K' }));
@@ -36,32 +42,95 @@ test('register returns a Shortcut and sends only the accelerator with its signal
   assert.equal(request.signal, controller.signal);
 });
 
-test('substitution has null token and never subscribes or delivers events', async () => {
-  reply = { id: 's31:r9', owner: 31, token: null };
+test('numeric stand-in uses the shared subscription and handle-based unregister', async () => {
+  reply = { id: 's31:r9', owner: 31, token: Number.MAX_SAFE_INTEGER };
   const handle = await shortcut.register('Ctrl+K');
   let count = 0;
   const before = runtime.calls('runtime.events.subscribe').length;
+  duringSubscribe = () => emit({ owner: 31, token: Number.MAX_SAFE_INTEGER });
   const off = await handle.on('pressed', () => count++);
+  duringSubscribe = undefined;
+  await quiet(runtime);
+  assert.equal(count, 1, 'numeric identity installs the listener before the stream opens');
+  count = 0;
   assert.equal(typeof off, 'function');
-  assert.equal(runtime.calls('runtime.events.subscribe').length, before);
+  assert.equal(runtime.calls('runtime.events.subscribe').length, before + 1);
   emit({ owner: 31, token: null });
-  emit({ owner: 31, token: 999 });
+  emit({ owner: 31, token: 17 });
+  emit({ owner: 32, token: Number.MAX_SAFE_INTEGER });
+  await quiet(runtime);
+  assert.equal(count, 0, 'stand-in is inert when the host emits no matching event');
   off();
   await handle.unregister();
-  assert.equal(count, 0);
   assert.deepEqual(runtime.argsOf(runtime.calls('shortcut.unregister').at(-1)), { id: 's31:r9' });
 });
 
-test('shared subscription catches opening-race events and filters both owner and token', async t => {
+test('public TypeScript surface hides the DTO and disallows construction', () => {
+  const file = fileURLToPath(new URL('./shortcut.consumer.ts', import.meta.url));
+  const source = `
+    import { Shortcut, shortcut } from '../../../src/desktop/shortcut.ts';
+    async function consume() {
+      const handle: Shortcut = await shortcut.register('Ctrl+K');
+      const id: string = handle.id;
+      await handle.on('pressed', () => {});
+      await handle.unregister();
+      // @ts-expect-error owner is not public
+      handle.owner;
+      // @ts-expect-error token is not public
+      handle.token;
+      // @ts-expect-error wire DTO is not a public constructor argument
+      new Shortcut({ id, owner: 31, token: 17 });
+      // @ts-expect-error no public constructor at all
+      new Shortcut();
+      // @ts-expect-error no public wire factory
+      Shortcut.create({ id, owner: 31, token: 17 });
+    }
+    void consume;
+  `;
+  const config = fileURLToPath(new URL('./shortcut.consumer.tsconfig.json', import.meta.url));
+  const virtual = new Map([
+    [file.replaceAll('\\', '/'), source],
+    [config.replaceAll('\\', '/'), JSON.stringify({
+      compilerOptions: {
+        target: 'ES2022', module: 'ESNext', moduleResolution: 'Bundler',
+        strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true,
+      },
+      files: [file],
+    })],
+  ]);
+  const api = new API({
+    cwd: process.cwd(),
+    fs: {
+      readFile: path => virtual.get(path.replaceAll('\\', '/')),
+      fileExists: path => virtual.has(path.replaceAll('\\', '/')) || undefined,
+    },
+  });
+  try {
+    const snapshot = api.updateSnapshot({ openProjects: [config] });
+    try {
+      const program = snapshot.getProject(config).program;
+      const diagnostics = [
+        ...program.getProgramDiagnostics(), ...program.getGlobalDiagnostics(),
+        ...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics(),
+      ];
+      assert.deepEqual(diagnostics, []);
+    } finally {
+      snapshot.dispose();
+    }
+  } finally {
+    api.close();
+  }
+});
+
+test('shared subscription filters both owner and token', async t => {
   const failures = t.mock.method(console, 'error', () => {});
   reply = { id: 's31:r8', owner: 31, token: 17 };
   const handle = await shortcut.register('Ctrl+K');
   let count = 0;
-  duringSubscribe = () => emit({ owner: 31, token: 17 });
   const off = await handle.on('pressed', () => count++);
-  duringSubscribe = undefined;
+  emit({ owner: 31, token: 17 });
   await quiet(runtime);
-  assert.equal(count, 1, 'handler is installed before the shared stream opens');
+  assert.equal(count, 1);
   for (const payload of [null, 17, {}, { owner: 32, token: 17 }, { owner: 31, token: 18 }, { owner: '31', token: 17 }, { owner: 31, token: '17' }]) emit(payload);
   emit({ owner: 31, token: 17 }, 'runtime.shortcut.released');
   emit({ owner: 31, token: 17 }, 'runtime.shortcut.unknown');
@@ -131,15 +200,16 @@ test('already-aborted signals reject registration, unregister and listeners incl
   await assert.rejects(shortcut.register('Ctrl+K', options), { name: 'AbortError' });
   await assert.rejects(handle.unregister(options), { name: 'AbortError' });
   await assert.rejects(handle.on('pressed', () => {}, options), { name: 'AbortError' });
-  reply = { id: 's31:r10', owner: 31, token: null };
+  reply = { id: 's31:r10', owner: 31, token: Number.MAX_SAFE_INTEGER };
   const substitute = await shortcut.register('Ctrl+L');
   await assert.rejects(substitute.on('pressed', () => {}, options), { name: 'AbortError' });
   reply = { id: 's31:r8', owner: 31, token: 17 };
 });
 
 test('unknown event names reject at runtime without opening a subscription', async () => {
-  for (const token of [17, null]) {
-    const handle = new Shortcut({ id: 's31:r8', owner: 31, token });
+  for (const token of [17, Number.MAX_SAFE_INTEGER]) {
+    reply = { id: 's31:r8', owner: 31, token };
+    const handle = await shortcut.register('Ctrl+K');
     const before = runtime.requests.length;
     await assert.rejects(handle.on('released', () => {}), { code: 'INVALID_ARGUMENT' });
     await assert.rejects(handle.on('', () => {}), { code: 'INVALID_ARGUMENT' });

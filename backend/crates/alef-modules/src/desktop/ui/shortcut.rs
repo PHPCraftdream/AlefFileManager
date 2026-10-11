@@ -125,8 +125,10 @@ pub(crate) fn register(registry: &mut Registry, host: Arc<dyn Host>) -> Result<(
                 validate(&args.accelerator)?;
                 let window = ctx.session.window();
                 let owner = ctx.session.id();
-                let token = if ctx.decision() == Decision::Substitute {
-                    None
+                let (token, identity) = if ctx.decision() == Decision::Substitute {
+                    let identity = ShortcutToken::allocate()
+                        .map_err(|error| AlefError::new(ErrorCode::Internal, error.to_string()))?;
+                    (None, identity.0)
                 } else {
                     let reply = host
                         .ui(
@@ -139,14 +141,14 @@ pub(crate) fn register(registry: &mut Registry, host: Arc<dyn Host>) -> Result<(
                         .await?;
                     let native = reply
                         .as_u64()
-                        .filter(|token| (1..=0xBFFF).contains(token))
+                        .filter(|token| (1..=ShortcutToken::MAX).contains(token))
                         .ok_or_else(|| {
                             AlefError::new(
                                 ErrorCode::Internal,
                                 "invalid shortcut token from UI host",
                             )
                         })?;
-                    Some(ShortcutToken(native))
+                    (Some(ShortcutToken(native)), native)
                 };
                 let shortcut = Shortcut {
                     host,
@@ -164,7 +166,7 @@ pub(crate) fn register(registry: &mut Registry, host: Arc<dyn Host>) -> Result<(
                 Ok(Reply::Json(json!({
                     "id": handle(owner, id),
                     "owner": owner.0,
-                    "token": token.map(|native| native.0),
+                    "token": identity,
                 })))
             });
             async move {

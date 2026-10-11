@@ -137,9 +137,13 @@ async fn shortcut_substitute_is_inert_but_validates_strictly() {
     .await
     .unwrap();
     let id = reply["id"].clone();
+    let token = reply["token"]
+        .as_u64()
+        .expect("substitute token is numeric");
+    assert!((1..=(1_u64 << 53) - 1).contains(&token));
     assert_eq!(
         reply,
-        json!({"id": id, "owner": f.session().id().0, "token": null})
+        json!({"id": id, "owner": f.session().id().0, "token": token})
     );
     // Neither a body nor a handle that is not exactly the one given releases it.
     assert_eq!(
@@ -325,7 +329,7 @@ async fn shortcut_invalid_host_tokens_do_not_insert_resources() {
         json!(0),
         json!(-1),
         json!(1.5),
-        json!(0xC000),
+        json!(1_u64 << 53),
         json!(u64::MAX),
         json!("17"),
         json!({"token": 17}),
@@ -341,6 +345,87 @@ async fn shortcut_invalid_host_tokens_do_not_insert_resources() {
         assert!(f.session().resources().is_empty());
     }
     assert_eq!(seen(&f).len(), 8);
+}
+
+#[tokio::test]
+async fn shortcut_generated_tokens_above_win32_limit_are_valid() {
+    let f = shortcuts(Decision::Allow).await;
+    for token in [0xC000, (1_u64 << 53) - 1] {
+        queue(&f, json!(token));
+        let reply = bounded(f.call("shortcut.register", json!({"accelerator": "Ctrl+K"})))
+            .await
+            .unwrap();
+        assert_eq!(reply["token"], json!(token));
+        assert_eq!(
+            bounded(f.call("shortcut.unregister", json!({"id": reply["id"]})))
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        assert!(
+            matches!(seen(&f).last().unwrap().1, UiCall::Shortcut(ShortcutCall::Unregister { token: ShortcutToken(value), .. }) if value == token)
+        );
+    }
+}
+
+#[tokio::test]
+async fn shortcut_substitute_tokens_are_unique_and_unregister_like_real_handles() {
+    let f = shortcuts(Decision::Substitute).await;
+    let first = bounded(f.call("shortcut.register", json!({"accelerator": "Ctrl+K"})))
+        .await
+        .unwrap();
+    let second = bounded(f.call("shortcut.register", json!({"accelerator": "Ctrl+L"})))
+        .await
+        .unwrap();
+    let one = first["token"].as_u64().expect("numeric substitute token");
+    let two = second["token"].as_u64().expect("numeric substitute token");
+    assert_ne!(one, two);
+    for reply in [first, second] {
+        assert_eq!(
+            bounded(f.call("shortcut.unregister", json!({"id": reply["id"]})))
+                .await
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            bounded(f.call("shortcut.unregister", json!({"id": reply["id"]})))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    }
+    assert!(seen(&f).is_empty());
+    assert!(f.session().resources().is_empty());
+}
+
+#[tokio::test]
+async fn shortcut_substitute_identity_cannot_match_a_live_native_identity_after_consent_tightens() {
+    let f = shortcuts(Decision::Allow).await;
+    let native = ShortcutToken::allocate().unwrap();
+    queue(&f, json!(native.0));
+    let real = bounded(f.call("shortcut.register", json!({"accelerator": "Ctrl+K"})))
+        .await
+        .unwrap();
+    let f = f.with_consent(consent(&[(
+        Right::plain("shortcut.global"),
+        Decision::Substitute,
+    )]));
+    let substitute = bounded(f.call("shortcut.register", json!({"accelerator": "Ctrl+L"})))
+        .await
+        .unwrap();
+    assert_eq!(real["owner"], substitute["owner"]);
+    assert!(substitute["token"].as_u64().unwrap() > native.0);
+    assert_ne!(real["token"], substitute["token"]);
+    assert_eq!(seen(&f).len(), 1);
+    bounded(f.call("shortcut.unregister", json!({"id": substitute["id"]})))
+        .await
+        .unwrap();
+    assert_eq!(seen(&f).len(), 1);
+    bounded(f.call("shortcut.unregister", json!({"id": real["id"]})))
+        .await
+        .unwrap();
+    assert_eq!(seen(&f).len(), 2);
 }
 
 #[tokio::test]

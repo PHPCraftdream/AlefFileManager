@@ -9,27 +9,32 @@ import type { Unlisten } from './window.ts';
 interface Registration {
   id: string;
   owner: number;
-  token: number | null;
+  token: number;
 }
+
+let createShortcut: (reply: Registration) => Shortcut;
 
 /** A document-owned global shortcut; a substituted registration never emits events. */
 export class Shortcut {
   readonly id: string;
   readonly #owner: number;
-  readonly #token: number | null;
+  readonly #token: number;
   #registered = true;
 
-  constructor(reply: Registration) {
+  private constructor(reply: Registration) {
     this.id = reply.id;
     this.#owner = reply.owner;
     this.#token = reply.token;
+  }
+
+  static {
+    createShortcut = reply => new Shortcut(reply);
   }
 
   /** Resolves once the shared event subscription is ready, with a function that unsubscribes. */
   async on(event: 'pressed', callback: () => void, options: Cancelable = {}): Promise<Unlisten> {
     if (event !== 'pressed') throw new AlefError('INVALID_ARGUMENT', 'Unknown shortcut event.');
     options.signal?.throwIfAborted();
-    if (this.#token === null) return () => {};
     return on<unknown>('runtime.shortcut.pressed', payload => {
       if (!this.#registered || typeof payload !== 'object' || payload === null) return;
       const { owner, token } = payload as { owner?: unknown; token?: unknown };
@@ -56,5 +61,5 @@ if (typeof asyncDispose === 'symbol') {
 export const shortcut = {
   /** Needs `permissions.shortcut.global`; the registration belongs to this document. */
   register: async (accelerator: string, options: Cancelable = {}): Promise<Shortcut> =>
-    new Shortcut(await call<Registration>('shortcut.register', { accelerator }, options)),
+    createShortcut(await call<Registration>('shortcut.register', { accelerator }, options)),
 };

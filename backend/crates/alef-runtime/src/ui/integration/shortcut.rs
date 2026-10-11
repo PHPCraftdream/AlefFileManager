@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native manager and registration table are owned exclusively by App on the UI thread.
-use super::forward::Forwarder;
+use super::shortcut_source::{native_id, Source, TaggedEvent};
 use crate::{
     bridge::EventBus,
     ui::{event_json, Wake},
@@ -10,7 +10,7 @@ use alef_core::{
     registry::window::shortcut::{ShortcutCall, ShortcutToken},
     session::session::SessionManager,
 };
-use global_hotkey::{hotkey::HotKey, GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use global_hotkey::{hotkey::HotKey, GlobalHotKeyManager, HotKeyState};
 use serde_json::Value;
 use std::{
     io,
@@ -27,6 +27,19 @@ const SWEEP: Duration = Duration::from_millis(250);
 trait Backend {
     fn register(&self, key: HotKey) -> io::Result<()>;
     fn unregister(&self, key: HotKey) -> io::Result<()>;
+    fn reuse_ids(&self) -> bool {
+        cfg!(windows)
+    }
+    fn drain_native(&self) -> bool {
+        #[cfg(windows)]
+        {
+            super::shortcut_source::drain_native()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
 }
 
 fn native_error(error: global_hotkey::Error) -> io::Error {
@@ -67,7 +80,10 @@ struct Registration {
 }
 #[derive(Default)]
 struct Table {
-    next: u64,
+    native_next: u32,
+    free: Vec<u32>,
+    retired: Vec<u32>,
+    source: Source,
     entries: Vec<Registration>,
 }
 
@@ -106,16 +122,30 @@ impl Table {
                 "Global shortcut limit reached",
             ));
         }
-        // Stay in Win32 RegisterHotKey's application id range; never wrap or reuse.
-        let next = self
-            .next
-            .checked_add(1)
-            .filter(|n| *n <= 0xBFFF)
-            .ok_or_else(|| io::Error::other("Shortcut token space exhausted"))?;
-        // Native event ids are also never reused: queued events cannot target a new registration.
-        self.next = next;
-        key.id = next as u32;
-        backend.register(key)?;
+        if !self.retired.is_empty() && backend.drain_native() {
+            self.free.append(&mut self.retired);
+        }
+        let next = ShortcutToken::allocate()?.0;
+        let id = if let Some(id) = self.free.pop() {
+            id
+        } else {
+            let maximum = if backend.reuse_ids() {
+                0xBFFF
+            } else {
+                u32::MAX
+            };
+            self.native_next = native_id(self.native_next, maximum)?;
+            self.native_next
+        };
+        key.id = id;
+        self.source.insert(id, ShortcutToken(next));
+        if let Err(error) = backend.register(key) {
+            self.source.remove(id);
+            if backend.reuse_ids() {
+                self.free.push(id);
+            }
+            return Err(error);
+        }
         self.entries.push(Registration {
             owner,
             token: ShortcutToken(next),
@@ -141,7 +171,15 @@ impl Table {
             ));
         }
         self.entries[index].retiring = true;
+        let id = self.entries[index].key.id;
+        self.source.remove(id);
         backend.unregister(self.entries[index].key)?;
+        if backend.reuse_ids() {
+            self.retired.push(id);
+            if backend.drain_native() {
+                self.free.append(&mut self.retired);
+            }
+        }
         self.entries.remove(index);
         Ok(Value::Null)
     }
@@ -164,7 +202,7 @@ impl Table {
 
     fn route(
         &self,
-        event: GlobalHotKeyEvent,
+        event: TaggedEvent,
         live: impl Fn(Owner) -> bool,
     ) -> Option<(Owner, ShortcutToken)> {
         if event.state != HotKeyState::Pressed {
@@ -172,7 +210,7 @@ impl Table {
         }
         self.entries
             .iter()
-            .find(|entry| entry.key.id == event.id && !entry.retiring && live(entry.owner))
+            .find(|entry| entry.token == event.token && !entry.retiring && live(entry.owner))
             .map(|entry| (entry.owner, entry.token))
     }
 }
@@ -187,7 +225,6 @@ fn live_owner(sessions: &SessionManager, window: u64, owner: SessionId) -> bool 
 #[derive(Default)]
 pub(crate) struct Shortcuts {
     backend: Option<GlobalHotKeyManager>,
-    forward: Option<Forwarder<GlobalHotKeyEvent>>,
     table: Table,
     next_sweep: Option<Instant>,
 }
@@ -231,12 +268,15 @@ impl Shortcuts {
         #[cfg(not(target_os = "linux"))]
         let _ = event_loop;
         if self.backend.is_none() {
-            let backend = GlobalHotKeyManager::new().map_err(native_error)?;
-            let forward = Forwarder::start(GlobalHotKeyEvent::receiver().clone(), move || {
-                proxy.send_event(Wake).is_ok()
-            })?;
+            self.table.source.activate(proxy)?;
+            let backend = match GlobalHotKeyManager::new().map_err(native_error) {
+                Ok(backend) => backend,
+                Err(error) => {
+                    self.table.source.deactivate();
+                    return Err(error);
+                }
+            };
             self.backend = Some(backend);
-            self.forward = Some(forward);
         }
         Ok(())
     }
@@ -295,13 +335,11 @@ impl Shortcuts {
                 self.table.sweep(backend, live);
             }
         }
-        if let Some(forward) = &self.forward {
-            for event in forward.drain() {
-                if let Some((owner, token)) = self.table.route(event, live) {
-                    let payload = serde_json::json!({"owner": owner.session.0, "token": token.0});
-                    if let Ok(json) = event_json(PRESSED, &payload) {
-                        events.publish_session(owner.window, owner.session, &json);
-                    }
+        for event in self.table.source.drain() {
+            if let Some((owner, token)) = self.table.route(event, live) {
+                let payload = serde_json::json!({"owner": owner.session.0, "token": token.0});
+                if let Ok(json) = event_json(PRESSED, &payload) {
+                    events.publish_session(owner.window, owner.session, &json);
                 }
             }
         }
@@ -336,7 +374,7 @@ impl Shortcuts {
         if let Some(backend) = &self.backend {
             self.table.sweep(backend, |_| false);
         }
-        self.forward.take(); // stop + join our reader, before dropping native manager
+        self.table.source.deactivate();
         self.backend.take();
         self.table.entries.clear();
         self.next_sweep = None;
@@ -349,16 +387,29 @@ impl Drop for Shortcuts {
 }
 
 #[cfg(test)]
+#[path = "shortcut_tests.rs"]
+mod reuse_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     #[derive(Default)]
-    struct Fake {
-        keys: RefCell<Vec<HotKey>>,
-        conflict: Cell<bool>,
-        fail_release: Cell<bool>,
+    pub(super) struct Fake {
+        pub(super) keys: RefCell<Vec<HotKey>>,
+        pub(super) conflict: Cell<bool>,
+        pub(super) fail_release: Cell<bool>,
+        pub(super) barriers: Cell<usize>,
+        pub(super) barrier_pending: Cell<bool>,
     }
     impl Backend for Fake {
+        fn reuse_ids(&self) -> bool {
+            true
+        }
+        fn drain_native(&self) -> bool {
+            self.barriers.set(self.barriers.get() + 1);
+            !self.barrier_pending.get()
+        }
         fn register(&self, key: HotKey) -> io::Result<()> {
             if self.conflict.get() {
                 return Err(io::Error::new(io::ErrorKind::AlreadyExists, "OS conflict"));
@@ -374,13 +425,18 @@ mod tests {
             Ok(())
         }
     }
-    fn owner(session: u64) -> Owner {
+    pub(super) fn owner(session: u64) -> Owner {
         Owner {
             window: 1,
             session: SessionId(session),
         }
     }
-    fn register(table: &mut Table, backend: &Fake, who: Owner, key: &str) -> ShortcutToken {
+    pub(super) fn register(
+        table: &mut Table,
+        backend: &Fake,
+        who: Owner,
+        key: &str,
+    ) -> ShortcutToken {
         ShortcutToken(table.register(backend, who, key).unwrap().as_u64().unwrap())
     }
     #[test]
@@ -448,11 +504,11 @@ mod tests {
         );
     }
     #[test]
-    fn routing_is_pressed_live_owner_only_and_native_ids_never_reused() {
+    fn routing_is_pressed_live_owner_only_and_old_tokens_never_reused() {
         let (mut table, backend) = (Table::default(), Fake::default());
         let old = register(&mut table, &backend, owner(1), "Alt+A");
-        let pressed = GlobalHotKeyEvent {
-            id: old.0 as u32,
+        let pressed = TaggedEvent {
+            token: old,
             state: HotKeyState::Pressed,
         };
         assert_eq!(
@@ -462,7 +518,7 @@ mod tests {
         assert!(table.route(pressed, |_| false).is_none());
         assert!(table
             .route(
-                GlobalHotKeyEvent {
+                TaggedEvent {
                     state: HotKeyState::Released,
                     ..pressed
                 },
@@ -488,8 +544,8 @@ mod tests {
         assert!(table.unregister(&backend, owner(1), token).is_err());
         assert!(table
             .route(
-                GlobalHotKeyEvent {
-                    id: token.0 as u32,
+                TaggedEvent {
+                    token,
                     state: HotKeyState::Pressed
                 },
                 |_| true
@@ -513,17 +569,6 @@ mod tests {
         register(&mut table, &backend, owner(1), "Alt+A");
         register(&mut table, &backend, owner(1), "Ctrl+B");
         assert_eq!(table.entries.len(), 3);
-    }
-
-    #[test]
-    fn tokens_stop_where_win32_stops_and_a_refused_one_is_not_spent() {
-        let (mut table, backend) = (Table::default(), Fake::default());
-        table.next = 0xBFFE;
-        assert_eq!(register(&mut table, &backend, owner(1), "Ctrl+A").0, 0xBFFF);
-        let exhausted = table.register(&backend, owner(1), "Ctrl+B").unwrap_err();
-        assert_eq!(exhausted.kind(), io::ErrorKind::Other);
-        assert_eq!(table.entries.len(), 1);
-        assert_eq!(backend.keys.borrow().len(), 1);
     }
 
     #[test]

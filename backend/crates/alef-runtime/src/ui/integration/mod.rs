@@ -7,6 +7,7 @@ pub(crate) mod menu;
 #[path = "menu/unavailable.rs"]
 pub(crate) mod menu;
 pub(crate) mod shortcut;
+mod shortcut_source;
 #[cfg(any(windows, target_os = "macos"))]
 pub(crate) mod tray;
 #[cfg(not(any(windows, target_os = "macos")))]
