@@ -418,23 +418,11 @@ async fn read_asset(assets: Option<PathBuf>, requested: String) -> io::Result<(V
     Ok((tokio::fs::read(path).await?, mime))
 }
 
-/// Headers of the legacy/asset/spike responses (transport responses carry their own).
+/// Headers of asset responses; transport responses carry their own CORS policy.
 fn apply_headers(response: &mut Response, content_type: &str, csp: Option<&str>) {
     response.headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(content_type).expect("MIME header"),
-    );
-    response.headers.insert(
-        header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_static("*"),
-    );
-    response.headers.insert(
-        header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("POST, OPTIONS"),
-    );
-    response.headers.insert(
-        header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("authorization, content-type"),
     );
     response.headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -477,6 +465,61 @@ mod tests {
     use alef_core::protocol::transport::{Method, ResponseBody as Body, TransportRequest};
     use bytes::Bytes;
     use serde_json::Value;
+
+    fn asset_response(content_type: &str, csp: Option<&str>) -> Response {
+        let mut response = Response::new(
+            servo::ServoUrl::parse("native://app/index.html").expect("asset URL"),
+            ResourceFetchTiming::new(net_traits::ResourceTimingType::None),
+        );
+        apply_headers(&mut response, content_type, csp);
+        response
+    }
+
+    // R-006: each assertion fails with its legacy transport header restored.
+    #[test]
+    fn asset_headers_do_not_allow_cross_origin_reads() {
+        let response = asset_response("text/html", Some(DEFAULT_CSP));
+        assert_eq!(
+            response.headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            None
+        );
+    }
+
+    #[test]
+    fn asset_headers_do_not_advertise_transport_methods() {
+        let response = asset_response("application/json", Some(DEFAULT_CSP));
+        assert_eq!(
+            response.headers.get(header::ACCESS_CONTROL_ALLOW_METHODS),
+            None
+        );
+    }
+
+    #[test]
+    fn asset_headers_do_not_advertise_transport_authorization() {
+        let response = asset_response("application/octet-stream", None);
+        assert_eq!(
+            response.headers.get(header::ACCESS_CONTROL_ALLOW_HEADERS),
+            None
+        );
+    }
+
+    #[test]
+    fn asset_headers_preserve_content_type_nosniff_and_csp() {
+        for (content_type, csp) in [
+            ("text/html", Some(DEFAULT_CSP)),
+            ("application/json", Some("default-src 'none'")),
+            ("application/octet-stream", None),
+        ] {
+            let response = asset_response(content_type, csp);
+            assert_eq!(response.headers[header::CONTENT_TYPE], content_type);
+            assert_eq!(response.headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+            assert_eq!(
+                response.headers.get(header::CONTENT_SECURITY_POLICY),
+                csp.map(|value| HeaderValue::from_str(value).expect("CSP"))
+                    .as_ref(),
+            );
+        }
+    }
 
     #[tokio::test]
     async fn refuses_asset_parent_traversal() {
