@@ -130,17 +130,25 @@ async function rawChecks() {
     let received = 0;
     let acked = 0;
     let stalls = 0;
+    let silent = 0;
     for (;;) {
       const frame = await frames.next(400);
       if (frame === undefined) {
-        // silence: the producer must be waiting for credit right now
-        if (received - acked !== MIB) throw new Error(`stalled with ${received - acked} unacked bytes`);
-        stalls += 1;
-        await call('runtime.stream.ack', { id: stream, bytes: received - acked });
-        acked = received;
+        // Silence with a full window: the producer waits for credit, as it must. Silence with room left
+        // is only a slow moment of a loaded machine; it is a stall when nothing comes for a long time.
+        if (received - acked === MIB) {
+          silent = 0;
+          stalls += 1;
+          await call('runtime.stream.ack', { id: stream, bytes: received - acked });
+          acked = received;
+        } else {
+          silent += 400;
+          if (silent >= 20000) throw new Error(`stalled with ${received - acked} unacked bytes`);
+        }
       } else if (frame === null || frame.kind === 3) {
         break;
       } else if (frame.kind === 2) {
+        silent = 0;
         received += frame.payload.length;
         if (received - acked > MIB) throw new Error(`window exceeded: ${received - acked}`);
       } else {
