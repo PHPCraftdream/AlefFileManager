@@ -25,6 +25,143 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_running_child_is_held_back_by_a_full_buffer_and_nothing_else_is() {
+        use super::{read_room, OUTPUT_LIMIT, READ_CHUNK};
+        assert_eq!(read_room(0, false, false, false), READ_CHUNK);
+        assert_eq!(read_room(OUTPUT_LIMIT - 10, false, false, false), 10);
+        assert_eq!(read_room(OUTPUT_LIMIT, false, false, false), 0);
+        assert_eq!(read_room(OUTPUT_LIMIT + 1, false, false, false), 0);
+        for (exited, shutdown, page_gone) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert_eq!(
+                read_room(OUTPUT_LIMIT, exited, shutdown, page_gone),
+                READ_CHUNK
+            );
+        }
+    }
+
+    #[test]
+    fn pty_stalled_output_is_bounded_and_reports_gap_before_end_or_error() {
+        for failed in [false, true] {
+            let mut buffer = super::OutputBuffer::default();
+            for _ in 0..1000 {
+                buffer.push(&vec![b'x'; super::READ_CHUNK]);
+                assert!(buffer.length <= super::OUTPUT_LIMIT);
+                assert!(buffer.chunks.len() <= super::OUTPUT_LIMIT / super::READ_CHUNK);
+            }
+            buffer.done = true;
+            if failed {
+                buffer.error = Some(super::super::invalid("read failed"));
+            }
+            let mut retained = 0;
+            for _ in 0..super::OUTPUT_LIMIT / super::READ_CHUNK {
+                match buffer.pop() {
+                    Some(super::OutputItem::Bytes(bytes)) => {
+                        retained += bytes.len();
+                        assert!(bytes.iter().all(|b| *b == b'x'));
+                    }
+                    _ => panic!("retained prefix before overflow"),
+                }
+            }
+            assert_eq!(retained, super::OUTPUT_LIMIT);
+            assert!(
+                matches!(buffer.pop(), Some(super::OutputItem::Overflow(n)) if n == (1000 * super::READ_CHUNK - retained) as u64)
+            );
+            match buffer.pop() {
+                Some(super::OutputItem::Error(error)) if failed => {
+                    assert_eq!(error.message, "read failed")
+                }
+                Some(super::OutputItem::End) if !failed => {}
+                _ => panic!("lifecycle after overflow"),
+            }
+        }
+        let mut buffer = super::OutputBuffer::default();
+        buffer.push(&vec![b'a'; super::OUTPUT_LIMIT]);
+        buffer.push(b"lost");
+        assert!(matches!(buffer.pop(), Some(super::OutputItem::Bytes(_))));
+        buffer.push(b"also lost"); // Do not insert bytes in an unreported gap.
+        assert!(matches!(
+            buffer.pop(),
+            Some(super::OutputItem::Overflow(13))
+        ));
+        buffer.push(b"tail");
+        buffer.done = true;
+        match buffer.pop() {
+            Some(super::OutputItem::Bytes(bytes)) => assert_eq!(&bytes[..], b"tail"),
+            _ => panic!("tail retained after gap"),
+        }
+        assert!(matches!(buffer.pop(), Some(super::OutputItem::End)));
+    }
+}
+
+const READ_CHUNK: usize = 32 * 1024;
+const OUTPUT_LIMIT: usize = 256 * 1024;
+
+/// How much the pump may read now. A running child is held back (backpressure) once the buffer
+/// is full; after it has exited, or when the page or the session is gone, ConPTY is drained
+/// whatever the credit, and what does not fit is counted as lost.
+fn read_room(held: usize, exited: bool, shutdown: bool, page_gone: bool) -> usize {
+    if exited || shutdown || page_gone {
+        READ_CHUNK
+    } else {
+        OUTPUT_LIMIT.saturating_sub(held).min(READ_CHUNK)
+    }
+}
+
+/// Retain the prefix, coalesce its following gap, then resume after reporting that gap.
+/// A gap never overtakes retained bytes; neither EOF nor an error overtakes the gap.
+#[derive(Default)]
+struct OutputBuffer {
+    chunks: std::collections::VecDeque<bytes::Bytes>,
+    length: usize,
+    dropped: u64,
+    done: bool,
+    error: Option<AlefError>,
+}
+enum OutputItem {
+    Bytes(bytes::Bytes),
+    Overflow(u64),
+    End,
+    Error(AlefError),
+}
+impl OutputBuffer {
+    fn push(&mut self, bytes: &[u8]) {
+        let keep = if self.dropped == 0 {
+            bytes.len().min(OUTPUT_LIMIT - self.length)
+        } else {
+            0
+        };
+        if keep > 0 {
+            self.chunks
+                .push_back(bytes::Bytes::copy_from_slice(&bytes[..keep]));
+            self.length += keep;
+        }
+        self.dropped = self.dropped.saturating_add((bytes.len() - keep) as u64);
+    }
+    fn pop(&mut self) -> Option<OutputItem> {
+        if let Some(bytes) = self.chunks.pop_front() {
+            self.length -= bytes.len();
+            return Some(OutputItem::Bytes(bytes));
+        }
+        if self.dropped > 0 {
+            return Some(OutputItem::Overflow(std::mem::take(&mut self.dropped)));
+        }
+        if self.done {
+            return Some(match self.error.take() {
+                Some(error) => OutputItem::Error(error),
+                None => OutputItem::End,
+            });
+        }
+        None
+    }
+}
+
 pub(crate) struct Terminal(platform::Terminal);
 impl Terminal {
     pub(crate) fn stop(&self) {
@@ -169,84 +306,85 @@ async fn open(
     };
     let (output, output_id) = session.streams().open_outgoing();
     let (mut input, input_id) = session.streams().open_incoming_reader();
-    let spool_owner = tempfile::NamedTempFile::new()?;
-    let spool = spool_owner.reopen()?;
-    let spool_read = spool_owner.reopen()?;
-    let (spool_tx, spool_rx) = tokio::sync::watch::channel((0_u64, false));
+    let buffer = Arc::new(Mutex::new(OutputBuffer::default()));
+    let (changed_tx, mut changed) = tokio::sync::watch::channel(());
     let (exit_tx, mut exited) = tokio::sync::watch::channel(false);
-    let (consumed_tx, mut consumed) = tokio::sync::watch::channel(0_u64);
+    let (consumed_tx, mut consumed) = tokio::sync::watch::channel(());
     session.resources().with_as::<Process, _>(id, |process| {
         let mut pumps = tokio::task::JoinSet::new();
         let read = terminal.clone();
         let mut read_shutdown = shared.shutdown.subscribe();
-        let mut spool = tokio::fs::File::from_std(spool);
         let mut capture_shutdown = shared.shutdown.subscribe();
+        let capture = buffer.clone();
         pumps.spawn(async move {
-            use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-            let mut length = 0_u64;
-            let mut buffer = vec![0; 32 * 1024];
+            let mut bytes = vec![0; READ_CHUNK];
             loop {
-                // While running, retain at most one credit window on disk. After exit the
-                // OS terminal buffer is finite; drain it regardless of page credit.
-                let discard = *capture_shutdown.borrow() || consumed.has_changed().is_err();
-                while !discard && length.saturating_sub(*consumed.borrow()) >= if *exited.borrow() { 32 * 1024 * 1024 - 32768 } else { 256 * 1024 } {
-                    tokio::select! { _ = consumed.changed() => {}, _ = exited.changed() => {}, _ = capture_shutdown.changed() => {} }
-                    if *capture_shutdown.borrow() || consumed.has_changed().is_err() { break; }
-                }
-                let at = length % (32 * 1024 * 1024);
-                let available = ((32 * 1024 * 1024 - at) as usize).min(buffer.len());
-                match read.0.read(&mut buffer[..available]) {
+                let available = loop {
+                    let held = capture.lock().unwrap_or_else(|e| e.into_inner()).length;
+                    let room = read_room(
+                        held,
+                        *exited.borrow(),
+                        *capture_shutdown.borrow(),
+                        consumed.has_changed().is_err(),
+                    );
+                    if room > 0 {
+                        break room;
+                    }
+                    tokio::select! {
+                        _ = consumed.changed() => {},
+                        _ = exited.changed() => {},
+                        _ = capture_shutdown.changed() => {},
+                    }
+                };
+                match read.0.read(&mut bytes[..available]) {
                     Ok(Some(0)) => break,
                     Ok(Some(n)) => {
-                        if *capture_shutdown.borrow() || consumed.has_changed().is_err() { continue; }
-                        if let Err(error) = spool.seek(std::io::SeekFrom::Start(at)).await {
-                            read.0.abandon_output();
-                            return Err(alef_core::AlefError::from(error));
+                        if *capture_shutdown.borrow() || consumed.has_changed().is_err() {
+                            continue;
                         }
-                        if let Err(error) = spool.write_all(&buffer[..n]).await {
-                            read.0.abandon_output();
-                            return Err(alef_core::AlefError::from(error));
-                        }
-                        if let Err(error) = spool.flush().await {
-                            read.0.abandon_output();
-                            return Err(alef_core::AlefError::from(error));
-                        }
-                        length += n as u64;
-                        spool_tx.send_replace((length, false));
+                        capture.lock().unwrap_or_else(|e| e.into_inner()).push(&bytes[..n]);
+                        changed_tx.send_replace(());
                     }
                     Ok(None) => tokio::time::sleep(Duration::from_millis(5)).await,
-                    Err(error) => { read.0.abandon_output(); return Err(error); }
+                    Err(error) => {
+                        read.0.abandon_output();
+                        capture.lock().unwrap_or_else(|e| e.into_inner()).error = Some(error);
+                        break;
+                    }
                 }
             }
-            spool_tx.send_replace((length, true));
-            Ok(())
+            capture.lock().unwrap_or_else(|e| e.into_inner()).done = true;
+            changed_tx.send_replace(());
         });
         let mut replay = tokio::task::JoinSet::new();
         replay.spawn(async move {
-            let _spool_owner = spool_owner;
-            use tokio::io::{AsyncReadExt, AsyncSeekExt};
-            let mut file = tokio::fs::File::from_std(spool_read);
-            let mut state = spool_rx;
-            let mut offset = 0;
-            let mut buffer = vec![0; 32 * 1024];
             loop {
-                let (length, done) = *state.borrow_and_update();
-                if offset < length {
-                    let at = offset % (32 * 1024 * 1024);
-                    let n = ((length - offset).min(32 * 1024 * 1024 - at) as usize).min(buffer.len());
-                    // Reopened handles have independent cursors; the ring never overwrites unread bytes.
-                    if file.seek(std::io::SeekFrom::Start(at)).await.is_err() { break; }
-                    if let Err(error) = file.read_exact(&mut buffer[..n]).await { output.error(error.into()); return; }
-                    tokio::select! {
-                        result = output.send_binary(bytes::Bytes::copy_from_slice(&buffer[..n])) => if result.is_err() { return; },
-                        _ = read_shutdown.changed() => return,
+                changed.borrow_and_update();
+                let item = buffer.lock().unwrap_or_else(|e| e.into_inner()).pop();
+                consumed_tx.send_replace(());
+                match item {
+                    Some(OutputItem::Bytes(bytes)) => {
+                        tokio::select! {
+                            result = output.send_binary(bytes) => if result.is_err() { return; },
+                            _ = read_shutdown.changed() => return,
+                        }
                     }
-                    offset += n as u64;
-                    consumed_tx.send_replace(offset);
-                } else if done { output.end(); return; }
-                else if state.changed().await.is_err() { output.error(super::invalid("terminal output spool failed")); return; }
+                    Some(OutputItem::Overflow(dropped)) => {
+                        tokio::select! {
+                            result = output.send_json(json!({"kind":"overflow", "dropped":dropped})) => if result.is_err() { return; },
+                            _ = read_shutdown.changed() => return,
+                        }
+                    }
+                    Some(OutputItem::End) => { output.end(); return; }
+                    Some(OutputItem::Error(error)) => { output.error(error); return; }
+                    None => {
+                        tokio::select! {
+                            result = changed.changed() => if result.is_err() { return; },
+                            _ = read_shutdown.changed() => return,
+                        }
+                    }
+                }
             }
-            output.error(super::invalid("terminal output spool seek failed"));
         });
 
         let write = terminal.clone();

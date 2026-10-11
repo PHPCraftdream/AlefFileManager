@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { AlefError } from '../core/errors.ts';
 import { call } from '../core/transport.ts';
+import { openReadable, type Readable, type StreamFrame } from '../core/stream.ts';
 import { bytesOf, sinkOf } from '../core/web-stream.ts';
 import type { Cancelable } from '../desktop/app.ts';
 
@@ -115,18 +116,55 @@ function dimensions(cols: number, rows: number): void {
   }
 }
 
+/** Output was lost after process exit because the bounded terminal buffer filled. */
+export class PtyOverflowEvent extends Event {
+  readonly dropped: number;
+
+  constructor(dropped: number) {
+    super('overflow');
+    this.dropped = dropped;
+  }
+}
+
 /** A process attached to a terminal, with merged output and byte input. */
-export class Pty {
+export class Pty extends EventTarget {
   readonly pid: number;
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array>;
   #id: number;
 
   constructor(opened: PtyOpened) {
+    super();
     this.#id = opened.process;
     this.pid = opened.pid;
-    this.readable = bytesOf(opened.output);
+    let readable: Readable;
+    let frames: AsyncIterator<StreamFrame>;
+    this.readable = new ReadableStream<Uint8Array>({
+      async start() {
+        readable = await openReadable(opened.output);
+        frames = readable[Symbol.asyncIterator]();
+      },
+      pull: async controller => {
+        for (;;) {
+          const next = await frames.next();
+          if (next.done) { controller.close(); return; }
+          const frame = next.value;
+          if (frame.kind === 'binary') { controller.enqueue(frame.data); return; }
+          const value = frame.value as { kind?: string; dropped?: number };
+          if (value?.kind === 'overflow' && typeof value.dropped === 'number') {
+            this.dispatchEvent(new PtyOverflowEvent(value.dropped));
+          }
+        }
+      },
+      async cancel() { await readable?.close(); },
+    });
     this.writable = sinkOf(opened.input);
+  }
+
+  override addEventListener(type: 'overflow', callback: ((event: PtyOverflowEvent) => void) | null, options?: boolean | AddEventListenerOptions): void;
+  override addEventListener(type: string, callback: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions): void;
+  override addEventListener(type: string, callback: EventListenerOrEventListenerObject | ((event: PtyOverflowEvent) => void) | null, options?: boolean | AddEventListenerOptions): void {
+    super.addEventListener(type, callback as EventListenerOrEventListenerObject | null, options);
   }
 
   async resize(cols: number, rows: number): Promise<void> {

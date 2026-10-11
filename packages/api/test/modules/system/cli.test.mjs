@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AlefError, ChildProcess, Pty, cli } from '../../../src/index.ts';
-import { binaryFrame, endFrame, installRuntime, join, liveStream } from '../../fake-runtime.mjs';
+import { AlefError, ChildProcess, Pty, PtyOverflowEvent, cli } from '../../../src/index.ts';
+import { binaryFrame, jsonFrame, endFrame, installRuntime, join, liveStream } from '../../fake-runtime.mjs';
 
 const replies = new Map();
 const streams = new Map();
@@ -312,6 +312,27 @@ test('pty maps terminal streams, env entries, dimensions and process commands', 
   assert.deepEqual(argsOf('cli.kill'), { process: 17, signal: 'SIGINT' });
   assert.deepEqual(await terminal.wait(), { code: 3, signal: null });
   assert.deepEqual(argsOf('cli.wait'), { process: 17 });
+});
+
+test('pty reports overflow in output order without hiding retained bytes or end', { timeout: 2000 }, async () => {
+  streams.set(171, endless());
+  streams.set(172, { chunks: [join(binaryFrame(encode('before')), jsonFrame({ kind: 'overflow', dropped: 42 }), binaryFrame(encode('after')), endFrame())] });
+  replies.set('cli.pty', { json: { process: 17, pid: 5252, output: 172, input: 171 } });
+  const terminal = await cli.pty('node', [], { cols: 80, rows: 24 });
+  const seen = [];
+  terminal.addEventListener('overflow', event => {
+    assert.ok(event instanceof PtyOverflowEvent);
+    seen.push(['overflow', event.dropped]);
+  });
+  const reader = terminal.readable.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    seen.push(['bytes', decode(value)]);
+  }
+  reader.releaseLock();
+  await terminal.writable.abort();
+  assert.deepEqual(seen, [['bytes', 'before'], ['overflow', 42], ['bytes', 'after']]);
 });
 
 test('pty omits optional cwd and env from the wire', async () => {

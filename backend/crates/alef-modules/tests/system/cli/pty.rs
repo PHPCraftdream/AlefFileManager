@@ -517,6 +517,92 @@ async fn a_terminal_nobody_reads_holds_its_child_back() {
     );
 }
 
+/// Killing a stalled terminal still drains ConPTY, reports loss after retained bytes, and ends.
+#[tokio::test]
+async fn terminal_overflow_keeps_prefix_and_ordered_lifecycle_under_stalled_credit() {
+    use alef_core::{
+        ids::StreamId,
+        protocol::{call::Limits, frame::Frame},
+    };
+    let app = Fixture::new_limited(
+        Some(&manifest(&["node"])),
+        Limits {
+            stream_window: 8192,
+            chunk_size: 4096,
+            ..Limits::default()
+        },
+    )
+    .await;
+    let script = "let n=0;const row=Array.from({length:990},(_,c)=>String.fromCharCode(97+(c*13+(c>>3))%26)).join('');function pump(){process.stdout.write('ROW'+String(n++).padStart(4,'0')+':'+row+'\\r\\n',()=>{require('fs').writeFileSync(process.argv[1],String(n));setImmediate(pump)})}process.stdout.write('BEGIN:',pump)";
+    let dir = tempfile::tempdir().unwrap();
+    let rows_file = dir.path().join("rows");
+    let opened = call(
+        &app,
+        "cli.pty",
+        json!({"program":"node", "cols":1000,"rows":1000,"args":["-e", script, rows_file.to_str().unwrap()]}),
+    )
+    .await
+    .unwrap();
+    let id = StreamId(opened["output"].as_u64().unwrap());
+    let session = app.session();
+    let mut reader = session.streams().reader(id).unwrap();
+    // The child counts the rows the terminal took; 300 rows of 1000 bytes are more than the buffer holds.
+    let filled = tokio::time::timeout(Duration::from_secs(30), async {
+        while std::fs::read_to_string(&rows_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<usize>().ok())
+            < Some(300)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let killed = call(&app, "cli.kill", json!({"process":opened["process"]})).await;
+    let waited = call(&app, "cli.wait", json!({"process":opened["process"]})).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let retained = !session.resources().is_empty();
+    let output = tokio::time::timeout(Duration::from_secs(20), async {
+        let (mut bytes, mut gaps) = (Vec::new(), Vec::new());
+        while let Some(frame) = reader.next_frame().await {
+            match frame {
+                Frame::Binary(chunk) => {
+                    session.streams().ack(id, chunk.len()).unwrap();
+                    bytes.extend_from_slice(&chunk);
+                }
+                Frame::Json(value) => {
+                    session.streams().ack(id, value.to_string().len()).unwrap();
+                    gaps.push((bytes.len(), value));
+                }
+                Frame::End => return (bytes, gaps, true),
+                Frame::Error(error) => panic!("output failed: {error}"),
+            }
+        }
+        (bytes, gaps, false)
+    })
+    .await;
+    let gone = tokio::time::timeout(Duration::from_secs(20), async {
+        while !session.resources().is_empty() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    close(&app).await;
+    filled.expect("credit fills");
+    killed.unwrap();
+    waited.unwrap();
+    assert!(retained, "wait retains stalled output");
+    let (bytes, gaps, ended) = output.expect("output completes");
+    assert!(plain(&bytes).contains("BEGIN:"), "prefix retained");
+    assert!(!gaps.is_empty(), "the final drain reports the overflow");
+    for (at, gap) in gaps {
+        assert!(at > 0, "retained bytes precede gap");
+        assert_eq!(gap["kind"], "overflow");
+        assert!(gap["dropped"].as_u64().unwrap() > 0);
+    }
+    assert!(ended, "end follows retained bytes and overflow");
+    gone.expect("resource removed after replay");
+}
+
 /// The output of a finished terminal waits for the page, and a terminal that was waited for is no more resized.
 #[tokio::test]
 async fn a_terminal_waited_for_keeps_its_output_and_is_no_more_resized() {

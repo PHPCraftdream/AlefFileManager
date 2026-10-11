@@ -91,6 +91,7 @@ export { shell } from './desktop/shell.ts';
 export {
   ChildProcess,
   Pty,
+  PtyOverflowEvent,
   cli,
   type ExecOptions,
   type ExecResult as CliExecResult,
