@@ -180,17 +180,118 @@ async fn a_redirect_to_an_address_the_user_substituted_is_not_followed() {
         .await
         .with_consent(consent);
     let away = other.url("/hello");
-    let error = ask(
-        &app,
-        json!({ "url": server.url(&format!("/redirect/302?to={away}")) }),
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    let url = server.url(&format!("/redirect/302?to={away}"));
+    for command in ["http.request", "http.start"] {
+        let mark = server.requests().len();
+        let args = if command == "http.start" {
+            json!({ "url": url, "method": "POST", "redirect": "follow", "timeoutMs": 2000 })
+        } else {
+            json!({ "url": url, "timeoutMs": 2000 })
+        };
+        let (command, args) = if command == "http.start" {
+            let started = app.call(command, args).await.unwrap();
+            app.session()
+                .streams()
+                .incoming_writer(alef_core::ids::StreamId(
+                    started["upload"].as_u64().unwrap(),
+                ))
+                .unwrap()
+                .end();
+            ("http.response", json!({ "request": started["request"] }))
+        } else {
+            (command, args)
+        };
+        let mut answer = Box::pin(app.call(command, args));
+        tokio::select! {
+            result = &mut answer => panic!("the substituted hop completed early: {result:?}"),
+            arrived = until(|| server.requests().len() > mark) => assert!(arrived),
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut answer)
+                .await
+                .is_err(),
+            "a substituted hop must remain pending, not reveal consent"
+        );
+        let error = tokio::time::timeout(Duration::from_secs(3), answer)
+            .await
+            .expect("the request deadline must bound the substituted hop")
+            .unwrap_err();
+        let initial = tokio::time::timeout(
+            Duration::from_secs(2),
+            ask(&app, json!({ "url": away, "timeoutMs": 1 })),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Timeout);
+        assert_eq!(error.code, initial.code);
+        assert_eq!(error.message, initial.message);
+        assert_eq!(error.details, initial.details);
+    }
+    assert_eq!(
+        trail(&server, 0),
+        ["GET /redirect/302 []", "POST /redirect/302 []"]
+    );
     assert!(
         other.requests().is_empty(),
         "the stand-in of the user is no server to ask"
     );
+}
+
+#[tokio::test]
+async fn a_substituted_redirect_without_an_explicit_timeout_is_bounded_and_cancellable() {
+    let server = Server::start().await;
+    let other = Server::start().await;
+    let mut consent = substituting(&other.scope());
+    consent.set(Right::scoped("net.http", &server.scope()), Decision::Allow);
+    let app = Fixture::new(Some(&manifest(&[server.scope(), other.scope()], &[])), &[])
+        .await
+        .with_consent(consent);
+    let away = other.url("/hello");
+    let url = server.url(&format!("/redirect/302?to={away}"));
+    let mut answer = Box::pin(ask(&app, json!({ "url": url })));
+    tokio::select! {
+        result = &mut answer => panic!("the substituted hop completed early: {result:?}"),
+        arrived = until(|| !server.requests().is_empty()) => assert!(arrived),
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut answer)
+            .await
+            .is_err(),
+        "the default substituted hop must remain pending"
+    );
+    assert_eq!(trail(&server, 0), ["GET /redirect/302 []"]);
+    // Real loopback I/O is finished; virtual time checks the 30 s default without a long wait.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(25)).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut answer)
+            .await
+            .is_err(),
+        "the default deadline is not there yet"
+    );
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let error = tokio::time::timeout(Duration::from_secs(1), answer)
+        .await
+        .expect("the default deadline must expire")
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Timeout);
+    tokio::time::resume();
+
+    // Cancelling the caller drops the pending hop rather than scheduling a target request.
+    let mut cancelled = Box::pin(ask(&app, json!({ "url": url, "timeoutMs": 30000 })));
+    tokio::select! {
+        result = &mut cancelled => panic!("the substituted hop completed early: {result:?}"),
+        arrived = until(|| server.requests().len() == 2) => assert!(arrived),
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut cancelled)
+            .await
+            .is_err()
+    );
+    drop(cancelled);
+    assert_eq!(trail(&server, 0), ["GET /redirect/302 []"; 2]);
+    assert!(other.requests().is_empty());
 }
 
 #[tokio::test]

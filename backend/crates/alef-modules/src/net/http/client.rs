@@ -4,7 +4,7 @@
 //! against the scope again: a server cannot send an application where its manifest does not reach.
 use std::sync::{Arc, OnceLock};
 
-use alef_core::{AlefError, ErrorCode};
+use alef_core::{security::consent::Decision, AlefError, ErrorCode};
 use hyper::{
     body::Incoming,
     header::{
@@ -58,7 +58,7 @@ pub(super) struct Answer {
 }
 
 /// Says whether the program may reach a URL; asked again for every hop.
-pub(super) type Authorize = Box<dyn Fn(&str) -> Result<(), AlefError> + Send + Sync>;
+pub(super) type Authorize = Box<dyn Fn(&str) -> Result<Decision, AlefError> + Send + Sync>;
 
 fn network(message: &str) -> AlefError {
     AlefError::new(ErrorCode::Network, message)
@@ -128,10 +128,14 @@ fn next_hop(
 }
 
 /// Sends the request and follows the redirects the spec asks for, up to [`MAX_REDIRECTS`].
+/// A substituted hop waits for the original request deadline, without sending anything there.
+/// cancel-safe: yes for the substituted wait (sleep_until owns no network work); cancelling a
+/// real request abandons it, never retries it: its payload and response are dropped.
 pub(super) async fn execute(
     spec: Spec,
     mut payload: Payload,
     authorize: &Authorize,
+    deadline: tokio::time::Instant,
 ) -> Result<Answer, AlefError> {
     let Spec {
         mut url,
@@ -148,7 +152,19 @@ pub(super) async fn execute(
     let mut redirected = false;
     let mut hops = 0;
     loop {
-        authorize(url.as_str())?;
+        match authorize(url.as_str())? {
+            Decision::Allow => {}
+            Decision::Substitute => {
+                tokio::time::sleep_until(deadline).await;
+                return Err(super::timeout_error());
+            }
+            Decision::Deny => {
+                return Err(AlefError::new(
+                    ErrorCode::PermissionDenied,
+                    "the address is outside what the application may reach",
+                ));
+            }
+        }
         let uri = Uri::try_from(url.as_str()).map_err(|_| network("the address is not valid"))?;
         let mut request = Request::builder()
             .method(method.clone())
@@ -218,6 +234,22 @@ mod tests {
             );
         }
         headers
+    }
+
+    #[tokio::test]
+    async fn a_hop_the_check_denies_is_refused_before_anything_is_sent() {
+        let deny: Authorize = Box::new(|_| Ok(Decision::Deny));
+        let spec = Spec {
+            url: url("http://127.0.0.1:9/"),
+            method: Method::GET,
+            headers: HeaderMap::new(),
+            follow: true,
+        };
+        let error = execute(spec, Payload::Empty, &deny, tokio::time::Instant::now())
+            .await
+            .err()
+            .expect("a denied hop is an error");
+        assert_eq!(error.code, ErrorCode::PermissionDenied);
     }
 
     /// What a hop makes of a request: the next address, the method, the headers, the payload.

@@ -81,19 +81,11 @@ fn timeout_error() -> AlefError {
     AlefError::new(ErrorCode::Timeout, "the server did not answer in time")
 }
 
-/// Holds an address against `permissions.net.http`; what the user substituted is no hop to follow.
+/// Holds each address against `permissions.net.http`; what to do with a substitution is for the hop.
 fn authorizer(ctx: &CallContext) -> Authorize {
     let permissions = ctx.permissions.clone();
     let grants = ctx.grants();
-    Box::new(
-        move |url| match permissions.check(Permission::NetHttp, Some(url), &grants)? {
-            Decision::Allow => Ok(()),
-            _ => Err(AlefError::new(
-                ErrorCode::PermissionDenied,
-                "the address is outside what the application may reach",
-            )),
-        },
-    )
+    Box::new(move |url| permissions.check(Permission::NetHttp, Some(url), &grants))
 }
 
 /// The request, until its answer comes or its time is up.
@@ -103,7 +95,8 @@ async fn run(
     authorize: Authorize,
     timeout: Option<Duration>,
 ) -> Result<Answer, AlefError> {
-    let exchange = execute(spec, payload, &authorize);
+    let deadline = tokio::time::Instant::now() + timeout.unwrap_or(HANG);
+    let exchange = execute(spec, payload, &authorize, deadline);
     match timeout {
         Some(limit) => tokio::time::timeout(limit, exchange)
             .await
