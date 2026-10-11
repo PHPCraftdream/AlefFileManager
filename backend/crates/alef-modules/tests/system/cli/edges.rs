@@ -297,7 +297,10 @@ async fn a_terminal_killed_with_stalled_credit_keeps_its_prefix_and_reports_the_
     assert!(retained, "wait retains stalled output");
     let (bytes, gaps, ended) = output.expect("output completes");
     assert!(plain(&bytes).contains("BEGIN:"), "prefix retained");
-    assert!(!gaps.is_empty(), "the final drain reports the overflow");
+    // XNU flushes what the kernel holds when a killed child's slave closes: nothing is left to count.
+    if !cfg!(target_os = "macos") {
+        assert!(!gaps.is_empty(), "the final drain reports the overflow");
+    }
     for (at, gap) in gaps {
         assert!(at > 0, "retained bytes precede gap");
         assert_eq!(gap["kind"], "overflow");
