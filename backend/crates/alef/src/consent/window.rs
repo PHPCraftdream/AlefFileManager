@@ -19,15 +19,24 @@ use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 use serde_json::{json, Value};
 
 const PAGE: [(&str, &str); 3] = [
-    ("index.html", include_str!("../assets/consent/index.html")),
-    ("consent.css", include_str!("../assets/consent/consent.css")),
-    ("consent.js", include_str!("../assets/consent/consent.js")),
+    (
+        "index.html",
+        include_str!("../../assets/consent/index.html"),
+    ),
+    (
+        "consent.css",
+        include_str!("../../assets/consent/consent.css"),
+    ),
+    (
+        "consent.js",
+        include_str!("../../assets/consent/consent.js"),
+    ),
 ];
 
 /// The clicks of an end-to-end run; written only when the run asks for them.
 const AUTOMATION: (&str, &str) = (
     "consent-e2e.js",
-    include_str!("../assets/consent/consent-e2e.js"),
+    include_str!("../../assets/consent/consent-e2e.js"),
 );
 
 fn internal(error: impl ToString) -> AlefError {

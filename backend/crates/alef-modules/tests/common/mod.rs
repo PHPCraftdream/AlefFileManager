@@ -233,6 +233,13 @@ impl Fixture {
             args::Parsed::Run(parsed) => parsed,
             other => panic!("expected a run, got {other:?}"),
         };
+        let initial = if console.is_some() {
+            alef_core::security::manifest::Mode::Cli
+        } else if manifest.windows.is_empty() {
+            alef_core::security::manifest::Mode::Foreground
+        } else {
+            alef_core::security::manifest::Mode::Window
+        };
         let context = ModuleContext {
             app: AppInfo {
                 id: manifest.id.clone(),
@@ -260,6 +267,21 @@ impl Fixture {
             )),
             console,
             termination: Termination::default(),
+            launch: if manifest.modes.is_empty() {
+                alef_modules::LaunchState::new(
+                    vec![initial],
+                    Some(initial),
+                    alef_modules::LAUNCH_LIMIT,
+                )
+                .unwrap()
+            } else {
+                alef_modules::LaunchState::new(
+                    manifest.modes.clone(),
+                    None,
+                    alef_modules::LAUNCH_LIMIT,
+                )
+                .unwrap()
+            },
         };
         let host = Arc::new(FakeHost {
             quits: Mutex::new(Vec::new()),

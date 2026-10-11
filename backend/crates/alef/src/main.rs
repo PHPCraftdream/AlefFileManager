@@ -10,7 +10,8 @@ use alef_launch::{
         watch, Asker, WATCH_EVERY,
     },
     permissions,
-    plan::{load_manifest, make_plan, path_vars},
+    plan::{launch_timeout, load_manifest, make_plan, path_vars},
+    relaunch,
 };
 use alef_modules::{
     desktop::args::{parse, Parsed},
@@ -18,6 +19,7 @@ use alef_modules::{
 };
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 
+#[path = "consent/window.rs"]
 mod consent_window;
 
 surfman::declare_surfman!();
@@ -108,7 +110,9 @@ fn signals() -> std::io::Result<tokio::sync::mpsc::Receiver<i32>> {
             let sender = sender.clone();
             tokio::spawn(async move {
                 while stream.recv().await.is_some() {
-                    let _ = sender.send(code).await;
+                    if sender.send(code).await.is_err() {
+                        break;
+                    }
                 }
             });
         }
@@ -122,7 +126,9 @@ fn signals() -> std::io::Result<tokio::sync::mpsc::Receiver<i32>> {
                 let sender = sender.clone();
                 tokio::spawn(async move {
                     while stream.recv().await.is_some() {
-                        let _ = sender.send($code).await;
+                        if sender.send($code).await.is_err() {
+                            break;
+                        }
                     }
                 });
             }};
@@ -165,10 +171,21 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         app_args,
         grant,
         no_prompt,
+        launch_window,
     } = launch;
     let manifest = load_manifest(&app_dir)?;
     let vars = path_vars(&app_dir, &manifest.id)?;
-    let plan = make_plan(&app_dir, manifest, &vars)?;
+    let mut plan = make_plan(&app_dir, manifest, &vars)?;
+    if launch_window {
+        plan.select_window_child()?;
+    }
+    let limit = launch_timeout(
+        std::env::var_os("ALEF_E2E").as_deref(),
+        std::env::var_os("ALEF_E2E_LAUNCH_TIMEOUT_MS").as_deref(),
+    )
+    .map_err(Failure::Usage)?;
+    let launch_state =
+        alef_modules::LaunchState::new(plan.allowed_modes(), plan.initial_mode(), limit)?;
     let (app_args, startup_urls) =
         alef_modules::desktop::args::extract_deep_links(&plan.manifest.deep_links, &app_args)?;
     let args = match parse(
@@ -228,11 +245,12 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         args,
         deep_link_schemes: plan.manifest.deep_links.clone(),
         startup_urls,
-        process_args,
+        process_args: process_args.clone(),
         backends: Backends::from_environment(&plan.manifest.name),
         shadow,
-        console: plan.manifest.console.then(Console::process),
+        console: (plan.manifest.console || !plan.manifest.modes.is_empty()).then(Console::process),
         termination: termination.clone(),
+        launch: launch_state.clone(),
     };
     let console = context.console.clone();
 
@@ -244,6 +262,8 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         .collect();
     let assets = dev_url.is_none().then_some(plan.assets.as_path());
     let (entry, windowless) = (plan.entry(), plan.windowless());
+    let loaded = launch_state.clone();
+    let tick = launch_state.clone();
     let mut bridge = Bridge::with_options(
         Commands::new(),
         assets,
@@ -256,6 +276,8 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             csp: Some(plan.csp),
             permissions: Some(granted),
             entry: Some(entry),
+            headless_loaded: Some(Box::new(move || loaded.loaded())),
+            headless_tick: Some(Box::new(move || tick.check_timeout())),
             ..BridgeOptions::default()
         },
     )
@@ -270,9 +292,10 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     }
     let handle = bridge.handle();
     // A signal asks the application to end as `app.quit` does; a second one ends it.
-    let _signals = tokio::spawn(end_on_signals(termination, handle.clone()));
+    let signal_task = tokio::spawn(end_on_signals(termination, handle.clone()));
     let result = if windowless {
         // No window: the entry document runs in a hidden WebView.
+        launch_state.load_started();
         alef_runtime::run_headless(&mut bridge)
     } else {
         alef_runtime::run(
@@ -289,6 +312,11 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         // What the page wrote to stdout and stderr leaves before the process does.
         console.drain().await;
     }
+    signal_task.abort();
+    let _ = signal_task.await;
     result.map_err(|error| Failure::Runtime(error.to_string()))?;
+    if handle.relaunch_window_requested() {
+        return relaunch::window(&process_args).await.map_err(Failure::from);
+    }
     Ok(u8::try_from(handle.exit_code()).unwrap_or(1))
 }

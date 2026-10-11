@@ -66,6 +66,10 @@ pub struct BridgeOptions {
     pub limits: Limits,
     /// Root-relative entry document (`/app.html`); `None` opens the root, served as `index.html`.
     pub entry: Option<String>,
+    /// Called when the headless entry finishes loading; runtime owns no module state.
+    pub headless_loaded: Option<Box<dyn Fn() + Send>>,
+    /// Called each headless iteration; true requests a launch-timeout exit (code 2).
+    pub headless_tick: Option<Box<dyn Fn() -> bool + Send>>,
 }
 
 pub struct Bridge {
@@ -77,6 +81,8 @@ pub struct Bridge {
     sessions: Arc<SessionManager>,
     windows: WindowRegistry,
     transport: Arc<Transport>,
+    pub(crate) headless_loaded: Option<Box<dyn Fn() + Send>>,
+    pub(crate) headless_tick: Option<Box<dyn Fn() -> bool + Send>>,
 }
 
 /// A root-relative path (`/` or `/dir/app.html?x=1`); anything that could name another host or
@@ -260,6 +266,8 @@ impl Bridge {
             sessions,
             windows,
             transport,
+            headless_loaded: options.headless_loaded,
+            headless_tick: options.headless_tick,
         })
     }
 

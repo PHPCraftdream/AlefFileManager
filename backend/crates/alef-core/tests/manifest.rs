@@ -50,6 +50,7 @@ fn autostart_and_deep_links_are_optional_and_round_trip_with_camel_case_names() 
     let default = Manifest::from_ktav_str(MINIMAL).unwrap();
     assert!(!default.permissions.app.autostart);
     assert!(default.deep_links.is_empty());
+    assert!(default.modes.is_empty());
     for autostart in [false, true] {
         let source = MINIMAL.replace('\r', "").replace(
             "        env: []",
@@ -496,6 +497,8 @@ fn generated_manifest_types_include_window_schema() {
     }
     assert!(types.contains("openExternal"));
     assert!(types.contains("minWidth"));
+    assert!(types.contains("modes?: Array<Mode>"));
+    assert!(types.contains("export type Mode = \"cli\" | \"foreground\" | \"window\";"));
 }
 
 const ARGUMENTS: &str = "arguments: {

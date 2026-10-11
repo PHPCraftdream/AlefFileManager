@@ -228,6 +228,19 @@ pub struct Arguments {
     pub positional: Option<ArgPositional>,
 }
 
+/// Launch modes selectable by application code (M5 integration manifest rules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "manifest.ts")]
+pub enum Mode {
+    /// Console utility with standard streams.
+    Cli,
+    /// Long-lived foreground process without windows.
+    Foreground,
+    /// Declared application windows.
+    Window,
+}
+
 /// Application manifest with required security policy sections.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
@@ -245,8 +258,12 @@ pub struct Manifest {
     /// Needs `windows: []`.
     #[serde(default)]
     pub console: bool,
-    /// The entry document of an application without windows (a root-relative path, `/` when omitted).
-    /// Needs `windows: []`.
+    /// Selectable launch modes; empty or omitted preserves legacy startup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<Mode>>")]
+    pub modes: Vec<Mode>,
+    /// Entry document for headless startup or mode selection (root-relative, `/` when omitted).
+    /// With windows, requires nonempty `modes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub entry: Option<String>,
@@ -319,11 +336,28 @@ impl Manifest {
                 ));
             }
         }
+        // docs/stages/m5-integration.md: nonempty modes opt into launch selection.
+        if !manifest.modes.is_empty() {
+            if manifest.console {
+                return Err(invalid("console", "incompatible with nonempty modes"));
+            }
+            if manifest.modes.contains(&Mode::Window) == manifest.windows.is_empty() {
+                return Err(invalid(
+                    "modes",
+                    "window mode requires windows and vice versa",
+                ));
+            }
+            for (index, mode) in manifest.modes.iter().enumerate() {
+                if manifest.modes[..index].contains(mode) {
+                    return Err(invalid(&format!("modes[{index}]"), "duplicate mode"));
+                }
+            }
+        }
         if !manifest.windows.is_empty() {
             if manifest.console {
                 return Err(invalid("console", "needs windows: []"));
             }
-            if manifest.entry.is_some() {
+            if manifest.entry.is_some() && manifest.modes.is_empty() {
                 return Err(invalid("entry", "needs windows: []"));
             }
         }
@@ -459,4 +493,156 @@ fn validate_arguments(arguments: &Arguments) -> Result<(), (String, &'static str
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::{Manifest, Mode};
+    use crate::ErrorCode;
+    const MINIMAL: &str = include_str!("../../tests/fixtures/minimal.ktav");
+    fn error(src: &str) -> crate::AlefError {
+        let err = Manifest::from_ktav_str(src).expect_err("manifest must be rejected");
+        assert_eq!(err.code, ErrorCode::ManifestInvalid);
+        err
+    }
+    fn without_windows(extra: &str) -> String {
+        let mut s = MINIMAL.to_string();
+        let start = s.find("windows: [").unwrap();
+        let end = s[start..].find("]\nexternal").unwrap() + start + 1;
+        s.replace_range(start..end, &format!("windows: []\n{extra}"));
+        s
+    }
+    #[test]
+    fn modes_accept_all_valid_subsets_and_round_trip_lowercase() {
+        for mask in 1..8 {
+            let modes: Vec<_> = [
+                (Mode::Cli, "cli"),
+                (Mode::Foreground, "foreground"),
+                (Mode::Window, "window"),
+            ]
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0)
+            .map(|(_, mode)| mode)
+            .collect();
+            let items: String = modes
+                .iter()
+                .map(|(_, name)| format!("    :: {name}\n"))
+                .collect();
+            let extra = format!("modes: [\n{items}]\n");
+            let source = if mask & 4 != 0 {
+                format!("{MINIMAL}\n{extra}")
+            } else {
+                without_windows(&extra)
+            };
+            let manifest = Manifest::from_ktav_str(&source).unwrap();
+            assert_eq!(
+                manifest.modes,
+                modes.iter().map(|(mode, _)| *mode).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                manifest.entry, None,
+                "omitted entry retains the legacy representation"
+            );
+            let json = serde_json::to_value(&manifest).unwrap();
+            assert_eq!(
+                json["modes"],
+                serde_json::json!(modes.iter().map(|(_, name)| *name).collect::<Vec<_>>())
+            );
+            assert_eq!(serde_json::from_value::<Manifest>(json).unwrap(), manifest);
+        }
+    }
+    #[test]
+    fn modes_reject_console_window_mismatches_duplicates_and_unknown_values() {
+        for (source, path) in [
+            (
+                without_windows("modes: [\n    :: cli\n]\nconsole: true"),
+                "console",
+            ),
+            (
+                without_windows("modes: [\n    :: foreground\n]\nconsole: true"),
+                "console",
+            ),
+            (
+                format!("{MINIMAL}\nmodes: [\n    :: window\n]\nconsole: true\n"),
+                "console",
+            ),
+            (without_windows("modes: [\n    :: window\n]"), "modes"),
+            (format!("{MINIMAL}\nmodes: [\n    :: cli\n]\n"), "modes"),
+            (
+                format!("{MINIMAL}\nmodes: [\n    :: foreground\n]\n"),
+                "modes",
+            ),
+            (
+                without_windows("modes: [\n    :: cli\n    :: cli\n]"),
+                "modes[1]",
+            ),
+            (
+                without_windows("modes: [\n    :: foreground\n    :: cli\n    :: foreground\n]"),
+                "modes[2]",
+            ),
+            (
+                format!("{MINIMAL}\nmodes: [\n    :: window\n    :: window\n]\n"),
+                "modes[1]",
+            ),
+        ] {
+            assert_eq!(
+                error(&source).details,
+                Some(serde_json::json!({"path": path})),
+                "{source}"
+            );
+        }
+        for value in ["unknown", "Cli", "foregrounded", "undecided"] {
+            let err = error(&without_windows(&format!("modes: [\n    :: {value}\n]")));
+            assert!(err.message.contains("unknown variant"), "{err:?}");
+        }
+        for value in ["null", "cli", "1", "true", "{}"] {
+            error(&without_windows(&format!("modes: {value}")));
+        }
+    }
+    #[test]
+    fn modes_entry_uses_existing_root_relative_policy_with_and_without_windows() {
+        for source in [
+            without_windows("modes: [\n    :: cli\n    :: foreground\n]"),
+            format!("{MINIMAL}\nmodes: [\n    :: window\n]\n"),
+        ] {
+            for entry in ["/", "/choose.html", "/nested/choose.html?mode=cli#start"] {
+                let manifest =
+                    Manifest::from_ktav_str(&format!("{source}\nentry: {entry}\n")).unwrap();
+                assert_eq!(manifest.entry.as_deref(), Some(entry));
+            }
+            for entry in [
+                "choose.html",
+                "https://evil.example/x",
+                "//evil.example/x",
+                "/a\\b",
+            ] {
+                let err = error(&format!("{source}\nentry: {entry}\n"));
+                assert_eq!(err.details, Some(serde_json::json!({"path": "entry"})));
+            }
+        }
+    }
+    #[test]
+    fn modes_empty_and_absent_preserve_legacy_defaults_and_rejections() {
+        for source in [
+            MINIMAL.to_owned(),
+            without_windows(""),
+            without_windows("console: true\nentry: /tool.html"),
+            without_windows("console: false\nentry: /service.html"),
+        ] {
+            let legacy = Manifest::from_ktav_str(&source).unwrap();
+            assert!(legacy.modes.is_empty());
+            assert_eq!(
+                Manifest::from_ktav_str(&format!("{source}\nmodes: []\n")).unwrap(),
+                legacy
+            );
+            let mut json = serde_json::to_value(&legacy).unwrap();
+            json.as_object_mut().unwrap().remove("modes");
+            assert_eq!(serde_json::from_value::<Manifest>(json).unwrap(), legacy);
+        }
+        for extra in ["console: true", "entry: /choose.html"] {
+            let err = error(&format!("{MINIMAL}\nmodes: []\n{extra}\n"));
+            assert!(err.message.contains("needs windows: []"), "{err:?}");
+        }
+    }
 }

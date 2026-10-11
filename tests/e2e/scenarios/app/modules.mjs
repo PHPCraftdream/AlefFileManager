@@ -264,7 +264,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
     'shortcut-denied': () => shortcutRun('denied'),
     'shortcut-substitute': () => shortcutRun('substituted'),
     app: () => drive({
-      name: 'app', app: 'modules/app', targets: { cwd: process.cwd() },
+      name: 'app', app: 'modules/app/basic', targets: { cwd: process.cwd() },
       env: { ALEF_E2E_ENV_ALLOWED: 'yes', ALEF_E2E_ENV_SECRET: 'secret-value-31337' },
       args: ['--', '-p', '8080', '--verbose', '--label=check', 'y.txt'],
       expectedChecks: APP_CHECKS,
@@ -272,7 +272,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
 
     // The exit code of the process is the code the page passed to `app.quit`.
     quit: () => drive({
-      name: 'quit', app: 'modules/app', targets: { cwd: process.cwd() },
+      name: 'quit', app: 'modules/app/basic', targets: { cwd: process.cwd() },
       env: { ALEF_E2E_ENV_ALLOWED: 'yes', ALEF_E2E_ENV_SECRET: 'secret-value-31337' },
       args: ['--', '-p', '8080', '--verbose', '--label=quit', 'y.txt'],
       expectedChecks: APP_CHECKS,
@@ -623,7 +623,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
       const problems = [];
       mkdirSync(scratch, { recursive: true });
       for (const item of USAGE_CASES) {
-        const site = prepareSite(`usage-${USAGE_CASES.indexOf(item)}`, item.app ?? 'modules/app');
+        const site = prepareSite(`usage-${USAGE_CASES.indexOf(item)}`, item.app ?? 'modules/app/basic');
         const running = startApp({ exe, args: ['--app', site, '--', ...item.tail], verbose });
         const exit = await running.waitForExit(30000);
         const log = running.lines.join('\n');

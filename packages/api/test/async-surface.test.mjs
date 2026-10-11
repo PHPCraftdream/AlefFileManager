@@ -57,6 +57,8 @@ const ARGS = {
   'app.autostart.enable': [],
   'app.autostart.disable': [],
   'app.autostart.isEnabled': [],
+  'app.mode': [],
+  'app.launch': ['cli'],
   'app.info': [],
   'app.quit': [],
   'app.relaunch': [],

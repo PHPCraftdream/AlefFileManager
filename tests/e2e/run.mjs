@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,consent,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,consent,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink]
 //                          [--timeout-s 150] [--verbose]
 // Exit code 0 = every selected scenario passed.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,6 +15,7 @@ import { netScenarios } from './scenarios/net.mjs';
 import { manifestCases } from './scenarios/manifests.mjs';
 import { moduleScenarios } from './scenarios/app/modules.mjs';
 import { appIntegrationScenarios } from './scenarios/app/app-integration.mjs';
+import { launchModesScenarios } from './scenarios/app/launch-modes.mjs';
 import { startupScenarios } from './scenarios/startup.mjs';
 
 const args = process.argv.slice(2);
@@ -70,6 +71,7 @@ const INDUCED = ['binary-echo-16MiB', 'lib-binary-roundtrip-4MiB'];
 
 const scenarios = {
   ...moduleScenarios({ drive, exe, verbose }),
+  ...launchModesScenarios({ exe, verbose, timeoutMs }),
   ...appIntegrationScenarios({ exe, verbose, timeoutMs }),
   ...consentScenarios({ drive, exe, verbose }),
   ...dataScenarios({ drive, exe, verbose }),

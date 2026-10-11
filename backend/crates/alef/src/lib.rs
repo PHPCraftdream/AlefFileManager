@@ -5,3 +5,4 @@ pub mod args;
 pub mod consent;
 pub mod permissions;
 pub mod plan;
+pub mod relaunch;

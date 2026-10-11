@@ -31,6 +31,7 @@ use serde_json::json;
 use tokio::sync::Notify;
 
 use self::instance::{Endpoint, Instance};
+pub use self::integration::launch::{LaunchState, LAUNCH_LIMIT};
 use crate::{json, ModuleContext};
 
 /// The event a document that asked for it gets before the application quits.
@@ -225,18 +226,33 @@ fn value(name: &str) -> Option<String> {
     std::env::var_os(name).map(|text| text.to_string_lossy().into_owned())
 }
 
-/// Starts `program` with `arguments`; the child inherits the environment and the streams.
-fn start_again(program: &Path, arguments: &[OsString]) -> Result<(), AlefError> {
-    std::process::Command::new(program)
-        .args(arguments)
-        .spawn()
-        .map(drop)
-        .map_err(|error| {
-            AlefError::new(
-                ErrorCode::NotAvailable,
-                format!("cannot start a new instance: {error}"),
-            )
-        })
+/// Starts `program` with `arguments`; the child inherits the environment and the streams. It is
+/// no part of the process that starts it: a window child runs in a job or a group that kills what
+/// is left of it when it ends, and a restart must not be among those.
+fn start_again(program: &Path, arguments: &[OsString]) -> Result<std::process::Child, AlefError> {
+    let mut command = std::process::Command::new(program);
+    command.args(arguments);
+    #[cfg(unix)]
+    let spawned = {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0).spawn()
+    };
+    #[cfg(windows)]
+    let spawned = {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+        // Refused when the job of this process does not allow the breakaway: then it stays in it.
+        command
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+            .or_else(|_| command.creation_flags(0).spawn())
+    };
+    spawned.map_err(|error| {
+        AlefError::new(
+            ErrorCode::NotAvailable,
+            format!("cannot start a new instance: {error}"),
+        )
+    })
 }
 
 pub(crate) fn register(
@@ -244,6 +260,7 @@ pub(crate) fn register(
     host: Arc<dyn Host>,
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
+    integration::launch::register(registry, host.clone(), context)?;
     autostart::register(registry, context)?;
     deeplink::register(registry, context)?;
     let info = Arc::new(context.app.clone());
@@ -378,7 +395,7 @@ pub(crate) fn register(
                     return json(&());
                 }
                 tokio::task::spawn_blocking(move || {
-                    start_again(&std::env::current_exe()?, &arguments)
+                    start_again(&std::env::current_exe()?, &arguments).map(drop)
                 })
                 .await
                 .map_err(|error| AlefError::new(ErrorCode::Internal, error.to_string()))??;
@@ -401,10 +418,146 @@ mod tests {
             ("true", &[])
         };
         let arguments: Vec<OsString> = arguments.iter().map(OsString::from).collect();
-        start_again(Path::new(program), &arguments).expect("starts");
+        let status = start_again(Path::new(program), &arguments)
+            .expect("starts")
+            .wait()
+            .expect("ends");
+        assert!(status.success());
         let error = start_again(Path::new("alef-no-such-program-7f3a"), &[]).unwrap_err();
         assert_eq!(error.code, ErrorCode::NotAvailable);
         assert!(error.message.contains("cannot start a new instance"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_started_again_leads_a_group_of_its_own() {
+        let mut child = start_again(Path::new("sleep"), &[OsString::from("5")]).expect("starts");
+        let pid = child.id() as i32;
+        // SAFETY: the ids are those of a live child of ours and of this process.
+        let (group, own) = unsafe { (libc::getpgid(pid), libc::getpgid(0)) };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(group, pid, "it leads a group of its own");
+        assert_ne!(group, own);
+    }
+
+    // Also the entry point of the helper process, which the test puts in a job and which starts a
+    // program again from there.
+    #[cfg(windows)]
+    #[test]
+    fn a_program_started_again_from_a_job_outlives_the_job() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use std::time::Instant;
+        use windows_sys::Win32::{
+            Foundation::WAIT_TIMEOUT,
+            System::{JobObjects::*, Threading::*},
+        };
+
+        struct Alive(OwnedHandle);
+        impl Drop for Alive {
+            fn drop(&mut self) {
+                // SAFETY: the handle is that of the program the test started; this is clean-up.
+                unsafe {
+                    TerminateProcess(self.0.as_raw_handle(), 1);
+                }
+            }
+        }
+
+        let ping = Path::new(&std::env::var_os("SystemRoot").expect("SystemRoot"))
+            .join("System32")
+            .join("ping.exe");
+        if let Some(dir) = std::env::var_os("ALEF_TEST_RESTART_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            while !dir.join("go").exists() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let arguments: Vec<OsString> = ["-n", "60", "127.0.0.1"]
+                .into_iter()
+                .map(OsString::from)
+                .collect();
+            let child = start_again(&ping, &arguments).expect("starts");
+            std::fs::write(dir.join("pid"), child.id().to_string()).expect("writes");
+            std::thread::sleep(Duration::from_secs(60));
+            return;
+        }
+
+        // A job that allows the breakaway lets the restart leave it; one that does not still lets it
+        // start, in the job.
+        for allowed in [true, false] {
+            let dir = tempfile::tempdir().expect("dir");
+            // SAFETY: unnamed job with the default security; the limits are an initialised structure.
+            let job = unsafe {
+                let raw = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                assert!(!raw.is_null(), "job");
+                let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                    | if allowed {
+                        JOB_OBJECT_LIMIT_BREAKAWAY_OK
+                    } else {
+                        0
+                    };
+                assert_ne!(
+                    SetInformationJobObject(
+                        raw,
+                        JobObjectExtendedLimitInformation,
+                        (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                        std::mem::size_of_val(&limits) as u32,
+                    ),
+                    0
+                );
+                OwnedHandle::from_raw_handle(raw)
+            };
+            let mut helper = std::process::Command::new(std::env::current_exe().expect("exe"))
+                .args([
+                    "--exact",
+                    "desktop::app::tests::a_program_started_again_from_a_job_outlives_the_job",
+                ])
+                .env("ALEF_TEST_RESTART_DIR", dir.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("helper");
+            // SAFETY: the helper is a live child of ours, the job is ours; the helper waits for `go`.
+            assert_ne!(
+                unsafe { AssignProcessToJobObject(job.as_raw_handle(), helper.as_raw_handle()) },
+                0
+            );
+            std::fs::write(dir.path().join("go"), "").expect("go");
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let pid = loop {
+                if let Ok(text) = std::fs::read_to_string(dir.path().join("pid")) {
+                    if let Ok(pid) = text.parse::<u32>() {
+                        break pid;
+                    }
+                }
+                assert!(Instant::now() < deadline, "the helper started nothing");
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            // SAFETY: the pid was just reported by the helper, whose program is alive.
+            let again = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+            assert!(!again.is_null(), "open the program");
+            // SAFETY: a successful OpenProcess hands over a unique handle.
+            let again = Alive(unsafe { OwnedHandle::from_raw_handle(again) });
+            drop(job);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while helper.try_wait().expect("wait").is_none() {
+                assert!(Instant::now() < deadline, "the job did not end the helper");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            // SAFETY: the handle is owned and live; the wait only probes for half a second.
+            let state = unsafe { WaitForSingleObject(again.0.as_raw_handle(), 500) };
+            if allowed {
+                assert_eq!(
+                    state, WAIT_TIMEOUT,
+                    "the program started again is still running"
+                );
+            } else {
+                assert_ne!(
+                    state, WAIT_TIMEOUT,
+                    "it stayed in the job and ended with it"
+                );
+            }
+        }
     }
 
     #[test]

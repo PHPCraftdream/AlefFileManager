@@ -37,6 +37,8 @@ pub struct Launch {
     pub grant: Option<Decision>,
     /// `--no-prompt`: the permission window is never shown.
     pub no_prompt: bool,
+    /// Internal window-child selection; never an application option.
+    pub launch_window: bool,
 }
 
 /// `alef permissions ...`: what the user decided for an application.
@@ -171,6 +173,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
     let mut dev = None;
     let mut grant = None;
     let mut no_prompt = false;
+    let mut launch_window = false;
     let mut app_args = Vec::new();
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
@@ -180,7 +183,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             }
             // A link can carry a quote that breaks out of its place in the command line: what
             // comes after a URL is never an option of the runtime.
-            Some(flag @ ("--app" | "--dev-url" | "--grant" | "--no-prompt"))
+            Some(flag @ ("--app" | "--dev-url" | "--grant" | "--no-prompt" | "--launch-mode"))
                 if !app_args.is_empty() =>
             {
                 return Err(format!("{flag} is not accepted after a URL"));
@@ -196,6 +199,16 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             Some("--grant") => {
                 let word = text_of(value(&mut arguments, "--grant")?, "--grant")?;
                 grant = Some(decision_named(&word)?);
+            }
+            Some("--launch-mode") if launch_window => {
+                return Err("--launch-mode is given twice".to_owned())
+            }
+            Some("--launch-mode") => {
+                let word = text_of(value(&mut arguments, "--launch-mode")?, "--launch-mode")?;
+                if word != "window" {
+                    return Err("--launch-mode must be window".to_owned());
+                }
+                launch_window = true;
             }
             Some("--no-prompt") => no_prompt = true,
             Some("--help" | "-h") => return Ok(Command::Help),
@@ -216,6 +229,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
         app_args,
         grant,
         no_prompt,
+        launch_window,
     }))
 }
 
@@ -225,6 +239,42 @@ mod tests {
 
     fn parse(arguments: &[&str]) -> Result<Command, String> {
         parse_args(arguments.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn the_hidden_window_mode_is_strict_and_only_belongs_to_the_runtime_before_the_separator() {
+        let Command::Run(run) = parse(&["--launch-mode", "window", "--app", "site"]).unwrap()
+        else {
+            panic!("run")
+        };
+        assert!(run.launch_window);
+        assert!(!USAGE.contains("--launch-mode"));
+        for bad in [
+            "cli",
+            "foreground",
+            "undecided",
+            "Window",
+            "",
+            "window ",
+            "--",
+        ] {
+            assert!(
+                parse(&["--app", "site", "--launch-mode", bad]).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(parse(&["--app", "site", "--launch-mode"])
+            .unwrap_err()
+            .contains("requires a value"));
+        let Command::Run(run) = parse(&["--app", "site", "--", "--launch-mode", "window"]).unwrap()
+        else {
+            panic!("run")
+        };
+        assert!(!run.launch_window);
+        assert_eq!(
+            run.app_args,
+            [OsString::from("--launch-mode"), OsString::from("window")]
+        );
     }
 
     #[test]
@@ -250,6 +300,7 @@ mod tests {
             &["--grant", "allow"],
             &["--dev-url", "http://127.0.0.1:3000/"],
             &["--no-prompt"],
+            &["--launch-mode", "window"],
         ] {
             let mut line = vec!["--app", "site", "alef://open"];
             line.extend(after);
@@ -258,6 +309,14 @@ mod tests {
         for twice in [
             ["--app", "a", "--app", "b"].as_slice(),
             &["--app", "a", "--grant", "allow", "--grant", "deny"],
+            &[
+                "--app",
+                "a",
+                "--launch-mode",
+                "window",
+                "--launch-mode",
+                "window",
+            ],
             &[
                 "--app",
                 "a",
@@ -290,6 +349,7 @@ mod tests {
                 app_args: Vec::new(),
                 grant: None,
                 no_prompt: false,
+                launch_window: false,
             })
         );
         assert_eq!(
@@ -300,6 +360,7 @@ mod tests {
                 app_args: Vec::new(),
                 grant: None,
                 no_prompt: false,
+                launch_window: false,
             })
         );
     }

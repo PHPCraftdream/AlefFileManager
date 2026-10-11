@@ -120,6 +120,8 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   if (input !== undefined || interactive) child.stdin.on('error', () => {});
   if (input !== undefined) child.stdin.end(input);
   const output = [];
+  const errors = [];
+  child.stderr.on('data', chunk => errors.push(Buffer.from(chunk)));
   child.stdout.on('data', chunk => output.push(Buffer.from(chunk)));
   const lines = [];
   const watchers = new Set();
@@ -172,6 +174,8 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
     lines,
     /** Everything the runtime wrote to its stdout, as bytes. */
     stdout: () => Buffer.concat(output),
+    /** Everything the runtime and its descendants wrote to stderr, as bytes. */
+    stderr: () => Buffer.concat(errors),
     waitFor,
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */

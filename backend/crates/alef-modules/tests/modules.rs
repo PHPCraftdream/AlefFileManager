@@ -26,6 +26,8 @@ async fn the_command_surface_is_exactly_the_documented_one() {
             "app.env",
             "app.envAll",
             "app.info",
+            "app.launch",
+            "app.mode",
             "app.openUrlIntercept",
             "app.quit",
             "app.quitAnswer",

@@ -142,16 +142,21 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
     let unavailable = || {
         AlefError::new(
             ErrorCode::NotAvailable,
-            "This application is not a console utility: the manifest needs console: true",
+            "Standard streams require cli mode or legacy console: true",
         )
     };
 
     let console = context.console.clone();
+    let launch = context.launch.clone();
     registry
         .command::<()>("app.stdin")?
         .handler(move |ctx, ()| {
             let console = console.clone();
+            let launch = launch.clone();
             async move {
+                if !launch.stdio_allowed() {
+                    return Err(unavailable());
+                }
                 let console = console.ok_or_else(unavailable)?;
                 let input = console
                     .0
@@ -169,9 +174,14 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
 
     for (name, standard_error) in [("app.stdout", false), ("app.stderr", true)] {
         let console = context.console.clone();
+        let launch = context.launch.clone();
         registry.command::<()>(name)?.handler(move |ctx, ()| {
             let console = console.clone();
+            let launch = launch.clone();
             async move {
+                if !launch.stdio_allowed() {
+                    return Err(unavailable());
+                }
                 let console = console.ok_or_else(unavailable)?;
                 let output = if standard_error {
                     console.0.stderr.clone()

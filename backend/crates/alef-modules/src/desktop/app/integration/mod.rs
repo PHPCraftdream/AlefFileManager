@@ -3,6 +3,7 @@
 pub(super) mod deeplink_platform;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(super) mod files;
+pub(super) mod launch;
 #[cfg(windows)]
 pub(super) mod registry;
 

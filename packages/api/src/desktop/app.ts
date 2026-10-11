@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-import type { AppInfo, ParsedArgs } from '../../types/index.ts';
+import type { AppInfo, Mode, ParsedArgs } from '../../types/index.ts';
 import { AlefError } from '../core/errors.ts';
 import { on } from '../core/events.ts';
 import { call } from '../core/transport.ts';
@@ -196,6 +196,11 @@ let standardError: WritableStream<Uint8Array> | undefined;
 
 /** The running application: identity, command line, environment, lifetime. */
 export const app = {
+  /** The selected launch mode, or `undecided` while the entry document is choosing. */
+  mode: (options: Cancelable = {}): Promise<Mode | 'undecided'> => call<Mode | 'undecided'>('app.mode', null, options),
+
+  /** Choose a declared mode once; repeating it is a no-op, changing it is `ALREADY_EXISTS`. */
+  launch: (mode: Mode, options: Cancelable = {}): Promise<void> => call<void>('app.launch', { mode }, options),
   /** Register/unregister only current manifest schemes; each requires its scoped `app.deepLinks` right.
    * macOS registration is unavailable until M7 signed bundles. No scheme or launch arguments accepted.
    */

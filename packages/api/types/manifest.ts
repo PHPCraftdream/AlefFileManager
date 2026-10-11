@@ -195,8 +195,12 @@ export type Manifest = {
    */
   console: boolean,
   /**
-   * The entry document of an application without windows (a root-relative path, `/` when omitted).
-   * Needs `windows: []`.
+   * Selectable launch modes; empty or omitted preserves legacy startup.
+   */
+  modes?: Array<Mode>,
+  /**
+   * Entry document for headless startup or mode selection (root-relative, `/` when omitted).
+   * With windows, requires nonempty `modes`.
    */
   entry?: string,
   /**
@@ -215,6 +219,11 @@ export type Manifest = {
    * Declared deep-link schemes; at most eight unique lowercase schemes of 1–64 bytes.
    */
   deepLinks?: Array<string>, };
+
+/**
+ * Launch modes selectable by application code (M5 integration manifest rules).
+ */
+export type Mode = "cli" | "foreground" | "window";
 
 /**
  * Window monitor selection.

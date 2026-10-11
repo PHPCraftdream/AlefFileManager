@@ -13,8 +13,9 @@ use std::{
 
 use alef_core::registry::host::Host;
 use servo::{
-    ConsoleLogLevel, EventLoopWaker, NavigationRequest, Opts, RenderingContext, ServoBuilder,
-    SoftwareRenderingContext, WebResourceLoad, WebView, WebViewBuilder, WebViewDelegate,
+    ConsoleLogLevel, EventLoopWaker, LoadStatus, NavigationRequest, Opts, RenderingContext,
+    ServoBuilder, SoftwareRenderingContext, WebResourceLoad, WebView, WebViewBuilder,
+    WebViewDelegate,
 };
 use url::Url;
 use winit::dpi::PhysicalSize;
@@ -59,9 +60,14 @@ struct Delegate {
     entry_url: Url,
     handle: RuntimeHandle,
     crashed: Cell<bool>,
+    loaded: Option<Box<dyn Fn() + Send>>,
 }
 
 impl WebViewDelegate for Delegate {
+    fn notify_load_status_changed(&self, _: WebView, status: LoadStatus) {
+        notify_loaded(status, self.loaded.as_deref());
+    }
+
     fn load_web_resource(&self, _: WebView, load: WebResourceLoad) {
         crate::spikes::origin::web_resource(load);
     }
@@ -126,6 +132,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         entry_url: bridge.entry_url.clone(),
         handle: handle.clone(),
         crashed: Cell::new(false),
+        loaded: bridge.headless_loaded.take(),
     });
     let webview = WebViewBuilder::new(&servo, rendering.clone())
         .url(bridge.entry_url.clone())
@@ -137,6 +144,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
     webview.hide();
     while !handle.quit_requested() {
         servo.spin_event_loop();
+        check_launch_timeout(bridge.headless_tick.as_deref(), &handle);
         if handle.quit_requested() {
             break;
         }
@@ -145,4 +153,57 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
     drop(webview);
     drop(servo);
     Ok(())
+}
+
+fn notify_loaded(status: LoadStatus, callback: Option<&(dyn Fn() + Send)>) {
+    if status == LoadStatus::Complete {
+        if let Some(loaded) = callback {
+            loaded();
+        }
+    }
+}
+
+fn check_launch_timeout(callback: Option<&(dyn Fn() -> bool + Send)>, handle: &RuntimeHandle) {
+    if callback.is_some_and(|tick| tick()) {
+        eprintln!("alef: launch mode selection expired");
+        handle.quit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn only_a_complete_load_notifies_the_owned_callback() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let callback: Box<dyn Fn() + Send> = Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+        notify_loaded(LoadStatus::Started, Some(&*callback));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        notify_loaded(LoadStatus::Complete, Some(&*callback));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        notify_loaded(LoadStatus::Complete, None);
+    }
+
+    #[test]
+    fn an_expired_tick_requests_exit_two_and_wakes_the_headless_loop() {
+        let (handle, _) = RuntimeHandle::channel();
+        let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = woken.clone();
+        handle.windowless(move || {
+            flag.store(true, Ordering::SeqCst);
+        });
+        check_launch_timeout(None, &handle);
+        check_launch_timeout(Some(&|| false), &handle);
+        assert!(!handle.quit_requested());
+        check_launch_timeout(Some(&|| true), &handle);
+        assert!(handle.quit_requested());
+        assert_eq!(handle.exit_code(), 2);
+        assert!(woken.load(Ordering::SeqCst));
+        assert!(!handle.relaunch_window_requested());
+    }
 }

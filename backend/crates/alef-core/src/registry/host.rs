@@ -24,6 +24,13 @@ pub type HostFuture = Pin<Box<dyn Future<Output = Result<Value, AlefError>> + Se
 pub trait Host: Send + Sync {
     /// Asks the event loop to finish; the process exits with `code` once the window is gone.
     fn quit(&self, code: i32);
+    /// Accepts a window-mode child launch. Unwired hosts fail explicitly, never claim success.
+    fn launch_window(&self) -> Result<(), AlefError> {
+        Err(AlefError::new(
+            crate::ErrorCode::NotAvailable,
+            "window-mode launch is not available in this host",
+        ))
+    }
     /// The current desktop theme; `Light` when the platform does not report one.
     fn theme(&self) -> Theme;
     /// Runs `call` on the thread that owns the windows. `caller` is the window of the calling

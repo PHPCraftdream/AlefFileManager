@@ -1,0 +1,54 @@
+id: org.alef.e2e.modules.launch-modes
+name: Alef e2e launch modes
+version:: 1.0.0
+modes: [ cli, foreground, window ]
+entry: /decision.html
+windows: [
+    {
+        label: main
+        url: /child.html
+        width: 640
+        height: 480
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: [ listen:127.0.0.1:{{PORT}} ]
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: { env: [] }
+}
+arguments: {
+    options: [
+        { name: mode, type: string }
+        { name: port, type: number }
+    ]
+}

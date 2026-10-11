@@ -119,6 +119,7 @@ export type {
   MessageKind,
   MessageOptions,
   MonitorInfo,
+  Mode,
   OpenOptions,
   OsInfo,
   ParsedArgs,

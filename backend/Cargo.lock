@@ -85,6 +85,7 @@ dependencies = [
  "alef-modules",
  "alef-runtime",
  "dirs",
+ "libc",
  "rustls",
  "serde",
  "serde_json",
@@ -92,6 +93,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

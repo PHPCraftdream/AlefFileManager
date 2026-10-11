@@ -25,7 +25,7 @@ pub use desktop::{
         autostart::{AutostartBackend, AutostartOperation, MemoryAutostart, SystemAutostart},
         console::Console,
         deeplink::{DeepLinkBackend, MemoryDeepLinks, SystemDeepLinks},
-        Termination,
+        LaunchState, Termination, LAUNCH_LIMIT,
     },
     args::{ArgValue, ParsedArgs},
     shell::{PretendShell, ShellBackend, ShellRequest, SystemShell},
@@ -194,6 +194,8 @@ pub struct ModuleContext {
     pub shadow: PathBuf,
     /// The standard streams of a console utility (`console: true`); `None` for every other application.
     pub console: Option<Console>,
+    /// Process-wide launch selection, shared by every document and registration.
+    pub launch: LaunchState,
     /// How the process is asked to end from outside, by a signal.
     pub termination: Termination,
 }

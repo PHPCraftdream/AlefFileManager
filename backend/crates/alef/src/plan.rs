@@ -11,7 +11,7 @@ use alef_core::{
     error::{AlefError, ErrorCode},
     security::{
         csp::build_csp,
-        manifest::Manifest,
+        manifest::{Manifest, Mode},
         permissions::{PathVars, PermissionSet},
     },
 };
@@ -26,25 +26,76 @@ pub struct Plan {
     pub permissions: Arc<PermissionSet>,
     pub csp: String,
     pub assets: PathBuf,
+    initial_mode: Option<Mode>,
 }
 
 impl Plan {
     /// An application without windows (a console utility or a service) runs in a hidden WebView.
     pub fn windowless(&self) -> bool {
-        self.manifest.windows.is_empty()
+        self.initial_mode != Some(Mode::Window)
     }
 
-    /// The entry document: the URL of the first window, or the `entry` of an application without windows.
-    pub fn entry(&self) -> String {
-        match self.manifest.windows.first() {
-            Some(window) => window.url.clone(),
-            None => self
-                .manifest
-                .entry
-                .clone()
-                .unwrap_or_else(|| "/".to_owned()),
+    /// Applies the internal child mode before any engine is created.
+    pub fn select_window_child(&mut self) -> Result<(), AlefError> {
+        if !self.manifest.modes.contains(&Mode::Window) {
+            return Err(AlefError::new(
+                ErrorCode::InvalidArgument,
+                "--launch-mode window requires manifest window mode",
+            ));
+        }
+        self.initial_mode = Some(Mode::Window);
+        Ok(())
+    }
+
+    pub fn initial_mode(&self) -> Option<Mode> {
+        self.initial_mode
+    }
+
+    pub fn allowed_modes(&self) -> Vec<Mode> {
+        if self.manifest.modes.is_empty() {
+            vec![self.initial_mode.expect("legacy mode")]
+        } else {
+            self.manifest.modes.clone()
         }
     }
+
+    /// Undecided processes load the decision document, children load their first window.
+    pub fn entry(&self) -> String {
+        if self.initial_mode == Some(Mode::Window) {
+            self.manifest.windows[0].url.clone()
+        } else {
+            self.manifest
+                .entry
+                .clone()
+                .unwrap_or_else(|| "/".to_owned())
+        }
+    }
+}
+
+/// Test-only override: decimal milliseconds in 1..=30000, ignored outside ALEF_E2E=1.
+/// The argument form keeps timeout injection independent of process-wide environment mutation.
+pub fn launch_timeout(
+    e2e: Option<&std::ffi::OsStr>,
+    value: Option<&std::ffi::OsStr>,
+) -> Result<std::time::Duration, String> {
+    let default = std::time::Duration::from_secs(30);
+    if e2e != Some(std::ffi::OsStr::new("1")) {
+        return Ok(default);
+    }
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    let invalid =
+        || "ALEF_E2E_LAUNCH_TIMEOUT_MS must be decimal milliseconds in 1..=30000".to_owned();
+    let text = value.to_str().ok_or_else(invalid)?;
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let milliseconds = text.parse::<u64>().map_err(|_| invalid())?;
+    if !(1..=30000).contains(&milliseconds) {
+        return Err(invalid());
+    }
+    Ok(std::time::Duration::from_millis(milliseconds))
 }
 
 /// Reads and validates `<app_dir>/alef.ktav`.
@@ -70,6 +121,15 @@ pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<
         permissions,
         csp,
         assets: app_dir.to_path_buf(),
+        initial_mode: if !manifest.modes.is_empty() {
+            None
+        } else if !manifest.windows.is_empty() {
+            Some(Mode::Window)
+        } else if manifest.console {
+            Some(Mode::Cli)
+        } else {
+            Some(Mode::Foreground)
+        },
         manifest,
     })
 }
@@ -177,6 +237,82 @@ permissions: {{
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let vars = path_vars(dir, "org.example.app").expect("vars");
         make_plan(dir, manifest, &vars)
+    }
+
+    #[test]
+    fn the_timeout_override_is_strict_bounded_and_only_enabled_for_e2e() {
+        use std::{ffi::OsStr, time::Duration};
+        assert_eq!(
+            launch_timeout(None, Some(OsStr::new("bad"))).unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            launch_timeout(Some(OsStr::new("true")), Some(OsStr::new("1"))).unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            launch_timeout(Some(OsStr::new("1")), None).unwrap(),
+            Duration::from_secs(30)
+        );
+        for value in ["1", "30000"] {
+            assert_eq!(
+                launch_timeout(Some(OsStr::new("1")), Some(OsStr::new(value))).unwrap(),
+                Duration::from_millis(value.parse().unwrap())
+            );
+        }
+        for bad in [
+            "",
+            "0",
+            "30001",
+            "-1",
+            "+1",
+            " 1",
+            "1 ",
+            "1.0",
+            "1e2",
+            "18446744073709551616",
+        ] {
+            assert!(
+                launch_timeout(Some(OsStr::new("1")), Some(OsStr::new(bad))).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mode_inference_preserves_legacy_launches_and_undecided_processes_use_the_entry_document() {
+        let mut declaration = manifest(SIZE, "[]");
+        let legacy = plan_of(declaration.clone()).unwrap();
+        assert_eq!(legacy.initial_mode(), Some(Mode::Window));
+        assert!(!legacy.windowless());
+        assert_eq!(legacy.entry(), "/index.html");
+        assert!(plan_of(declaration.clone())
+            .unwrap()
+            .select_window_child()
+            .is_err());
+        declaration.modes = vec![Mode::Cli, Mode::Foreground, Mode::Window];
+        let plan = plan_of(declaration.clone()).unwrap();
+        assert_eq!(plan.initial_mode(), None);
+        assert!(plan.windowless());
+        assert_eq!(plan.entry(), "/");
+        declaration.entry = Some("/decision.html".into());
+        let mut plan = plan_of(declaration.clone()).unwrap();
+        assert_eq!(plan.entry(), "/decision.html");
+        plan.select_window_child().unwrap();
+        assert_eq!(plan.initial_mode(), Some(Mode::Window));
+        assert!(!plan.windowless());
+        assert_eq!(plan.entry(), "/index.html");
+        declaration.windows.clear();
+        declaration.modes.clear();
+        for (console, mode) in [(true, Mode::Cli), (false, Mode::Foreground)] {
+            declaration.console = console;
+            let plan = plan_of(declaration.clone()).unwrap();
+            assert_eq!(plan.initial_mode(), Some(mode));
+            assert_eq!(plan.allowed_modes(), vec![mode]);
+            assert!(plan.windowless());
+        }
+        declaration.modes = vec![Mode::Cli];
+        assert!(plan_of(declaration).unwrap().select_window_child().is_err());
     }
 
     #[test]

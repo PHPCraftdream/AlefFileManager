@@ -31,6 +31,7 @@ pub(crate) struct Wake;
 struct HostState {
     quit: AtomicI64,
     dark: AtomicBool,
+    relaunch_window: AtomicBool,
     /// The process has no window (a console utility, a service): what needs one is `NOT_AVAILABLE`.
     windowless: AtomicBool,
     /// Wakes the loop of a process without winit when the application asks to quit.
@@ -121,6 +122,7 @@ impl RuntimeHandle {
                 host: Arc::new(HostState {
                     quit: AtomicI64::new(NO_QUIT),
                     dark: AtomicBool::new(false),
+                    relaunch_window: AtomicBool::new(false),
                     windowless: AtomicBool::new(false),
                     waker: Mutex::new(None),
                 }),
@@ -144,8 +146,13 @@ impl RuntimeHandle {
         self.host.windowless.store(true, Ordering::SeqCst);
     }
 
+    /// A windowless process accepted a request to relaunch with windows.
+    pub fn relaunch_window_requested(&self) -> bool {
+        self.host.relaunch_window.load(Ordering::SeqCst)
+    }
+
     pub(crate) fn quit_requested(&self) -> bool {
-        self.host.quit.load(Ordering::SeqCst) != NO_QUIT
+        self.host.quit.load(Ordering::SeqCst) != NO_QUIT || self.relaunch_window_requested()
     }
 
     /// Records the theme the window reported; `true` when it differs from the previous one.
@@ -282,6 +289,20 @@ impl RuntimeHandle {
 }
 
 impl Host for RuntimeHandle {
+    fn launch_window(&self) -> Result<(), AlefError> {
+        if !self.host.windowless.load(Ordering::SeqCst) {
+            return Err(AlefError::new(
+                alef_core::ErrorCode::NotAvailable,
+                "window relaunch requires a windowless process",
+            ));
+        }
+        self.host.relaunch_window.store(true, Ordering::SeqCst);
+        if let Some(wake) = &*self.host.waker.lock().unwrap_or_else(|e| e.into_inner()) {
+            wake();
+        }
+        Ok(())
+    }
+
     fn quit(&self, code: i32) {
         self.host.quit.store(i64::from(code), Ordering::SeqCst);
         if let Some(proxy) = self.proxy.borrow().as_ref() {
@@ -343,6 +364,27 @@ pub(crate) fn event_json<T: Serialize + ?Sized>(name: &str, payload: &T) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_relaunch_is_only_accepted_without_windows_and_wakes_the_loop_without_changing_the_exit_code(
+    ) {
+        let (handle, _) = RuntimeHandle::channel();
+        assert!(!handle.relaunch_window_requested());
+        assert!(handle.launch_window().is_err());
+        assert!(!handle.relaunch_window_requested());
+        assert!(!handle.quit_requested());
+        let woken = Arc::new(AtomicBool::new(false));
+        let flag = woken.clone();
+        handle.windowless(move || flag.store(true, Ordering::SeqCst));
+        handle.launch_window().unwrap();
+        assert!(handle.clone().relaunch_window_requested());
+        assert!(handle.quit_requested());
+        assert!(woken.load(Ordering::SeqCst));
+        assert_eq!(handle.exit_code(), 0);
+        handle.quit(7);
+        assert_eq!(handle.exit_code(), 7);
+        assert!(handle.relaunch_window_requested());
+    }
 
     #[tokio::test]
     async fn native_operations_fail_without_an_attached_window() {
