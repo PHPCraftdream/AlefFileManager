@@ -24,7 +24,9 @@ const verbose = args.includes('--verbose');
 const timeoutMs = Number(option('--timeout-s') ?? 150) * 1000;
 const exe = option('--exe') ?? join(root, 'backend', 'target', 'debug', `alef${exeName}`);
 const only = option('--only')?.split(',');
-const MAX_ABORT_MS = 250;
+// Seen 5-30 ms on a quiet machine, 315 ms once while several builds ran; what it must tell apart is a source
+// that stops at once from one that stops when the stream ends or a timeout fires (seconds).
+const MAX_ABORT_MS = 1000;
 const WINDOW_BYTES = 1024 * 1024;
 
 const drive = makeDriver({ exe, verbose, timeoutMs });
