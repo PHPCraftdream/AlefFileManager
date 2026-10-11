@@ -4,7 +4,7 @@
 use super::unavailable;
 use super::Launch;
 #[cfg(any(windows, target_os = "linux", test))]
-use super::{self as integration};
+use crate::desktop::app::integration;
 use alef_core::AlefError;
 
 pub(in crate::desktop::app) fn apply(
