@@ -13,7 +13,8 @@ const FS_CHECKS = [
   'fs-text-and-bytes-round-trip-with-unicode', 'fs-stat-readdir-rename-copy-and-remove',
   'fs-outside-the-scope-is-denied-however-the-path-is-spelled', 'fs-a-link-that-leads-out-of-the-scope-leads-nowhere',
   'fs-a-scratch-file-and-a-picked-file-need-no-scope', 'fs-a-whole-file-is-for-small-files',
-  'fs-a-handle-reads-and-writes-pieces', 'fs-a-big-file-is-copied-through-streams-and-arrives-whole',
+  'fs-a-handle-reads-and-writes-pieces', 'fs-settle-leaves-a-backpressured-read-busy-and-byte-exact',
+  'fs-a-big-file-is-copied-through-streams-and-arrives-whole',
   'fs-a-big-folder-comes-in-batches', 'fs-watch-tells-create-modify-and-remove',
 ];
 
@@ -92,8 +93,16 @@ function prepare() {
   try {
     symlinkSync(join(outside, 'secret.txt'), join(root, 'link'));
     link = join(root, 'link');
-  } catch {
-    // an account that may not make links: the page says so
+  } catch (error) {
+    console.log(`fs file-symlink skipped: ${error.code ?? error.message}`);
+  }
+  // A directory junction needs no symlink privilege on Windows; do not skip this check.
+  const directoryLink = join(root, 'outside-directory-link');
+  try {
+    symlinkSync(outside, directoryLink, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    rmSync(base, { recursive: true, force: true });
+    throw error;
   }
   const many = join(root, 'many');
   mkdirSync(many);
@@ -107,7 +116,7 @@ function prepare() {
   ftruncateSync(handle, 64 * 1024 * 1024 + 1);
   closeSync(handle);
   return {
-    base, root, link, big, many, copySource, outside,
+    base, root, link, directoryLink, big, many, copySource, outside,
     secret: join(outside, 'secret.txt'), picked: join(base, 'picked.txt'),
     scope: `${root.replaceAll('\\', '/')}/**`,
   };
@@ -204,6 +213,7 @@ export function dataScenarios({ drive, exe, verbose }) {
           name: 'fs', app: 'modules/data/fs', replacements: { ROOT: here.scope.slice(0, -3) },
           targets: {
             mode: 'real', root: here.root, outside: here.secret, outsideName: 'outside', outsideFolder: here.outside, link: here.link,
+            directoryLink: here.directoryLink, linkedSecret: join(here.directoryLink, 'secret.txt'),
             big: here.big, many: here.many, manyCount: MANY, copySource: here.copySource, copySize: COPY_SIZE,
           },
           env: { ALEF_HOME: join(here.base, 'home'), ALEF_E2E_DIALOGS: JSON.stringify([{ open: [here.picked] }]) },
@@ -215,6 +225,7 @@ export function dataScenarios({ drive, exe, verbose }) {
             const note = join(here.root, 'work', 'note.txt');
             if (!existsSync(note) || readFileSync(note, 'utf8') !== 'héllo — мир 🌍!') problems.push('the note is not on the disk as the page wrote it');
             if (readFileSync(here.secret, 'utf8') !== 'secret') problems.push('the file outside the scope was changed');
+            if (JSON.stringify(readdirSync(here.outside)) !== JSON.stringify(['secret.txt'])) problems.push('the directory outside the scope was changed');
             if (readFileSync(here.picked, 'utf8') !== 'picked') problems.push('the picked file was changed');
             if (here.link && existsSync(here.link)) problems.push('the link is still there');
             if (here.link && !existsSync(here.secret)) problems.push('removing the link removed what it led to');

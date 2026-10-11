@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 use super::{
     dto::FileStat,
     fault::{coded, fault, invalid},
-    ops::file_stat,
+    ops::{file_stat, open_for_handle},
     space::Space,
 };
 use crate::json;
@@ -120,6 +120,18 @@ impl Inner {
         let (pump, started) = make();
         *slot = Some(pump);
         Ok(started)
+    }
+
+    fn take_write_pump(&self) -> Option<JoinHandle<Result<(), AlefError>>> {
+        let mut slot = self.pump.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(slot.as_ref(), Some(Pump::Write(_))) {
+            match slot.take() {
+                Some(Pump::Write(task)) => Some(task),
+                _ => unreachable!(),
+            }
+        } else {
+            None
+        }
     }
 
     fn take_pump(&self) -> Option<Pump> {
@@ -260,19 +272,14 @@ pub(super) fn register(registry: &mut Registry, space: &Space) -> Result<(), Ale
                 let place = place.expect("a file is opened for reading or writing");
                 let append = args.append;
                 let file = blocking(move || {
-                    place.prepare().map_err(fault)?;
-                    if std::fs::metadata(&place.real).is_ok_and(|meta| meta.is_dir()) {
-                        return Err(coded(ErrorCode::IsADirectory));
-                    }
                     let mut options = OpenOptions::new();
                     options
                         .read(reads)
                         .write(args.write || args.truncate || args.create_new)
                         .append(append)
                         .create(args.create && !args.create_new)
-                        .create_new(args.create_new)
-                        .truncate(args.truncate);
-                    options.open(&place.real).map_err(fault)
+                        .create_new(args.create_new);
+                    open_for_handle(&place, &options, args.truncate && !args.create_new)
                 })
                 .await?;
                 let resource = OpenFile {
@@ -428,12 +435,9 @@ pub(super) fn register(registry: &mut Registry, space: &Space) -> Result<(), Ale
         .command::<Handle>("fs.settle")?
         .handler(|ctx, args| async move {
             let inner = find(&ctx, args.handle)?;
-            match inner.take_pump() {
-                Some(Pump::Write(task)) => task
-                    .await
-                    .map_err(|error| AlefError::new(ErrorCode::Internal, error.to_string()))??,
-                Some(Pump::Read(task)) => task.abort(),
-                None => {}
+            if let Some(task) = inner.take_write_pump() {
+                task.await
+                    .map_err(|error| AlefError::new(ErrorCode::Internal, error.to_string()))??;
             }
             Ok(Reply::Json(serde_json::Value::Null))
         })?;
@@ -446,4 +450,137 @@ pub(super) fn register(registry: &mut Registry, space: &Space) -> Result<(), Ale
             ctx.resources().take(ResourceId(args.handle))?.close().await;
             Ok(Reply::Json(serde_json::Value::Null))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    use alef_core::{
+        ids::StreamId,
+        protocol::{call::Limits, frame::Frame},
+        security::{
+            manifest::Permissions,
+            permissions::{PathVars, PermissionSet},
+        },
+        session::SessionManager,
+    };
+
+    #[tokio::test]
+    async fn settle_preserves_a_backpressured_read_and_its_busy_slot() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let directory = match option_env!("CARGO_TARGET_TMPDIR") {
+                Some(target) => tempfile::tempdir_in(target),
+                None => tempfile::tempdir(),
+            }
+            .unwrap();
+            let path = directory.path().to_path_buf();
+            let policy: Permissions = serde_json::from_value(json!({
+                "fs": {"read": [], "write": []}, "cli": {"exec": []},
+                "net": {"http": [], "socket": []}, "shell": {"openExternal": []},
+                "clipboard": {"read": false}, "shortcut": {"global": false},
+                "secrets": false, "app": {"env": []}
+            }))
+            .unwrap();
+            let permissions = Arc::new(
+                PermissionSet::from_manifest(
+                    &policy,
+                    &PathVars {
+                        app_data: path.clone(),
+                        app_config: path.clone(),
+                        app_cache: path.clone(),
+                        home: path.clone(),
+                        documents: path.clone(),
+                        downloads: path.clone(),
+                        desktop: path.clone(),
+                        temp: path.clone(),
+                        app: path.clone(),
+                    },
+                )
+                .unwrap(),
+            );
+            let limits = Limits {
+                stream_window: STREAM_PIECE as usize,
+                chunk_size: STREAM_PIECE as usize,
+                ..Limits::default()
+            };
+            let manager = SessionManager::new(Arc::new(|| "test-token".to_owned()), limits);
+            let session = manager.begin_document(1).await;
+            let ctx = CallContext::new(session.clone(), permissions);
+            let mut registry = Registry::default();
+            register(&mut registry, &Space::new(path.join("shadow"))).unwrap();
+            let file = path.join("read.bin");
+            let data: Vec<u8> = (0..3 * STREAM_PIECE as usize + 123)
+                .map(|i| (i % 251) as u8)
+                .collect();
+            std::fs::write(&file, &data).unwrap();
+            session.grants().grant_read(&file).unwrap();
+            let Reply::Json(opened) = registry
+                .dispatch("fs.open", ctx.clone(), json!({"path": file}))
+                .await
+                .unwrap()
+            else {
+                panic!("expected handle");
+            };
+            let handle = opened["handle"].as_u64().unwrap();
+            let args = json!({"handle": handle});
+            let Reply::Json(started) = registry
+                .dispatch("fs.readStream", ctx.clone(), args.clone())
+                .await
+                .unwrap()
+            else {
+                panic!("expected stream");
+            };
+            let id = StreamId(started["stream"].as_u64().unwrap());
+            let mut reader = session.streams().reader(id).unwrap();
+            let Some(Frame::Binary(first)) = reader.next_frame().await else {
+                panic!("expected first binary frame");
+            };
+            assert_eq!(first.len(), limits.stream_window);
+            assert_eq!(session.streams().outstanding(id), Some(limits.stream_window));
+            let inner = find(&ctx, handle).unwrap();
+            assert!(matches!(
+                inner.pump.lock().unwrap().as_ref(),
+                Some(Pump::Read(task)) if !task.is_finished()
+            ));
+
+            for _ in 0..2 {
+                let settled = registry
+                    .dispatch("fs.settle", ctx.clone(), args.clone())
+                    .await
+                    .unwrap();
+                assert!(matches!(settled, Reply::Json(value) if value.is_null()));
+                assert!(
+                    matches!(inner.pump.lock().unwrap().as_ref(), Some(Pump::Read(task)) if !task.is_finished()),
+                    "settle must leave the active read pump reserved"
+                );
+                let error = registry
+                    .dispatch("fs.readStream", ctx.clone(), args.clone())
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code, ErrorCode::Busy);
+            }
+
+            let mut received = first.to_vec();
+            session.streams().ack(id, first.len()).unwrap();
+            loop {
+                match reader.next_frame().await {
+                    Some(Frame::Binary(piece)) => {
+                        session.streams().ack(id, piece.len()).unwrap();
+                        received.extend_from_slice(&piece);
+                    }
+                    Some(Frame::End) => break,
+                    other => panic!("expected binary frame or End, got {other:?}"),
+                }
+            }
+            assert_eq!(received.len(), data.len());
+            assert!(received == data, "settle must not truncate or change the read");
+            registry.dispatch("fs.close", ctx, args).await.unwrap();
+            drop(inner);
+            manager.close_window(1).await;
+        })
+        .await
+        .expect("settle/read regression stalled");
+    }
 }

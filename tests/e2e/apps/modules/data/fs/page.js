@@ -1,7 +1,7 @@
 // fs scenario: files and folders through the real transport. In `real` mode the user allowed the scope;
 // in `substituted` mode he chose a stand-in: the page finds an empty folder, writes into it and
 // finds its own writes again, and the runner looks at the real folder afterwards.
-import { api, guard, rejection, suite, verdict } from './harness.js';
+import { api, guard, pattern, rejection, suite, verdict } from './harness.js';
 
 const { fs } = api;
 
@@ -13,6 +13,17 @@ const expectCode = async (what, promise, code) => {
   if (error?.code !== code) throw new Error(`${what}: ${error?.code ?? 'it succeeded'}, expected ${code}`);
   return error;
 };
+
+async function bounded(promise, what, ms = 15000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out: ${what}`)), ms);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function real(t, check) {
   const dir = join(t.root, 'work');
@@ -65,7 +76,26 @@ async function real(t, check) {
   });
 
   await check('fs-a-link-that-leads-out-of-the-scope-leads-nowhere', async () => {
-    if (!t.link) return 'skipped: the runner could not make a link';
+    // Test a child through the directory link, not just the link entry itself.
+    const secret = t.linkedSecret;
+    await expectCode('directory link read', fs.readText(secret), 'PERMISSION_DENIED');
+    await expectCode('directory link open read', fs.open(secret), 'PERMISSION_DENIED');
+    await expectCode('directory link open truncate', fs.open(secret, { write: true, truncate: true }), 'PERMISSION_DENIED');
+    await expectCode('directory link open append', fs.open(secret, { append: true }), 'PERMISSION_DENIED');
+    await expectCode('directory link write', fs.writeText(secret, 'changed'), 'PERMISSION_DENIED');
+    await expectCode('directory link append', fs.writeText(secret, 'changed', { append: true }), 'PERMISSION_DENIED');
+    await expectCode('directory link stat', fs.stat(secret), 'PERMISSION_DENIED');
+    await expectCode('directory link lstat child', fs.lstat(secret), 'PERMISSION_DENIED');
+    await expectCode('directory link remove child', fs.remove(secret), 'PERMISSION_DENIED');
+    await expectCode('directory link copy from', fs.copy(secret, join(dir, 'secret-copy.txt')), 'PERMISSION_DENIED');
+    await expectCode('directory link copy to', fs.copy(join(dir, 'note.txt'), secret), 'PERMISSION_DENIED');
+    await expectCode('directory link rename from', fs.rename(secret, join(dir, 'secret-moved.txt')), 'PERMISSION_DENIED');
+    await expectCode('directory link rename to', fs.rename(join(dir, 'note.txt'), secret), 'PERMISSION_DENIED');
+    await expectCode('directory link readDir', fs.readDir(t.directoryLink), 'PERMISSION_DENIED');
+    await expectCode('directory link mkdir child', fs.mkdir(join(t.directoryLink, 'new-folder')), 'PERMISSION_DENIED');
+    await expectCode('directory link create child', fs.open(join(t.directoryLink, 'new.txt'), { write: true, createNew: true }), 'PERMISSION_DENIED');
+    await expectCode('directory link watch', api.call('fs.watch', { path: t.directoryLink }), 'PERMISSION_DENIED');
+    if (!t.link) return 'directory link checked; file-symlink skipped: runner printed creation failure';
     await expectCode('through the link', fs.readText(t.link), 'PERMISSION_DENIED');
     const entry = await fs.lstat(t.link);
     if (entry.kind !== 'symlink') throw new Error(`lstat: ${entry.kind}`);
@@ -112,6 +142,45 @@ async function real(t, check) {
     const reading = await fs.open(file);
     await expectCode('writing a handle opened for reading', reading.write(new Uint8Array(1)), 'PERMISSION_DENIED');
     await reading.close();
+  });
+
+  await check('fs-settle-leaves-a-backpressured-read-busy-and-byte-exact', async () => {
+    const { limits } = await api.connect();
+    const expected = pattern(3 * limits.streamWindow + 4321);
+    const file = join(dir, 'settle-read.bin');
+    await bounded(fs.writeBytes(file, expected), 'prepare settle/read file');
+    const { handle } = await bounded(api.call('fs.open', { path: file, read: true }), 'open settle/read handle');
+    let stream;
+    let readable;
+    try {
+      ({ stream } = await bounded(api.call('fs.readStream', { handle, position: 0 }), 'start raw read stream'));
+      // No reader/acks yet: a file larger than credit cannot finish its read pump.
+      for (let round = 0; round < 3; round += 1) {
+        await bounded(api.call('fs.settle', { handle }), `settle read ${round}`);
+        await bounded(expectCode('second read stream', api.call('fs.readStream', { handle, position: 0 }), 'BUSY'), 'read BUSY');
+      }
+      readable = await bounded(api.openReadable(stream), 'open actual API reader');
+      const count = await bounded((async () => {
+        let received = 0;
+        for await (const frame of readable) {
+          if (frame.kind !== 'binary') throw new Error(`unexpected frame ${frame.kind}`);
+          for (const byte of frame.data) {
+            if (received >= expected.length || byte !== expected[received]) throw new Error(`read differs at byte ${received}`);
+            received += 1;
+          }
+        }
+        return received;
+      })(), 'byte-exact read completion');
+      if (count !== expected.length) throw new Error(`read ended at ${count}, expected ${expected.length}`);
+      return `3 raw settles, 3 BUSY replies, ${count} exact bytes through api.openReadable`;
+    } finally {
+      try {
+        if (readable) await bounded(readable.close(), 'close API reader');
+        else if (stream !== undefined) await bounded(api.call('runtime.stream.close', { id: stream }), 'close raw stream');
+      } finally {
+        await bounded(api.call('fs.close', { handle }), 'close settle/read handle');
+      }
+    }
   });
 
   await check('fs-a-big-file-is-copied-through-streams-and-arrives-whole', async () => {

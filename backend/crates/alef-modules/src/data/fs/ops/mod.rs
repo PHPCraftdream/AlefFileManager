@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The operations of `fs` on the disk. They run off the async threads and know nothing of rights:
 //! a [`Place`] says where the bytes are, whether in the real folder or in a stand-in.
+//! Byte IO checks the opened handle before use; copy, rename, remove, directory listing and
+//! path-based metadata still have authorization-to-use races. This is not inode identity checking.
 use std::{
     fs::{self, File, Metadata, OpenOptions},
     io::{ErrorKind, Read, Write},
+    path::{Path, PathBuf},
     time::SystemTime,
 };
 
@@ -14,6 +17,140 @@ use super::{
     fault::{coded, fault, invalid},
     space::Place,
 };
+
+/// Opens without truncation; the open-step seam also drives deterministic race tests.
+/// `authorized` is the frozen authorization result, never canonicalized again here.
+/// Creating a missing file can still leave an empty file outside the scope on a race.
+pub(super) fn checked_open(
+    authorized: &Path,
+    options: &OpenOptions,
+    open: impl FnOnce(&OpenOptions, &Path) -> std::io::Result<File>,
+) -> Result<File, AlefError> {
+    checked_open_by(authorized, options, open, opened_path)
+}
+
+/// `checked_open` with the reading of the path of the opened handle as a seam, for the case that
+/// the system cannot tell it: the file is refused, not trusted.
+fn checked_open_by(
+    authorized: &Path,
+    options: &OpenOptions,
+    open: impl FnOnce(&OpenOptions, &Path) -> std::io::Result<File>,
+    opened_path: impl FnOnce(&File) -> std::io::Result<PathBuf>,
+) -> Result<File, AlefError> {
+    let mut options = options.clone();
+    options.truncate(false);
+    let file = open(&options, authorized).map_err(fault)?;
+    let opened = opened_path(&file).map_err(|_| coded(ErrorCode::PermissionDenied))?;
+    if comparable_path(&opened) != comparable_path(authorized) {
+        return Err(coded(ErrorCode::PermissionDenied));
+    }
+    Ok(file)
+}
+
+/// Pure spelling normalization only: never resolve the authorized path against the disk again.
+/// Stand-in roots may use ordinary rather than verbatim prefixes and contain `.`/`..`.
+fn comparable_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let spelling = {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        let prefix: Vec<u16> = r"\\?\".encode_utf16().collect();
+        let unc: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+        if wide.starts_with(&unc) {
+            wide.splice(..unc.len(), [b'\\' as u16, b'\\' as u16]);
+        } else if wide.starts_with(&prefix) {
+            wide.drain(..prefix.len());
+        }
+        for unit in &mut wide {
+            if *unit >= u16::from(b'A') && *unit <= u16::from(b'Z') {
+                *unit += u16::from(b'a' - b'A');
+            }
+        }
+        PathBuf::from(std::ffi::OsString::from_wide(&wide))
+    };
+    #[cfg(target_os = "macos")]
+    let spelling = {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        PathBuf::from(std::ffi::OsString::from_vec(
+            path.as_os_str().as_bytes().to_ascii_lowercase(),
+        ))
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let spelling = path.to_path_buf();
+    let mut normalized = PathBuf::new();
+    for component in spelling.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+#[cfg(windows)]
+fn opened_path(file: &File) -> std::io::Result<PathBuf> {
+    use std::os::windows::{ffi::OsStringExt, io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    let mut buffer = vec![0u16; 512];
+    loop {
+        // SAFETY: file owns a live handle throughout the call; buffer is writable for its
+        // advertised length. Flags 0 request the normalized DOS path of this handle.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                0,
+            )
+        } as usize;
+        if length == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if length < buffer.len() {
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(
+                &buffer[..length],
+            )));
+        }
+        if length > 32768 {
+            return Err(std::io::Error::other("opened path exceeds limit"));
+        }
+        buffer.resize(length + 1, 0);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn opened_path(file: &File) -> std::io::Result<PathBuf> {
+    use std::os::fd::AsRawFd;
+    fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+}
+
+#[cfg(target_os = "macos")]
+fn opened_path(file: &File) -> std::io::Result<PathBuf> {
+    use std::os::{fd::AsRawFd, unix::ffi::OsStringExt};
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: file holds a live fd; F_GETPATH writes at most PATH_MAX bytes into this
+    // initialized, writable buffer, which remains allocated throughout the call.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let end = buffer
+        .iter()
+        .position(|&byte| byte == 0)
+        .ok_or_else(|| std::io::Error::other("unterminated opened path"))?;
+    buffer.truncate(end);
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(buffer)))
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn opened_path(_: &File) -> std::io::Result<PathBuf> {
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "opened path verification unavailable",
+    ))
+}
 
 /// What `fs.readDir` lists at most: a bigger folder is for `fs.readDirStream`.
 pub(super) const MAX_ENTRIES: usize = 100_000;
@@ -48,12 +185,33 @@ fn is_folder(place: &Place) -> bool {
     fs::metadata(&place.real).is_ok_and(|meta| meta.is_dir())
 }
 
+/// A file opened for a handle: checked like every other open, and made empty only after the check.
+pub(super) fn open_for_handle(
+    place: &Place,
+    options: &OpenOptions,
+    truncate: bool,
+) -> Result<File, AlefError> {
+    place.prepare().map_err(fault)?;
+    if is_folder(place) {
+        return Err(coded(ErrorCode::IsADirectory));
+    }
+    let file = checked_open(&place.real, options, |options, path| options.open(path))?;
+    if truncate {
+        file.set_len(0).map_err(fault)?;
+    }
+    Ok(file)
+}
+
 pub(super) fn read_file(place: &Place, limit: u64) -> Result<Vec<u8>, AlefError> {
     place.prepare().map_err(fault)?;
     if is_folder(place) {
         return Err(coded(ErrorCode::IsADirectory));
     }
-    let file = File::open(&place.real).map_err(fault)?;
+    let file = checked_open(
+        &place.real,
+        OpenOptions::new().read(true),
+        |options, path| options.open(path),
+    )?;
     let size = file.metadata().map_err(fault)?.len();
     if size > limit {
         return Err(too_big(limit));
@@ -87,13 +245,14 @@ pub(super) fn write_file(
     if append {
         options.append(true);
     } else {
-        options.write(true).truncate(true);
+        options.write(true);
     }
     options.create(create);
-    options
-        .open(&place.real)
-        .and_then(|mut file| file.write_all(data))
-        .map_err(fault)
+    let mut file = checked_open(&place.real, &options, |options, path| options.open(path))?;
+    if !append {
+        file.set_len(0).map_err(fault)?;
+    }
+    file.write_all(data).map_err(fault)
 }
 
 /// A file made empty and open for writing, for a stream that arrives from elsewhere.
@@ -102,12 +261,13 @@ pub(super) fn create_file(place: &Place) -> Result<fs::File, AlefError> {
     if is_folder(place) {
         return Err(coded(ErrorCode::IsADirectory));
     }
-    OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&place.real)
-        .map_err(fault)
+    let file = checked_open(
+        &place.real,
+        OpenOptions::new().write(true).create(true),
+        |options, path| options.open(path),
+    )?;
+    file.set_len(0).map_err(fault)?;
+    Ok(file)
 }
 
 pub(super) fn file_stat(meta: &Metadata) -> FileStat {
@@ -272,3 +432,6 @@ fn copy_folder(from: &std::path::Path, to: &std::path::Path) -> Result<(), AlefE
     }
     Ok(())
 }
+
+#[cfg(all(test, any(windows, unix)))]
+mod tests;
