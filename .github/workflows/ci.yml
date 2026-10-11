@@ -185,13 +185,15 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1280x1024x24" sh -c 'openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose'
 
-      # The scenarios of Windows: the registry (autostart, deep links), the named pipe of the single
-      # instance, cmd.exe, dialogs and the quiet mode run here against a clean runner. The window of
-      # the runner is a real desktop session; the runtime shows nothing (ALEF_E2E_QUIET is set by the runner).
-      - name: e2e (alef on Servo, Windows)
+      # The runner of Windows has no GPU: a window cannot get its graphics context there ("Cannot
+      # create Servo graphics context: RequiredExtensionUnavailable"), so every scenario that opens a
+      # window fails before the page runs. These are the scenarios that need none (the first run of the
+      # whole set: 8 passed, 44 failed on exactly that). The rest follows once the quiet mode of the
+      # runner renders on the software context that the windowless mode already uses on this runner.
+      - name: e2e (alef on Servo, Windows, scenarios without a window)
         if: runner.os == 'Windows'
-        timeout-minutes: 45
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest
 
       - name: Upload executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
