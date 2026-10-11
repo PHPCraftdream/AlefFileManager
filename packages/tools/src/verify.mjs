@@ -16,6 +16,39 @@ function text(bytes, name) {
   return value;
 }
 
+// Edwards25519 over BigInt: a key or a commitment R of small order (8P is the identity) is refused
+// like verify_strict of the runtime refuses it; non-canonical encodings of such points are included.
+const P = 2n ** 255n - 19n;
+const mod = value => ((value % P) + P) % P;
+function power(base, exponent) {
+  let result = 1n; base = mod(base);
+  for (; exponent > 0n; exponent >>= 1n) { if (exponent & 1n) result = mod(result * base); base = mod(base * base); }
+  return result;
+}
+const invert = value => power(value, P - 2n);
+const D = mod(-121665n * invert(121666n));
+function decodePoint(bytes) {
+  let y = 0n;
+  for (let index = 31; index >= 0; index--) y = (y << 8n) | BigInt(bytes[index]);
+  const sign = y >> 255n; y = mod(y & ((1n << 255n) - 1n));
+  const square = mod(y * y); const u = mod(square - 1n); const v = mod(D * square + 1n);
+  let x = power(mod(u * invert(v)), (P + 3n) / 8n);
+  if (mod(x * x * v - u) !== 0n) x = mod(x * power(2n, (P - 1n) / 4n));
+  if (mod(x * x * v - u) !== 0n) return undefined;
+  return [(x & 1n) === sign ? x : mod(-x), y];
+}
+function doublePoint([x, y]) {
+  const t = mod(D * x * x * y * y);
+  return [mod(2n * x * y * invert(1n + t)), mod((y * y + x * x) * invert(1n - t))];
+}
+/** True for a point of order 1, 2, 4 or 8, and for bytes that are no point of the curve. */
+export function hasSmallOrder(bytes) {
+  let point = decodePoint(bytes);
+  if (point === undefined) return true;
+  for (let step = 0; step < 3; step++) point = doublePoint(point);
+  return point[0] === 0n && point[1] === 1n;
+}
+
 function base64(value, length) {
   check(/^[A-Za-z0-9+/]+={1,2}$/.test(value), SIGNATURE, 'noncanonical base64');
   const bytes = Buffer.from(value, 'base64');
@@ -27,6 +60,8 @@ function signatureInfo(bytes, hashes) {
   const lines = text(bytes, SIGNATURE).split('\n');
   check(lines.length === 4 && lines[3] === '' && lines[0] === 'alef-package 1' && lines[1].startsWith('key ') && lines[2].startsWith('sig '), SIGNATURE, 'expected exactly three canonical LF lines');
   const key = base64(lines[1].slice(4), 32); const signature = base64(lines[2].slice(4), 64);
+  check(!hasSmallOrder(key), SIGNATURE, 'public key of small order');
+  check(!hasSmallOrder(signature.subarray(0, 32)), SIGNATURE, 'commitment of small order');
   // Developer convenience only: Rust runtime verify_strict is normative.
   const publicKey = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), key]), format: 'der', type: 'spki' });
   check(cryptoVerify(null, Buffer.concat([PREFIX, hashes]), publicKey, signature), SIGNATURE, 'invalid Ed25519 signature');

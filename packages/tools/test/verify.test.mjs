@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, rm, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { crc32 } from 'node:zlib';
-import { verify } from '../src/verify.mjs';
+import { hasSmallOrder, verify } from '../src/verify.mjs';
 import { readZip } from '../src/zip.mjs';
 import { handmade } from './fixtures.mjs';
 
@@ -226,4 +226,15 @@ test('memory_verification_snapshots_inputs_and_returns_fresh_payload_bytes', bou
   const info = await verify(input); input.fill(0); zip.fill(0);
   const data = await info.read('index.html'); data.fill(0);
   assert.deepEqual(await info.read('index.html'), assets[1].data);
+});
+test('keys_and_commitments_of_small_order_are_found_and_ordinary_points_are_not', () => {
+  const identity = Buffer.alloc(32); identity[0] = 1;
+  const minusOne = Buffer.alloc(32, 0xff); minusOne[0] = 0xec; minusOne[31] = 0x7f;
+  const orderFour = Buffer.alloc(32);
+  const wrapped = Buffer.alloc(32, 0xff); wrapped[0] = 0xee; wrapped[31] = 0x7f;
+  for (const bytes of [identity, minusOne, orderFour, wrapped]) assert.equal(hasSmallOrder(bytes), true);
+  const base = Buffer.alloc(32, 0x66); base[0] = 0x58;
+  assert.equal(hasSmallOrder(base), false);
+  const { publicKey } = generateKeyPairSync('ed25519');
+  assert.equal(hasSmallOrder(publicKey.export({ format: 'der', type: 'spki' }).subarray(-32)), false);
 });
