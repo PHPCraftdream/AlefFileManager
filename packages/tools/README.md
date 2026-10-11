@@ -33,8 +33,9 @@ existing output inside input is skipped. The CLI prints the output path.
 At every depth `.git` and `node_modules` are excluded unless included through
 repeated/comma-separated `--include`. Configured key home and case-insensitive
 `.alef-tron` basenames are always excluded, even when explicitly included.
-Input/output inside key home, symlinks, special files and copied private-key
-PEM markers fail. Excluded trees are not traversed. This is not a general secret
+Input/output inside key home, symlinked entries, special files and copied
+private-key PEM markers fail; a link in the path above the input, the output or
+the key home is the user's own layout and is followed. Excluded trees are not traversed. This is not a general secret
 scanner: review other secrets before packaging.
 
 `verify` prints `signed by <fingerprint>` or `unsigned`. An embedded key proves

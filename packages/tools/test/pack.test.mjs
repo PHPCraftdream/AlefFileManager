@@ -152,9 +152,10 @@ test('sparse_oversized_files_and_total_size_are_rejected_before_payload_allocati
 test('invalid_duplicate_and_prefix_names_fail_metadata_preflight_before_any_key_or_payload_opens', bounded, () => scratch(async ({ dir, home }) => {
   const original_readdir = fs.readdir; const original_lstat = fs.lstat; const original_open = fs.open;
   const template = await original_lstat(path.join(dir, 'alef.ktav'));
+  const real = await fs.realpath(dir);
   let names = []; let payload_opens = 0;
-  fs.readdir = async folder => path.resolve(folder) === dir ? ['alef.ktav', ...names] : original_readdir(folder);
-  fs.lstat = async filename => names.some(name => path.join(dir, name) === filename) ? template : original_lstat(filename);
+  fs.readdir = async folder => path.resolve(folder) === real ? ['alef.ktav', ...names] : original_readdir(folder);
+  fs.lstat = async filename => names.some(name => path.join(real, name) === filename) ? template : original_lstat(filename);
   fs.open = async (...args) => { payload_opens++; return original_open(...args); };
   syncBuiltinESMExports();
   try {
@@ -180,12 +181,13 @@ test('invalid_duplicate_and_prefix_names_fail_metadata_preflight_before_any_key_
 test('entry_limits_include_generated_metadata', bounded, () => scratch(async ({ dir, home }) => {
   const original_readdir = fs.readdir; const original_lstat = fs.lstat; const original_open = fs.open;
   const template = await original_lstat(path.join(dir, 'alef.ktav'));
+  const real = await fs.realpath(dir);
   let count = 9998; let file_stats = 0; let payload_opens = 0;
-  fs.readdir = async folder => path.resolve(folder) === dir
+  fs.readdir = async folder => path.resolve(folder) === real
     ? ['alef.ktav', ...Array.from({ length: count }, (_, index) => `asset${index}`)]
     : original_readdir(folder);
   fs.lstat = async filename => {
-    if (path.dirname(filename) === dir && /^asset\d+$/.test(path.basename(filename))) {
+    if (path.dirname(filename) === real && /^asset\d+$/.test(path.basename(filename))) {
       file_stats++; return template;
     }
     return original_lstat(filename);

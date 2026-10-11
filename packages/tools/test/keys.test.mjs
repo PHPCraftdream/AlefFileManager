@@ -51,6 +51,15 @@ test('loading_and_listing_reject_malformed_non_pkcs8_and_non_ed25519_keys', boun
     await assert.rejects(loadKey('bad', { home })); await assert.rejects(listKeys({ home }));
   }
 }));
+test('a_key_home_below_a_linked_parent_folder_works', bounded, () => scratch(async home => {
+  const linked = path.join(home, 'linked');
+  try { await symlink(home, linked, 'junction'); } catch (error) { if (error.code === 'EPERM') return; throw error; }
+  const through = path.join(linked, 'below');
+  const info = await createKey(undefined, { home: through });
+  assert.equal((await listKeys({ home: through })).length, 1);
+  assert.equal((await loadKey(undefined, { home: through })).asymmetricKeyType, 'ed25519');
+  assert.equal(info.name, 'default');
+}));
 test('the_key_home_follows_the_environment_and_rejects_symlinks_without_touching_their_targets', bounded, () => scratch(async home => {
   const previous = process.env.ALEF_TRON_HOME;
   try {

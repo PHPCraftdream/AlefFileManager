@@ -15,15 +15,11 @@ function keyName(name) {
   if (name.includes('/') || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(name)) throw new Error('Invalid key name');
   return name;
 }
+// Only the target itself: a parent link is the user's own layout (macOS tmpdir() lies below /var, a link).
 export async function noSymlinks(target) {
-  const absolute = path.resolve(target); const root = path.parse(absolute).root;
-  let current = root;
-  for (const part of absolute.slice(root.length).split(path.sep).filter(Boolean)) {
-    current = path.join(current, part);
-    try {
-      if ((await lstat(current)).isSymbolicLink()) throw new Error(`Symlink forbidden: ${current}`);
-    } catch (error) { if (error.code === 'ENOENT') return; throw error; }
-  }
+  let stat;
+  try { stat = await lstat(target); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (stat.isSymbolicLink()) throw new Error(`Symlink forbidden: ${target}`);
 }
 function publicInfo(name, file, privateKey) {
   const der = createPublicKey(privateKey).export({ format: 'der', type: 'spki' });
