@@ -7,19 +7,15 @@
 //! is small) or `http.respondStream` (a stream), or takes the offer of a WebSocket with `http.upgrade`, which
 //! hands it the connection as the ones of `websocket.connect` are handed. A folder (`files`) is served from the disk without a
 //! word to the page. The right the user substituted gives a port that nobody comes to.
-use std::{
-    any::Any, convert::Infallible, future::Future, net::SocketAddr, pin::Pin, sync::Arc,
-    time::Duration,
-};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
 
 use alef_core::{
-    ids::ResourceId,
     registry::{command::Reply, context::CallContext, dispatch::Registry},
     security::{
         consent::Decision,
         permissions::{Permission, Reach},
     },
-    session::{resources::Resource, session::Session, streams::StreamWriter},
+    session::{session::Session, streams::StreamWriter},
     AlefError, ErrorCode,
 };
 use bytes::Bytes;
@@ -40,13 +36,16 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::oneshot,
+    sync::{oneshot, Semaphore},
     task::JoinSet,
 };
 use tokio_rustls::TlsAcceptor;
 
+mod exchanges;
 mod files;
 mod guard;
+#[cfg(test)]
+mod tests;
 mod upgrade;
 
 use self::{
@@ -63,6 +62,11 @@ use crate::{
         websocket,
     },
 };
+
+/// How many connections a server takes when the page names no limit.
+const DEFAULT_MAX_CONNECTIONS: usize = 64;
+/// How many unanswered requests a server takes when the page names no limit.
+const DEFAULT_MAX_REQUESTS: usize = 32;
 
 /// How long the page has to take a request and to answer it, before the client gets a 503 or a 504,
 /// when the page names no time.
@@ -98,6 +102,10 @@ struct ServeArgs {
     origins: Vec<String>,
     #[serde(default)]
     answer_timeout_ms: Option<u64>,
+    #[serde(default, deserialize_with = "limit")]
+    max_connections: Option<u64>,
+    #[serde(default, deserialize_with = "limit")]
+    max_requests: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +124,24 @@ struct RespondArgs {
     status: u16,
     #[serde(default)]
     headers: Vec<(String, String)>,
+}
+
+fn limit<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    let value = u64::deserialize(deserializer)?;
+    if !(1..=256).contains(&value) {
+        return Err(serde::de::Error::custom("server limits are 1 to 256"));
+    }
+    Ok(Some(value))
+}
+
+fn budget(value: Option<u64>, default: usize) -> Result<usize, AlefError> {
+    match value {
+        None => Ok(default),
+        Some(value @ 1..=256) => Ok(value as usize),
+        _ => Err(invalid(
+            "server limits are positive integers no greater than 256",
+        )),
+    }
 }
 
 fn ok() -> u16 {
@@ -149,24 +175,6 @@ struct Exchange {
     offer: Option<Offer>,
 }
 
-impl Resource for Exchange {
-    fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(async {})
-    }
-}
-
-/// Removes the resource of a request when the request is over, whichever way it ended.
-struct Forget {
-    session: Arc<Session>,
-    id: ResourceId,
-}
-
-impl Drop for Forget {
-    fn drop(&mut self) {
-        let _ = self.session.resources().take(self.id);
-    }
-}
-
 /// What every connection of a server shares.
 struct Shared {
     session: Arc<Session>,
@@ -174,6 +182,8 @@ struct Shared {
     guard: Guard,
     files: Files,
     answer_time: Duration,
+    exchanges: Arc<exchanges::Table>,
+    max_connections: usize,
 }
 
 fn text(status: StatusCode, message: &'static str) -> Response<RequestBody> {
@@ -191,6 +201,8 @@ fn text(status: StatusCode, message: &'static str) -> Response<RequestBody> {
 }
 
 /// The request as the page sees it, once its head is let in and the page has room for it.
+/// cancel-safe: yes — file lookup is read-only; request lease removes routing at every
+/// send/answer cancellation point. Body streaming is managed by the existing stream hub.
 async fn answer_request(shared: &Shared, mut request: Request<Incoming>) -> Response<RequestBody> {
     if let Some((status, message)) = shared.guard.check(request.headers()) {
         return text(status, message);
@@ -206,19 +218,16 @@ async fn answer_request(shared: &Shared, mut request: Request<Incoming>) -> Resp
     let on_upgrade = offer.is_some().then(|| hyper::upgrade::on(&mut request));
     let (parts, incoming) = request.into_parts();
     let (sender, receiver) = oneshot::channel();
-    let Ok(id) = shared.session.resources().insert(Box::new(Exchange {
+    let Some(lease) = shared.exchanges.insert(Exchange {
         answer: sender,
         offer: offer.clone(),
-    })) else {
+    }) else {
         return text(
             StatusCode::SERVICE_UNAVAILABLE,
-            "the application has no room for another request",
+            "the server has no room for another request",
         );
     };
-    let _forget = Forget {
-        session: shared.session.clone(),
-        id,
-    };
+    let id = lease.id;
     let body = if incoming.is_end_stream() {
         None
     } else {
@@ -241,7 +250,7 @@ async fn answer_request(shared: &Shared, mut request: Request<Incoming>) -> Resp
         .path_and_query()
         .map_or("/", |target| target.as_str());
     let frame = json!({
-        "id": id.0,
+        "id": id,
         "method": parts.method.as_str(),
         "url": url,
         "headers": headers,
@@ -277,9 +286,12 @@ async fn answer_request(shared: &Shared, mut request: Request<Incoming>) -> Resp
                 );
             };
             // The connection is ours once the 101 is written; the page waits for it.
+            // fire-and-forget: detached by design; bounded handover survives server close.
             tokio::spawn(async move {
-                let taken = on_upgrade
+                let taken = tokio::time::timeout(UPGRADE_TIME, on_upgrade)
                     .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result.map_err(|error| error.to_string()))
                     .map(TokioIo::new)
                     .map_err(|error| error.to_string());
                 let _ = ready.send(taken);
@@ -297,6 +309,7 @@ async fn answer_request(shared: &Shared, mut request: Request<Incoming>) -> Resp
     }
 }
 
+/// cancel-safe: yes — dropping the Hyper connection drops its pending service and request lease.
 async fn serve_io<I>(io: I, shared: Arc<Shared>)
 where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
@@ -306,6 +319,7 @@ where
         async move { Ok::<_, Infallible>(answer_request(&shared, request).await) }
     });
     let _ = http1::Builder::new()
+        .half_close(false)
         .timer(TokioTimer::new())
         .header_read_timeout(HEAD_TIME)
         .serve_connection(io, service)
@@ -313,11 +327,12 @@ where
         .await;
 }
 
+/// cancel-safe: yes — dropping closes the owned TCP/TLS connection and Hyper handler.
 async fn connection(stream: TcpStream, acceptor: Option<TlsAcceptor>, shared: Arc<Shared>) {
     match acceptor {
         None => serve_io(TokioIo::new(stream), shared).await,
         Some(acceptor) => {
-            if let Ok(secure) = acceptor.accept(stream).await {
+            if let Ok(Ok(secure)) = tokio::time::timeout(HEAD_TIME, acceptor.accept(stream)).await {
                 serve_io(TokioIo::new(secure), shared).await;
             }
         }
@@ -325,14 +340,25 @@ async fn connection(stream: TcpStream, acceptor: Option<TlsAcceptor>, shared: Ar
 }
 
 /// Takes the connections of the listener; the connections end with the task, for they are its own.
+/// cancel-safe: yes — listener and JoinSet drop close/abort connections; Closing purges
+/// routing synchronously even before the aborted child futures are reaped by Tokio.
 async fn accept_loop(listener: TcpListener, acceptor: Option<TlsAcceptor>, shared: Arc<Shared>) {
+    // Dropping the accept task closes routing synchronously, before child task aborts finish.
+    let _closing = exchanges::Closing(shared.exchanges.clone());
     let mut connections = JoinSet::new();
+    // A place is held by the task of a connection until the connection is over, reaped or not.
+    let places = Arc::new(Semaphore::new(shared.max_connections));
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
+                    let Ok(place) = places.clone().try_acquire_owned() else { drop(stream); continue; };
                     let _ = stream.set_nodelay(true);
-                    connections.spawn(connection(stream, acceptor.clone(), shared.clone()));
+                    let (acceptor, shared) = (acceptor.clone(), shared.clone());
+                    connections.spawn(async move {
+                        let _place = place;
+                        connection(stream, acceptor, shared).await;
+                    });
                 }
                 Err(_) => tokio::time::sleep(ACCEPT_PAUSE).await,
             },
@@ -385,13 +411,7 @@ fn take_exchange(
     request: u64,
     check: impl FnOnce(&Exchange) -> Result<(), AlefError>,
 ) -> Result<Exchange, AlefError> {
-    let id = ResourceId(request);
-    // Only a request is taken: the id of a server is no request, and is left as it is.
-    ctx.resources().with_as::<Exchange, _>(id, check)??;
-    let any: Box<dyn Any> = ctx.resources().take(id)?;
-    any.downcast::<Exchange>()
-        .map(|exchange| *exchange)
-        .map_err(|_| AlefError::new(ErrorCode::NotFound, "resource not found"))
+    exchanges::Table::take(&ctx.session, request, check)
 }
 
 /// The place where the answer of a request goes.
@@ -418,6 +438,8 @@ pub(super) fn register(registry: &mut Registry) -> Result<(), AlefError> {
         })
         .substitutes()
         .handler(|ctx, args| async move {
+            let max_connections = budget(args.max_connections, DEFAULT_MAX_CONNECTIONS)?;
+            let max_requests = budget(args.max_requests, DEFAULT_MAX_REQUESTS)?;
             let host = args.host.as_deref().unwrap_or(LOOPBACK);
             let (writer, requests) = ctx.streams().open_outgoing();
             if ctx.decision() == Decision::Substitute {
@@ -435,6 +457,8 @@ pub(super) fn register(registry: &mut Registry) -> Result<(), AlefError> {
             let local: SocketAddr = listener.local_addr()?;
             let shared = Arc::new(Shared {
                 session: ctx.session.clone(),
+                exchanges: exchanges::Table::new(&ctx.session, max_requests),
+                max_connections,
                 requests: writer,
                 guard: Guard::new(local, &args.hosts, &args.origins),
                 files: Files::new(root, ctx.permissions.clone(), ctx.grants()),

@@ -113,8 +113,8 @@ export const http = {
 
   /** Takes a port of this machine and gives the requests that come to it; see `HttpServer`. */
   serve: async (options: ServeOptions = {}): Promise<HttpServer> => {
-    const { host, port, tls, files, hosts, origins, answerTimeout, signal } = options;
-    const args = { host, port, tls, files, hosts, origins, answerTimeoutMs: answerTimeout };
+    const { answerTimeout, signal, ...rest } = options;
+    const args = { ...rest, answerTimeoutMs: answerTimeout };
     return new HttpServer(await call<ConstructorParameters<typeof HttpServer>[0]>('http.serve', args, { signal }));
   },
 

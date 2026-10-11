@@ -9,7 +9,7 @@ use std::{
 };
 
 use alef_core::{
-    ids::{ResourceId, StreamId},
+    ids::StreamId,
     registry::command::Reply as Answer,
     security::consent::{Consent, Decision, Right},
     AlefError, ErrorCode,
@@ -399,41 +399,33 @@ async fn a_request_that_the_page_does_not_answer_gets_a_504_and_is_forgotten() {
 #[tokio::test]
 async fn a_server_that_is_closed_takes_nobody_and_drops_the_requests_it_had() {
     let app = app_for(&[]).await;
-    let mut served = serve(&app, json!({})).await.unwrap();
-    let pending = plain_get(served.url("/pending"));
-    let seen = next_request(&mut served.requests).await.unwrap();
-    app.call("socket.close", json!({ "socket": served.id }))
-        .await
-        .unwrap();
-    let outcome = tokio::time::timeout(Duration::from_secs(10), pending)
-        .await
-        .expect("the client of a closed server is told")
-        .unwrap();
-    assert!(outcome.is_err() || outcome.unwrap().0 != StatusCode::OK);
-    let mut refused = false;
-    for _ in 0..40 {
-        if TcpStream::connect(("127.0.0.1", served.port))
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut served = serve(&app, json!({})).await.unwrap();
+        let mut pending = plain_get(served.url("/pending"));
+        let seen = next_request(&mut served.requests).await.unwrap();
+        app.call("socket.close", json!({ "socket": served.id }))
             .await
-            .is_err()
-        {
-            refused = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(refused, "a closed server still took a connection");
-    // The request is forgotten with its connection.
-    let mut forgotten = false;
-    for _ in 0..100 {
-        match respond(&app, seen.id, 200, &[], b"").await {
-            Err(error) if error.code == ErrorCode::NotFound => {
-                forgotten = true;
-                break;
-            }
-            _ => tokio::time::sleep(Duration::from_millis(50)).await,
-        }
-    }
-    assert!(forgotten, "a request outlived its server");
+            .unwrap();
+        assert!(
+            (&mut pending).await.unwrap().is_err(),
+            "server closure must cancel the HTTP client, not send an error response"
+        );
+        assert!(
+            TcpStream::connect(("127.0.0.1", served.port))
+                .await
+                .is_err(),
+            "a closed server still took a connection"
+        );
+        assert_eq!(
+            respond(&app, seen.id, 200, &[], b"late")
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    })
+    .await
+    .expect("server closure and late response complete within the deadline");
 }
 
 #[tokio::test]
@@ -456,15 +448,39 @@ async fn a_page_that_stops_taking_requests_leaves_the_clients_with_a_503() {
 }
 
 #[tokio::test]
-async fn a_request_whose_place_is_gone_is_told_to_the_client_as_a_500() {
-    let app = app_for(&[]).await;
-    let mut served = serve(&app, json!({})).await.unwrap();
-    let call = plain_get(served.url("/"));
-    let seen = next_request(&mut served.requests).await.unwrap();
-    // What the end of a document does to the requests it had.
-    app.session().resources().take(ResourceId(seen.id)).unwrap();
-    let (status, _, _) = call.await.unwrap().unwrap();
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+async fn reloading_a_document_cancels_its_pending_client_and_rejects_late_responses() {
+    let mut app = app_for(&[]).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let old_session = app.session();
+        let mut served = serve(&app, json!({})).await.unwrap();
+        let mut call = plain_get(served.url("/"));
+        let seen = next_request(&mut served.requests).await.unwrap();
+        app.reload_document().await;
+        assert!(
+            (&mut call).await.unwrap().is_err(),
+            "document closure must cancel the HTTP client, not send a 500"
+        );
+        assert_eq!(
+            app.call_as(
+                &old_session,
+                "http.respond",
+                json!({ "request": seen.id, "status": 200 }),
+            )
+            .await
+            .unwrap_err()
+            .code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            respond(&app, seen.id, 200, &[], b"late")
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+    })
+    .await
+    .expect("document closure and late responses complete within the deadline");
 }
 
 #[tokio::test]

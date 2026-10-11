@@ -37,6 +37,7 @@ const WEBSOCKET_CHECKS = [
 ];
 const WEBSOCKET_SUBSTITUTE_CHECKS = ['websocket-a-substituted-network-hangs-until-its-time-is-up'];
 const SERVE_CHECKS = [
+  'serve-limits',
   'serve-the-page-answers-requests-of-its-own-with-streams-both-ways',
   'serve-a-client-outside-reaches-the-page-and-big-bodies-go-both-ways',
   'serve-the-host-and-the-origin-of-a-request-are-held',
@@ -233,23 +234,41 @@ async function freePorts(count) {
   return ports;
 }
 
-/** Whether something takes a connection on the port. */
-const listening = port => new Promise(resolve => {
+/** Whether something takes a connection on the port, within an absolute deadline. */
+const listening = (port, ms = 1000) => new Promise(resolve => {
   const probe = net.connect(port, '127.0.0.1');
-  probe.on('connect', () => { probe.destroy(); resolve(true); });
-  probe.on('error', () => resolve(false));
+  let settled = false;
+  const finish = answer => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer); probe.destroy(); resolve(answer);
+  };
+  const timer = setTimeout(() => finish(false), ms);
+  probe.once('connect', () => finish(true));
+  probe.once('error', () => finish(false));
+  probe.once('close', () => finish(false));
 });
 
 /** A request to the server of the page, whole: its status, headers and body. */
 function reach(options, payload) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, answer) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) { request.destroy(); reject(error); }
+      else resolve(answer);
+    };
     const request = (options.ca ? https : http).request({ host: '127.0.0.1', agent: false, ...options }, response => {
       const pieces = [];
       response.on('data', piece => pieces.push(piece));
-      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(pieces) }));
+      response.on('error', error => finish(error));
+      response.on('aborted', () => finish(new Error('response aborted')));
+      response.on('end', () => finish(null, { status: response.statusCode, headers: response.headers, body: Buffer.concat(pieces) }));
     });
-    request.on('error', reject);
-    request.setTimeout(30000, () => request.destroy(new Error('no answer in 30 s')));
+    const timer = setTimeout(() => finish(new Error('no complete answer in 30 s')), 30000);
+    request.on('error', error => finish(error));
     request.end(payload);
   });
 }
@@ -314,15 +333,93 @@ function serveClient({ port, secure, wsport, authority, size }) {
       problems.push(`${what}: ${error?.message ?? error}`);
     }
   };
+  const clients = new Set();
+  const control = path => reach({ port: secure, path, ca: authority, signal: AbortSignal.timeout(2000) });
+  const poll = async predicate => {
+    const deadline = Date.now() + 10000;
+    do {
+      try {
+        const answer = await control('/limits-ready');
+        if (answer.status === 200 && predicate(JSON.parse(answer.body.toString()))) return;
+      } catch { /* The secure listener may still be starting. */ }
+      await pause(50);
+    } while (Date.now() < deadline);
+    throw new Error('limits control did not become ready in 10 s');
+  };
+  const testLimits = async () => {
+    const held = [];
+    const raw = [];
+    try {
+      for (let i = 0; i < 2; i += 1) {
+        const result = new Promise(resolve => {
+          const finish = answer => { clearTimeout(timer); if (answer.error) request.destroy(); resolve(answer); };
+          const request = http.get({ ...at('/stall'), host: '127.0.0.1', agent: false }, response => {
+            const pieces = [];
+            response.on('data', piece => pieces.push(piece));
+            response.on('error', error => finish({ error }));
+            response.on('aborted', () => finish({ error: new Error('held response aborted') }));
+            response.on('end', () => finish({ status: response.statusCode, body: Buffer.concat(pieces).toString() }));
+          });
+          const timer = setTimeout(() => request.destroy(new Error('stall exceeded 15 s')), 15000);
+          clients.add(request); request.on('error', error => finish({ error }));
+          request.on('close', () => { clients.delete(request); finish({ error: new Error('held request closed before an answer') }); });
+        });
+        held.push(result);
+        await poll(state => state.held === i + 1);
+      }
+      expect('request overflow gets 503', (await reach({ ...at('/stall'), signal: AbortSignal.timeout(3000) })).status === 503);
+      for (let i = 0; i < 3; i += 1) {
+        const socket = net.connect(port, '127.0.0.1'), pieces = [];
+        let error;
+        const result = new Promise(resolve => {
+          const timer = setTimeout(() => socket.destroy(new Error('partial-header client exceeded 10 s')), 10000);
+          socket.on('data', piece => pieces.push(piece));
+          socket.on('error', failure => { error = failure; });
+          socket.on('close', () => {
+            clearTimeout(timer); clients.delete(socket);
+            resolve({ error, answer: Buffer.concat(pieces).toString() });
+          });
+        });
+        clients.add(socket);
+        socket.on('connect', () => socket.write('GET /hello HTTP/1.1\r\n'));
+        raw.push({ socket, result });
+      }
+      if (!(await eventually(() => raw.filter(({ socket }) => socket.destroyed).length === 1
+        && raw.every(({ socket }) => socket.destroyed || !socket.connecting), 3000))) {
+        throw new Error('connection overflow did not close exactly one of five clients at accept');
+      }
+      const retained = raw.filter(({ socket }) => !socket.destroyed);
+      const surplus = await raw.find(({ socket }) => socket.destroyed).result;
+      expect('the surplus connection closes without an HTTP response', surplus.answer === '');
+      const status = await control('/limits-status'), state = JSON.parse(status.body.toString());
+      expect('fs.open/read/close succeeds with two stalled handlers and four connections', status.status === 200 && state.held === 2 && state.fsOpened === true);
+      // Each completed retained request must get 503 while /stall fills the budget: no fixed pause.
+      for (const { socket } of retained) socket.write(`Host: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`);
+      for (const result of await Promise.all(retained.map(client => client.result)))
+        expect('an accepted partial-header connection gets 503 on completion', !result.error && /^HTTP\/1\.1 503\b/.test(result.answer));
+    } finally {
+      for (const { socket } of raw) socket.destroy();
+      try {
+        expect('control releases held requests', (await control('/limits-release')).status === 200);
+        for (const result of await Promise.all(held)) expect('a held request was answered', result.status === 200 && result.body === 'released');
+      } finally {
+        for (const client of clients) client.destroy();
+        clients.clear();
+      }
+    }
+    const recovered = await reach({ ...at('/hello'), signal: AbortSignal.timeout(3000) });
+    expect('the main server recovers after release', recovered.status === 200 && recovered.body.toString() === 'hello from the page');
+  };
   const finished = (async () => {
     const deadline = Date.now() + 60000;
-    while (!(await listening(port))) {
+    while (!(await listening(port, Math.min(1000, Math.max(1, deadline - Date.now()))))) {
       if (Date.now() > deadline) {
         problems.push('the server of the page did not take connections in a minute');
         return;
       }
       await pause(50);
     }
+    await attempt('per-server limits', async () => { await poll(state => state.ready); await testLimits(); });
     await attempt('the first request', async () => {
       const answer = await reach({ ...at('/from-runner?x=1'), headers: { origin: `http://127.0.0.1:${port}` } });
       expect('a request of the client is answered by the page', answer.status === 200 && answer.body.toString() === 'page: GET /from-runner?x=1');
@@ -395,7 +492,7 @@ function serveClient({ port, secure, wsport, authority, size }) {
       expect('a server with TLS does not answer in plain', plain === 'refused');
     });
   })().finally(() => reach(at('/finish')).catch(() => {}));
-  return { problems: async () => { await finished; return problems; }, stop: () => {} };
+  return { problems: async () => { await finished; return problems; }, stop: () => { for (const client of clients) client.destroy(); clients.clear(); } };
 }
 
 /** The runner looks for a listener on the ports while the page runs: for a port the user substituted there must be none. */

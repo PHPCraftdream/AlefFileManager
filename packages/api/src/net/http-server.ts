@@ -23,6 +23,10 @@ export interface ServeOptions extends Cancelable {
   hosts?: string[];
   /** Origins besides the ones of this server that a request may come from. */
   origins?: string[];
+  /** Maximum live HTTP connections per server: an integer from 1 to 256; 64 when omitted. Excess connections are closed at accept. */
+  maxConnections?: number;
+  /** Maximum active request handlers per server: an integer from 1 to 256; 32 when omitted. Excess requests get 503 without reaching the page. */
+  maxRequests?: number;
   /** Milliseconds the page has to answer a request, before the client gets a 504; 60 000 when omitted. */
   answerTimeout?: number;
 }

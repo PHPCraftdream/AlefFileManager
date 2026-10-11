@@ -31,15 +31,30 @@ async function first(server) {
   throw new Error('no request came');
 }
 
-test('serve names the address, the port, TLS, the folder, the names, the origins and the time', async () => {
+test('serve forwards the address, TLS, folder, names, origins, time and per-server limits exactly', async () => {
   await serving();
   assert.deepEqual(argsOf('http.serve'), {}, 'nothing asked: the runtime chooses');
   await http.serve({
-    host: '0.0.0.0', port: 8443, tls: { cert: 'C', key: 'K' }, files: '/site', hosts: ['app.test'], origins: ['https://app.test'], answerTimeout: 900,
+    host: '0.0.0.0', port: 8443, tls: { cert: 'C', key: 'K' }, files: '/site', hosts: ['app.test'], origins: ['https://app.test'], answerTimeout: 900, maxConnections: 4, maxRequests: 2,
   });
   assert.deepEqual(argsOf('http.serve'), {
-    host: '0.0.0.0', port: 8443, tls: { cert: 'C', key: 'K' }, files: '/site', hosts: ['app.test'], origins: ['https://app.test'], answerTimeoutMs: 900,
+    host: '0.0.0.0', port: 8443, tls: { cert: 'C', key: 'K' }, files: '/site', hosts: ['app.test'], origins: ['https://app.test'], answerTimeoutMs: 900, maxConnections: 4, maxRequests: 2,
   });
+});
+
+test('serve leaves limit defaults and validation to the backend, including null and invalid numbers', async () => {
+  replies.set('http.serve', { json: opened() });
+  for (const value of [1, 64, 32, 256, 0, 257, -1, 1.5, null, '4', true]) {
+    await http.serve({ maxConnections: value, maxRequests: value });
+    assert.deepEqual(argsOf('http.serve'), { maxConnections: value, maxRequests: value });
+  }
+  replies.set('http.serve', { status: 400, json: { code: 'INVALID_ARGUMENT', message: 'invalid limit' } });
+  try {
+    await assert.rejects(http.serve({ maxRequests: null }), error => error instanceof AlefError && error.code === 'INVALID_ARGUMENT');
+    assert.deepEqual(argsOf('http.serve'), { maxRequests: null });
+  } finally {
+    replies.set('http.serve', { json: opened() });
+  }
 });
 
 test('the server tells its address and where clients come, with brackets for an address of IPv6', async () => {
