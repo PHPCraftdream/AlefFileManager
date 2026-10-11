@@ -1,0 +1,13 @@
+{
+  "name": "@alef-tron/tools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Dependency-free Alef package tooling",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "engines": { "node": ">=22.12.0" },
+  "exports": { ".": "./src/index.mjs" },
+  "bin": { "alef-tron": "./bin/alef-tron.mjs" },
+  "files": ["src", "bin", "README.md", "CHANGELOG.md"]
+}

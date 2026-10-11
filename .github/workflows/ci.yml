@@ -167,6 +167,12 @@ jobs:
       - name: "@alef-tron/api tests"
         run: npm run test:api
 
+      - name: "@alef-tron/mcp tests"
+        run: npm run test:mcp
+
+      - name: "@alef-tron/tools tests"
+        run: npm run test:tools
+
       # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
       - name: Build (Rust, без frontend)
         if: runner.os != 'Linux'
