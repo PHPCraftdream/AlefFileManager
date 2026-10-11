@@ -204,9 +204,20 @@ async fn terminal_wait_keeps_output_for_a_reader_delayed_more_than_two_seconds()
     });
     let (begin, end) = (text.contains("BEGIN:"), text.contains(":END"));
     close(&app).await;
-    assert!(begin, "missing beginning");
-    assert!(end, "missing ending");
-    assert!(report.is_none(), "{}", report.unwrap_or_default());
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(120)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    assert!(
+        begin && end && report.is_none(),
+        "beginning {begin}, ending {end}, {} bytes, last of the text {tail:?}, {}",
+        bytes.len(),
+        report.unwrap_or_default()
+    );
 }
 
 #[tokio::test]

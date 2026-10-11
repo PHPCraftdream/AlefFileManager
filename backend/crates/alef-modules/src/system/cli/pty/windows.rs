@@ -11,11 +11,8 @@ use std::{
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
-    },
-    time::Duration,
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::{ERROR_BROKEN_PIPE, ERROR_NO_DATA},
@@ -23,11 +20,17 @@ use windows_sys::Win32::{
     System::{Console::*, Pipes::*, Threading::*},
 };
 
+/// How long the output may stay open once the console is closed. Windows 11 24H2 (build 26100) and
+/// Server 2025 return from `ClosePseudoConsole` at once and the host writes its last frame later;
+/// the end of the output is the pipe closing, this only bounds a host that never closes it.
+const DRAIN_LIMIT: Duration = Duration::from_secs(5);
+
 pub(super) struct Terminal {
     console: Mutex<Option<HPCON>>,
     read: Mutex<Option<OwnedHandle>>,
     write: Mutex<Option<OwnedHandle>>,
-    done: AtomicBool,
+    closed_at: Mutex<Option<Instant>>,
+    drain_limit: Duration,
 }
 pub(super) struct Child {
     process: OwnedHandle,
@@ -195,7 +198,8 @@ pub(super) fn open(
         console: Mutex::new(Some(console)),
         read: Mutex::new(Some(output_read)),
         write: Mutex::new(Some(input_write)),
-        done: AtomicBool::new(false),
+        closed_at: Mutex::new(None),
+        drain_limit: DRAIN_LIMIT,
     };
     let mut attributes = Attributes::new(console)?;
     // SAFETY: all-zero startup and process information structures are valid initial representations.
@@ -309,11 +313,10 @@ impl Terminal {
             return Err(error.into());
         }
         if available == 0 {
-            return Ok(if self.done.load(Ordering::Acquire) {
-                Some(0)
-            } else {
-                None
-            });
+            let closed_at = *self.closed_at.lock().unwrap_or_else(|e| e.into_inner());
+            return Ok(closed_at
+                .is_some_and(|at| at.elapsed() >= self.drain_limit)
+                .then_some(0));
         }
         let count = usize::min(buffer.len(), available as usize) as u32;
         let mut read = 0;
@@ -401,7 +404,7 @@ impl Terminal {
             });
             let _ = task.await;
         }
-        self.done.store(true, Ordering::Release);
+        *self.closed_at.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     }
     pub(super) fn abandon_output(&self) {
         self.read.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -460,5 +463,61 @@ impl Child {
 impl Drop for Child {
     fn drop(&mut self) {
         self.killer.kill();
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn over_a_pipe(limit: Duration) -> (Terminal, OwnedHandle) {
+        let (read, write) = pipe().expect("pipe");
+        let terminal = Terminal {
+            console: Mutex::new(None),
+            read: Mutex::new(Some(read)),
+            write: Mutex::new(None),
+            closed_at: Mutex::new(None),
+            drain_limit: limit,
+        };
+        (terminal, write)
+    }
+
+    fn put(write: &OwnedHandle, bytes: &[u8]) {
+        let mut written = 0;
+        // SAFETY: the handle is the live write end of the pipe, the slice covers `len` bytes.
+        let ok = unsafe {
+            WriteFile(
+                write.as_raw_handle(),
+                bytes.as_ptr(),
+                bytes.len() as u32,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0, "write to the pipe");
+    }
+
+    #[tokio::test]
+    async fn the_output_goes_on_after_the_console_is_closed_until_the_host_closes_the_pipe() {
+        let (terminal, write) = over_a_pipe(Duration::from_secs(3600));
+        terminal.finished().await;
+        let mut buffer = [0; 16];
+        assert_eq!(terminal.read(&mut buffer).expect("read"), None);
+        put(&write, b"last");
+        assert_eq!(terminal.read(&mut buffer).expect("read"), Some(4));
+        assert_eq!(&buffer[..4], b"last");
+        assert_eq!(terminal.read(&mut buffer).expect("read"), None);
+        drop(write);
+        assert_eq!(terminal.read(&mut buffer).expect("read"), Some(0));
+    }
+
+    #[tokio::test]
+    async fn a_host_that_never_closes_the_pipe_ends_the_output_after_the_limit() {
+        let (terminal, write) = over_a_pipe(Duration::ZERO);
+        let mut buffer = [0; 16];
+        assert_eq!(terminal.read(&mut buffer).expect("read"), None);
+        terminal.finished().await;
+        put(&write, b"x");
+        assert_eq!(terminal.read(&mut buffer).expect("read"), Some(1));
+        assert_eq!(terminal.read(&mut buffer).expect("read"), Some(0));
     }
 }
