@@ -306,6 +306,7 @@ async fn handshake(args: ConnectArgs) -> Result<(Ws, Option<String>), AlefError>
 pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
     registry
         .command::<ConnectArgs>("websocket.connect")?
+        .waits()
         .permission(Permission::NetHttp, |args| Some(args.url.clone()))
         .substitutes()
         .handler(|ctx, args| async move {
@@ -334,6 +335,7 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
 
     registry
         .command::<SendArgs>("websocket.send")?
+        .waits()
         .handler(|ctx, args| async move {
             let sink = ctx
                 .resources()

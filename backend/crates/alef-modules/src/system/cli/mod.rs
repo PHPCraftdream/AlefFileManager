@@ -187,6 +187,7 @@ pub(crate) fn register(
     pty::register(registry)?;
     registry
         .command::<ExecArgs>("cli.exec")?
+        .waits()
         .permission(Permission::CliExec, |args| first_token(&args.command_line))
         .substitutes()
         .handler(move |ctx, args| {
@@ -272,6 +273,7 @@ pub(crate) fn register(
 
     registry
         .command::<WaitArgs>("cli.wait")?
+        .waits()
         .handler(|ctx, args| async move {
             let shared = ctx
                 .resources()

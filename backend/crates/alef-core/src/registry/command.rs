@@ -29,6 +29,7 @@ pub struct CommandBuilder<'r, A> {
     pub(super) permission: Permission,
     pub(super) target: ScopeTarget<A>,
     pub(super) substitutes: bool,
+    pub(super) waits: bool,
     pub(super) marker: std::marker::PhantomData<A>,
 }
 impl<'r, A: DeserializeOwned + Send + 'static> CommandBuilder<'r, A> {
@@ -49,6 +50,13 @@ impl<'r, A: DeserializeOwned + Send + 'static> CommandBuilder<'r, A> {
         self.substitutes = true;
         self
     }
+    /// The handler waits on something outside (the network, a process): the call leaves the budget
+    /// of running calls for that of waiting ones before the handler starts. A substituted call
+    /// does the same, since a stand-in waits as long as the real thing would.
+    pub fn waits(mut self) -> Self {
+        self.waits = true;
+        self
+    }
     /// Register the async handler; handler errors pass through unchanged.
     pub fn handler<F, Fut>(self, handler: F) -> Result<(), AlefError>
     where
@@ -58,6 +66,7 @@ impl<'r, A: DeserializeOwned + Send + 'static> CommandBuilder<'r, A> {
         let permission = self.permission;
         let target = self.target;
         let substitutes = self.substitutes;
+        let waits = self.waits;
         let invoke = Arc::new(move |ctx: CallContext, value: serde_json::Value| {
             let args: A = serde_json::from_value(value).map_err(|_| {
                 AlefError::new(ErrorCode::InvalidArgument, "invalid command arguments")
@@ -68,6 +77,9 @@ impl<'r, A: DeserializeOwned + Send + 'static> CommandBuilder<'r, A> {
                 .check(permission, scope.as_deref(), &ctx.grants())?;
             if decision == Decision::Substitute && !substitutes {
                 return Err(refusal(permission));
+            }
+            if waits || decision == Decision::Substitute {
+                ctx.waiting()?;
             }
             Ok::<Fut, AlefError>(handler(ctx.with_decision(decision), args))
         });

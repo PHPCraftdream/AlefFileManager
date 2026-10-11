@@ -77,6 +77,7 @@ impl Registry {
             permission: Permission::None,
             target: Box::new(|_| None),
             substitutes: false,
+            waits: false,
             marker: std::marker::PhantomData,
         })
     }

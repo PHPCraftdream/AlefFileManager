@@ -83,6 +83,7 @@ pub(in crate::system::cli) fn register(
     let run_app = app.clone();
     registry
         .command::<RunArgs>("cli.run")?
+        .waits()
         .permission(Permission::CliCommand, |args| Some(args.name.clone()))
         .substitutes()
         .handler(move |ctx, args| {

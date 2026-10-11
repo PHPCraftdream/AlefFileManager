@@ -2,6 +2,7 @@
 //! Permission gating: closed-by-default booleans, environment names, window creation and error hygiene.
 mod commands;
 mod consent;
+mod slots;
 
 use alef_core::{
     security::{

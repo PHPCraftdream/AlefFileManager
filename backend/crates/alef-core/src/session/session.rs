@@ -152,6 +152,7 @@ pub struct Session {
     streams: StreamHub,
     grants: Arc<Grants>,
     calls: Arc<Semaphore>,
+    waits: Arc<Semaphore>,
     open: AtomicBool,
 }
 impl fmt::Debug for Session {
@@ -180,6 +181,7 @@ impl Session {
             streams: StreamHub::new(limits.stream_window, limits.chunk_size),
             grants: Arc::new(Grants::new()),
             calls: Arc::new(Semaphore::new(limits.max_concurrent_calls_per_session)),
+            waits: Arc::new(Semaphore::new(limits.max_waiting_calls_per_session)),
             open: AtomicBool::new(true),
         }
     }
@@ -220,33 +222,59 @@ impl Session {
             .clone()
             .try_acquire_owned()
             .map(CallPermit::from)
-            .map_err(|e| {
-                AlefError::new(
-                    match e {
-                        TryAcquireError::NoPermits => ErrorCode::Busy,
-                        TryAcquireError::Closed => ErrorCode::Closed,
-                    },
-                    "call slot unavailable",
-                )
-            })
+            .map_err(slot_unavailable)
+    }
+    /// Moves a call from the budget of running calls to that of calls that wait on the outside,
+    /// so it stops counting against the running ones. `BUSY` when that budget is full too, and the
+    /// call stays where it is; a call already waiting stays so.
+    pub fn begin_waiting(&self, permit: &CallPermit) -> Result<(), AlefError> {
+        let mut slot = permit.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.0 == Slot::Waiting {
+            return Ok(());
+        }
+        let waiting = self
+            .waits
+            .clone()
+            .try_acquire_owned()
+            .map_err(slot_unavailable)?;
+        *slot = (Slot::Waiting, waiting);
+        Ok(())
     }
     /// Closes streams and then resources once.
     pub async fn close(&self) {
         if self.open.swap(false, Ordering::AcqRel) {
             self.streams.close_all();
             self.calls.close();
+            self.waits.close();
             self.resources.close_all().await;
         }
     }
 }
+fn slot_unavailable(error: TryAcquireError) -> AlefError {
+    AlefError::new(
+        match error {
+            TryAcquireError::NoPermits => ErrorCode::Busy,
+            TryAcquireError::Closed => ErrorCode::Closed,
+        },
+        "call slot unavailable",
+    )
+}
+/// Where a call stands: among the running ones, or among those that wait on the outside.
+#[derive(Debug, PartialEq, Eq)]
+enum Slot {
+    Running,
+    Waiting,
+}
 /// Call slot held for the duration of a command.
 #[derive(Debug)]
 pub struct CallPermit {
-    _permit: OwnedSemaphorePermit,
+    slot: Mutex<(Slot, OwnedSemaphorePermit)>,
 }
 impl From<OwnedSemaphorePermit> for CallPermit {
     fn from(p: OwnedSemaphorePermit) -> Self {
-        Self { _permit: p }
+        Self {
+            slot: Mutex::new((Slot::Running, p)),
+        }
     }
 }
 
@@ -458,6 +486,40 @@ mod tests {
         bounded(s.close()).await;
         assert_eq!(
             s.try_begin_call().expect_err("closed").code,
+            ErrorCode::Closed
+        );
+    }
+    #[tokio::test]
+    async fn a_call_moves_to_the_waiting_budget_and_frees_a_running_slot() {
+        let limits = Limits {
+            max_concurrent_calls_per_session: 2,
+            max_waiting_calls_per_session: 1,
+            ..Limits::default()
+        };
+        let s = bounded(SessionManager::new(source(), limits).begin_document(1)).await;
+        let a = s.try_begin_call().expect("permit");
+        let b = s.try_begin_call().expect("permit");
+        assert_eq!(s.try_begin_call().expect_err("busy").code, ErrorCode::Busy);
+        s.begin_waiting(&a).expect("a place among the waiting");
+        s.begin_waiting(&a).expect("already waiting: nothing to do");
+        let c = s.try_begin_call().expect("the slot of a is free");
+        assert_eq!(
+            s.begin_waiting(&b).expect_err("full").code,
+            ErrorCode::Busy,
+            "one waiting call at most"
+        );
+        assert_eq!(
+            s.try_begin_call().expect_err("b still runs").code,
+            ErrorCode::Busy
+        );
+        drop(a);
+        s.begin_waiting(&b)
+            .expect("the waiting place is free again");
+        drop(c);
+        let d = s.try_begin_call().expect("the slot of b is free");
+        bounded(s.close()).await;
+        assert_eq!(
+            s.begin_waiting(&d).expect_err("closed").code,
             ErrorCode::Closed
         );
     }

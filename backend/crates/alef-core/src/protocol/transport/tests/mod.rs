@@ -145,6 +145,20 @@ fn register(registry: &mut Registry, probe: &Arc<Probe>) {
         .expect("register");
     let p = probe.clone();
     registry
+        .command::<Value>("test.wait")
+        .expect("name")
+        .waits()
+        .handler(move |_, _| {
+            let p = p.clone();
+            async move {
+                p.entered.add_permits(1);
+                p.release.acquire().await.expect("release").forget();
+                Ok(Reply::Json(Value::Null))
+            }
+        })
+        .expect("register");
+    let p = probe.clone();
+    registry
         .command::<Value>("test.hang")
         .expect("name")
         .handler(move |_, _| {

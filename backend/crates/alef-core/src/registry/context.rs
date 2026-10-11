@@ -5,7 +5,12 @@ use crate::{
         consent::Decision,
         permissions::{Grants, PermissionSet},
     },
-    session::{resources::ResourceTable, session::Session, streams::StreamHub},
+    session::{
+        resources::ResourceTable,
+        session::{CallPermit, Session},
+        streams::StreamHub,
+    },
+    AlefError,
 };
 use bytes::Bytes;
 use std::sync::Arc;
@@ -67,6 +72,8 @@ pub struct CallContext {
     decision: Decision,
     body: Option<Bytes>,
     cancel: CancelHandle,
+    /// The call slot this call holds, when the transport counted it.
+    permit: Option<Arc<CallPermit>>,
     /// Keeps the default channel open so an unbound context is never "cancelled".
     keepalive: Option<CancelSender>,
 }
@@ -80,6 +87,7 @@ impl CallContext {
             decision: Decision::Allow,
             body: None,
             cancel,
+            permit: None,
             keepalive: Some(sender),
         }
     }
@@ -116,6 +124,21 @@ impl CallContext {
         self.cancel = cancel;
         self.keepalive = None;
         self
+    }
+    /// Attach the call slot the transport took for this call (builder style).
+    pub fn with_permit(mut self, permit: Arc<CallPermit>) -> Self {
+        self.permit = Some(permit);
+        self
+    }
+    /// The handler is about to wait on something outside (the network, a process, a stand-in):
+    /// the call moves from the budget of running calls to that of waiting ones, so that a few
+    /// calls that wait for long cannot leave every other command of the session `BUSY`. `BUSY`
+    /// when the waiting budget is full; a call the transport did not count has nothing to move.
+    pub fn waiting(&self) -> Result<(), AlefError> {
+        match &self.permit {
+            Some(permit) => self.session.begin_waiting(permit),
+            None => Ok(()),
+        }
     }
     /// The binary body, if any.
     pub fn body(&self) -> Option<&Bytes> {

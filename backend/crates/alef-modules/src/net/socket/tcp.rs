@@ -238,6 +238,7 @@ async fn accept_loop(listener: TcpListener, writer: StreamWriter, session: Arc<S
 pub(super) fn register(registry: &mut Registry) -> Result<(), AlefError> {
     registry
         .command::<ConnectArgs>("socket.connect")?
+        .waits()
         .permission(Permission::NetSocket, |args| {
             Some(target("tcp", &args.host, args.port))
         })

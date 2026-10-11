@@ -188,6 +188,97 @@ async fn call_slots_are_limited_per_session_and_released() {
 }
 
 #[tokio::test]
+async fn a_call_that_waits_on_the_outside_does_not_use_up_the_running_calls() {
+    let limits = Limits {
+        max_concurrent_calls_per_session: 1,
+        max_waiting_calls_per_session: 1,
+        ..Limits::default()
+    };
+    let fx = fixture(config(limits));
+    let token = session_token(&fx).await;
+    let spawn = |name: &str| {
+        let transport = fx.transport.clone();
+        let request = call(name, &token, &json!({}));
+        tokio::spawn(async move { transport.handle(request).await })
+    };
+    let waiting = spawn("test.wait");
+    bounded(fx.probe.entered.acquire())
+        .await
+        .expect("entered")
+        .forget();
+    let other = send(&fx, call("test.echo", &token, &json!({}))).await;
+    assert_eq!(other.status, 200, "the only running slot is free");
+    let second = send(&fx, call("test.wait", &token, &json!({}))).await;
+    assert_eq!(second.status, 429);
+    assert_eq!(
+        error_code(&second),
+        "BUSY",
+        "the waiting budget is full too"
+    );
+    fx.probe.release.add_permits(1);
+    assert_eq!(bounded(waiting).await.expect("join").status, 200);
+    let again = spawn("test.wait");
+    bounded(fx.probe.entered.acquire())
+        .await
+        .expect("entered")
+        .forget();
+    fx.probe.release.add_permits(1);
+    assert_eq!(
+        bounded(again).await.expect("join").status,
+        200,
+        "the waiting slot is released when the call ends"
+    );
+}
+
+#[tokio::test]
+async fn returning_credit_and_closing_a_stream_need_no_call_slot_but_writing_does() {
+    let limits = Limits {
+        max_concurrent_calls_per_session: 1,
+        ..Limits::default()
+    };
+    let fx = fixture(config(limits));
+    let token = session_token(&fx).await;
+    let transport = fx.transport.clone();
+    let request = call("test.slow", &token, &json!({}));
+    let running = tokio::spawn(async move { transport.handle(request).await });
+    bounded(fx.probe.entered.acquire())
+        .await
+        .expect("entered")
+        .forget();
+    assert_eq!(
+        send(&fx, call("test.echo", &token, &json!({})))
+            .await
+            .status,
+        429,
+        "the only slot is taken"
+    );
+    for (name, args) in [
+        ("runtime.stream.ack", json!({"id": 999, "bytes": 1})),
+        ("runtime.stream.close", json!({"id": 999})),
+        ("runtime.stream.end", json!({"id": 999})),
+    ] {
+        let response = send(&fx, call(name, &token, &args)).await;
+        assert_eq!(
+            error_code(&response),
+            "NOT_FOUND",
+            "{name} reached its handler"
+        );
+    }
+    let write = send(
+        &fx,
+        call("runtime.stream.write", &token, &json!({"id": 999})),
+    )
+    .await;
+    assert_eq!(
+        error_code(&write),
+        "BUSY",
+        "writing waits for the reader and is counted"
+    );
+    fx.probe.release.add_permits(1);
+    assert_eq!(bounded(running).await.expect("join").status, 200);
+}
+
+#[tokio::test]
 async fn dropping_the_response_future_aborts_the_handler_and_frees_the_slot() {
     let limits = Limits {
         max_concurrent_calls_per_session: 1,

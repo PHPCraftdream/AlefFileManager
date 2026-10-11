@@ -13,7 +13,7 @@ use crate::{
         context::{CallContext, CancelHandle, CancelSender},
         dispatch::valid_name,
     },
-    session::Session,
+    session::{CallPermit, Session},
 };
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -22,6 +22,15 @@ use tokio::task::JoinHandle;
 
 /// Handshake protocol version.
 const PROTOCOL: u32 = 1;
+
+/// Commands that never wait and never hold anything, so they take no call slot: with every slot
+/// taken by calls that wait, the page could not return credit (`ack`) and every outgoing stream
+/// of the session would stop. `runtime.stream.write` waits for the reader and stays counted.
+const UNCOUNTED: &[&str] = &[
+    "runtime.stream.ack",
+    "runtime.stream.close",
+    "runtime.stream.end",
+];
 
 fn invalid(message: &str) -> AlefError {
     AlefError::new(ErrorCode::InvalidArgument, message)
@@ -94,11 +103,20 @@ impl Transport {
         {
             return http::error(&invalid("stream chunk too large"));
         }
-        let _permit = match session.try_begin_call() {
-            Ok(permit) => permit,
-            Err(error) => return http::error(&error),
+        let permit = if UNCOUNTED.contains(&name) {
+            None
+        } else {
+            match session.try_begin_call() {
+                Ok(permit) => Some(Arc::new(permit)),
+                Err(error) => return http::error(&error),
+            }
         };
-        self.dispatch(session, name, args, body).await
+        // The slot is held here until the response is ready: the context only borrows it for `waiting`.
+        let response = self
+            .dispatch(session, name, args, body, permit.clone())
+            .await;
+        drop(permit);
+        response
     }
 
     /// Runs the handler in its own task so that a panic is an `INTERNAL` response.
@@ -108,11 +126,15 @@ impl Transport {
         name: &str,
         args: Value,
         body: Option<Bytes>,
+        permit: Option<Arc<CallPermit>>,
     ) -> TransportResponse {
         let (cancel, handle) = CancelHandle::channel();
-        let ctx = CallContext::new(session, self.permissions.clone())
+        let mut ctx = CallContext::new(session, self.permissions.clone())
             .with_body(body)
             .with_cancel(handle);
+        if let Some(permit) = permit {
+            ctx = ctx.with_permit(permit);
+        }
         let registry = self.registry.clone();
         let name = name.to_owned();
         let task = tokio::spawn(async move { registry.dispatch(&name, ctx, args).await });

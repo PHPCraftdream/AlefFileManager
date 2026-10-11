@@ -252,6 +252,7 @@ async fn fill(
 pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Result<(), AlefError> {
     registry
         .command::<RequestArgs>("http.request")?
+        .waits()
         .permission(Permission::NetHttp, |args| Some(args.url.clone()))
         .substitutes()
         .handler(|ctx, args| async move {
@@ -323,6 +324,7 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
     let shadow = context.shadow.clone();
     registry
         .command::<DownloadArgs>("http.download")?
+        .waits()
         .permission(Permission::NetHttp, |args| Some(args.url.clone()))
         .substitutes()
         .handler(move |ctx, args| {

@@ -475,9 +475,11 @@ mod tests {
                 .into_iter()
                 .map(OsString::from)
                 .collect();
-            let child = start_again(&ping, &arguments).expect("starts");
+            let mut child = start_again(&ping, &arguments).expect("starts");
             std::fs::write(dir.join("pid"), child.id().to_string()).expect("writes");
             std::thread::sleep(Duration::from_secs(60));
+            let _ = child.kill();
+            let _ = child.wait();
             return;
         }
 

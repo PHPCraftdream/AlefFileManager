@@ -57,6 +57,9 @@ pub struct Limits {
     pub max_resources_per_session: usize,
     /// Maximum simultaneous calls per session.
     pub max_concurrent_calls_per_session: usize,
+    /// Maximum calls per session that wait on something outside (the network, a process, a
+    /// stand-in); they leave the budget of running calls so they cannot starve it.
+    pub max_waiting_calls_per_session: usize,
     /// Maximum unary request body size.
     pub max_unary_body: usize,
     /// Maximum bulk request body size.
@@ -71,6 +74,7 @@ impl Default for Limits {
         Self {
             max_resources_per_session: 1024,
             max_concurrent_calls_per_session: 32,
+            max_waiting_calls_per_session: 256,
             max_unary_body: 256 * 1024,
             max_bulk_body: 128 * 1024 * 1024,
             stream_window: DEFAULT_STREAM_WINDOW,
@@ -126,6 +130,7 @@ mod tests {
             Limits {
                 max_resources_per_session: 1024,
                 max_concurrent_calls_per_session: 32,
+                max_waiting_calls_per_session: 256,
                 max_unary_body: 256 * 1024,
                 max_bulk_body: 128 * 1024 * 1024,
                 stream_window: DEFAULT_STREAM_WINDOW,
