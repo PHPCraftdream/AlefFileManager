@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, Tray, menu as applicationMenu, tray } from '../../src/index.ts';
-import { installRuntime, jsonFrame, liveStream, quiet } from '../fake-runtime.mjs';
+import { on } from '../../src/core/events.ts';
+import { barrier, installRuntime, jsonFrame, liveStream } from '../fake-runtime.mjs';
 
 const feed = liveStream();
 const reply = { id: 's31:r8', owner: 31, token: 'tray:17' };
@@ -25,6 +26,8 @@ const emit = (payload, name = 'runtime.tray.click') => feed.push(jsonFrame({ nam
 const valid = { owner: 31, token: 'tray:17', button: 'left' };
 const create = () => tray.create({ icon });
 const bounded = (name, fn) => test(name, { timeout: 5000 }, fn);
+
+const settle = () => barrier(feed, on, 'test.tray.marker');
 
 bounded('create sends PNG bytes, metadata and signal, exposes only the resource id', async () => {
   const controller = new AbortController();
@@ -79,7 +82,7 @@ bounded('subscription catches opening-race events and filters malformed or forei
   duringSubscribe = () => emit(valid);
   const off = await handle.on('click', payload => received.push(payload));
   duringSubscribe = undefined;
-  await quiet(runtime);
+  await settle();
   assert.deepEqual(received, [{ tray: handle, button: 'left' }]);
   for (const payload of [null, 17, [], {},
     { ...valid, owner: 32 }, { ...valid, owner: '31' },
@@ -90,14 +93,14 @@ bounded('subscription catches opening-race events and filters malformed or forei
   emit(valid, 'runtime.tray.double-click');
   emit({ ...valid, button: 'middle' });
   emit({ ...valid, button: 'right' });
-  await quiet(runtime);
+  await settle();
   assert.deepEqual(received.map(payload => payload.button), ['left', 'middle', 'right']);
   assert.ok(received.every(payload => payload.tray === handle));
   assert.equal(errors.mock.callCount(), 0);
   assert.equal(runtime.calls('runtime.events.subscribe').length, 1);
   off();
   emit(valid);
-  await quiet(runtime);
+  await settle();
   assert.equal(received.length, 3);
 });
 
@@ -109,7 +112,7 @@ bounded('double-click and right-click map only to their real native event names'
   emit(valid);
   emit({ ...valid, button: 'left' }, 'runtime.tray.double-click');
   emit({ ...valid, button: 'right' }, 'runtime.tray.right-click');
-  await quiet(runtime);
+  await settle();
   assert.deepEqual(received, [
     ['double-click', { tray: handle, button: 'left' }],
     ['right-click', { tray: handle, button: 'right' }],
@@ -127,7 +130,7 @@ bounded('menu-click maps runtime.tray.menu-click and requires owner, token and n
     { owner: 31, token: reply.token, id: '' },
     { owner: 31, token: reply.token, id: 1 },
     { owner: 31, token: reply.token, id: 'item' }]) emit(payload, 'runtime.tray.menu-click');
-  await quiet(runtime);
+  await settle();
   assert.deepEqual(received, [{ tray: handle, id: 'item' }]);
   off();
 });
@@ -140,7 +143,7 @@ bounded('an item of a tray menu does not reach menu.on and an item of the applic
   const offTray = await handle.on('menu-click', payload => fromTray.push(payload.id));
   emit({ owner: 31, token: reply.token, id: 'tray-item' }, 'runtime.tray.menu-click');
   emit({ owner: 31, id: 'app-item' }, 'runtime.menu.clicked');
-  await quiet(runtime);
+  await settle();
   assert.deepEqual(fromMenu, [{ id: 'app-item' }]);
   assert.deepEqual(fromTray, ['tray-item']);
   offMenu();
@@ -156,7 +159,7 @@ bounded('separate tray instances filter tokens and destroyed instances stop ever
     handle.on(event, () => count++)));
   const otherOff = await other.on('click', () => otherCount++);
   emit({ ...valid, token: 'tray:18' });
-  await quiet(runtime);
+  await settle();
   assert.equal(count, 0);
   assert.equal(otherCount, 1);
   await handle.destroy();
@@ -164,7 +167,7 @@ bounded('separate tray instances filter tokens and destroyed instances stop ever
   emit({ owner: 31, token: reply.token, id: 'item' }, 'runtime.tray.menu-click');
   const lateOff = await handle.on('click', () => count++);
   emit(valid);
-  await quiet(runtime);
+  await settle();
   assert.equal(count, 0);
   offs.forEach(off => off());
   otherOff();
@@ -194,11 +197,11 @@ bounded('failed destroy propagates and preserves event delivery until successful
     failure = undefined;
   }
   emit(valid);
-  await quiet(runtime);
+  await settle();
   assert.equal(count, 1);
   await handle.destroy();
   emit(valid);
-  await quiet(runtime);
+  await settle();
   assert.equal(count, 1);
   off();
 });
@@ -223,14 +226,14 @@ bounded('aborting during listener setup or after setup removes the listener', as
   opening.abort();
   const off = await pending;
   emit(valid);
-  await quiet(runtime);
+  await settle();
   assert.equal(count, 0);
   off();
   const controller = new AbortController();
   const stop = await handle.on('click', () => count++, { signal: controller.signal });
   controller.abort();
   emit(valid);
-  await quiet(runtime);
+  await settle();
   assert.equal(count, 0);
   stop();
 });
@@ -252,7 +255,7 @@ bounded('async disposal destroys and suppresses events when the symbol is availa
   await handle[Symbol.asyncDispose]();
   assert.deepEqual(runtime.argsOf(runtime.calls('tray.destroy').at(-1)), { id: handle.id });
   emit(valid);
-  await quiet(runtime);
+  await settle();
   assert.equal(count, 0);
   off();
 });

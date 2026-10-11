@@ -66,6 +66,33 @@ export async function quiet(runtime, polls = 5) {
   }
 }
 
+/**
+ * Resolves once the event stream has delivered everything pushed to `feed` before the call: a marker
+ * event goes through the same stream, so request silence is not taken for delivery. Bounded by `limit`.
+ */
+export async function barrier(feed, on, name = 'test.barrier', limit = 2000) {
+  let off;
+  let timer;
+  let arrive;
+  const arrived = new Promise(resolve => { arrive = resolve; });
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`missing ${name}`)), limit);
+  });
+  try {
+    await Promise.race([
+      (async () => {
+        off = await on(name, () => arrive());
+        feed.push(jsonFrame({ name, payload: null }));
+        await arrived;
+      })(),
+      expired,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    off?.();
+  }
+}
+
 /** A stream body the test feeds by hand; aborting the request errors it like a real fetch. */
 export function liveStream() {
   let controller;

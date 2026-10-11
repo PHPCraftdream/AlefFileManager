@@ -2,9 +2,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, on } from '../src/index.ts';
-import { installRuntime, jsonFrame, liveStream, quiet } from './fake-runtime.mjs';
+import { barrier, installRuntime, jsonFrame, liveStream } from './fake-runtime.mjs';
 
 const feed = liveStream();
+let readGate;
+let readEntered;
+const body = feed.reply.body.pipeThrough(new TransformStream({
+  async transform(bytes, controller) {
+    if (readGate) {
+      readEntered();
+      await readGate;
+    }
+    controller.enqueue(bytes);
+  },
+}));
 let subscribeStatus = 200;
 const runtime = installRuntime({
   handler(request) {
@@ -13,13 +24,13 @@ const runtime = installRuntime({
         ? { json: { stream: 5 } }
         : { status: subscribeStatus, json: { code: 'INTERNAL', message: 'subscribe failed' } };
     }
-    if (request.url === 'native://stream/5') return feed.reply;
+    if (request.url === 'native://stream/5') return { ...feed.reply, body };
     return undefined;
   },
 });
 
 const emit = (name, payload) => feed.push(jsonFrame({ name, payload }));
-const settle = () => quiet(runtime);
+const settle = () => barrier(feed, on, 'test.events.marker');
 
 test('a failed subscription rejects, leaves no handler behind and is retried by the next on()', async () => {
   subscribeStatus = 500;
@@ -31,6 +42,65 @@ test('a failed subscription rejects, leaves no handler behind and is retried by 
   await settle();
   assert.deepEqual(seen, [], 'the handler of the failed on() was removed');
   off();
+});
+
+test('the barrier waits for a blocked read even when the requests of the runtime stay unchanged', { timeout: 3000 }, async () => {
+  let release;
+  let entered;
+  readGate = new Promise(resolve => { release = resolve; });
+  let readingTimer;
+  const reading = new Promise(resolve => { entered = resolve; });
+  readEntered = entered;
+  const seen = [];
+  let off;
+  let completed = false;
+  let pending;
+  try {
+    off = await on('blocked', value => seen.push(value));
+    const before = runtime.requests.length;
+    emit('blocked', 1);
+    pending = settle().then(() => { completed = true; });
+    await Promise.race([
+      reading,
+      new Promise((resolve, reject) => {
+        readingTimer = setTimeout(() => reject(new Error('missing blocked read')), 1000);
+      }),
+    ]);
+    clearTimeout(readingTimer);
+    // Longer than the five polls of 10 ms that a wait for request silence would need.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(runtime.requests.length, before, 'request silence cannot establish delivery');
+    assert.deepEqual(seen, []);
+    assert.equal(completed, false, 'the marker cannot overtake the blocked frame');
+    release();
+    await pending;
+    assert.deepEqual(seen, [1]);
+    off();
+    emit('blocked', 2);
+    await settle();
+    assert.deepEqual(seen, [1], 'the ignored frame was read before the marker');
+  } finally {
+    clearTimeout(readingTimer);
+    release();
+    readGate = undefined;
+    readEntered = undefined;
+    off?.();
+    await pending;
+  }
+});
+
+test('the barrier gives up when the stream delivers nothing', { timeout: 3000 }, async () => {
+  let release;
+  readGate = new Promise(resolve => { release = resolve; });
+  readEntered = () => {};
+  try {
+    await assert.rejects(barrier(feed, on, 'test.events.never', 100), /missing test\.events\.never/);
+  } finally {
+    release();
+    readGate = undefined;
+    readEntered = undefined;
+  }
+  await settle();
 });
 
 test('one subscription serves every handler; events are matched by name', async () => {

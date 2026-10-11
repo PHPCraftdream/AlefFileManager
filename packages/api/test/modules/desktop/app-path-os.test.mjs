@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, app, os, path } from '../../../src/index.ts';
-import { DENIED, installRuntime, jsonFrame, liveStream, quiet } from '../../fake-runtime.mjs';
+import { on } from '../../../src/core/events.ts';
+import { DENIED, barrier, installRuntime, jsonFrame, liveStream } from '../../fake-runtime.mjs';
 
 const feed = liveStream();
 const replies = new Map();
@@ -14,6 +15,8 @@ const runtime = installRuntime({
     return replies.get(command) ?? { json: null };
   },
 });
+
+const settle = () => barrier(feed, on, 'test.app-path-os.marker');
 
 /** Calls `fn` and returns the command it sent with its arguments. */
 async function sent(command, fn, reply = { json: null }) {
@@ -75,11 +78,11 @@ test('os.info and os.theme read replies; theme-changed delivers the theme itself
   feed.push(jsonFrame({ name: 'os.theme-changed', payload: { theme: 'dark' } }));
   feed.push(jsonFrame({ name: 'os.other', payload: { theme: 'light' } }));
   feed.push(jsonFrame({ name: 'os.theme-changed', payload: { theme: 'light' } }));
-  await quiet(runtime);
+  await settle();
   assert.deepEqual(seen, ['dark', 'light'], 'only theme-changed, as the bare theme');
   off();
   feed.push(jsonFrame({ name: 'os.theme-changed', payload: { theme: 'dark' } }));
-  await quiet(runtime);
+  await settle();
   assert.deepEqual(seen, ['dark', 'light'], 'nothing after unsubscribe');
 });
 

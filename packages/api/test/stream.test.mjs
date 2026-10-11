@@ -3,19 +3,40 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, openReadable, openWritable } from '../src/index.ts';
 import {
-  binaryFrame, chunked, endFrame, errorFrame, frame, installRuntime, join, jsonFrame, quiet,
+  binaryFrame, chunked, endFrame, errorFrame, frame, installRuntime, join, jsonFrame,
 } from './fake-runtime.mjs';
 
 // stream id -> reply; control calls are answered with {}.
 const streams = new Map();
+const callWaiters = new Set();
 const runtime = installRuntime({
   handler(request) {
+    for (const waiter of [...callWaiters]) waiter(request);
     const match = /^native:\/\/stream\/(\d+)$/.exec(request.url);
     if (!match) return undefined;
     return streams.get(Number(match[1])) ?? { status: 404, json: { code: 'NOT_FOUND', message: 'stream not found' } };
   },
 });
 const sent = name => runtime.calls(name).map(runtime.argsOf);
+
+async function closed(id, action) {
+  let resolve;
+  let reject;
+  const done = new Promise((yes, no) => { resolve = yes; reject = no; });
+  const timer = setTimeout(() => reject(new Error(`missing stream ${id} close call`)), 2000);
+  const waiter = request => {
+    if (request.url === 'native://call/runtime.stream.close' && runtime.argsOf(request).id === id) resolve();
+  };
+  callWaiters.add(waiter);
+  try {
+    await action();
+    await done;
+  } finally {
+    callWaiters.delete(waiter);
+    clearTimeout(timer);
+    resolve();
+  }
+}
 
 async function collect(readable) {
   const frames = [];
@@ -92,8 +113,7 @@ test('aborting the signal closes the stream', async () => {
   streams.set(6, { chunks: [jsonFrame(1)] });
   const controller = new AbortController();
   await openReadable(6, { signal: controller.signal });
-  controller.abort();
-  await quiet(runtime);
+  await closed(6, () => controller.abort());
   assert.deepEqual(sent('runtime.stream.close').filter(args => args.id === 6), [{ id: 6 }]);
   await assert.rejects(openReadable(6, { signal: controller.signal }), { name: 'AbortError' });
 });
