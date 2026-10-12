@@ -26,7 +26,8 @@ function fakeScript(relativeTarget, extra = '') {
     import { readFileSync, writeFileSync } from 'node:fs';
     const text = readFileSync('${relativeTarget.split('\\').join('\\\\')}', 'utf8');
     ${extra}
-    process.exit(text.includes('MUTATED') ? 101 : 0);
+    if (text.includes('MUTATED')) { console.log('test result: FAILED. 0 passed; 1 failed'); process.exit(101); }
+    process.exit(0);
   `;
 }
 

@@ -59,7 +59,11 @@ export function validateList(list) {
 }
 
 export function loadList(list, root) {
-  const file = list.endsWith('.json') ? path.join(root, list) : path.join(root, 'scripts', 'quality', 'mutations', `${list}.json`);
+  // A bare name (with or without .json) is a list of the mutations folder, anything with a separator a path from the root.
+  const bare = !/[\\/]/.test(list);
+  const file = bare
+    ? path.join(root, 'scripts', 'quality', 'mutations', list.endsWith('.json') ? list : `${list}.json`)
+    : path.join(root, list);
   return validateList(JSON.parse(readFileSync(file, 'utf8')));
 }
 
