@@ -397,13 +397,25 @@ mod tests {
         assert_eq!(trust, None);
         assert_eq!(decided.len(), wanted.len());
 
-        let stray = Answer {
+        // A trust answer to a question that did not ask trust is refused, the rights being complete.
+        let mut stray = answer(&[
+            (&wanted[0], Decision::Allow, false),
+            (&wanted[1], Decision::Substitute, false),
+            (&wanted[2], Decision::Allow, false),
+        ]);
+        stray.trust = Some(true);
+        assert_eq!(
+            validate(&request, &stray).unwrap_err(),
+            "trust was not asked"
+        );
+        // The rights are checked first: an answer without them is refused for them.
+        let incomplete = Answer {
             decisions: Vec::new(),
             trust: Some(true),
         };
         assert_eq!(
-            validate(&request, &stray).unwrap_err(),
-            "trust was not asked"
+            validate(&request, &incomplete).unwrap_err(),
+            "clipboard.read is not answered"
         );
     }
 

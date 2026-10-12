@@ -582,26 +582,44 @@ mod tests {
         let stored: Pin =
             serde_json::from_slice(&std::fs::read(pin_path(folder.path(), ID)).unwrap()).unwrap();
         assert_eq!(stored, first);
-        // Two competing threads: each either wins or reloads the winner's record.
+        // Two threads race for the first pin with different keys: exactly one wins, the other
+        // reloads the winner's record and is refused; the record is never replaced.
+        let raced = tempfile::tempdir().unwrap();
+        let [one, other] = race(raced.path(), 'a', 'b');
+        let stored: Pin =
+            serde_json::from_slice(&std::fs::read(pin_path(raced.path(), ID)).unwrap()).unwrap();
+        let (winner, loser) = match (one, other) {
+            (Ok(pinned), Err(error)) => {
+                assert_eq!(stored.public_key, key('a'));
+                (pinned, error)
+            }
+            (Err(error), Ok(pinned)) => {
+                assert_eq!(stored.public_key, key('b'));
+                (pinned, error)
+            }
+            (one, other) => panic!("exactly one writer must win: {one:?} and {other:?}"),
+        };
+        assert_eq!(winner, stored);
+        assert_eq!(loser.kind(), io::ErrorKind::AlreadyExists);
+        assert!(loser.to_string().contains("another key"));
+        // The same key from two threads: both succeed with the same record.
+        let same = tempfile::tempdir().unwrap();
+        let [x, y] = race(same.path(), 'a', 'a');
+        assert_eq!(x.unwrap(), y.unwrap());
+    }
+
+    fn race(folder: &std::path::Path, one: char, other: char) -> [io::Result<Pin>; 2] {
         let barrier = std::sync::Barrier::new(2);
-        let base = folder.path().to_owned();
         std::thread::scope(|scope| {
-            let handles = [('a', 'b'), ('b', 'a')].map(|(mine, _)| {
-                let base = base.clone();
+            let handles = [one, other].map(|mine| {
                 let barrier = &barrier;
                 scope.spawn(move || {
                     barrier.wait();
-                    pin(&base, ID, &key(mine))
+                    pin(folder, ID, &key(mine))
                 })
             });
-            for handle in handles {
-                assert!(handle.join().unwrap().is_ok());
-            }
-        });
-        let stored: Pin =
-            serde_json::from_slice(&std::fs::read(pin_path(folder.path(), ID)).unwrap()).unwrap();
-        assert!(stored.public_key == key('a') || stored.public_key == key('b'));
-        assert!(stored.public_key == key('a') || stored.public_key == key('b'));
+            handles.map(|handle| handle.join().unwrap())
+        })
     }
 
     #[test]
@@ -612,29 +630,21 @@ mod tests {
             pin(folder.path(), ID, &key('b')).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
         );
-        let barrier = std::sync::Barrier::new(2);
-        let base = folder.path().to_owned();
-        std::thread::scope(|scope| {
-            let handles = [('a', 'b'), ('b', 'a')].map(|(mine, _)| {
-                let base = base.clone();
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    barrier.wait();
-                    pin(&base, ID, &key(mine))
-                })
-            });
-            for handle in handles {
-                assert!(handle.join().unwrap().is_ok());
-            }
-        });
-        let expected = pin_path(folder.path(), ID)
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned();
-        for entry in std::fs::read_dir(folder.path()).unwrap() {
-            assert_eq!(entry.unwrap().file_name().to_str().unwrap(), expected);
+        let raced = tempfile::tempdir().unwrap();
+        let results = race(raced.path(), 'a', 'b');
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        for folder in [folder.path(), raced.path()] {
+            let expected = pin_path(folder, ID)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let names: Vec<_> = std::fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(names, [expected]);
         }
     }
 
