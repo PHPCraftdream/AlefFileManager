@@ -182,7 +182,7 @@ pub fn path_vars(app_dir: &Path, id: &str) -> Result<PathVars, AlefError> {
         downloads: dirs::download_dir().unwrap_or_else(|| home.join("Downloads")),
         desktop: dirs::desktop_dir().unwrap_or_else(|| home.join("Desktop")),
         temp: std::env::temp_dir(),
-        app,
+        app: Some(app),
         home,
     })
 }
@@ -506,7 +506,7 @@ permissions: {{
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let vars = path_vars(dir, "org.example.app").expect("vars");
         for path in [
-            &vars.app,
+            vars.app.as_ref().expect("installed app"),
             &vars.home,
             &vars.temp,
             &vars.app_data,

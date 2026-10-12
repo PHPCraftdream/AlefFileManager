@@ -163,7 +163,7 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         downloads: root.clone(),
         desktop: root.clone(),
         temp: root.clone(),
-        app: root,
+        app: Some(root),
     };
     PermissionSet::from_manifest(&policy, &vars)
         .map(Arc::new)

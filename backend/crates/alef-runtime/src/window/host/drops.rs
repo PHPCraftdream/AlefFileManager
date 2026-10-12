@@ -91,7 +91,7 @@ mod tests {
             downloads: root.join("downloads"),
             desktop: root.join("desktop"),
             temp: root.join("temp"),
-            app: root.join("app"),
+            app: Some(root.join("app")),
         };
         let policy: Permissions = serde_json::from_value(json!({
             "fs": {"read": [], "write": []}, "cli": {"exec": []},

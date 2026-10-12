@@ -47,7 +47,7 @@ fn perms(read: Vec<String>, write: Vec<String>) -> Arc<PermissionSet> {
                 downloads: tmp(),
                 desktop: tmp(),
                 temp: tmp(),
-                app: tmp(),
+                app: Some(tmp()),
             },
         )
         .unwrap(),

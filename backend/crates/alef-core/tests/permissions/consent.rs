@@ -31,7 +31,7 @@ fn vars(root: &Path) -> PathVars {
         downloads: at("downloads"),
         desktop: at("desktop"),
         temp: at("temp"),
-        app: at("app"),
+        app: Some(at("app")),
     }
 }
 

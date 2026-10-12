@@ -4,7 +4,7 @@ use super::integration::deeplink_platform as platform;
 
 use alef_core::{
     registry::dispatch::Registry,
-    security::{consent::Decision, permissions::Permission},
+    security::{authority::Authority, consent::Decision, permissions::Permission},
 };
 use std::{
     fmt::Debug,
@@ -49,8 +49,10 @@ impl DeepLinkBackend for MemoryDeepLinks {
         register: bool,
     ) -> Result<(), AlefError> {
         super::integration::safe_id(id)?;
-        super::integration::path_text(folder)?;
-        if !folder.is_absolute() {
+        if !folder.as_os_str().is_empty() {
+            super::integration::path_text(folder)?;
+        }
+        if !folder.as_os_str().is_empty() && !folder.is_absolute() {
             return Err(invalid());
         }
         validate_schemes(schemes)?;
@@ -95,6 +97,7 @@ pub(super) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         let substitute = substitute.clone();
         let id = context.app.id.clone();
         let folder = context.paths.app.clone();
+        let installed = context.authority == Authority::Directory;
         let schemes = context.deep_link_schemes.clone();
         registry
             .command::<serde_json::Value>(command)?
@@ -131,12 +134,30 @@ pub(super) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                     if !args.is_null() && !args.as_object().is_some_and(|map| map.is_empty()) {
                         return Err(invalid());
                     }
+                    if !allowed.is_empty() && (!installed || folder.is_none()) {
+                        return Err(AlefError::new(
+                            ErrorCode::NotAvailable,
+                            "native registration requires an installed application",
+                        ));
+                    }
                     tokio::task::spawn_blocking(move || {
                         if !diverted.is_empty() {
-                            substitute.apply(&id, &folder, &diverted, register)?;
+                            // Empty paths exist only in the isolated in-memory stand-in.
+                            substitute.apply(
+                                &id,
+                                folder.as_deref().unwrap_or_else(|| Path::new("")),
+                                &diverted,
+                                register,
+                            )?;
                         }
                         if !allowed.is_empty() {
-                            real.apply(&id, &folder, &allowed, register)?;
+                            let folder = folder.as_deref().ok_or_else(|| {
+                                AlefError::new(
+                                    ErrorCode::NotAvailable,
+                                    "native registration requires an installed application",
+                                )
+                            })?;
+                            real.apply(&id, folder, &allowed, register)?;
                         }
                         Ok::<_, AlefError>(())
                     })

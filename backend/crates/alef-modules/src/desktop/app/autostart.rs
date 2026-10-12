@@ -65,8 +65,10 @@ impl AutostartBackend for MemoryAutostart {
         operation: AutostartOperation,
     ) -> Result<bool, AlefError> {
         integration::safe_id(id)?;
-        integration::path_text(folder)?;
-        if !folder.is_absolute() {
+        if !folder.as_os_str().is_empty() {
+            integration::path_text(folder)?;
+        }
+        if !folder.as_os_str().is_empty() && !folder.is_absolute() {
             return Err(unavailable("application folder must be absolute"));
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -222,7 +224,8 @@ pub(super) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
             .permission(Permission::AppAutostart, |_| None)
             .substitutes()
             .handler(move |ctx, args| {
-                let backend = if ctx.decision() == Decision::Substitute {
+                let is_substitute = ctx.decision() == Decision::Substitute;
+                let backend = if is_substitute {
                     substitute.clone()
                 } else {
                     real.clone()
@@ -238,6 +241,17 @@ pub(super) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                             "autostart accepts no arguments",
                         ));
                     }
+                    // Empty paths exist only in the isolated in-memory stand-in.
+                    let folder = if is_substitute {
+                        folder.unwrap_or_default()
+                    } else {
+                        folder.ok_or_else(|| {
+                            AlefError::new(
+                                ErrorCode::NotAvailable,
+                                "native registration requires an installed application",
+                            )
+                        })?
+                    };
                     let enabled =
                         tokio::task::spawn_blocking(move || backend.apply(&id, &folder, operation))
                             .await

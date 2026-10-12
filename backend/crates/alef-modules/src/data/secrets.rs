@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `secrets`: passwords, tokens and keys an application keeps in the credential store of the system
 //! (Windows Credential Manager, macOS Keychain, the Secret Service of Linux) instead of in a file
-//! of its own. Every application has a namespace, `alef/<id of the application>`, put in front of the
-//! service it names, so what one keeps another does not find. The manifest asks for the right
+//! of its own. Directory applications use `alef/<id>`; packages use `alef/packages/<authority token>`,
+//! put in front of the service they name, so what one keeps another does not find. The manifest asks for the right
 //! `secrets`; a document the user gave a stand-in keeps its secrets in the memory of the process
 //! and they are gone when the run ends. A secret is bytes and travels as the body of a call, never
 //! in its arguments.
@@ -215,7 +215,7 @@ async fn blocking<T: Send + 'static>(
 struct Shelf {
     real: Arc<dyn SecretsBackend>,
     stand_in: Arc<dyn SecretsBackend>,
-    /// `alef/<id of the application>`: what the services of this application begin with.
+    /// Authority-scoped prefix of the services of this application.
     namespace: String,
 }
 
@@ -252,7 +252,10 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
     let shelf = Arc::new(Shelf {
         real: context.backends.secrets.clone(),
         stand_in: Arc::new(MemorySecrets::default()),
-        namespace: format!("alef/{}", context.app.id),
+        namespace: match context.authority.package_token(&context.app.id) {
+            Some(token) => format!("alef/packages/{token}"),
+            None => format!("alef/{}", context.app.id),
+        },
     });
 
     let this = shelf.clone();

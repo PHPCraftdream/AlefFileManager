@@ -50,7 +50,7 @@ fn vars() -> PathVars {
         downloads: root.clone(),
         desktop: root.clone(),
         temp: root.clone(),
-        app: root,
+        app: Some(root),
     }
 }
 

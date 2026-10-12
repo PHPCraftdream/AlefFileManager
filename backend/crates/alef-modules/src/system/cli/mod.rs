@@ -20,7 +20,7 @@ use std::time::Duration;
 use alef_core::{
     ids::ResourceId,
     registry::{command::Reply, context::CallContext, dispatch::Registry},
-    security::{consent::Decision, permissions::Permission},
+    security::{authority::Authority, consent::Decision, permissions::Permission},
     AlefError, ErrorCode,
 };
 use serde::Deserialize;
@@ -181,7 +181,10 @@ pub(crate) fn register(
     registry: &mut Registry,
     context: &crate::ModuleContext,
 ) -> Result<(), AlefError> {
-    let app = context.paths.app.clone();
+    let app = match context.authority {
+        Authority::Directory => context.paths.app.clone(),
+        Authority::SignedPackage { .. } | Authority::UnsignedPackage { .. } => None,
+    };
     let exec_app = app.clone();
     let spawn_app = app.clone();
     pty::register(registry)?;
@@ -228,7 +231,7 @@ pub(crate) fn register(
                     }
                 };
                 let cwd = cwd_of(&ctx, &args.cwd)?;
-                let program = sidecar::program(&app, &program_text)?;
+                let program = sidecar::program(app.as_deref(), &program_text)?;
                 let body = ctx.body().cloned();
                 let (out, err, code, signal) = exec::run(exec::Spec {
                     program,
@@ -255,7 +258,7 @@ pub(crate) fn register(
                 }
                 let env = spawn::check_env(args.env, wildcard(&ctx))?;
                 let cwd = cwd_of(&ctx, &args.cwd)?;
-                let program = sidecar::program(&app, &args.program)?;
+                let program = sidecar::program(app.as_deref(), &args.program)?;
                 let reply = spawn::spawn_command(
                     &ctx.session,
                     program,

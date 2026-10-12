@@ -12,7 +12,13 @@ use super::super::{invalid, tree};
 
 /// `bin/<name>` of the application; on Windows `bin/<name>.exe` when `bin/<name>` is not there.
 /// Never searched for on `PATH`.
-pub(crate) fn sidecar(app: &Path, name: &str) -> Result<PathBuf, AlefError> {
+pub(crate) fn sidecar(app: Option<&Path>, name: &str) -> Result<PathBuf, AlefError> {
+    let app = app.ok_or_else(|| {
+        AlefError::new(
+            ErrorCode::NotAvailable,
+            "sidecars require an installed application",
+        )
+    })?;
     let bin = app.join("bin");
     let plain = bin.join(name);
     let found = if plain.is_file() {
@@ -32,7 +38,7 @@ pub(crate) fn sidecar(app: &Path, name: &str) -> Result<PathBuf, AlefError> {
 
 /// The program a text names. A text written as a sidecar reference is never a plain name: with a bad
 /// name it is `INVALID_ARGUMENT`, with a good one the sidecar (or `NOT_FOUND`).
-pub(crate) fn program(app: &Path, text: &str) -> Result<PathBuf, AlefError> {
+pub(crate) fn program(app: Option<&Path>, text: &str) -> Result<PathBuf, AlefError> {
     if is_sidecar_reference(text) {
         let name = sidecar_name(text).ok_or_else(|| invalid("invalid sidecar name"))?;
         return sidecar(app, name);
@@ -70,7 +76,7 @@ mod tests {
     fn a_sidecar_is_found_in_bin_of_the_application_and_nowhere_else() {
         let app = tempfile::tempdir().unwrap();
         assert_eq!(
-            sidecar(app.path(), "tool").unwrap_err().code,
+            sidecar(Some(app.path()), "tool").unwrap_err().code,
             ErrorCode::NotFound
         );
         std::fs::create_dir(app.path().join("bin")).unwrap();
@@ -79,7 +85,7 @@ mod tests {
             .join("bin")
             .join(if cfg!(windows) { "tool.exe" } else { "tool" });
         std::fs::write(&file, b"x").unwrap();
-        assert_eq!(sidecar(app.path(), "tool").unwrap(), file);
+        assert_eq!(sidecar(Some(app.path()), "tool").unwrap(), file);
     }
 
     #[cfg(windows)]
@@ -90,7 +96,7 @@ mod tests {
         std::fs::create_dir_all(bin.join("tool")).unwrap();
         std::fs::write(bin.join("tool.exe"), b"x").unwrap();
         assert_eq!(
-            sidecar(app.path(), "tool").unwrap_err().code,
+            sidecar(Some(app.path()), "tool").unwrap_err().code,
             ErrorCode::NotFound
         );
     }
@@ -100,11 +106,29 @@ mod tests {
         let app = tempfile::tempdir().unwrap();
         for text in ["sidecar:", "sidecar:..", "sidecar:a/b", "sidecar:a b"] {
             assert_eq!(
-                program(app.path(), text).unwrap_err().code,
+                program(Some(app.path()), text).unwrap_err().code,
                 ErrorCode::InvalidArgument,
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn archive_sidecars_are_unavailable_and_bad_references_stay_invalid() {
+        assert_eq!(
+            sidecar(None, "tool").unwrap_err().code,
+            ErrorCode::NotAvailable
+        );
+        assert_eq!(
+            program(None, "sidecar:tool").unwrap_err().code,
+            ErrorCode::NotAvailable
+        );
+        assert_eq!(
+            program(None, "sidecar:..").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(program(None, exe.to_str().unwrap()).unwrap(), exe);
     }
 
     #[test]

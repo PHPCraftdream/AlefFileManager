@@ -79,8 +79,13 @@ fn folder_that_fits(name: &str, candidates: Vec<PathBuf>) -> PathBuf {
 
 impl Endpoint {
     pub(crate) fn of(context: &ModuleContext) -> Self {
-        let identity = format!("{}|{}", context.paths.home.display(), context.app.id);
-        let key = format!("{:016x}", fnv1a(&identity));
+        let key = context
+            .authority
+            .package_token(&context.app.id)
+            .unwrap_or_else(|| {
+                let identity = format!("{}|{}", context.paths.home.display(), context.app.id);
+                format!("{:016x}", fnv1a(&identity))
+            });
         Self {
             folder: Self::folder_for(&key, &context.paths.app_cache),
             key,
@@ -105,6 +110,14 @@ impl Endpoint {
             candidates.push(std::env::temp_dir().join("alef"));
         }
         candidates.push(cache.join("instance"));
+        #[cfg(unix)]
+        if key.len() == 64 {
+            // Keep the full package token in the filename, even when the scoped cache
+            // and macOS temporary directory cannot fit it. Ownership is checked at claim.
+            // SAFETY: geteuid has no preconditions.
+            let uid = unsafe { libc::geteuid() };
+            candidates.push(PathBuf::from(format!("/tmp/alef-{uid}")));
+        }
         folder_that_fits(&format!("{key}.sock"), candidates)
     }
 }
@@ -294,7 +307,7 @@ async fn deliver(endpoint: &Endpoint, hello: &Hello) -> io::Result<()> {
 mod platform {
     use std::{
         fs,
-        os::unix::fs::{DirBuilderExt, PermissionsExt},
+        os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
         path::PathBuf,
     };
 
@@ -328,6 +341,15 @@ mod platform {
             .recursive(true)
             .mode(0o700)
             .create(&endpoint.folder)?;
+        let metadata = fs::symlink_metadata(&endpoint.folder)?;
+        // In particular, never chmod or use a pre-planted /tmp fallback owned by another user.
+        // SAFETY: geteuid has no preconditions.
+        if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "instance folder is not owned by this user",
+            ));
+        }
         fs::set_permissions(&endpoint.folder, fs::Permissions::from_mode(0o700))?;
         let path = socket(endpoint);
         for _ in 0..2 {
@@ -379,7 +401,7 @@ mod platform {
     const ERROR_ACCESS_DENIED: i32 = 5;
     const ERROR_PIPE_BUSY: i32 = 231;
 
-    fn name(endpoint: &Endpoint) -> String {
+    pub(super) fn name(endpoint: &Endpoint) -> String {
         format!(r"\\.\pipe\alef-instance-{}", endpoint.key)
     }
 
@@ -580,6 +602,10 @@ mod tests {
             "a real later instance is still heard"
         );
         assert_eq!(host.count(), 1);
+    }
+
+    mod authority_tests {
+        include!("authority_tests.rs");
     }
 
     #[test]

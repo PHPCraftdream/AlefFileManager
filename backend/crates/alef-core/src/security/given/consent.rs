@@ -191,7 +191,8 @@ impl Consent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     pub app_id: String,
-    /// Fingerprint of the signing key; `None` for an application run from a folder.
+    /// `pkg-signed:<fingerprint>` or `pkg-unsigned:<archive_digest>` for packages;
+    /// legacy `dir:<canonical-directory>` or `None` for directory applications.
     pub signer: Option<String>,
 }
 
@@ -200,6 +201,18 @@ impl Identity {
     /// short, and never a path of its own. Whatever is kept for the application on the disk of the
     /// runtime (decisions, the content of stand-ins) lies under it.
     pub fn key(&self) -> String {
+        if let Some(signer) = self.signer.as_deref() {
+            if let Some(fingerprint) = signer.strip_prefix("pkg-signed:") {
+                return crate::security::authority::package_token(
+                    "signed",
+                    &self.app_id,
+                    fingerprint,
+                );
+            }
+            if let Some(digest) = signer.strip_prefix("pkg-unsigned:") {
+                return crate::security::authority::package_token("unsigned", &self.app_id, digest);
+            }
+        }
         let signer = self
             .signer
             .as_deref()
@@ -378,15 +391,15 @@ impl ConsentStore for FileConsentStore {
 mod tests {
     use super::*;
 
-    fn right(permission: &str, scope: &str) -> Right {
-        Right::scoped(permission, scope)
-    }
-
     fn identity(id: &str, signer: Option<&str>) -> Identity {
         Identity {
             app_id: id.to_owned(),
             signer: signer.map(str::to_owned),
         }
+    }
+
+    fn right(permission: &str, scope: &str) -> Right {
+        Right::scoped(permission, scope)
     }
 
     #[test]
@@ -619,3 +632,7 @@ mod tests {
         assert_eq!(store.load(&odd).unwrap().map(|_| ()), Some(()));
     }
 }
+
+#[cfg(test)]
+#[path = "consent/authority_tests.rs"]
+mod authority_tests;

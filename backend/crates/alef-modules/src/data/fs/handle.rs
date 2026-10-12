@@ -495,7 +495,7 @@ mod tests {
                         downloads: path.clone(),
                         desktop: path.clone(),
                         temp: path.clone(),
-                        app: path.clone(),
+                        app: Some(path.clone()),
                     },
                 )
                 .unwrap(),

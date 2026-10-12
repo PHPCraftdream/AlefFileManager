@@ -33,7 +33,7 @@ fn permissions() -> Arc<PermissionSet> {
         downloads: path.clone(),
         desktop: path.clone(),
         temp: path.clone(),
-        app: path,
+        app: Some(path),
     };
     let mut policy = alef_core::security::manifest::Manifest::from_ktav_str(include_str!(
         "../../../../tests/fixtures/app.ktav"

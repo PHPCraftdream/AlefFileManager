@@ -261,6 +261,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     let window_state = vars.app_data.join("window-state.json");
     let termination = Termination::default();
     let context = ModuleContext {
+        authority: alef_core::security::authority::Authority::Directory,
         app: AppInfo {
             id: plan.manifest.id.clone(),
             name: plan.manifest.name.clone(),

@@ -7,5 +7,5 @@ pub mod permissions;
 pub(crate) mod scope;
 pub mod window;
 
-pub use given::{consent, grants};
+pub use given::{authority, consent, grants};
 pub use scope::{command, sidecar};

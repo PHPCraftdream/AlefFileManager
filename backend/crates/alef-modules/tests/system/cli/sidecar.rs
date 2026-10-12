@@ -53,7 +53,14 @@ fn file_name() -> String {
 
 /// Whether `text` (the output of the sidecar) is the path of the copy.
 fn is_the_copy(app: &Fixture, text: &str) -> bool {
-    let expected = app.context.paths.app.join("bin").join(file_name());
+    let expected = app
+        .context
+        .paths
+        .app
+        .as_ref()
+        .unwrap()
+        .join("bin")
+        .join(file_name());
     std::fs::canonicalize(text).expect("the executed file exists")
         == std::fs::canonicalize(expected).unwrap()
 }
@@ -116,6 +123,62 @@ async fn finished(app: &Fixture, reply: &Value) -> (String, Value) {
 
 fn command_line() -> String {
     format!(r#"sidecar:{NAME} -e "{SCRIPT}""#)
+}
+
+#[tokio::test]
+async fn package_authority_refuses_sidecars_even_with_an_application_path() {
+    use alef_core::registry::dispatch::Registry;
+    use alef_core::security::authority::Authority;
+    use alef_modules::register_all;
+
+    for authority in [
+        Authority::SignedPackage {
+            fingerprint: "synthetic-signer".into(),
+        },
+        Authority::UnsignedPackage {
+            archive_digest: "synthetic-archive".into(),
+        },
+    ] {
+        let root = tempdir().unwrap();
+        let manifest = manifest_with(&[SIDE], None, &side_item());
+        let mut fixture = Fixture::new_in(root.path(), Some(&manifest), &[]).await;
+        assert!(fixture.context.paths.app.is_some());
+        let folder = fixture.context.paths.app.clone();
+        fixture.context.authority = authority;
+        alef_modules::namespace_paths(
+            &mut fixture.context.paths,
+            root.path(),
+            root.path(),
+            root.path(),
+            &fixture.context.app.id,
+            &fixture.context.authority,
+        );
+        fixture.context.paths.app = folder;
+        fixture.registry = Registry::default();
+        register_all(
+            &mut fixture.registry,
+            fixture.host.clone(),
+            &fixture.context,
+        )
+        .unwrap();
+        for (command, args) in [
+            ("cli.exec", json!({"commandLine": command_line()})),
+            ("cli.spawn", json!({"program": SIDE})),
+            ("cli.run", json!({"name": "side", "params": {"value": "x"}})),
+            (
+                "cli.start",
+                json!({"name": "side", "params": {"value": "x"}}),
+            ),
+        ] {
+            let error = fixture.call(command, args).await.unwrap_err();
+            assert_eq!(error.code, ErrorCode::NotAvailable, "{command}");
+        }
+        // Ordinary permission refusal still precedes sidecar capability resolution.
+        assert_eq!(
+            spawn(&fixture, "sidecar:other").await.unwrap_err().code,
+            ErrorCode::PermissionDenied
+        );
+    }
 }
 
 #[tokio::test]

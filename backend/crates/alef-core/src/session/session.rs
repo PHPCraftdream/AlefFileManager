@@ -414,7 +414,7 @@ mod tests {
                     downloads: path.clone(),
                     desktop: path.clone(),
                     temp: path.clone(),
-                    app: path,
+                    app: Some(path),
                 },
             )
             .expect("permission set"),

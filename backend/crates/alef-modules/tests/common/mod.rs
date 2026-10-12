@@ -111,7 +111,7 @@ pub fn path_vars(root: &std::path::Path) -> PathVars {
         downloads: at("downloads"),
         desktop: at("desktop"),
         temp: at("temp"),
-        app: at("app"),
+        app: Some(at("app")),
     }
 }
 
@@ -156,6 +156,7 @@ impl Fixture {
             secrets,
             None,
             Limits::default(),
+            alef_core::security::authority::Authority::Directory,
         )
         .await
     }
@@ -174,6 +175,7 @@ impl Fixture {
             Arc::new(MemorySecrets::default()),
             None,
             limits,
+            alef_core::security::authority::Authority::Directory,
         )
         .await
     }
@@ -192,6 +194,26 @@ impl Fixture {
             Arc::new(MemorySecrets::default()),
             Some(console),
             Limits::default(),
+            alef_core::security::authority::Authority::Directory,
+        )
+        .await
+    }
+
+    /// Package fixtures namespace explicit bases before constructing permissions.
+    pub async fn new_sharing_authority(
+        root: &std::path::Path,
+        manifest: Option<&str>,
+        secrets: Arc<MemorySecrets>,
+        authority: alef_core::security::authority::Authority,
+    ) -> Self {
+        Self::build(
+            root,
+            manifest,
+            &[],
+            secrets,
+            None,
+            Limits::default(),
+            authority,
         )
         .await
     }
@@ -203,11 +225,13 @@ impl Fixture {
         secrets: Arc<MemorySecrets>,
         console: Option<Console>,
         limits: Limits,
+        authority: alef_core::security::authority::Authority,
     ) -> Self {
         let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
         let manifest = Manifest::from_ktav_str(&text).expect("manifest");
         let root = root.to_path_buf();
-        let vars = path_vars(&root);
+        let mut vars = path_vars(&root);
+        alef_modules::namespace_paths(&mut vars, &root, &root, &root, &manifest.id, &authority);
         let permissions = Arc::new(
             PermissionSet::from_manifest(&manifest.permissions, &vars)
                 .expect("permissions")
@@ -241,6 +265,7 @@ impl Fixture {
             alef_core::security::manifest::Mode::Window
         };
         let context = ModuleContext {
+            authority,
             app: AppInfo {
                 id: manifest.id.clone(),
                 name: manifest.name.clone(),
@@ -386,6 +411,127 @@ mod deep_link_registration_tests {
         consent.set(Right::scoped("app.deepLinks", "other"), second);
         consent
     }
+    #[tokio::test]
+    async fn archive_registration_preserves_substitutes_and_refuses_real_backends() {
+        let text = manifest().replace("env: [", "autostart: true\n        env: [");
+        for decision in [Decision::Allow, Decision::Substitute] {
+            let mut decisions = consent(decision, decision);
+            decisions.set(Right::plain("app.autostart"), decision);
+            let mut fixture = Fixture::new(Some(&text), &[]).await.with_consent(decisions);
+            fixture.context.paths.app = None;
+            fixture.registry = Registry::default();
+            register_all(
+                &mut fixture.registry,
+                fixture.host.clone(),
+                &fixture.context,
+            )
+            .unwrap();
+            for command in [
+                "app.autostart.enable",
+                "app.autostart.isEnabled",
+                "app.autostart.disable",
+                "app.registerDeepLinks",
+                "app.unregisterDeepLinks",
+            ] {
+                let result = fixture.call(command, Value::Null).await;
+                if decision == Decision::Allow {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, ErrorCode::NotAvailable);
+                    assert!(error
+                        .message
+                        .contains("native registration requires an installed application"));
+                } else {
+                    let value = result.unwrap();
+                    if command == "app.autostart.isEnabled" {
+                        assert_eq!(value, json!(true));
+                    }
+                }
+            }
+            assert!(fixture.autostart.calls().is_empty());
+            assert!(fixture.deep_links.calls().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn registration_uses_authority_after_permissions_before_recording_backends() {
+        use alef_core::security::authority::Authority;
+        use alef_modules::AutostartOperation::{Disable, Enable, IsEnabled};
+
+        let text = manifest().replace("env: [", "autostart: true\n        env: [");
+        for authority in [
+            Authority::Directory,
+            Authority::SignedPackage {
+                fingerprint: "synthetic-signer".into(),
+            },
+            Authority::UnsignedPackage {
+                archive_digest: "synthetic-archive".into(),
+            },
+        ] {
+            for decision in [Decision::Allow, Decision::Substitute, Decision::Deny] {
+                let mut decisions = consent(decision, decision);
+                decisions.set(Right::plain("app.autostart"), decision);
+                let root = tempfile::tempdir().unwrap();
+                let mut fixture = Fixture::new_sharing_authority(
+                    root.path(),
+                    Some(&text),
+                    Arc::default(),
+                    authority.clone(),
+                )
+                .await
+                .with_consent(decisions);
+                fixture.registry = Registry::default();
+                register_all(
+                    &mut fixture.registry,
+                    fixture.host.clone(),
+                    &fixture.context,
+                )
+                .unwrap();
+                for (index, command) in [
+                    "app.autostart.enable",
+                    "app.autostart.isEnabled",
+                    "app.autostart.disable",
+                    "app.autostart.isEnabled",
+                    "app.registerDeepLinks",
+                    "app.unregisterDeepLinks",
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let result = fixture.call(command, Value::Null).await;
+                    if decision == Decision::Deny {
+                        assert_eq!(result.unwrap_err().code, ErrorCode::PermissionDenied);
+                    } else if decision == Decision::Allow && authority != Authority::Directory {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.code, ErrorCode::NotAvailable);
+                        assert_eq!(
+                            error.message,
+                            "native registration requires an installed application"
+                        );
+                    } else {
+                        let value = result.unwrap();
+                        if command == "app.autostart.isEnabled" {
+                            // First query follows enable; second follows disable.
+                            assert_eq!(value, json!(index == 1));
+                        }
+                    }
+                }
+                if decision == Decision::Allow && authority == Authority::Directory {
+                    assert_eq!(
+                        fixture.autostart.calls(),
+                        vec![Enable, IsEnabled, Disable, IsEnabled]
+                    );
+                    let calls = fixture.deep_links.calls();
+                    assert_eq!(calls.len(), 2);
+                    assert!(calls[0].3);
+                    assert!(!calls[1].3);
+                } else {
+                    assert!(fixture.autostart.calls().is_empty());
+                    assert!(fixture.deep_links.calls().is_empty());
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn deep_link_registration_checks_all_scopes_before_any_backend_call() {
         for (first, second) in [

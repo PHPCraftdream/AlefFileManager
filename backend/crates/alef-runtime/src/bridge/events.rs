@@ -292,7 +292,7 @@ mod tests {
             downloads: root.clone(),
             desktop: root.clone(),
             temp: root.clone(),
-            app: root,
+            app: Some(root),
         };
         let permissions = Arc::new(PermissionSet::from_manifest(&policy, &vars).expect("set"));
         let session = session(7).await;

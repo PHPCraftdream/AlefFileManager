@@ -3,6 +3,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod authority;
 mod crypto;
 mod fs;
 mod secrets;

@@ -38,7 +38,7 @@ impl Swap {
             downloads: root.clone(),
             desktop: root.clone(),
             temp: root.clone(),
-            app: root,
+            app: Some(root),
         };
         let policy: Permissions = serde_json::from_value(serde_json::json!({
             "fs": {"read": [], "write": []}, "cli": {"exec": []},

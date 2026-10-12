@@ -5,11 +5,15 @@
 //! A module registers its commands in the registry (`<module>.<command>`) with the permission and
 //! scope each one needs; the registry checks them before the handler runs. Everything the modules
 //! need from the process comes through [`ModuleContext`] and the [`Host`](alef_core::registry::host::Host).
-use std::{ffi::OsString, path::PathBuf, sync::Arc};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use alef_core::{
     registry::{command::Reply, dispatch::Registry, host::Host},
-    security::permissions::PathVars,
+    security::{authority::Authority, permissions::PathVars},
     AlefError, ErrorCode,
 };
 use serde::{Deserialize, Serialize};
@@ -201,6 +205,8 @@ pub struct AppInfo {
 /// The facts about the process that the modules serve.
 #[derive(Debug, Clone)]
 pub struct ModuleContext {
+    /// Host-selected authority, independent of the application path and manifest id.
+    pub authority: Authority,
     pub app: AppInfo,
     pub paths: PathVars,
     /// The command line of the application, already parsed by its schema.
@@ -224,12 +230,72 @@ pub struct ModuleContext {
     pub termination: Termination,
 }
 
-/// Registers every module of this crate.
+/// Applies host-selected authority to caller-built paths before constructing permissions.
+/// Bases are the OS data/config/cache directories, not application-owned directories.
+/// Directory authority leaves *every* field literally unchanged; packages use
+/// `<base>/alef-packages/<full authority token>` and have no filesystem `$APP`.
+/// Other fields are untouched. This performs no IO or authority verification.
+pub fn namespace_paths(
+    paths: &mut PathVars,
+    data_base: &Path,
+    config_base: &Path,
+    cache_base: &Path,
+    id: &str,
+    authority: &Authority,
+) {
+    if let Some(token) = authority.package_token(id) {
+        let owned = |base: &Path| base.join("alef-packages").join(&token);
+        paths.app_data = owned(data_base);
+        paths.app_config = owned(config_base);
+        paths.app_cache = owned(cache_base);
+        paths.app = None;
+    }
+}
+
+impl ModuleContext {
+    /// Validates already namespaced package paths before module registration.
+    /// Each owned path must be absolute and exactly `<base>/alef-packages/<this token>`.
+    /// Callers must use explicit bases with `namespace_paths` before building permissions;
+    /// registration never infers bases or repairs legacy paths or permissions.
+    pub fn effective_paths(&self) -> Result<PathVars, AlefError> {
+        let mut paths = self.paths.clone();
+        let Some(token) = self.authority.package_token(&self.app.id) else {
+            return Ok(paths);
+        };
+        for owned in [&paths.app_data, &paths.app_config, &paths.app_cache] {
+            if !owned.is_absolute()
+                || owned.file_name().is_none_or(|name| name != token.as_str())
+                || owned
+                    .parent()
+                    .and_then(Path::file_name)
+                    .is_none_or(|name| name != "alef-packages")
+                || owned.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::ParentDir | std::path::Component::CurDir
+                    )
+                })
+            {
+                return Err(AlefError::new(
+                    ErrorCode::InvalidArgument,
+                    "package paths require absolute base/alef-packages/authority-token",
+                ));
+            }
+        }
+        paths.app = None;
+        Ok(paths)
+    }
+}
+
+/// Registers every module of this crate with the same authority-scoped paths.
 pub fn register_all(
     registry: &mut Registry,
     host: Arc<dyn Host>,
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
+    let mut effective = context.clone();
+    effective.paths = context.effective_paths()?;
+    let context = &effective;
     desktop::register(registry, host.clone(), context)?;
     data::register(registry, context)?;
     net::register(registry, context)?;

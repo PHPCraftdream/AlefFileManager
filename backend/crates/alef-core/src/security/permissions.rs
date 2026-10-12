@@ -131,7 +131,7 @@ pub struct PathVars {
     /// Temporary directory (`$TEMP`).
     pub temp: PathBuf,
     /// Application directory (`$APP`).
-    pub app: PathBuf,
+    pub app: Option<PathBuf>,
 }
 
 impl PathVars {
@@ -145,7 +145,7 @@ impl PathVars {
             "DOWNLOADS" => &self.downloads,
             "DESKTOP" => &self.desktop,
             "TEMP" => &self.temp,
-            "APP" => &self.app,
+            "APP" => return self.app.as_deref(),
             _ => return None,
         })
     }
@@ -189,8 +189,12 @@ fn path_pattern(pattern: &str, vars: &PathVars) -> Result<PathPattern, AlefError
     match pattern.strip_prefix('$') {
         Some(rest) => {
             let end = rest.find(['/', '\\']).unwrap_or(rest.len());
+            let name = &rest[..end];
+            if name == "APP" && vars.app.is_none() {
+                return Err(invalid("$APP is unavailable for archive applications"));
+            }
             let root = vars
-                .lookup(&rest[..end])
+                .lookup(name)
                 .ok_or_else(|| invalid(format!("unknown path variable ${}", &rest[..end])))?;
             PathPattern::parse(Some(root), rest[end..].trim_start_matches(['/', '\\']))
         }

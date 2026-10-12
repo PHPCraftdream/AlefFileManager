@@ -58,7 +58,7 @@ struct Plan {
 
 fn plan(
     ctx: &CallContext,
-    app: &std::path::Path,
+    app: Option<&std::path::Path>,
     name: &str,
     params: Option<BTreeMap<String, String>>,
     cwd: &Option<String>,
@@ -78,7 +78,7 @@ fn plan(
 
 pub(in crate::system::cli) fn register(
     registry: &mut Registry,
-    app: PathBuf,
+    app: Option<PathBuf>,
 ) -> Result<(), AlefError> {
     let run_app = app.clone();
     registry
@@ -93,7 +93,7 @@ pub(in crate::system::cli) fn register(
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(limit).await);
                 }
-                let plan = plan(&ctx, &app, &args.name, args.params, &args.cwd)?;
+                let plan = plan(&ctx, app.as_deref(), &args.name, args.params, &args.cwd)?;
                 let (out, err, code, signal) = exec::run(exec::Spec {
                     program: plan.program,
                     args: plan.args,
@@ -117,7 +117,7 @@ pub(in crate::system::cli) fn register(
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(None).await);
                 }
-                let plan = plan(&ctx, &app, &args.name, args.params, &args.cwd)?;
+                let plan = plan(&ctx, app.as_deref(), &args.name, args.params, &args.cwd)?;
                 let reply = spawn::spawn_command(
                     &ctx.session,
                     plan.program,

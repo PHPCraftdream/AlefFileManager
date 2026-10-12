@@ -39,7 +39,57 @@ fn vars(root: &Path) -> PathVars {
         downloads: root.join("downloads"),
         desktop: root.join("desktop"),
         temp: root.join("temp"),
-        app: root.join("app"),
+        app: Some(root.join("app")),
+    }
+}
+
+#[test]
+fn archive_app_variable_is_unavailable_but_appdata_is_usable() {
+    let dir = sandbox();
+    let mut vars = vars(dir.path());
+    vars.app = None;
+    fs::create_dir_all(&vars.app_data).unwrap();
+    let file = vars.app_data.join("note.txt");
+    fs::write(&file, b"note").unwrap();
+    for write in [false, true] {
+        for pattern in ["$APP", "$APP/**", "$APP\\**"] {
+            let mut policy = closed();
+            if write {
+                policy.fs.write = vec![pattern.into()];
+            } else {
+                policy.fs.read = vec![pattern.into()];
+            }
+            let error = PermissionSet::from_manifest(&policy, &vars).unwrap_err();
+            assert_eq!(error.code, ErrorCode::ManifestInvalid);
+            assert_eq!(
+                error.message,
+                "$APP is unavailable for archive applications"
+            );
+        }
+        let mut policy = closed();
+        if write {
+            policy.fs.write = vec!["$APPDATA/**".into()];
+        } else {
+            policy.fs.read = vec!["$APPDATA/**".into()];
+        }
+        let set = PermissionSet::from_manifest(&policy, &vars).unwrap();
+        assert!(can(
+            &set,
+            if write {
+                Permission::FsWrite
+            } else {
+                Permission::FsRead
+            },
+            &file
+        ));
+        if write {
+            policy.fs.write = vec!["$APPx/**".into()];
+        } else {
+            policy.fs.read = vec!["$APPx/**".into()];
+        }
+        let error = PermissionSet::from_manifest(&policy, &vars).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ManifestInvalid);
+        assert_eq!(error.message, "unknown path variable $APPx");
     }
 }
 

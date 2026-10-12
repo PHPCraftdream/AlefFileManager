@@ -106,7 +106,7 @@ fn closed_permissions() -> Arc<PermissionSet> {
         downloads: root.clone(),
         desktop: root.clone(),
         temp: root.clone(),
-        app: root,
+        app: Some(root),
     };
     Arc::new(PermissionSet::from_manifest(&policy, &vars).expect("permission set"))
 }
