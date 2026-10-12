@@ -200,26 +200,15 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1280x1024x24" sh -c 'openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose'
 
-      # The runner of Windows has no GPU: a window cannot get its graphics context there ("Cannot
-      # create Servo graphics context: RequiredExtensionUnavailable"), so every scenario that opens a
-      # window fails before the page runs. These are the scenarios that need none (the first run of the
-      # whole set: 8 passed, 44 failed on exactly that). The rest follows once the quiet mode of the
-      # runner renders on the software context that the windowless mode already uses on this runner.
+      # The runner of Windows has no GPU, and the WGL backend of surfman needs the extension
+      # WGL_NV_DX_interop and a hardware Direct3D 11 device ("Cannot create Servo software graphics
+      # context: RequiredExtensionUnavailable"): every scenario whose application opens a window fails
+      # before the page runs, on the software context too, and with Mesa (llvmpipe) as the OpenGL of
+      # the machine too (#107, #116). These are the scenarios without a window.
       - name: e2e (alef on Servo, Windows, scenarios without a window)
         if: runner.os == 'Windows'
         timeout-minutes: 30
         run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest
-
-      # #107, an experiment until it has run on the runner: the whole quiet suite, every window on the
-      # software context. It cannot turn the job red; when it is green for a while it replaces the
-      # step above. Whether the software adapter of Windows works without a GPU is what it tells.
-      - name: e2e (alef on Servo, Windows, whole suite on the software context; experiment)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        timeout-minutes: 40
-        env:
-          ALEF_E2E_SOFTWARE: '1'
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose
 
       - name: Upload executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
