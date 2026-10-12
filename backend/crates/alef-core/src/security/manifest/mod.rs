@@ -7,6 +7,9 @@ use serde_json::json;
 use super::window::WindowDef;
 use crate::{AlefError, ErrorCode};
 
+mod assets;
+use assets::{assets_line, deserialize_assets};
+
 /// External-resource policy; all fields are required.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
@@ -252,6 +255,15 @@ pub struct Manifest {
     pub name: String,
     /// Non-empty version string.
     pub version: String,
+    /// Public proper subdirectory; absence leaves `dist` selection to the asset source.
+    // Explicit null is not absence: a present field must be a valid String.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_assets",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub assets: Option<String>,
     /// Declared windows; an empty list is allowed (a console utility or a service).
     pub windows: Vec<WindowDef>,
     /// A console utility: no window, and the process has stdin, stdout and stderr (`app.stdin`...).
@@ -286,6 +298,11 @@ impl Manifest {
     pub fn from_ktav_str(src: &str) -> Result<Self, AlefError> {
         let manifest: Self = ktav::from_str(src).map_err(|error| {
             let text = error.to_string();
+            if text.starts_with("assets:") {
+                let line = assets_line(src);
+                return AlefError::new(ErrorCode::ManifestInvalid, format!("{text} (line {line})"))
+                    .with_details(json!({"path": "assets", "line": line}));
+            }
             if let (Some(line), Some(span)) = (error.line(), error.span()) {
                 let (_, column) = span.line_col(src);
                 AlefError::new(
@@ -499,7 +516,7 @@ fn validate_arguments(arguments: &Arguments) -> Result<(), (String, &'static str
 mod mode_tests {
     use super::{Manifest, Mode};
     use crate::ErrorCode;
-    const MINIMAL: &str = include_str!("../../tests/fixtures/minimal.ktav");
+    const MINIMAL: &str = include_str!("../../../tests/fixtures/minimal.ktav");
     fn error(src: &str) -> crate::AlefError {
         let err = Manifest::from_ktav_str(src).expect_err("manifest must be rejected");
         assert_eq!(err.code, ErrorCode::ManifestInvalid);

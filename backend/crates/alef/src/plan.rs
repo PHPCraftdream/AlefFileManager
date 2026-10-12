@@ -136,7 +136,7 @@ pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<
     Ok(Plan {
         permissions,
         csp,
-        assets: app_dir.to_path_buf(),
+        assets: app_dir.join(manifest.assets.as_deref().unwrap_or("dist")),
         initial_mode: if !manifest.modes.is_empty() {
             None
         } else if !manifest.windows.is_empty() {
@@ -339,6 +339,23 @@ permissions: {{
         }
         declaration.modes = vec![Mode::Cli];
         assert!(plan_of(declaration).unwrap().select_window_child().is_err());
+    }
+
+    #[test]
+    fn assets_selection_is_lexical_and_never_the_application_root() {
+        let declaration = manifest(SIZE, "[]");
+        let plan = plan_of(declaration.clone()).unwrap();
+        assert_eq!(
+            plan.assets,
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("dist")
+        );
+        let mut nested = declaration;
+        nested.assets = Some("web/build".into());
+        let plan = plan_of(nested).unwrap();
+        assert_eq!(
+            plan.assets,
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("web/build")
+        );
     }
 
     #[test]

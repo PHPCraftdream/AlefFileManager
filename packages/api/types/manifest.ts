@@ -186,6 +186,10 @@ export type Manifest = {
    */
   version: string,
   /**
+   * Public proper subdirectory; absence leaves `dist` selection to the asset source.
+   */
+  assets?: string,
+  /**
    * Declared windows; an empty list is allowed (a console utility or a service).
    */
   windows: Array<WindowDef>,

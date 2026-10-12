@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `native://` protocol: application assets and the transport routes `call`/`stream`.
+mod assets;
 pub(crate) mod commands;
 #[cfg(feature = "e2e")]
 mod e2e;
@@ -67,6 +68,8 @@ pub struct BridgeOptions {
     pub limits: Limits,
     /// Root-relative entry document (`/app.html`); `None` opens the root, served as `index.html`.
     pub entry: Option<String>,
+    /// Application handle boundary for nested selected roots. Embedders default to assets' parent.
+    pub application_dir: Option<PathBuf>,
     /// Called when the headless entry finishes loading; runtime owns no module state.
     pub headless_loaded: Option<Box<dyn Fn() + Send>>,
     /// Called each headless iteration; true requests a launch-timeout exit (code 2).
@@ -214,27 +217,30 @@ impl Bridge {
         options: BridgeOptions,
     ) -> io::Result<Self> {
         let entry = entry_path(options.entry.as_deref())?;
-        let assets = match assets {
-            Some(path) => {
-                let path = tokio::fs::canonicalize(path).await?;
-                let document = match entry.trim_matches('/') {
-                    "" => "index.html",
-                    other => other,
-                };
-                if !tokio::fs::try_exists(path.join(document)).await? {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!(
-                            "The entry document {document} is missing in the application assets"
-                        ),
-                    ));
-                }
-                if crate::spikes::origin::enabled() {
-                    crate::spikes::origin::set_assets(&path);
-                }
-                Some(path)
+        let native_entry = Url::parse("native://app/")
+            .and_then(|base| base.join(&entry))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let assets = if development_url.is_some() {
+            None // Development never resolves, requires or serves disk, even for embedders.
+        } else if let Some(selected) = assets {
+            let application = options
+                .application_dir
+                .as_deref()
+                .or_else(|| selected.parent())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "Missing application boundary")
+                })?;
+            let source = assets::Source::open(application, selected)?;
+            source.read(native_entry.path())?;
+            if crate::spikes::origin::enabled() {
+                crate::spikes::origin::set_assets(selected);
             }
-            None => None,
+            Some(Arc::new(source))
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Missing disk assets",
+            ));
         };
         let token = random_token()?;
         let mut entry_url = match development_url {
@@ -340,7 +346,7 @@ impl Bridge {
 }
 
 pub(super) struct MemoryProtocol {
-    pub(super) assets: Option<PathBuf>,
+    pub(super) assets: Option<Arc<assets::Source>>,
     pub(super) handle: tokio::runtime::Handle,
     pub(super) transport: Arc<Transport>,
     pub(super) windows: WindowRegistry,
@@ -383,10 +389,10 @@ impl ProtocolHandler for MemoryProtocol {
             let url = request.current_url().clone();
             let result = if url.host_str() == Some("app") && request.method == http::Method::GET {
                 let assets = self.assets.clone();
-                let path = url.path().trim_start_matches('/').to_owned();
+                let path = url.path().to_owned();
                 let mut task = transport::OwnedTask(
                     self.handle
-                        .spawn(async move { read_asset(assets, path).await }),
+                        .spawn(async move { assets::read_asset(assets, path).await }),
                 );
                 (&mut task.0)
                     .await
@@ -424,27 +430,6 @@ impl ProtocolHandler for MemoryProtocol {
             response
         })
     }
-}
-
-async fn read_asset(assets: Option<PathBuf>, requested: String) -> io::Result<(Vec<u8>, String)> {
-    let root = assets
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Assets are served by Rsbuild"))?;
-    let requested = if requested.is_empty() {
-        "index.html"
-    } else {
-        &requested
-    };
-    let path = tokio::fs::canonicalize(root.join(requested)).await?;
-    if !path.starts_with(&root) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Asset outside frontend root",
-        ));
-    }
-    let mime = mime_guess::from_path(&path)
-        .first_or_octet_stream()
-        .to_string();
-    Ok((tokio::fs::read(path).await?, mime))
 }
 
 /// Headers of asset responses; transport responses carry their own CORS policy.
@@ -603,21 +588,6 @@ mod tests {
                     .as_ref(),
             );
         }
-    }
-
-    #[tokio::test]
-    async fn refuses_asset_parent_traversal() {
-        let directory = tempfile::tempdir().expect("assets");
-        let root = directory.path().join("frontend");
-        tokio::fs::create_dir(&root).await.expect("frontend");
-        tokio::fs::write(directory.path().join("secret"), b"private")
-            .await
-            .expect("outside asset");
-        let root = tokio::fs::canonicalize(root).await.expect("root");
-        let error = read_asset(Some(root), "../secret".to_owned())
-            .await
-            .expect_err("outside root");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 
     fn capability(bridge: &Bridge) -> String {

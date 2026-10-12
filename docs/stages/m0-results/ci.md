@@ -88,7 +88,7 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 1. Первый запуск через `workflow_dispatch`; скорректировать шаги зависимостей по факту.
 2. Решить по `ALEF_CARGO_JOBS` (правка scripts — вне скоупа M0.4a).
-3. Проверить размер кэша `backend/target`, оба артефакта (бинарник + `alef-frontend-dist`).
+3. Проверить размер кэша `backend/target`, оба артефакта (бинарник + `alef-frontend-app`).
 
 ## Команды и результаты
 

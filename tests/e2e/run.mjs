@@ -35,6 +35,7 @@ const WINDOW_BYTES = 1024 * 1024;
 const drive = makeDriver({ exe, verbose, timeoutMs });
 
 const CORE_CHECKS = [
+  'assets-public-url-and-headers', 'assets-root-private-and-invalid-paths',
   'window-is-shown-once-it-has-content', 'hello', 'denials', 'json-echo', 'binary-echo-16MiB', 'unknown-command-is-not-found', 'legacy-invoke-route-is-gone',
   'credit-window', 'abort-closes-the-source', 'events-stream',
   'lib-connect', 'lib-call-json', 'lib-binary-roundtrip-4MiB', 'lib-error-mapping', 'lib-readable-acks-by-itself',
@@ -129,8 +130,8 @@ const scenarios = {
   // `--dev-url`: the document is served by a local HTTP server instead of the application files.
   async dev() {
     const directory = join(scratch, 'sites', 'dev');
-    const server = await staticServer(directory);
-    const probe = await staticServer(directory); // a second origin: it must not get a session
+    const server = await staticServer(join(directory, 'dist'));
+    const probe = await staticServer(join(directory, 'dist')); // a second origin: it must not get a session
     try {
       return await drive({
         name: 'dev', app: 'dev', targets: { probeOrigin: probe.origin },

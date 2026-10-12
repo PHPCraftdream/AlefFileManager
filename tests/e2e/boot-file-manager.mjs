@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Boot check of the real File Manager: starts the generic binary `alef` on the application (the built
-// frontend, frontend/dist, holds its manifest and icon) with ALEF_LOG_CALLS=1, then requires the startup
+// frontend/app holds its manifest and icon; frontend/app/dist holds the web assets) with ALEF_LOG_CALLS=1, then requires the startup
 // traffic of the API to succeed: handshake, app.info, store.get, the window snapshot and the event stream,
 // with no failed request and no page error. The application runs from a copy under an id of its own, so
 // the data it makes is removed with the copy.
@@ -19,7 +19,7 @@ const option = name => { const at = args.indexOf(name); return at < 0 ? undefine
 const verbose = args.includes('--verbose');
 const timeoutMs = Number(option('--timeout-s') ?? 60) * 1000;
 const exe = option('--exe') ?? join(root, 'backend', 'target', 'debug', process.platform === 'win32' ? 'alef.exe' : 'alef');
-const frontend = resolve(option('--frontend-dir') ?? join(root, 'frontend', 'dist'));
+const frontend = resolve(option('--frontend-dir') ?? join(root, 'frontend', 'app'));
 const scratch = join(root, 'backend', 'target', `boot-data-${process.pid}`);
 const id = `org.alef.filemanager.boot${process.pid}`;
 const appData = appDataOf(id);

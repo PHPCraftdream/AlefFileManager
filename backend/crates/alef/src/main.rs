@@ -302,6 +302,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             csp: Some(plan.csp),
             permissions: Some(granted),
             entry: Some(entry),
+            application_dir: Some(app_dir.to_path_buf()),
             headless_loaded: Some(Box::new(move || loaded.loaded())),
             headless_tick: Some(Box::new(move || tick.check_timeout())),
             ..BridgeOptions::default()

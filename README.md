@@ -21,13 +21,13 @@ npm run test:rust
 ```
 
 - `build`: TypeScript/Rsbuild production frontend и Rust workspace.
-- `start`: `alef --app frontend/dist` на ранее собранном приложении; Rsbuild не нужен.
+- `start`: `alef --app frontend/app` на ранее собранном приложении; Rsbuild не нужен.
 - `check`: Oxlint, лимиты структуры, TypeScript и Clippy всего workspace с ошибкой на warnings.
 - `lint:structure`: в нашем коде (`frontend/src`, `frontend/test`, `backend/crates`, `scripts`, `packages`, `tests`, `experiments`) не более 7 элементов в папке и не более 700 строк в файле (`scripts/check-structure.mjs`).
 - `test:rust`: Rust-тесты приложения и runtime.
 - `dev:web`: только asset server; обычный браузер не имеет доступа к native bridge.
 
-File Manager — обычное приложение Alef: манифест `frontend/public/alef.ktav` (rsbuild кладет его с иконкой `icon.png` в `frontend/dist`), запуск — генерический бинарник `alef` (`npm start`, `npm run dev`). Аргументы приложения передаются после имени скрипта, например:
+File Manager — обычное приложение Alef: манифест `frontend/app-source/alef.ktav` и иконка `icon.png` (сборка собирает их в каталог приложения `frontend/app`, страницы лежат в его `dist/`), запуск — генерический бинарник `alef` (`npm start`, `npm run dev`). Аргументы приложения передаются после имени скрипта, например:
 
 ```sh
 npm start -- --root ~/Documents
@@ -38,7 +38,7 @@ npm start -- --root ~/Documents
 ## Структура и повторное использование
 
 - `backend/crates/alef-runtime`: независимый crate `alef-runtime`; Servo window host, приватный bridge, typed async command registry, события backend → browser, window API и универсальный async Fjall facade.
-- `frontend/public`: манифест `alef.ktav` и иконка File Manager; Rust-кода у приложения нет.
+- `frontend/app-source`: манифест `alef.ktav` и иконка File Manager (сборка кладёт их в корень приложения `frontend/app`, страницы — в его `dist/`); Rust-кода у приложения нет.
 - `frontend/src/native/runtime.ts`: универсальные `invoke`, `listen`/`Unlisten`, `nativeWindow` без зависимости от React или команд Alef.
 - `frontend/src/native/api.ts`: язык в `store`, каталог через `fs`, `app.info` — поверх `@alef-tron/api`; тест — `frontend/test/native-api.test.mjs`.
 - `backend/patches/servo-paint-api`: локальный Servo 0.6 fix активации GL context до загрузки GL функций; версия не изменена.

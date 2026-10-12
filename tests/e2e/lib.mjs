@@ -2,7 +2,7 @@
 // Helpers of the end-to-end runner: a scenario site (application files + the transpiled
 // @alef-tron/api), the runtime process with its stderr log, and small local HTTP servers.
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -43,7 +43,7 @@ export function transpileApi() {
     tsc, '--ignoreConfig', '--strict', '--skipLibCheck', '--target', 'ES2022', '--module', 'ESNext',
     '--moduleResolution', 'bundler', '--rewriteRelativeImportExtensions',
     '--rootDir', api, '--outDir', out, join(api, 'src', 'index.ts'),
-  ], { cwd: root, stdio: 'inherit' });
+  ], { cwd: root, stdio: 'inherit', timeout: 120000 });
   if (result.status !== 0) throw new Error('could not transpile @alef-tron/api for the scenarios');
   transpiled = out;
   return out;
@@ -76,16 +76,22 @@ export function transpileMcp() {
 export function prepareSite(name, app, { replacements = {}, targets = {} } = {}) {
   const site = join(scratch, 'sites', name);
   rmSync(site, { recursive: true, force: true });
-  cpSync(join(here, 'apps', app), site, { recursive: true });
-  copyFileSync(join(here, 'harness.js'), join(site, 'harness.js'));
+  const source = join(here, 'apps', app);
+  cpSync(source, site, {
+    recursive: true,
+    // Desktop/system contain independent child apps: never import their trees.
+    filter: path => path === source || !statSync(path).isDirectory() || !existsSync(join(path, 'alef.ktav')),
+  });
+  const publicRoot = join(site, 'dist');
+  copyFileSync(join(here, 'harness.js'), join(publicRoot, 'harness.js'));
   const api = transpileApi();
-  for (const folder of ['src', 'types']) cpSync(join(api, folder), join(site, folder), { recursive: true });
-  if (app.startsWith('modules/net/mcp')) cpSync(transpileMcp(), join(site, 'mcp'), { recursive: true });
+  for (const folder of ['src', 'types']) cpSync(join(api, folder), join(publicRoot, folder), { recursive: true });
+  if (app.startsWith('modules/net/mcp')) cpSync(transpileMcp(), join(publicRoot, 'mcp'), { recursive: true });
   const manifest = join(site, 'alef.ktav');
   let text = readFileSync(manifest, 'utf8');
   for (const [key, value] of Object.entries(replacements)) text = text.replaceAll(`{{${key}}}`, value);
   writeFileSync(manifest, text);
-  writeFileSync(join(site, 'targets.json'), JSON.stringify({ app: site, sep, ...targets }));
+  writeFileSync(join(publicRoot, 'targets.json'), JSON.stringify({ ...targets, app: site, sep }));
   return site;
 }
 
@@ -245,8 +251,9 @@ export async function staticServer(directory) {
       return;
     }
     try {
+      const bytes = readFileSync(file);
       response.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' });
-      response.end(readFileSync(file));
+      response.end(bytes);
     } catch {
       response.writeHead(404).end();
     }

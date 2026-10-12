@@ -75,10 +75,10 @@ try {
   }
   if (!ready) throw new Error('Rsbuild did not start on 127.0.0.1:3000.');
   const executable = path.join(root, 'backend', 'target', 'debug', process.platform === 'win32' ? 'alef.exe' : 'alef');
-  // The manifest and the icon are in frontend/public; the page comes from the server of Rsbuild.
+  // The manifest and icon are in frontend/app-source; Rsbuild serves only browser assets.
   // Everything after the script name is the command line of the application (for example --root DIRECTORY).
   const given = process.argv.slice(2);
-  const application = launch(executable, ['--app', path.join(root, 'frontend', 'public'),
+  const application = launch(executable, ['--app', path.join(root, 'frontend', 'app-source'),
     '--dev-url', 'http://127.0.0.1:3000/', ...(given.length > 0 ? ['--', ...given] : [])]);
   await finished(application);
 } catch (error) {

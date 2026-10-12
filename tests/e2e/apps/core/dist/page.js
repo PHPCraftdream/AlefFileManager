@@ -75,6 +75,23 @@ async function openStream(id, options = {}) {
 }
 
 async function rawChecks() {
+  await check('assets-public-url-and-headers', async () => {
+    for (const path of ['hello%20world.txt', 'hello%20world.txt?x=../alef.ktav']) {
+      const response = await fetch(`native://app/${path}`);
+      if (response.status !== 200) throw new Error(`${path}: HTTP ${response.status}`);
+      if (await response.text() !== 'public space sentinel\n') throw new Error(`${path}: public asset body mismatch`);
+      if (response.headers.get('access-control-allow-origin') !== null) throw new Error('assets must not grant CORS');
+    }
+  });
+  await check('assets-root-private-and-invalid-paths', async () => {
+    for (const path of ['alef.ktav', 'private.txt', 'a%2fb', 'a%5cb', '%00', '%GG', '%FF', '%252e%252e/alef.ktav']) {
+      const response = await fetch(`native://app/${path}`);
+      if (response.ok) throw new Error(`${path} unexpectedly published`);
+      const body = await response.text();
+      if (body.includes('root private sentinel') || body.includes('id: org.')) throw new Error(`${path} leaked private bytes`);
+      if (response.headers.get('access-control-allow-origin') !== null) throw new Error('errors must not grant CORS');
+    }
+  });
   // The runtime opens the window hidden and shows it with the first painted content (that it is not
   // shown earlier is checked by the `startup` scenario, which watches the windows of the process).
   await check('window-is-shown-once-it-has-content', async () => {
