@@ -12,6 +12,8 @@ alef-tron keys --list
 alef-tron pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <names>]
 alef-tron verify <file>
 alef-tron check [dir]
+alef-tron build [dir] [--out <dir>]
+alef-tron dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
 alef-tron --help
 ```
 
@@ -49,6 +51,21 @@ validation was not performed. Text hygiene is not Ktav syntax/schema validation;
 there are no parser dependencies. `pack`/`verify` check composition, not manifest
 semantics. Alef performs full manifest validation before launching the app.
 
+`build` runs the configured build command, then assembles `app-build` (or
+`--out`) with `alef.ktav`, optional `icon.png` and the outDir tree under the
+manifest assets directory; unsafe or overlapping destinations fail before any
+deletion. `dev` starts the configured dev command, polls `alef-tron.devUrl`
+until it answers (default 60 s, `--ready-timeout`), then spawns the runtime
+with `--app <root> --dev-url <url>` plus any args after `--`; the runtime is
+resolved from `ALEF_BIN`, `@alef-tron/runtime` `getRuntimePath()` or `alef`
+on PATH. Both children are owned and cleaned up: the dev server is killed when
+the runtime exits, on dev death, readiness timeout and SIGINT/SIGTERM; the
+runtime exit code propagates. Only `dev` needs the runtime binary (resolved
+from `ALEF_BIN`, `@alef-tron/runtime` `getRuntimePath()` or `alef` on PATH);
+`build` does not. On Windows, app arguments passed to a `.cmd`/`.bat` runtime
+shim are refused when they contain cmd.exe metacharacters (`& | < > ^ % ! "`
+or a newline). Not done: full manifest schema validation and bundle.
+
 ## API
 
 | Export | Input / result |
@@ -59,6 +76,9 @@ semantics. Alef performs full manifest validation before launching the app.
 | `listKeys({ home? })` | Promise of name-sorted public descriptors |
 | `keyHome({ home? })` | Absolute key-home path |
 | `check(dir = cwd)` | Promise of frozen `{ file, message }` |
+| `build(dir, { out?, timeoutMs?, stdio? })` | Promise of frozen `{ dir, out, assets }` |
+| `dev(dir, { readyTimeoutMs?, devStdio?, stdio?, appArgs?, alefBin? })` | Promise of frozen `{ code }`; runs until the runtime exits |
+| `findRuntime(dir?, { alefBin?, runtimeModule?, path? })` | Promise of the runtime executable path |
 | `readZip(input)` | Path/URL or Uint8Array; Promise of frozen `{ entries, read }` |
 | `writeZip(entries, { method? })` | Buffer; entries `{ name, data: Uint8Array, method? }`; method 0/8, default automatic |
 | `validateName(name)` | Original valid string, otherwise throws; no normalization |

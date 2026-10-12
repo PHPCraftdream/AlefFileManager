@@ -2,6 +2,20 @@
 
 ## 0.1.0 — M7b.2 (private)
 
+- Workflow commands: `alef-tron build [dir] [--out <dir>]` runs the configured
+  build command and assembles a packageable app directory (manifest, optional
+  icon, assets); `alef-tron dev [dir] [--ready-timeout <ms>] [-- <args>]` starts
+  the configured dev command, polls `alef-tron.devUrl` for readiness and
+  launches the runtime (`ALEF_BIN`, `@alef-tron/runtime` `getRuntimePath()` or
+  PATH `alef`) with `--app`/`--dev-url`, owning and cleaning up both children,
+  propagating the runtime exit code and killing the server on runtime exit,
+  dev death, readiness timeout or SIGINT/SIGTERM (interrupts kill the runtime's
+  own process group, exit 128+n, and the signal exit code is never overwritten
+  by a null runtime code). Runtime argv is always argv, never an interpolated
+  string; on Windows `.cmd`/`.bat` runtime shims get a fixed ComSpec argv and
+  app arguments containing cmd.exe metacharacters are refused. Full manifest
+  schema validation and bundle remain deferred.
+
 - Dependency-free Node >=22.12.0 ESM API and `alef-tron` CLI: keys, pack,
   verify, basic check; MIT OR Apache-2.0. Keys print name/fingerprint and raw32
   public `key <base64>`; listing omits private material; no overwrite.
@@ -35,5 +49,5 @@
 - Default test-runner file concurrency restored; isolated temporary directories
   and metadata mocks reduce disk I/O without increasing timeouts. Existing lint
   covers packages; no TypeScript configuration change.
-- Deferred: dev/build/bundle/create scaffolding, full JS manifest/environment
+- Deferred: bundle/create scaffolding, full JS manifest/environment
   validation, runtime/updater, publication and Rust/JS cross-reader tests.

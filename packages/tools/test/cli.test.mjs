@@ -17,7 +17,23 @@ async function scratch(run) {
   try {
     await mkdir(dir); await writeFile(path.join(dir, 'alef.ktav'), 'app: example\n');
     await run({ root, dir, home, cli: (args, cwd = dir) => invoke(args, cwd, home) });
-  } finally { await rm(root, { recursive: true, force: true }); }
+  } finally {
+    // Reap any leftover owned children (never by image name): an orphaned child
+    // keeps this process' event loop alive and its cwd locks make rm fail on Windows.
+    const kills = [];
+    for (const pid of ownedPids()) {
+      kills.push(process.platform === 'win32'
+        ? new Promise(resolve => {
+            const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+            killer.once('close', resolve); killer.once('error', resolve);
+          })
+        : Promise.resolve().then(() => { try { process.kill(-pid, 'SIGKILL'); } catch { process.kill(pid, 'SIGKILL'); } }));
+    }
+    await Promise.allSettled(kills);
+    const reapDeadline = Date.now() + 3000;
+    while (ownedPids().some(isAlive) && Date.now() < reapDeadline) await delay(50);
+    await rm(root, { recursive: true, force: true });
+  }
 }
 function invoke(args, cwd, home) {
   return new Promise((resolve, reject) => {
@@ -25,7 +41,13 @@ function invoke(args, cwd, home) {
       cwd, env: { ...process.env, ALEF_TRON_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = ''; let stderr = ''; let childFailure;
-    const stop = message => { childFailure ??= new Error(message); child.kill('SIGKILL'); };
+    // Kill the driver's whole tree by its PID (never by image name) so descendants holding the pipes cannot hang the test.
+    const killAll = () => {
+      if (!child.pid || child.exitCode !== null) return;
+      if (process.platform === 'win32') spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      else { try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } } }
+    };
+    const stop = message => { childFailure ??= new Error(message); killAll(); child.kill('SIGKILL'); };
     const timer = setTimeout(() => stop('CLI child exceeded its timeout'), 30000);
     child.stdout.on('data', bytes => { stdout += bytes; if (stdout.length > 65536) stop('CLI stdout exceeded its bound'); });
     child.stderr.on('data', bytes => { stderr += bytes; if (stderr.length > 65536) stop('CLI stderr exceeded its bound'); });
@@ -150,4 +172,391 @@ test('the_pack_command_names_the_entry_when_private_material_or_a_manifest_is_in
   failure(await cli(['pack', dir, '--unsigned']), /copied.pem.*private key forbidden/);
   await rm(copy); await rm(path.join(dir, 'alef.ktav'));
   failure(await cli(['pack', dir, '--unsigned']), /alef.ktav/);
+}));
+
+// Workflow coverage lives here: the test directory has its seven allowed entries.
+async function fakeProject(dir, config = {}, source = "await mkdir('dist',{recursive:true}); await writeFile('dist/index.html','web');") {
+  await writeFile(path.join(dir, 'fake-build.mjs'), `import {mkdir,writeFile} from 'node:fs/promises';\n${source}\n`);
+  const command = `"${process.execPath}" fake-build.mjs`;
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': { build: command, ...config } }));
+  return command;
+}
+async function workflow() {
+  return { ...await import('../src/workflow/project.mjs'), ...await import('../src/index.mjs') };
+}
+
+test('build assembles unchanged manifest root icon and web tree with pack roundtrip', bounded, () => scratch(async ({ dir, root }) => {
+  const { build } = await workflow();
+  const bytes = Buffer.from('id: org.example.app\r\nversion:: 1.0.0\r\nassets: web/build\r\n');
+  await writeFile(path.join(dir, 'alef.ktav'), bytes);
+  await writeFile(path.join(dir, 'icon.png'), 'icon');
+  await fakeProject(dir);
+  const result = await build(dir, { stdio: 'ignore' });
+  assert.equal(result.dir, path.join(dir, 'app-build'));
+  assert.deepEqual(await readFile(path.join(result.dir, 'alef.ktav')), bytes);
+  assert.equal(await readFile(path.join(result.dir, 'icon.png'), 'utf8'), 'icon');
+  assert.equal(await readFile(path.join(result.dir, 'web/build/index.html'), 'utf8'), 'web');
+  const out = path.join(root, 'built.alef');
+  await pack(result.dir, { unsigned: true, out });
+  assert.deepEqual((await verify(out)).entries.map(entry => entry.name), ['META-INF/hashes', 'alef.ktav', 'icon.png', 'web/build/index.html']);
+}));
+
+test('shared reader validates supported assets spellings and rejects unsafe or uncertain encodings', bounded, () => scratch(async ({ dir }) => {
+  const { readProject } = await workflow();
+  for (const line of ['assets: web/build', '"assets": "web/build"', "'assets':: web/build", '`assets`: `web/build`', 'assets: ((\nweb/build\n))']) {
+    await writeFile(path.join(dir, 'alef.ktav'), `## assets: decoy\n${line}\n`);
+    assert.equal((await readProject(dir)).manifest.assets, 'web/build'); await check(dir);
+  }
+  for (const value of ['../dist', './dist', '/dist', 'a//b', 'a\\b', 'NUL.txt', 'COM1/a', 'dist.', 'a~1', 'meta-inf/a', 'alef.ktav/a', 'icon.png/a', 'null', 'true', '123', '[]', '{}', '"a\\u002fb"', '((\ndist \n))']) {
+    await writeFile(path.join(dir, 'alef.ktav'), `assets: ${value}\n`);
+    await assert.rejects(check(dir), /assets/); await assert.rejects(readProject(dir), /assets/);
+  }
+  for (const text of ['assets: dist\nassets: other\n', '"a\\u0073sets": dist\n', '{ assets: dist, name: x }']) {
+    await writeFile(path.join(dir, 'alef.ktav'), text); await assert.rejects(check(dir), /assets/);
+  }
+  await writeFile(path.join(dir, 'alef.ktav'), 'windows: [{ assets: nested }]\napp: example\n');
+  assert.equal((await readProject(dir)).manifest.assets, 'dist');
+}));
+
+test('build rejects dangerous destinations before commands or deletion', bounded, () => scratch(async ({ root, dir }) => {
+  const { build } = await workflow();
+  await fakeProject(dir, {}, "await writeFile('ran','yes'); await mkdir('dist',{recursive:true});");
+  await mkdir(path.join(dir, 'protected')); await writeFile(path.join(dir, 'protected/package.json'), '{}');
+  await mkdir(path.join(dir, 'repo/.git'), { recursive: true });
+  for (const out of [dir, root, path.join(dir, '..', 'app'), 'dist', 'dist/nested', 'protected', 'repo', path.join(dir, 'alef.ktav')]) {
+    await assert.rejects(build(dir, { out, stdio: 'ignore' }), /Unsafe|Protected/);
+    await assert.rejects(readFile(path.join(dir, 'ran')), /ENOENT/);
+  }
+  if (process.platform === 'win32') {
+    const { spawnSync } = await import('node:child_process');
+    const short = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `for %I in ("${dir}") do @echo %~sI`], { encoding: 'utf8', timeout: 5000 }).stdout?.trim();
+    if (short) await assert.rejects(build(dir, { out: short, stdio: 'ignore' }), /Unsafe|Protected/);
+  }
+  const alias = path.join(root, 'alias');
+  try { await symlink(dir, alias, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (error.code === 'EPERM') return; throw error; }
+  await assert.rejects(build(dir, { out: alias, stdio: 'ignore' }), /Symlink|Unsafe/);
+  await assert.rejects(build(dir, { out: path.join(alias, 'dist', 'absent'), stdio: 'ignore' }), /overlaps source/);
+  await mkdir(path.join(dir, 'nested-output'));
+  await symlink(path.join(root, 'alias'), path.join(dir, 'nested-output/link'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(build(dir, { out: 'nested-output', stdio: 'ignore' }), /Symlink.*link/);
+  // Parent aliases are allowed when the canonical destination is safe.
+  const result = await build(alias, { out: path.join(alias, 'assembled'), stdio: 'ignore' });
+  assert.equal(result.dir, path.join(dir, 'assembled'));
+}));
+
+test('build rejects missing outDir symlink entries and command failures with bounded timeouts', bounded, () => scratch(async ({ root, dir }) => {
+  const { build } = await workflow();
+  await fakeProject(dir, {}, '');
+  await assert.rejects(build(dir, { stdio: 'ignore' }), /Missing outDir/);
+  await fakeProject(dir, {}, 'process.exit(7);');
+  await assert.rejects(build(dir, { stdio: 'ignore' }), /exit 7/);
+  await fakeProject(dir, {}, 'setInterval(() => {}, 1000);');
+  await assert.rejects(build(dir, { timeoutMs: 200, stdio: 'ignore' }), /timed out/);
+  await fakeProject(dir);
+  await mkdir(path.join(dir, 'dist')); await writeFile(path.join(root, 'outside'), 'untouched');
+  try { await symlink(path.join(root, 'outside'), path.join(dir, 'dist/linked')); }
+  catch (error) { if (error.code === 'EPERM') return; throw error; }
+  await assert.rejects(build(dir, { stdio: 'ignore' }), /Symlink.*linked/);
+  assert.equal(await readFile(path.join(root, 'outside'), 'utf8'), 'untouched');
+}));
+
+test('project config hygiene and timeout validation precede command side effects', bounded, () => scratch(async ({ dir }) => {
+  const { build, readProject } = await workflow();
+  await fakeProject(dir, {}, "await writeFile('ran','yes');");
+  await writeFile(path.join(dir, 'alef.ktav'), 'app:\tx\n');
+  await assert.rejects(build(dir, { stdio: 'ignore' }), /tabs/);
+  await assert.rejects(readFile(path.join(dir, 'ran')), /ENOENT/);
+  await writeFile(path.join(dir, 'alef.ktav'), 'app: example\n');
+  for (const config of [null, [], { build: 1 }, { build: '' }, { dev: [] }, { outDir: '' }, { devUrl: 'file:///tmp' }]) {
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': config }));
+    await assert.rejects(readProject(dir), /package.json/);
+  }
+  await writeFile(path.join(dir, 'package.json'), '{'); await assert.rejects(readProject(dir), /package.json/);
+  await fakeProject(dir);
+  for (const timeoutMs of [0, -1, Infinity, 1.5, '100']) await assert.rejects(build(dir, { timeoutMs }), /timeoutMs/);
+  await assert.rejects(readFile(path.join(dir, 'ran')), /ENOENT/);
+}));
+
+test('project npm defaults and optional package config execute fixed script names', bounded, () => scratch(async ({ dir }) => {
+  const { build, readProject } = await workflow();
+  const empty = await readProject(dir); assert.equal(empty.devUrl, undefined); assert.equal(empty.outDir, path.join(dir, 'dist'));
+  await assert.rejects(build(dir), /no build command/);
+  await fakeProject(dir);
+  const command = 'node fake-build.mjs';
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ scripts: { build: command, dev: command } }));
+  const project = await readProject(dir);
+  assert.deepEqual(project.build, { npm: 'build' }); assert.deepEqual(project.dev, { npm: 'dev' });
+  const result = await build(dir, { stdio: 'ignore', timeoutMs: 30000 });
+  assert.equal(await readFile(path.join(result.dir, 'dist/index.html'), 'utf8'), 'web');
+}));
+
+// Dev workflow coverage: real loopback servers, fake runtime shims, bounded waits.
+import { realpath, stat } from 'node:fs/promises';
+import net from 'node:net';
+import { pathToFileURL } from 'node:url';
+import { dev, findRuntime, ownedPids } from '../src/workflow/dev.mjs';
+
+const isAlive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function assertDead(pid) {
+  const deadline = Date.now() + 5000;
+  while (isAlive(pid) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(!isAlive(pid), `pid ${pid} should have exited`);
+}
+async function freePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => { const { port } = server.address(); server.close(() => resolve(port)); });
+  });
+}
+async function devProject(dir, port, { devUrlPort, dieAfterMs } = {}) {
+  const exit = dieAfterMs === undefined ? '' : `setTimeout(() => process.exit(3), ${dieAfterMs});\n`;
+  await writeFile(path.join(dir, 'fake-dev.mjs'),
+    `import http from 'node:http';import{appendFile,writeFile} from 'node:fs/promises';\n` +
+    `await writeFile(${JSON.stringify(path.join(dir, 'dev-pid.txt'))},String(process.pid));\n` +
+    `http.createServer((q,s)=>{appendFile(${JSON.stringify(path.join(dir, 'dev-log.txt'))},'hit\\n').catch(()=>{});s.end('ok');})` +
+    `.listen(${port},'127.0.0.1');\n${exit}`);
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': {
+    dev: `"${process.execPath}" fake-dev.mjs`, devUrl: `http://127.0.0.1:${devUrlPort ?? port}`,
+  } }));
+}
+const devPid = async dir => Number(await readFile(path.join(dir, 'dev-pid.txt'), 'utf8'));
+async function runtimeShim(root) {
+  const log = path.join(root, 'runtime-log.json');
+  const pid = path.join(root, 'runtime-pid.txt');
+  const script = path.join(root, 'fake-runtime.mjs');
+  await writeFile(script,
+    `import{writeFile} from 'node:fs/promises';import{spawn} from 'node:child_process';
+` +
+    `const grandchild = ${JSON.stringify(path.join(root, 'runtime-grandchild.txt'))};
+` +
+    `let extra = null;
+` +
+    `if (process.env.FAKE_RUNTIME_GRANDCHILD) {
+` +
+    `  extra = spawn(process.execPath, ['-e','setTimeout(()=>{},60000)'], { stdio: 'ignore' });
+` +
+    `  await writeFile(grandchild, String(extra.pid));
+` +
+    `}
+` +
+    `await Promise.all([writeFile(${JSON.stringify(log)},JSON.stringify(process.argv.slice(2))),` +
+    `writeFile(${JSON.stringify(pid)},String(process.pid))]);
+` +
+    `if (process.env.FAKE_RUNTIME_ASSERT_LAST) {
+` +
+    `  const args = process.argv.slice(2);
+` +
+    `  const separator = args.indexOf('--');
+` +
+    `  const last = args.indexOf(process.env.FAKE_RUNTIME_ASSERT_LAST);
+` +
+    `  if (last !== -1 && (separator === -1 || separator > last)) process.exit(9);
+` +
+    `}
+` +
+    `await new Promise(resolve => setTimeout(resolve, Number(process.env.FAKE_RUNTIME_LIVE_MS ?? 0)));
+` +
+    `process.exit(Number(process.env.FAKE_RUNTIME_EXIT ?? 0));
+`);
+  const shim = path.join(root, process.platform === 'win32' ? 'runtime-shim.cmd' : 'runtime-shim');
+  const command = `"${process.execPath}" "${script}"`;
+  await writeFile(shim, process.platform === 'win32' ? `@echo off\r\n${command} %*\r\n` : `#!/bin/sh\nexec ${command} "$@"\n`, { mode: 0o755 });
+  return { shim, log, pid };
+}
+
+test('dev starts the server waits for the url then runs the runtime with exact argv and passthrough args', bounded, () => scratch(async ({ dir, root }) => {
+  const port = await freePort();
+  await devProject(dir, port);
+  const { shim, log } = await runtimeShim(root);
+  process.env.FAKE_RUNTIME_ASSERT_LAST = '--help';
+  try {
+    assert.deepEqual(await dev(dir, { alefBin: shim, devStdio: 'ignore', appArgs: ['--help'] }), { code: 0 });
+  } finally { delete process.env.FAKE_RUNTIME_ASSERT_LAST; }
+  assert.deepEqual(JSON.parse(await readFile(log, 'utf8')),
+    ['--app', await realpath(dir), '--dev-url', `http://127.0.0.1:${port}`, '--', '--help']);
+  assert.match(await readFile(path.join(dir, 'dev-log.txt'), 'utf8'), /hit/);
+  // Ordering: the dev server answered (and logged) before the runtime was spawned.
+  assert.ok((await stat(path.join(dir, 'dev-log.txt'))).mtimeMs <= (await stat(log)).mtimeMs + 50);
+  await assertDead(await devPid(dir));
+  assert.deepEqual(ownedPids(), []);
+  // No app arguments: no trailing separator, exact argv.
+  assert.deepEqual(await dev(dir, { alefBin: shim, devStdio: 'ignore' }), { code: 0 });
+  assert.deepEqual(JSON.parse(await readFile(log, 'utf8')),
+    ['--app', await realpath(dir), '--dev-url', `http://127.0.0.1:${port}`]);
+  await assertDead(await devPid(dir));
+  assert.deepEqual(ownedPids(), []);
+}));
+
+test('dev rejects unsafe cmd.exe metacharacters in app arguments before spawning the .cmd shim', bounded, () => scratch(async ({ dir, root }) => {
+  const port = await freePort();
+  await devProject(dir, port);
+  const { shim } = await runtimeShim(root);
+  if (process.platform !== 'win32') return; // the shim is a plain executable on posix
+  await assert.rejects(dev(dir, { alefBin: shim, devStdio: 'ignore', appArgs: ['a&b'] }),
+    /cmd\.exe metacharacter/);
+  assert.deepEqual(ownedPids(), []);
+  await assert.rejects(readFile(path.join(root, 'runtime-pid.txt')), /ENOENT/);
+}));
+
+test('dev resolves the runtime exit code and kills the dev server when the runtime exits', bounded, () => scratch(async ({ dir, root }) => {
+  const port = await freePort();
+  await devProject(dir, port);
+  const { shim } = await runtimeShim(root);
+  process.env.FAKE_RUNTIME_EXIT = '7';
+  try { assert.deepEqual(await dev(dir, { alefBin: shim, devStdio: 'ignore' }), { code: 7 }); }
+  finally { delete process.env.FAKE_RUNTIME_EXIT; }
+  await assertDead(await devPid(dir));
+  assert.deepEqual(ownedPids(), []);
+}));
+
+test('dev kills the runtime and reports the reason when the dev server dies first', bounded, () => scratch(async ({ dir, root }) => {
+  const port = await freePort();
+  await devProject(dir, port, { dieAfterMs: 1500 });
+  const { shim } = await runtimeShim(root);
+  process.env.FAKE_RUNTIME_LIVE_MS = '5000';
+  process.env.FAKE_RUNTIME_GRANDCHILD = '1';
+  let grandchildPid;
+  try {
+    await assert.rejects(dev(dir, { alefBin: shim, devStdio: 'ignore' }), /Dev server died.*exit 3/);
+    grandchildPid = Number(await readFile(path.join(root, 'runtime-grandchild.txt'), 'utf8'));
+  } finally { delete process.env.FAKE_RUNTIME_LIVE_MS; delete process.env.FAKE_RUNTIME_GRANDCHILD; }
+  await assertDead(await devPid(dir));
+  await assertDead(Number(await readFile(path.join(root, 'runtime-pid.txt'), 'utf8')));
+  if (grandchildPid) await assertDead(grandchildPid);
+  assert.deepEqual(ownedPids(), []);
+}));
+
+test('dev times out kills the dev server and rejects when the url never answers', bounded, () => scratch(async ({ dir, root }) => {
+  const port = await freePort();
+  await devProject(dir, port, { devUrlPort: 1 }); // nothing listens on port 1
+  const { shim } = await runtimeShim(root);
+  await assert.rejects(dev(dir, { alefBin: shim, devStdio: 'ignore', readyTimeoutMs: 300 }),
+    /not ready within 300 ms/);
+  await assertDead(await devPid(dir));
+  assert.deepEqual(ownedPids(), []);
+}));
+
+test('dev rejects a missing dev command or missing devUrl and invalid timeouts before spawning anything', bounded, () => scratch(async ({ dir }) => {
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': { devUrl: 'http://127.0.0.1:9' } }));
+  await assert.rejects(dev(dir, { devStdio: 'ignore' }), /no dev command or scripts\.dev/);
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': { dev: 'node nothing.mjs' } }));
+  await assert.rejects(dev(dir, { devStdio: 'ignore' }), /dev command without alef-tron\.devUrl/);
+  await devProject(dir, 1);
+  for (const readyTimeoutMs of [0, -1, 1.5, '100', Infinity]) await assert.rejects(dev(dir, { readyTimeoutMs, devStdio: 'ignore' }), /timeoutMs/);
+  assert.deepEqual(ownedPids(), []);
+}));
+
+test('findRuntime resolves ALEF_BIN runtime module PATH and reports all three places when absent', bounded, () => scratch(async ({ root, dir }) => {
+  const saved = process.env.ALEF_BIN; delete process.env.ALEF_BIN;
+  try {
+    assert.equal(await findRuntime(dir, { alefBin: 'custom-alef' }), 'custom-alef');
+    const modulePath = path.join(root, 'fake-runtime-module.mjs');
+    await writeFile(modulePath, 'export function getRuntimePath() { return "module-alef"; }\n');
+    assert.equal(await findRuntime(dir, { runtimeModule: pathToFileURL(modulePath).href }), 'module-alef');
+    const bin = path.join(root, 'bin'); await mkdir(bin);
+    const name = process.platform === 'win32' ? 'alef.exe' : 'alef';
+    await writeFile(path.join(bin, name), 'x', { mode: 0o755 });
+    assert.equal(await findRuntime(dir, { path: bin }), path.join(bin, name));
+    await mkdir(path.join(root, 'empty'));
+    await assert.rejects(findRuntime(dir, { path: path.join(root, 'empty') }), /ALEF_BIN.*getRuntimePath\(\).*PATH/);
+  } finally { if (saved !== undefined) process.env.ALEF_BIN = saved; }
+}));
+
+test('dev kills both owned children and exits nonzero when interrupted on posix', { skip: process.platform === 'win32', timeout: 300000 }, () => scratch(async ({ dir, root }) => {
+  // On win32 child.kill('SIGINT') is unreliable, so this test is posix-only.
+  const port = await freePort();
+  await devProject(dir, port);
+  const { shim, pid: runtimePid } = await runtimeShim(root);
+  const driver = path.join(root, 'signal-driver.mjs');
+  await writeFile(driver, `import { dev } from ${JSON.stringify(pathToFileURL(fileURLToPath(new URL('../src/workflow/dev.mjs', import.meta.url))).href)};\n` +
+    'try { await dev(process.argv[2], { alefBin: process.argv[3], devStdio: "ignore" }); process.exit(process.exitCode ?? 0); }\n' +
+    'catch (error) { console.error(error.message); process.exit(process.exitCode ?? 1); }\n');
+  // Detached on posix so the tree-kill safety net can signal the driver's whole group.
+  // The runtime must outlive the signal: it lives a minute and starts a grandchild of its own.
+  const env = { ...process.env, FAKE_RUNTIME_LIVE_MS: '60000', FAKE_RUNTIME_GRANDCHILD: '1' };
+  const child = spawn(process.execPath, [driver, dir, shim], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+  const deadline = Date.now() + 10000;
+  while (!(await exists(path.join(root, 'runtime-log.json'))) && Date.now() < deadline) await delay(50);
+  assert.ok(await exists(path.join(root, 'runtime-log.json')), 'runtime did not start within 10 s');
+  child.kill('SIGINT');
+  // Bound the driver close; on expiry kill the DRIVER's whole tree by its PID and fail instead of hanging.
+  const [code] = await new Promise(resolve => {
+    const killer = setTimeout(() => {
+      if (process.platform === 'win32') spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      else { try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } } }
+      resolve([null, null]);
+    }, 15000);
+    child.once('close', (c, s) => { clearTimeout(killer); resolve([c, s]); });
+  });
+  assert.equal(code, 130);
+  await assertDead(await devPid(dir)); await assertDead(Number(await readFile(runtimePid, 'utf8')));
+  await assertDead(Number(await readFile(path.join(root, 'runtime-grandchild.txt'), 'utf8')));
+  assert.deepEqual(ownedPids(), []);
+}));
+
+test('the build command prints the directory and the dev command validates its usage', bounded, () => scratch(async ({ cli, dir }) => {
+  await fakeProject(dir);
+  assert.equal(success(await cli(['build', dir])).trim(), path.join(dir, 'app-build'));
+  assert.match(success(await cli(['--help'])), /alef-tron build/);
+  assert.match(success(await cli(['--help'])), /alef-tron dev/);
+  failure(await cli(['build', dir, 'extra']), /Usage: build/);
+  failure(await cli(['dev', dir, 'extra']), /Usage: dev/);
+  failure(await cli(['dev', dir, '--ready-timeout', 'x']), /--ready-timeout must be a positive integer/);
+  failure(await cli(['dev', dir, '--ready-timeout']), /Missing value: --ready-timeout/);
+}));
+
+test('the dev command starts the server reports the missing runtime and kills the server', bounded, () => scratch(async ({ cli, dir }) => {
+  const port = await freePort();
+  await devProject(dir, port);
+  const saved = process.env.ALEF_BIN; delete process.env.ALEF_BIN;
+  try { failure(await cli(['dev', dir, '--ready-timeout', '15000']), /runtime executable not found/i); }
+  finally { if (saved !== undefined) process.env.ALEF_BIN = saved; }
+  await assertDead(await devPid(dir));
+}));
+
+test('build rejects an ancestor output before the command runs and still builds to a safe sibling with outDir outside the project', bounded, () => scratch(async ({ root, dir }) => {
+  const { build } = await workflow();
+  const sibling = path.join(root, 'out');
+  await writeFile(path.join(dir, 'alef.ktav'), 'app: example\nassets: web/build\n');
+  await mkdir(path.join(sibling, 'dist'), { recursive: true });
+  await writeFile(path.join(sibling, 'dist', 'index.html'), 'web');
+  await fakeProject(dir, { outDir: sibling }, "await writeFile('ran','yes');");
+  await assert.rejects(build(dir, { out: root, stdio: 'ignore' }), /Protected output entry/);
+  await assert.rejects(readFile(path.join(dir, 'ran')), /ENOENT/);
+  const result = await build(dir, { out: path.join(root, 'safe'), stdio: 'ignore' });
+  assert.equal(await readFile(path.join(dir, 'ran'), 'utf8'), 'yes');
+  assert.equal(await readFile(path.join(result.dir, 'web/build/dist/index.html'), 'utf8'), 'web');
+}));
+
+test('the_cli_dev_command_propagates_the_runtime_exit_code_and_leaves_no_server_behind', bounded, () => scratch(async ({ cli, dir, root }) => {
+  const port = await freePort();
+  await devProject(dir, port);
+  const { shim } = await runtimeShim(root);
+  const saved = process.env.ALEF_BIN;
+  process.env.ALEF_BIN = shim;
+  try {
+    process.env.FAKE_RUNTIME_EXIT = '7';
+    try { const result = await cli(['dev', dir, '--ready-timeout', '15000']); assert.equal(result.code, 7); assert.equal(result.stderr, ''); }
+    finally { delete process.env.FAKE_RUNTIME_EXIT; }
+    const clean = await cli(['dev', dir, '--ready-timeout', '15000']);
+    assert.equal(clean.code, 0); assert.equal(clean.stderr, '');
+  } finally { if (saved !== undefined) process.env.ALEF_BIN = saved; else delete process.env.ALEF_BIN; }
+  assert.match(await readFile(path.join(dir, 'dev-log.txt'), 'utf8'), /hit/);
+  await assertDead(await devPid(dir));
+}));
+
+async function exists(file) { try { await stat(file); return true; } catch { return false; } }
+
+test('killTree returns only after its process is reaped', { skip: process.platform === 'win32', timeout: 60000 }, () => scratch(async ({ dir }) => {
+  const { killTree, startCommand } = await import('../src/workflow/process.mjs');
+  // The shell execs a program that ignores SIGTERM, so only SIGKILL ends it.
+  const shell = `exec "${process.execPath}" -e "process.on('SIGTERM', () => {}); setTimeout(() => {}, 60000)"`;
+  const child = startCommand({ shell }, { cwd: dir, stdio: 'ignore' });
+  await delay(500);
+  await killTree(child);
+  // No polling here: a process that is still dying or not yet reaped when killTree returns fails.
+  assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
 }));
