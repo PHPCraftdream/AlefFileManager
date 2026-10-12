@@ -224,8 +224,9 @@ async fn what_the_user_substituted_goes_nowhere_and_nothing_comes() {
 
 #[tokio::test]
 async fn a_datagram_that_found_nobody_does_not_stop_the_socket() {
-    let (gone, gone_port) = peer().await;
-    drop(gone);
+    // Below the ephemeral range: nobody holds it, and no socket of a parallel test can be given
+    // it, as it could be given a port that this test had bound and freed.
+    let gone_port = 1;
     let (live, _) = peer().await;
     let app = app(&["listen:127.0.0.1:*", "udp:127.0.0.1:*"]).await;
     let mut page = bind(&app).await;
