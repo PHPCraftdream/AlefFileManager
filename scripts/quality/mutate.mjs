@@ -134,7 +134,7 @@ export function run(argv, deps = {}) {
   const { list: listArgument, shard, filter } = parseArgv(argv);
   let regex = null;
   if (filter !== null) {
-    try { regex = new RegExp(filter); } catch (error) { throw new Error(`--filter is not a valid regular expression: ${error.message}`); }
+    try { regex = new RegExp(filter); } catch (error) { throw new Error(`--filter is not a valid regular expression: ${error.message}`, { cause: error }); }
   }
   const shardParts = shard === null ? null : parseShard(shard);
   let mutations = loadList(listArgument, root);
