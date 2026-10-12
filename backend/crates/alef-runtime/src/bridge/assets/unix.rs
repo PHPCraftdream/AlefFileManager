@@ -42,7 +42,16 @@ struct Dirent {
 }
 unsafe extern "C" {
     fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
+    // Intel macOS keeps a legacy 32-bit-inode dirent under the plain names; Dirent is the 64-bit one.
+    #[cfg_attr(
+        all(target_os = "macos", target_arch = "x86_64"),
+        link_name = "fdopendir$INODE64"
+    )]
     fn fdopendir(fd: c_int) -> *mut c_void;
+    #[cfg_attr(
+        all(target_os = "macos", target_arch = "x86_64"),
+        link_name = "readdir$INODE64"
+    )]
     fn readdir(dir: *mut c_void) -> *mut Dirent;
     #[cfg(target_os = "macos")]
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
