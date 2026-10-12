@@ -1,0 +1,22 @@
+{
+  "name": "{{PACKAGE}}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": { "@alef-tron/api": "{{API}}" },
+  "devDependencies": {
+    "@alef-tron/tools": "{{TOOLS}}",
+    "vite": "{{VITE}}"
+  },
+  "alef-tron": {
+    "dev": "npm run dev",
+    "devUrl": "http://127.0.0.1:3000",
+    "build": "npm run build",
+    "outDir": "dist"
+  }
+}
