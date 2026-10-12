@@ -175,6 +175,12 @@ jobs:
       - name: "@alef-tron/tools tests"
         run: npm run test:tools
 
+      - name: "create-alef-tron tests"
+        run: npm run test:create
+
+      - name: "@alef-tron/runtime tests"
+        run: npm run test:runtime
+
       # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
       - name: Build (Rust, без frontend)
         if: runner.os != 'Linux'
