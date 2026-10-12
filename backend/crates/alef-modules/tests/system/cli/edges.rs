@@ -235,7 +235,10 @@ async fn a_terminal_killed_with_stalled_credit_keeps_its_prefix_and_reports_the_
     let id = StreamId(opened["output"].as_u64().unwrap());
     let session = app.session();
     let mut reader = session.streams().reader(id).unwrap();
-    // Require completed output beyond every retained slot before accepting a stall.
+    // Completed rows before a stall counts as one that fills the retained slots. A Unix terminal
+    // holds the child back by itself after about 270-290 rows. ConPTY absorbs more than the 256 KiB
+    // capture buffer, the 8 KiB window and a 32 KiB chunk, so a pause below that is a scheduling one.
+    let full = if cfg!(windows) { 305 } else { 250 };
     let held = tokio::time::timeout(Duration::from_secs(30), async {
         let (mut rows, mut since) = (0, 0);
         loop {
@@ -246,7 +249,7 @@ async fn a_terminal_killed_with_stalled_credit_keeps_its_prefix_and_reports_the_
             if let (Some(now), Some(beat)) = (numbers.next(), numbers.next()) {
                 if now != rows {
                     (rows, since) = (now, beat);
-                } else if rows >= 305 && beat >= since + 6 {
+                } else if rows >= full && beat >= since + 6 {
                     break;
                 }
             }
