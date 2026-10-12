@@ -684,8 +684,10 @@ permissions: {{
         let id = prepared.manifest.id.clone();
         let selected = prepared.selected_root.clone();
         let vars = package_path_vars(&id).expect("vars");
-        let error = make_package_plan(prepared.package, &selected, prepared.manifest, &vars)
-            .expect_err("$APP must be refused for an archive");
+        let error = match make_package_plan(prepared.package, &selected, prepared.manifest, &vars) {
+            Ok(_) => panic!("$APP must be refused for an archive"),
+            Err(error) => error,
+        };
         assert_eq!(error.code, ErrorCode::ManifestInvalid);
         assert_eq!(
             error.message,

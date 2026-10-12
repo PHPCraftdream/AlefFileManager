@@ -11,7 +11,7 @@ use alef_core::security::{
     authority::Authority,
     consent::Identity,
     manifest::{runtime_requirement_met, validate_package_version, Manifest},
-    scope::sidecar::is_sidecar_reference,
+    sidecar::is_sidecar_reference,
 };
 use alef_package::PackageError;
 use sha2::{Digest, Sha256};
@@ -127,7 +127,7 @@ pub fn load(path: &Path) -> Result<ApplicationSource, LoadFailure> {
 
 /// Freezes a bounded owned snapshot of the file and verifies it into a `Prepared`.
 fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
-    let mut file = std::fs::File::open(path).map_err(|error| io_failure(&error))?;
+    let mut file = std::fs::File::open(path).map_err(|error| io_failure(error))?;
     let meta = file.metadata().map_err(io_failure)?;
     if !meta.is_file() {
         return Err(not_a_package(path));
@@ -147,6 +147,11 @@ fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
         )));
     }
     let archive_digest = format!("{:x}", Sha256::digest(&bytes));
+    // `NOT_A_PACKAGE` is for input that is not a ZIP at all; a recognizable ZIP that fails
+    // the strict profile stays a format failure.
+    if !bytes.starts_with(b"PK\x03\x04") && !bytes.starts_with(b"PK\x05\x06") {
+        return Err(not_a_package(path));
+    }
     let mut package =
         alef_package::Package::from_bytes(bytes).map_err(|error| package_failure(&error))?;
 
@@ -329,7 +334,7 @@ fn not_a_package(path: &Path) -> LoadFailure {
     )
 }
 
-fn io_failure(error: &std::io::Error) -> LoadFailure {
+fn io_failure(error: std::io::Error) -> LoadFailure {
     LoadFailure {
         category: None,
         detail: format!("cannot read the package: {error}"),
@@ -355,7 +360,7 @@ mod tests {
         ]
     }
 
-    fn referenced(files: &[(&str, Vec<u8>)]) -> Vec<(&str, &[u8])> {
+    fn referenced<'a>(files: &'a [(&'static str, Vec<u8>)]) -> Vec<(&'static str, &'a [u8])> {
         files
             .iter()
             .map(|(name, bytes)| (*name, &bytes[..]))
@@ -371,7 +376,10 @@ mod tests {
     }
 
     fn category_of(result: Result<ApplicationSource, LoadFailure>) -> LoadFailure {
-        result.expect_err("expected a refusal")
+        match result {
+            Ok(_) => panic!("expected a refusal"),
+            Err(failure) => failure,
+        }
     }
 
     #[test]
@@ -695,7 +703,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("app.alef");
         std::fs::write(&path, &bytes).expect("write the package");
-        let prepared = match load(&path).expect("a package") {
+        let mut prepared = match load(&path).expect("a package") {
             ApplicationSource::Package(prepared) => *prepared,
             ApplicationSource::Directory { .. } => panic!("expected a package"),
         };

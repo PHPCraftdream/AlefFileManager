@@ -390,7 +390,7 @@ mod tests {
         let request = request_for(&app(), &wanted, &|_| None, &Consent::undecided());
         let given = answer(&[
             (&wanted[0], Decision::Allow, false),
-            (&wanted[1], Decision::Allow, false),
+            (&wanted[1], Decision::Substitute, false),
             (&wanted[2], Decision::Allow, false),
         ]);
         let (decided, trust) = validate(&request, &given).unwrap();

@@ -18,7 +18,7 @@ pub fn hashes(files: &[(&str, &[u8])]) -> Vec<u8> {
 /// The signature record over `hashes` and the hex fingerprint of the fixed test key.
 pub fn signature(hashes: &[u8]) -> (Vec<u8>, String) {
     let key = SigningKey::from_bytes(&[42; 32]);
-    let public = key.verifying_key().as_bytes();
+    let public = *key.verifying_key().as_bytes();
     let message = [b"alef-package-v1\n".as_slice(), hashes].concat();
     let record = format!(
         "alef-package 1\nkey {}\nsig {}\n",
@@ -26,7 +26,7 @@ pub fn signature(hashes: &[u8]) -> (Vec<u8>, String) {
         STANDARD.encode(key.sign(&message).to_bytes())
     )
     .into_bytes();
-    (record, format!("{:x}", Sha256::digest(public)))
+    (record, format!("{:x}", Sha256::digest(&public)))
 }
 
 /// The hex public key of the fixed test key (see [`signature`]).
@@ -51,7 +51,7 @@ pub fn signed_package(files: &[(&str, &[u8])]) -> (Vec<u8>, String) {
 
 #[allow(dead_code)]
 pub fn unsigned_package(files: &[(&str, &[u8])]) -> Vec<u8> {
-    zip(files.to_vec())
+    zip(&files.to_vec())
 }
 
 #[allow(dead_code)]

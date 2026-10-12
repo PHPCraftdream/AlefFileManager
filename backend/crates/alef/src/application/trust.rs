@@ -82,6 +82,8 @@ pub fn load(folder: &Path, app_id: &str) -> io::Result<Option<Pin>> {
         ));
     }
     #[cfg(windows)]
+    use std::os::windows::fs::MetadataExt as _;
+    #[cfg(windows)]
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -323,7 +325,7 @@ pub fn decide(
                             .to_owned(),
                     ));
                 }
-                if key != public_key {
+                if key != fingerprint {
                     return Err(TrustFailure::BadTrustKey(
                         "--trust-key must be the fingerprint of the signer of this package: \
                          it does not match the signer of this package"
@@ -511,9 +513,10 @@ mod tests {
                 r#"{{"version":1,"app_id":"{ID}","public_key":"{key}","fingerprint":"{fingerprint}","extra":1}}"#
             )
             .into_bytes(),
-            record_json(ID, &key, &fingerprint)
-                .replace("\"version\":1", "\"version\":2")
-                .into_bytes(),
+            format!(
+                r#"{{"version":2,"app_id":"{ID}","public_key":"{key}","fingerprint":"{fingerprint}"}}"#
+            )
+            .into_bytes(),
             record_json("other.id", &key, &fingerprint),
             record_json(ID, "ABCD", &fingerprint),
             record_json(ID, &key, &"0".repeat(64)),
@@ -538,6 +541,7 @@ mod tests {
 
     #[test]
     fn links_and_directories_at_the_trust_boundary_are_refused() {
+        // A directory where the record belongs is not a record.
         let folder = tempfile::tempdir().unwrap();
         std::fs::create_dir(pin_path(folder.path(), ID)).unwrap();
         assert_eq!(
@@ -548,6 +552,7 @@ mod tests {
         // creating one needs privileges.
         #[cfg(unix)]
         {
+            let folder = tempfile::tempdir().unwrap();
             let target = folder.path().join("target.json");
             std::fs::write(&target, b"{}").unwrap();
             std::os::unix::fs::symlink(&target, pin_path(folder.path(), ID)).unwrap();
@@ -714,7 +719,7 @@ mod tests {
             Some((&key, &fp(&key))),
             "digest",
             &TrustInputs {
-                trust_key: Some(key.clone()),
+                trust_key: Some(fp(&key)),
                 allow_unsigned: false,
             },
             &mut recorder(&questions, true),
@@ -749,7 +754,7 @@ mod tests {
         assert!(matches!(failure, TrustFailure::BadTrustKey(_)));
         assert_eq!(failure.exit(), 2);
         // (b) Valid hex, but another key.
-        let other = key('b');
+        let other = "b".repeat(64);
         let failure = decide(
             folder.path(),
             ID,
@@ -791,7 +796,7 @@ mod tests {
     fn a_pin_to_another_key_is_signer_changed_and_the_pin_is_kept() {
         let folder = tempfile::tempdir().unwrap();
         let key = key('a');
-        let other = key('b');
+        let other = "b".repeat(64);
         pin(folder.path(), ID, &key).unwrap();
         let questions = std::cell::RefCell::new(Vec::new());
         let failure = decide(
@@ -873,7 +878,7 @@ mod tests {
         .unwrap();
         assert_eq!(outcome, TrustOutcome::UnsignedAllowed);
         assert_eq!(
-            questions.borrow(),
+            *questions.borrow(),
             vec![TrustQuestion::Unsigned {
                 archive_digest: "digest".to_owned()
             }]
