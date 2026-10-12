@@ -192,7 +192,7 @@ test('build assembles unchanged manifest root icon and web tree with pack roundt
   await writeFile(path.join(dir, 'icon.png'), 'icon');
   await fakeProject(dir);
   const result = await build(dir, { stdio: 'ignore' });
-  assert.equal(result.dir, path.join(dir, 'app-build'));
+  assert.equal(result.dir, path.join(await realpath(dir), 'app-build'));
   assert.deepEqual(await readFile(path.join(result.dir, 'alef.ktav')), bytes);
   assert.equal(await readFile(path.join(result.dir, 'icon.png'), 'utf8'), 'icon');
   assert.equal(await readFile(path.join(result.dir, 'web/build/index.html'), 'utf8'), 'web');
@@ -242,7 +242,7 @@ test('build rejects dangerous destinations before commands or deletion', bounded
   await assert.rejects(build(dir, { out: 'nested-output', stdio: 'ignore' }), /Symlink.*link/);
   // Parent aliases are allowed when the canonical destination is safe.
   const result = await build(alias, { out: path.join(alias, 'assembled'), stdio: 'ignore' });
-  assert.equal(result.dir, path.join(dir, 'assembled'));
+  assert.equal(result.dir, path.join(await realpath(dir), 'assembled'));
 }));
 
 test('build rejects missing outDir symlink entries and command failures with bounded timeouts', bounded, () => scratch(async ({ root, dir }) => {
@@ -280,7 +280,7 @@ test('project config hygiene and timeout validation precede command side effects
 
 test('project npm defaults and optional package config execute fixed script names', bounded, () => scratch(async ({ dir }) => {
   const { build, readProject } = await workflow();
-  const empty = await readProject(dir); assert.equal(empty.devUrl, undefined); assert.equal(empty.outDir, path.join(dir, 'dist'));
+  const empty = await readProject(dir); assert.equal(empty.devUrl, undefined); assert.equal(empty.outDir, path.join(await realpath(dir), 'dist'));
   await assert.rejects(build(dir), /no build command/);
   await fakeProject(dir);
   const command = 'node fake-build.mjs';
@@ -499,7 +499,7 @@ test('dev kills both owned children and exits nonzero when interrupted on posix'
 
 test('the build command prints the directory and the dev command validates its usage', bounded, () => scratch(async ({ cli, dir }) => {
   await fakeProject(dir);
-  assert.equal(success(await cli(['build', dir])).trim(), path.join(dir, 'app-build'));
+  assert.equal(success(await cli(['build', dir])).trim(), path.join(await realpath(dir), 'app-build'));
   assert.match(success(await cli(['--help'])), /alef-tron build/);
   assert.match(success(await cli(['--help'])), /alef-tron dev/);
   failure(await cli(['build', dir, 'extra']), /Usage: build/);
