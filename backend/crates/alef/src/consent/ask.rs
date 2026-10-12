@@ -11,6 +11,7 @@ use std::{
 
 use alef_core::security::consent::{Consent, Decision, Right};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "e2e")]
 use serde_json::Value;
 
 use crate::consent::runtime_home;
@@ -55,6 +56,7 @@ pub struct Request {
     pub app: AppSummary,
     pub rights: Vec<AskedRight>,
     /// End-to-end runs only: the clicks of a user, played by the page.
+    #[cfg(feature = "e2e")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation: Option<Value>,
 }
@@ -82,7 +84,6 @@ pub fn request_for(
     wanted: &[Right],
     describe: &dyn Fn(&Right) -> Option<String>,
     stored: &Consent,
-    automation: Option<Value>,
 ) -> Request {
     Request {
         app: app.clone(),
@@ -96,7 +97,8 @@ pub fn request_for(
                 decision: stored.decided(right).then(|| stored.decision(right)),
             })
             .collect(),
-        automation,
+        #[cfg(feature = "e2e")]
+        automation: None,
     }
 }
 
@@ -228,12 +230,25 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "e2e"))]
+    #[test]
+    fn feature_off_discards_automation_from_the_question() {
+        let request = request_for(&app(), &rights(), &|_| None, &Consent::undecided());
+        let mut wire = serde_json::to_value(&request).unwrap();
+        wire["automation"] = serde_json::json!([{ "submit": true }]);
+        let decoded: Request = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, request);
+        assert!(!serde_json::to_string(&decoded)
+            .unwrap()
+            .contains("automation"));
+    }
+
     #[test]
     fn the_question_names_every_right_marks_the_risky_ones_and_shows_what_was_decided() {
         let wanted = rights();
         let mut stored = Consent::undecided();
         stored.set(wanted[2].clone(), Decision::Substitute);
-        let request = request_for(&app(), &wanted, &|_| None, &stored, None);
+        let request = request_for(&app(), &wanted, &|_| None, &stored);
         assert_eq!(request.rights.len(), 3);
         assert_eq!(request.rights[0].risk, None);
         assert!(
@@ -255,7 +270,6 @@ mod tests {
             std::slice::from_ref(&right),
             &|_| None,
             &Consent::undecided(),
-            None,
         );
         assert_eq!(request.rights[0].permission, "tray");
         assert_eq!(request.rights[0].scope, None);
@@ -277,7 +291,7 @@ mod tests {
         let describe = |right: &Right| {
             (right.permission == "cli.command").then(|| "status — Shows (git status)".to_owned())
         };
-        let request = request_for(&app(), &wanted, &describe, &Consent::undecided(), None);
+        let request = request_for(&app(), &wanted, &describe, &Consent::undecided());
         assert_eq!(
             request.rights[0].detail.as_deref(),
             Some("status — Shows (git status)")
@@ -290,7 +304,7 @@ mod tests {
     #[test]
     fn only_the_whole_answer_is_believed() {
         let wanted = rights();
-        let request = request_for(&app(), &wanted, &|_| None, &Consent::undecided(), None);
+        let request = request_for(&app(), &wanted, &|_| None, &Consent::undecided());
         let whole = answer(&[
             (&wanted[0], Decision::Substitute, false),
             (&wanted[1], Decision::Allow, true),

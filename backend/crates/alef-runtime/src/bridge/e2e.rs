@@ -12,10 +12,6 @@ use serde_json::Value;
 
 use crate::RuntimeHandle;
 
-fn enabled() -> bool {
-    std::env::var("ALEF_E2E").is_ok_and(|value| value == "1")
-}
-
 fn epoch_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -49,12 +45,16 @@ struct Once {
 }
 
 /// Registers `e2e.*` when the end-to-end mode is on.
-pub(super) fn register(registry: &mut Registry, ui: &RuntimeHandle) -> Result<(), AlefError> {
-    if !enabled() {
+pub(super) fn register(
+    registry: &mut Registry,
+    ui: &RuntimeHandle,
+    enabled: bool,
+    broken: bool,
+) -> Result<(), AlefError> {
+    if !enabled {
         return Ok(());
     }
     // Induced failure for proving that the runner detects a FAIL: corrupts every echo.
-    let broken = std::env::var("ALEF_E2E_BREAK").is_ok_and(|value| value == "1");
     registry
         .command::<Value>("e2e.echo")?
         .handler(move |ctx, args| async move {

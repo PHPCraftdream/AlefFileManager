@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `native://` protocol: application assets and the transport routes `call`/`stream`.
 pub(crate) mod commands;
+#[cfg(feature = "e2e")]
 mod e2e;
 mod events;
 mod transport;
@@ -166,6 +167,37 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         .map_err(startup)
 }
 
+/// Build the same command table for startup and registry-level tests.
+fn command_registry(
+    commands: &Commands,
+    ui: &RuntimeHandle,
+    modules: Option<ModuleInstaller>,
+    e2e_enabled: bool,
+    e2e_broken: bool,
+) -> Result<Registry, AlefError> {
+    let mut registry = commands.to_registry(ui)?;
+    ui.events().register(&mut registry)?;
+    #[cfg(feature = "e2e")]
+    e2e::register(&mut registry, ui, e2e_enabled, e2e_broken)?;
+    #[cfg(not(feature = "e2e"))]
+    let _ = (e2e_enabled, e2e_broken);
+    if let Some(install) = modules {
+        install(&mut registry, Arc::new(ui.clone()))?;
+    }
+    Ok(registry)
+}
+
+#[cfg(feature = "e2e")]
+fn e2e_decision() -> (bool, bool) {
+    let flag = |name| std::env::var(name).is_ok_and(|value| value == "1");
+    (flag("ALEF_E2E"), flag("ALEF_E2E_BREAK"))
+}
+
+#[cfg(not(feature = "e2e"))]
+fn e2e_decision() -> (bool, bool) {
+    (false, false)
+}
+
 impl Bridge {
     pub async fn new(
         commands: Commands,
@@ -221,12 +253,9 @@ impl Bridge {
         entry_url.set_fragment(Some(&fragment));
         let commands = Arc::new(commands);
         let (ui, requests) = RuntimeHandle::channel();
-        let mut registry = commands.to_registry(&ui).map_err(startup)?;
-        ui.events().register(&mut registry).map_err(startup)?;
-        e2e::register(&mut registry, &ui).map_err(startup)?;
-        if let Some(install) = options.modules {
-            install(&mut registry, Arc::new(ui.clone())).map_err(startup)?;
-        }
+        let (e2e_enabled, e2e_broken) = e2e_decision();
+        let registry = command_registry(&commands, &ui, options.modules, e2e_enabled, e2e_broken)
+            .map_err(startup)?;
         let tokens: TokenSource =
             Arc::new(|| random_token().expect("the system must provide randomness"));
         let sessions = Arc::new(SessionManager::new(tokens, options.limits));
@@ -455,7 +484,7 @@ pub(crate) mod testing {
 
     pub(crate) fn registry_of(commands: &Commands) -> Registry {
         let (ui, _requests) = RuntimeHandle::channel();
-        commands.to_registry(&ui).expect("registry")
+        command_registry(commands, &ui, None, false, false).expect("registry")
     }
 }
 
@@ -465,6 +494,61 @@ mod tests {
     use alef_core::protocol::transport::{Method, ResponseBody as Body, TransportRequest};
     use bytes::Bytes;
     use serde_json::Value;
+
+    fn registry_with_hooks(enabled: bool) -> Registry {
+        let mut commands = Commands::new();
+        commands
+            .register("app.probe", |_: Value, _| async { Ok(true) })
+            .expect("embedder command");
+        let modules: ModuleInstaller = Box::new(|registry, _host| {
+            registry
+                .command::<Value>("module.probe")?
+                .handler(
+                    |_, args| async move { Ok(alef_core::registry::command::Reply::Json(args)) },
+                )
+        });
+        let (ui, _requests) = RuntimeHandle::channel();
+        command_registry(&commands, &ui, Some(modules), enabled, false).expect("startup registry")
+    }
+
+    #[test]
+    fn shared_registry_keeps_embedder_events_and_modules_without_e2e_mode() {
+        let names = registry_with_hooks(false).command_names();
+        assert!(names.iter().any(|name| name == "app.probe"));
+        assert!(names.iter().any(|name| name == "module.probe"));
+        assert!(names.iter().any(|name| name == "runtime.events.subscribe"));
+        assert!(!names.iter().any(|name| name.starts_with("e2e.")));
+    }
+
+    #[cfg(not(feature = "e2e"))]
+    #[test]
+    fn feature_off_registry_has_no_e2e_commands_even_when_requested() {
+        let names = registry_with_hooks(true).command_names();
+        assert!(!names.iter().any(|name| name.starts_with("e2e.")));
+    }
+
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn feature_on_registry_installs_all_e2e_commands_when_enabled() {
+        let names: Vec<_> = registry_with_hooks(true)
+            .command_names()
+            .into_iter()
+            .filter(|name| name.starts_with("e2e."))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "e2e.appEnv",
+                "e2e.dropFiles",
+                "e2e.echo",
+                "e2e.flood",
+                "e2e.fsRead",
+                "e2e.fsWrite",
+                "e2e.once",
+                "e2e.report",
+            ]
+        );
+    }
 
     fn asset_response(content_type: &str, csp: Option<&str>) -> Response {
         let mut response = Response::new(

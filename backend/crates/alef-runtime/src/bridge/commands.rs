@@ -158,7 +158,15 @@ mod tests {
             .expect("register");
         let registry = testing::registry_of(&commands);
         let names = registry.command_names();
-        assert_eq!(names, vec!["app.hello", "math.double", "window.apply"]);
+        assert_eq!(
+            names,
+            vec![
+                "app.hello",
+                "math.double",
+                "runtime.events.subscribe",
+                "window.apply"
+            ]
+        );
         let session = testing::session(1).await;
         let permissions = testing::permissions();
         let ctx = || CallContext::new(session.clone(), permissions.clone());

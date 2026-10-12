@@ -72,13 +72,29 @@ impl Plan {
     }
 }
 
+const DEFAULT_LAUNCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(feature = "e2e")]
+pub fn launch_timeout_from_environment() -> Result<std::time::Duration, String> {
+    launch_timeout(
+        std::env::var_os("ALEF_E2E").as_deref(),
+        std::env::var_os("ALEF_E2E_LAUNCH_TIMEOUT_MS").as_deref(),
+    )
+}
+
+#[cfg(not(feature = "e2e"))]
+pub fn launch_timeout_from_environment() -> Result<std::time::Duration, String> {
+    Ok(DEFAULT_LAUNCH_TIMEOUT)
+}
+
 /// Test-only override: decimal milliseconds in 1..=30000, ignored outside ALEF_E2E=1.
 /// The argument form keeps timeout injection independent of process-wide environment mutation.
+#[cfg(feature = "e2e")]
 pub fn launch_timeout(
     e2e: Option<&std::ffi::OsStr>,
     value: Option<&std::ffi::OsStr>,
 ) -> Result<std::time::Duration, String> {
-    let default = std::time::Duration::from_secs(30);
+    let default = DEFAULT_LAUNCH_TIMEOUT;
     if e2e != Some(std::ffi::OsStr::new("1")) {
         return Ok(default);
     }
@@ -239,6 +255,16 @@ permissions: {{
         make_plan(dir, manifest, &vars)
     }
 
+    #[cfg(not(feature = "e2e"))]
+    #[test]
+    fn feature_off_always_uses_the_default_launch_timeout() {
+        assert_eq!(
+            launch_timeout_from_environment().unwrap(),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[cfg(feature = "e2e")]
     #[test]
     fn the_timeout_override_is_strict_bounded_and_only_enabled_for_e2e() {
         use std::{ffi::OsStr, time::Duration};

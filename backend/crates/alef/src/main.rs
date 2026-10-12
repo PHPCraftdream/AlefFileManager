@@ -10,7 +10,7 @@ use alef_launch::{
         watch, Asker, WATCH_EVERY,
     },
     permissions,
-    plan::{launch_timeout, load_manifest, make_plan, path_vars},
+    plan::{launch_timeout_from_environment, load_manifest, make_plan, path_vars},
     relaunch,
 };
 use alef_modules::{
@@ -49,6 +49,7 @@ impl From<std::io::Error> for Failure {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> ExitCode {
+    warn_end_to_end_build();
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match launch(arguments).await {
         Ok(code) => ExitCode::from(code),
@@ -66,6 +67,35 @@ async fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(feature = "e2e")]
+const HOOKS_NOTICE: &str = "this build carries the end-to-end hooks";
+
+#[cfg(feature = "e2e")]
+fn hooks_notice(mode: Option<&str>) -> Option<&'static str> {
+    (mode == Some("1")).then_some(HOOKS_NOTICE)
+}
+
+#[cfg(feature = "e2e")]
+fn warn_end_to_end_build() {
+    if let Some(notice) = hooks_notice(std::env::var("ALEF_E2E").ok().as_deref()) {
+        eprintln!("{notice}");
+    }
+}
+
+#[cfg(all(test, feature = "e2e"))]
+#[test]
+fn the_notice_of_the_hooks_is_given_only_in_an_end_to_end_run() {
+    assert_eq!(
+        hooks_notice(Some("1")),
+        Some("this build carries the end-to-end hooks")
+    );
+    assert_eq!(hooks_notice(Some("0")), None);
+    assert_eq!(hooks_notice(None), None);
+}
+
+#[cfg(not(feature = "e2e"))]
+fn warn_end_to_end_build() {}
 
 fn install_tls() -> Result<(), Failure> {
     rustls::crypto::aws_lc_rs::default_provider()
@@ -179,11 +209,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     if launch_window {
         plan.select_window_child()?;
     }
-    let limit = launch_timeout(
-        std::env::var_os("ALEF_E2E").as_deref(),
-        std::env::var_os("ALEF_E2E_LAUNCH_TIMEOUT_MS").as_deref(),
-    )
-    .map_err(Failure::Usage)?;
+    let limit = launch_timeout_from_environment().map_err(Failure::Usage)?;
     let launch_state =
         alef_modules::LaunchState::new(plan.allowed_modes(), plan.initial_mode(), limit)?;
     let (app_args, startup_urls) =

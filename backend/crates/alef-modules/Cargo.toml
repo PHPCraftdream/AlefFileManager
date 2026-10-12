@@ -6,6 +6,9 @@ rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+e2e = []
+
 [dependencies]
 alef-core = { path = "../alef-core" }
 global-hotkey = "=0.8.0"

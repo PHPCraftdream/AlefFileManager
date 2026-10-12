@@ -1,6 +1,14 @@
 // End-to-end runs only (`ALEF_E2E=1`): the runtime writes this file next to the page when the run asks
 // for it. Plays the clicks of a user from a script and reports what the page shows, so that the page
 // is tested through its own controls and not through a shortcut.
+import { call, ready } from './consent.js';
+
+ready.then(async request => {
+  if (request.automation) await automate(request.automation, call);
+}).catch(error => {
+  document.getElementById('root').textContent = `The permissions cannot be shown: ${error.message}`;
+});
+
 const same = (a, b) => a === b;
 
 function rowOf(right) {

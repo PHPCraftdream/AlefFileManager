@@ -5,12 +5,14 @@
 //!
 //! An end-to-end run (`ALEF_E2E=1` with `ALEF_E2E_DIALOGS`) answers from a script instead and
 //! shows nothing: a test must not put a dialog in front of anybody.
+#[cfg(any(test, feature = "e2e"))]
+use std::{collections::VecDeque, sync::Mutex};
+
 use std::{
-    collections::VecDeque,
     future::Future,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 use alef_core::registry::dialog::{
@@ -28,11 +30,13 @@ use crate::ui::UiReply;
 
 /// The answers an end-to-end run gives, in the order the documents ask: `[{"open": [...]}, ...]`
 /// where each entry names the dialog and holds the JSON the dialog answers with.
+#[cfg(any(test, feature = "e2e"))]
 type Script = Mutex<VecDeque<(String, Value)>>;
 
 pub(in crate::window) struct Dialogs {
     /// One dialog at a time; the others wait their turn.
     turn: Arc<Semaphore>,
+    #[cfg(feature = "e2e")]
     script: Option<Arc<Script>>,
 }
 
@@ -40,19 +44,24 @@ impl Dialogs {
     /// An end-to-end run (`ALEF_E2E=1`) always has a script, an empty one when none was given, so
     /// no such run can show a dialog.
     pub(in crate::window) fn new() -> Self {
-        let e2e = std::env::var("ALEF_E2E").is_ok_and(|value| value == "1");
-        let script = e2e.then(|| {
-            let text = std::env::var("ALEF_E2E_DIALOGS").unwrap_or_else(|_| "[]".to_owned());
-            let entries = parse_script(&text).unwrap_or_else(|error| {
-                eprintln!("ALEF_E2E_DIALOGS is unusable, every dialog will fail: {error}");
-                VecDeque::new()
-            });
-            Arc::new(Mutex::new(entries))
-        });
         Self {
             turn: Arc::new(Semaphore::new(1)),
-            script,
+            #[cfg(feature = "e2e")]
+            script: script_from(&|name| std::env::var(name).ok()),
         }
+    }
+
+    #[cfg(feature = "e2e")]
+    fn source(&self, title: &str, parent: Option<&Window>, call: DialogCall) -> Source {
+        match &self.script {
+            Some(script) => Source::Script(script.clone(), call),
+            None => Source::Native(prepare(title, parent, call)),
+        }
+    }
+
+    #[cfg(not(feature = "e2e"))]
+    fn source(&self, title: &str, parent: Option<&Window>, call: DialogCall) -> Source {
+        Source::Native(prepare(title, parent, call))
     }
 
     /// Shows `call` on top of `parent` and answers `reply` when the user is done.
@@ -65,10 +74,7 @@ impl Dialogs {
         reply: UiReply,
     ) {
         let turn = self.turn.clone();
-        let source = match &self.script {
-            Some(script) => Source::Script(script.clone(), call),
-            None => Source::Native(prepare(title, parent, call)),
-        };
+        let source = self.source(title, parent, call);
         runtime.spawn(async move {
             let answer = one_at_a_time(&turn, || reply.canceled(), source.answer()).await;
             if let Some(answer) = answer {
@@ -76,6 +82,19 @@ impl Dialogs {
             }
         });
     }
+}
+
+#[cfg(feature = "e2e")]
+fn script_from(read: &dyn Fn(&str) -> Option<String>) -> Option<Arc<Script>> {
+    let enabled = read("ALEF_E2E").is_some_and(|value| value == "1");
+    enabled.then(|| {
+        let text = read("ALEF_E2E_DIALOGS").unwrap_or_else(|| "[]".to_owned());
+        let entries = parse_script(&text).unwrap_or_else(|error| {
+            eprintln!("ALEF_E2E_DIALOGS is unusable, every dialog will fail: {error}");
+            VecDeque::new()
+        });
+        Arc::new(Mutex::new(entries))
+    })
 }
 
 /// Waits for the turn, then runs `work`; nothing runs for a request that was given up meanwhile.
@@ -98,6 +117,7 @@ async fn one_at_a_time<T>(
 
 enum Source {
     Native(Prepared),
+    #[cfg(feature = "e2e")]
     Script(Arc<Script>, DialogCall),
 }
 
@@ -105,11 +125,13 @@ impl Source {
     async fn answer(self) -> io::Result<Value> {
         match self {
             Self::Native(prepared) => prepared.run().await,
+            #[cfg(feature = "e2e")]
             Self::Script(script, call) => scripted(&script, &call),
         }
     }
 }
 
+#[cfg(any(test, feature = "e2e"))]
 fn kind_of(call: &DialogCall) -> &'static str {
     match call {
         DialogCall::Open(_) => "open",
@@ -119,6 +141,7 @@ fn kind_of(call: &DialogCall) -> &'static str {
     }
 }
 
+#[cfg(any(test, feature = "e2e"))]
 fn parse_script(text: &str) -> Result<VecDeque<(String, Value)>, String> {
     let entries: Vec<serde_json::Map<String, Value>> =
         serde_json::from_str(text).map_err(|error| error.to_string())?;
@@ -135,6 +158,7 @@ fn parse_script(text: &str) -> Result<VecDeque<(String, Value)>, String> {
 }
 
 /// The next answer of the script, if it is for this kind of dialog.
+#[cfg(any(test, feature = "e2e"))]
 fn scripted(script: &Script, call: &DialogCall) -> io::Result<Value> {
     let kind = kind_of(call);
     let next = script.lock().unwrap_or_else(|e| e.into_inner()).pop_front();
@@ -351,6 +375,24 @@ mod tests {
 
     fn script_of(text: &str) -> Script {
         Mutex::new(parse_script(text).expect("a script"))
+    }
+
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn a_script_of_answers_exists_only_in_an_end_to_end_run() {
+        let given =
+            |name: &str| (name == "ALEF_E2E_DIALOGS").then(|| r#"[{"open":null}]"#.to_owned());
+        assert!(script_from(&given).is_none());
+        let on = |name: &str| match name {
+            "ALEF_E2E" => Some("1".to_owned()),
+            "ALEF_E2E_DIALOGS" => Some(r#"[{"open":null}]"#.to_owned()),
+            _ => None,
+        };
+        assert_eq!(script_from(&on).unwrap().lock().unwrap().len(), 1);
+        let empty = |name: &str| (name == "ALEF_E2E").then(|| "1".to_owned());
+        assert_eq!(script_from(&empty).unwrap().lock().unwrap().len(), 0);
+        let off = |name: &str| (name == "ALEF_E2E").then(|| "0".to_owned());
+        assert!(script_from(&off).is_none());
     }
 
     fn open_call() -> DialogCall {

@@ -28,6 +28,7 @@ jobs:
       - name: Patched crates = published crates + the recorded changes (docs/PATCHES.md)
         run: |
           node --test scripts/supply/check-patches.test.mjs
+          node --test scripts/supply/check-no-hooks.test.mjs
           node scripts/supply/check-patches.mjs
 
   deny:

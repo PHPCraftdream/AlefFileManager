@@ -34,10 +34,29 @@ const PAGE: [(&str, &str); 3] = [
 ];
 
 /// The clicks of an end-to-end run; written only when the run asks for them.
+#[cfg(feature = "e2e")]
 const AUTOMATION: (&str, &str) = (
     "consent-e2e.js",
     include_str!("../../assets/consent/consent-e2e.js"),
 );
+
+#[cfg(feature = "e2e")]
+fn write_automation(pages: &Path, request: &Request) -> std::io::Result<()> {
+    if request.automation.is_some() && std::env::var("ALEF_E2E").is_ok_and(|value| value == "1") {
+        fs::write(pages.join(AUTOMATION.0), AUTOMATION.1)?;
+        let index = PAGE[0].1.replace(
+            "</head>",
+            "<script type=\"module\" src=\"consent-e2e.js\"></script>\n</head>",
+        );
+        fs::write(pages.join("index.html"), index)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "e2e"))]
+fn write_automation(_: &Path, _: &Request) -> std::io::Result<()> {
+    Ok(())
+}
 
 fn internal(error: impl ToString) -> AlefError {
     AlefError::new(ErrorCode::Internal, error.to_string())
@@ -94,14 +113,11 @@ pub async fn run(request_path: &Path, answer_path: &Path, icon: Vec<u8>) -> Resu
     .map_err(|e| format!("the question is damaged: {e}"))?;
     let pages = exchange_folder().join(format!("{}-page", std::process::id()));
     fs::create_dir_all(&pages).map_err(|e| format!("the page cannot be put down: {e}"))?;
-    let mut files = PAGE.to_vec();
-    if request.automation.is_some() && std::env::var("ALEF_E2E").is_ok_and(|v| v == "1") {
-        files.push(AUTOMATION);
-    }
-    for (name, text) in files {
+    for (name, text) in PAGE {
         fs::write(pages.join(name), text)
             .map_err(|e| format!("the page cannot be put down: {e}"))?;
     }
+    write_automation(&pages, &request).map_err(|e| format!("the page cannot be put down: {e}"))?;
     let shown = show(request, answer_path, &pages, icon).await;
     let _ = fs::remove_dir_all(&pages);
     shown

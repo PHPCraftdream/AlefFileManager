@@ -2,7 +2,6 @@
 //! The launcher's side of consent: where the decisions of the user are kept, whom they belong to,
 //! and how the rights an application asks for are decided before it starts.
 use std::{
-    collections::BTreeMap,
     fmt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -16,21 +15,30 @@ use alef_core::{
         permissions::PermissionSet,
     },
 };
+#[cfg(feature = "e2e")]
 use serde_json::Value;
+#[cfg(any(test, feature = "e2e"))]
+use std::collections::BTreeMap;
 
 pub mod ask;
+#[cfg(feature = "e2e")]
+mod hooks;
+#[cfg(feature = "e2e")]
+use hooks::{scripted_asker, window_asker, with_automation};
 #[cfg(test)]
 pub(crate) mod fixtures;
 
 use ask::{ask_in_window, request_for, AppSummary};
 
 /// End-to-end runs only (`ALEF_E2E=1`): the clicks of the user in the consent window, as JSON.
+#[cfg(feature = "e2e")]
 pub const UI_VARIABLE: &str = "ALEF_E2E_CONSENT_UI";
 
 /// Moves the data folder of the runtime (decisions of the users, among others).
 pub const HOME_VARIABLE: &str = "ALEF_HOME";
 
 /// End-to-end runs only (`ALEF_E2E=1`): the answers to the questions, `right=decision;...`.
+#[cfg(feature = "e2e")]
 pub const SCRIPT_VARIABLE: &str = "ALEF_E2E_CONSENT";
 
 /// The data folder of the runtime: nothing in it belongs to an application.
@@ -76,6 +84,7 @@ pub fn identity_of(app_dir: &Path, id: &str) -> Result<Identity, AlefError> {
 
 /// The answers to the questions: `right=decision` separated by `;`, and `*=decision` for every
 /// right not named. A right that is neither named nor covered by `*` stays unanswered.
+#[cfg(any(test, feature = "e2e"))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Script {
     named: BTreeMap<Right, Decision>,
@@ -102,6 +111,7 @@ pub fn word_of(decision: Decision) -> &'static str {
     }
 }
 
+#[cfg(any(test, feature = "e2e"))]
 impl Script {
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut script = Self::default();
@@ -130,9 +140,13 @@ pub enum Asker {
     /// `--grant`: every right not decided yet gets this decision.
     Grant(Decision),
     /// A fixed table of answers (end-to-end runs).
+    #[cfg(any(test, feature = "e2e"))]
     Script(Script),
-    /// The user, in the consent window; `automation` is the clicks that an end-to-end run plays.
-    Window { automation: Option<Value> },
+    /// The user, in the consent window.
+    Window {
+        #[cfg(feature = "e2e")]
+        automation: Option<Value>,
+    },
     /// Nobody to ask: the application does not start with rights nobody decided on.
     Nobody,
 }
@@ -152,25 +166,40 @@ impl Asker {
         if let Some(decision) = grant {
             return Ok(Self::Grant(decision));
         }
-        let end_to_end = std::env::var("ALEF_E2E").is_ok_and(|value| value == "1");
-        if end_to_end {
-            if let Ok(text) = std::env::var(SCRIPT_VARIABLE) {
-                return Script::parse(&text)
-                    .map(Self::Script)
-                    .map_err(|error| format!("{SCRIPT_VARIABLE}: {error}"));
-            }
+        if let Some(script) = scripted_asker()? {
+            return Ok(script);
         }
         if no_prompt || !can_show_a_window() {
             return Ok(Self::Nobody);
         }
-        let automation = match std::env::var(UI_VARIABLE) {
-            Ok(text) if end_to_end => Some(
-                serde_json::from_str(&text).map_err(|error| format!("{UI_VARIABLE}: {error}"))?,
-            ),
-            _ => None,
-        };
-        Ok(Self::Window { automation })
+        window_asker()
     }
+}
+
+#[cfg(not(feature = "e2e"))]
+fn scripted_asker() -> Result<Option<Asker>, String> {
+    Ok(None)
+}
+
+#[cfg(not(feature = "e2e"))]
+fn window_asker() -> Result<Asker, String> {
+    Ok(Asker::Window {})
+}
+
+fn window_request(
+    asker: &Asker,
+    app: &AppSummary,
+    wanted: &[Right],
+    describe: &dyn Fn(&Right) -> Option<String>,
+    consent: &Consent,
+) -> ask::Request {
+    let request = request_for(app, wanted, describe, consent);
+    with_automation(request, asker)
+}
+
+#[cfg(not(feature = "e2e"))]
+fn with_automation(request: ask::Request, _: &Asker) -> ask::Request {
+    request
 }
 
 /// The decisions the application starts with.
@@ -258,6 +287,7 @@ pub fn settle_with(
                     consent.set(right.clone(), *decision);
                 }
             }
+            #[cfg(any(test, feature = "e2e"))]
             Asker::Script(script) => {
                 let mut left = Vec::new();
                 for right in &new {
@@ -273,9 +303,9 @@ pub fn settle_with(
                     });
                 }
             }
-            Asker::Window { automation } => {
+            Asker::Window { .. } => {
                 // The window shows every right with what was decided before; its answer is the answer to all.
-                let request = request_for(app, wanted, describe, &consent, automation.clone());
+                let request = window_request(asker, app, wanted, describe, &consent);
                 match ask_in_window(&request) {
                     Ok(Some(answers)) => {
                         for (right, decision) in answers {
@@ -415,6 +445,38 @@ mod tests {
         assert!(settled.changed);
         assert!(!settled.consent.decided(&wanted[2]));
         assert!(settled.consent.decided(&wanted[1]));
+    }
+
+    #[cfg(not(feature = "e2e"))]
+    #[test]
+    fn feature_off_has_no_scripted_or_automated_asker() {
+        assert_eq!(scripted_asker().unwrap(), None);
+        assert_eq!(window_asker().unwrap(), Asker::Window {});
+        assert_eq!(Asker::from_environment(None, true).unwrap(), Asker::Nobody);
+    }
+
+    #[test]
+    fn an_explicit_grant_wins_even_without_a_prompt() {
+        for decision in [Decision::Allow, Decision::Substitute, Decision::Deny] {
+            assert_eq!(
+                Asker::from_environment(Some(decision), true).unwrap(),
+                Asker::Grant(decision)
+            );
+        }
+    }
+
+    #[test]
+    fn a_script_settles_named_rights_and_refuses_unanswered_ones() {
+        let wanted = rights();
+        let script = Asker::Script(Script::parse("clipboard.read=deny;*=substitute").unwrap());
+        let settled = settle(&app(), &wanted, None, &script).unwrap();
+        assert_eq!(settled.consent.decision(&wanted[0]), Decision::Deny);
+        assert_eq!(settled.consent.decision(&wanted[1]), Decision::Substitute);
+        let partial = Asker::Script(Script::parse("clipboard.read=deny").unwrap());
+        assert_eq!(
+            settle(&app(), &wanted, None, &partial).unwrap_err().rights,
+            wanted[1..]
+        );
     }
 
     #[test]

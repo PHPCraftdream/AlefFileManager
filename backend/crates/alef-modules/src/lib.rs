@@ -84,6 +84,7 @@ impl Backends {
     /// notifications go to the files `ALEF_E2E_SHELL_LOG` and `ALEF_E2E_NOTIFICATION_LOG` name; every
     /// other run uses the desktop. The run of the checks of autostart and deep links
     /// (`ALEF_E2E_APP_INTEGRATION=1`) takes the real ones of those two and nothing else.
+    #[cfg(feature = "e2e")]
     pub fn from_environment(application: &str) -> Self {
         let flag = |name: &str| std::env::var(name).is_ok_and(|value| value == "1");
         Self::chosen(
@@ -95,6 +96,13 @@ impl Backends {
         )
     }
 
+    /// Without the `e2e` feature, always uses the desktop and ignores E2E environment variables.
+    #[cfg(not(feature = "e2e"))]
+    pub fn from_environment(application: &str) -> Self {
+        Self::system(application)
+    }
+
+    #[cfg(any(test, feature = "e2e"))]
     fn chosen(
         application: &str,
         e2e: bool,
@@ -127,6 +135,22 @@ mod tests {
             format!("{:?}", backends.autostart),
             format!("{:?}", backends.deep_links),
         ]
+    }
+
+    #[cfg(not(feature = "e2e"))]
+    #[test]
+    fn from_environment_without_the_e2e_feature_uses_system_backends() {
+        let kinds = kinds(&Backends::from_environment("app"));
+        for (kind, expected) in kinds.iter().zip([
+            "SystemClipboard",
+            "SystemShell",
+            "SystemNotifications",
+            "SystemSecrets",
+            "SystemAutostart",
+            "SystemDeepLinks",
+        ]) {
+            assert!(kind.contains(expected), "{kinds:?}");
+        }
     }
 
     #[test]

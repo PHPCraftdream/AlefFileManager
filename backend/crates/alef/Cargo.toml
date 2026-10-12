@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "alef"
 path = "src/main.rs"
 
+[features]
+e2e = ["alef-runtime/e2e", "alef-modules/e2e"]
+spike-origin = ["alef-runtime/spike-origin"]
+
 [dependencies]
 alef-core = { path = "../alef-core" }
 alef-modules = { path = "../alef-modules" }

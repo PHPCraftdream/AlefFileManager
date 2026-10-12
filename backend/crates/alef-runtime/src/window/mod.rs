@@ -110,6 +110,40 @@ struct App {
     restore: Option<state::restore::Restore>,
 }
 
+#[cfg(feature = "e2e")]
+fn quiet_enabled() -> bool {
+    quiet_from(&|name| std::env::var(name).ok())
+}
+
+#[cfg(feature = "e2e")]
+fn quiet_from(read: &dyn Fn(&str) -> Option<String>) -> bool {
+    let flag = |name| read(name).is_some_and(|value| value == "1");
+    flag("ALEF_E2E") && flag("ALEF_E2E_QUIET")
+}
+
+#[cfg(all(test, feature = "e2e"))]
+#[test]
+fn quiet_windows_need_the_end_to_end_mode_and_the_quiet_flag() {
+    let set = |names: &'static [&'static str]| {
+        move |name: &str| names.contains(&name).then(|| "1".to_owned())
+    };
+    assert!(quiet_from(&set(&["ALEF_E2E", "ALEF_E2E_QUIET"])));
+    assert!(!quiet_from(&set(&["ALEF_E2E_QUIET"])));
+    assert!(!quiet_from(&set(&["ALEF_E2E"])));
+    assert!(!quiet_from(&set(&[])));
+}
+
+#[cfg(not(feature = "e2e"))]
+fn quiet_enabled() -> bool {
+    false
+}
+
+#[cfg(all(test, not(feature = "e2e")))]
+#[test]
+fn feature_off_never_enables_quiet_windows() {
+    assert!(!quiet_enabled());
+}
+
 pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn std::error::Error>> {
     if options.windows.is_empty() {
         return Err(
@@ -119,8 +153,8 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
     state::resize_wait::set_resize_trace(
         std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"),
     );
-    let flag = |name: &str| std::env::var(name).is_ok_and(|value| value == "1");
-    let quiet = flag("ALEF_E2E") && flag("ALEF_E2E_QUIET");
+    let quiet = quiet_enabled();
+    #[cfg(feature = "e2e")]
     if quiet {
         eprintln!("ALEF_E2E quiet: the windows of this run are never shown");
     }

@@ -106,6 +106,18 @@ packages/api/
 
 ## 8. Генерический бинарник `alef`
 
+**Как сделано (R-018)**
+
+Тестовые хуки требуют cargo-feature `e2e` (по умолчанию выключена); `ALEF_E2E=1` включает их только в такой сборке и печатает предупреждение `this build carries the end-to-end hooks`. Origin-стенд включается отдельно через `spike-origin`; обычные сборки оставляют обе features выключенными. Перед e2e: `node scripts/cargo.mjs build -p alef --features e2e` — раннер сам не собирает бинарник. CI явно включает `alef/e2e` для сценариев; отдельный Linux-шаг добавлен для сборки release без features и сканирования маркеров через `node scripts/supply/check-no-hooks.mjs <binary-path>`.
+
+Наблюдаемые результаты локально на Windows:
+
+- Rust-тесты plain и `e2e`, включая doctests, — PASS; workspace clippy plain и `e2e` + `spike-origin` — PASS.
+- Plain **DEBUG**: сканер дал 0 совпадений для пяти строк (`e2e.dropFiles`, `e2e.once`, `e2e.flood`, `ALEF_E2E`, `ALEF_SPIKE_ORIGIN`) в UTF8/UTF16LE. Feature **DEBUG**: отклонён по четырём найденным маркерам. Контракт сканера проверен; настоящий release-бинарник локально **не сканировался**, результат Linux CI не заявляется.
+- Полный Windows e2e — **55 PASS**, с существующими пропусками visible startup и service-signal; Ctrl остаётся ручной проверкой. Plain с враждебным окружением — exit 3, без создания файлов прав/согласия. Все десять мутаций пойманы проверками и восстановлены.
+
+Загружаемые CI DEBUG-артефакты всё ещё содержат feature `e2e` и тестовые хуки: **не для распространения**. Upload сохранён без изменений по скоупу; это не проверяемый release без features.
+
 **Как сделано (R-006)**
 
 - Из `alef-runtime::bridge::apply_headers` удалены старые транспортные заголовки `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: POST, OPTIONS` и `Access-Control-Allow-Headers: authorization, content-type`. Ассеты и их JSON-ошибки больше не получают эти CORS-разрешения; `Content-Type`, `X-Content-Type-Options: nosniff` и CSP сохранены. Политика CORS транспорта `native://call`/`native://stream` остаётся отдельной и не менялась. Не сделано (вторая половина замечания): каталог ассетов по-прежнему весь каталог приложения, а не подкаталог или явный список; это решение про манифест, оно остаётся открытым.

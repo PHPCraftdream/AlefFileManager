@@ -163,6 +163,7 @@ jobs:
         run: |
           npm run check:types
           npm run test:types
+          node --test scripts/supply/check-no-hooks.test.mjs
 
       - name: "@alef-tron/api tests"
         run: npm run test:api
@@ -176,11 +177,19 @@ jobs:
       # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
       - name: Build (Rust, без frontend)
         if: runner.os != 'Linux'
-        run: npm run build:rust
+        run: node scripts/cargo.mjs build --locked --workspace --features alef/e2e
 
       - name: Build (typecheck + frontend + Rust)
         if: runner.os == 'Linux'
-        run: npm run build
+        run: |
+          npm run build:frontend
+          node scripts/cargo.mjs build --locked --workspace --features alef/e2e
+
+      - name: Release build without test hooks (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          node scripts/cargo.mjs build --locked -p alef --release
+          node scripts/supply/check-no-hooks.mjs backend/target/release/alef
 
       # tests/e2e: the real alef binary on scenario applications; Servo renders through Mesa software GL.
       - name: e2e (alef on Servo, headless X11)

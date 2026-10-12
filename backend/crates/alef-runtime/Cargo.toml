@@ -39,6 +39,8 @@ muda = "=0.19.3"
 tray-icon = "=0.24.2"
 
 [features]
+e2e = []
+spike-origin = []
 spike-integration = []
 
 [dev-dependencies]

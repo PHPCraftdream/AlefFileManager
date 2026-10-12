@@ -3,6 +3,9 @@
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
 //   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,consent,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink]
 //                          [--timeout-s 150] [--verbose]
+// Build beforehand: node scripts/cargo.mjs build -p alef --features e2e
+// This runner does not build the runtime.
+// Check a release without hooks: node scripts/supply/check-no-hooks.mjs <binary-path>
 // Exit code 0 = every selected scenario passed.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

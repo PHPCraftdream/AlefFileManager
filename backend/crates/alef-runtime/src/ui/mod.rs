@@ -88,6 +88,7 @@ pub(crate) enum UiRequest {
         reply: UiReply,
     },
     /// A drop of files on a window that did not come from the system (end-to-end runs only).
+    #[cfg(feature = "e2e")]
     Drop {
         window: u64,
         paths: Vec<std::path::PathBuf>,
@@ -220,6 +221,7 @@ impl RuntimeHandle {
     }
 
     /// Drops `paths` on the window `window` as if the system had (end-to-end runs only).
+    #[cfg(feature = "e2e")]
     pub(crate) async fn simulate_drop(
         &self,
         window: u64,

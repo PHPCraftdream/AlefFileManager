@@ -21,7 +21,7 @@ const GROUPS = [
 const capability = new URLSearchParams(location.hash.slice(1)).get('capability') ?? '';
 let token;
 
-async function call(command, args = null) {
+export async function call(command, args = null) {
   const bearer = token ?? capability;
   const response = await fetch(`native://call/${encodeURIComponent(command)}`, {
     method: 'POST',
@@ -164,12 +164,10 @@ async function main() {
   token = hello.token;
   const request = await call('runtime.consent.request');
   render(request);
-  if (request.automation) {
-    const { automate } = await import('./consent-e2e.js');
-    await automate(request.automation, call);
-  }
+  return request;
 }
 
-main().catch(error => {
+export const ready = main();
+ready.catch(error => {
   document.getElementById('root').textContent = `The permissions cannot be shown: ${error.message}`;
 });

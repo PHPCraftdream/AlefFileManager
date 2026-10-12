@@ -588,6 +588,7 @@ impl App {
                     call,
                     reply,
                 } => (caller, call, reply),
+                #[cfg(feature = "e2e")]
                 UiRequest::Drop {
                     window,
                     paths,
