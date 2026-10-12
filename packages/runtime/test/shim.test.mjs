@@ -28,13 +28,11 @@ function fakeExecutable(t, unixBody, windowsBody) {
 }
 
 function runShim(t, fake, args, env = {}) {
-  // Seed SHLVL=1 so the fake's SHLVL heuristics can detect an extra wrapping
-  // shell (dash never initializes SHLVL when absent; direct children inherit 1).
   const result = spawnSync(process.execPath, [shim, ...fake.args, ...args], {
     encoding: 'utf8',
     timeout: 15_000,
     windowsHide: true,
-    env: { ...process.env, ...env, ALEF_BIN: fake.bin, SHLVL: '1' },
+    env: { ...process.env, ...env, ALEF_BIN: fake.bin },
   });
   assert.equal(result.error, undefined, `spawnSync failed: ${result.error}`);
   return result;
@@ -42,7 +40,7 @@ function runShim(t, fake, args, env = {}) {
 
 test('shim_forwards_arguments_verbatim_to_the_resolved_binary_without_a_shell', t => {
   const fake = fakeExecutable(t,
-    'printf \'ARGS:\'; for a in "$@"; do printf \' <%s>\' "$a"; done; echo; test "$SHLVL" = 1 || echo NESTED',
+    'printf \'ARGS:\'; for a in "$@"; do printf \' <%s>\' "$a"; done; echo',
     'console.log("ARGS:" + JSON.stringify(process.argv.slice(2)));');
   const result = runShim(t, fake, ['run', '--flag', 'value with spaces', '--', '-x']);
   assert.equal(result.status, 0);
@@ -52,7 +50,7 @@ test('shim_forwards_arguments_verbatim_to_the_resolved_binary_without_a_shell', 
   assert.equal(result.stdout.trim(), expected);
   // Direct-spawn proof: the shim resolves ALEF_BIN and spawns that exact file
   // as the immediate child with no `shell` option, so argv arrives unsplit and
-  // unquoted; on Unix the $0/SHLVL heuristics below confirm no wrapping shell.
+  // unquoted; on Unix the $0 and parent-pid checks below confirm no wrapping shell.
 });
 
 test('shim_forwards_the_child_exit_code', t => {
@@ -83,19 +81,19 @@ test('non_executable_alef_bin_regular_file_resolves_but_fails_at_spawn_with_exit
 
 test('shim_spawns_the_fake_binary_directly_not_through_cmd_exe_or_sh', t => {
   // Structural guarantee on every platform: the shim never passes a `shell`
-  // option, so children are direct. On Unix this is additionally proven by
-  // $0/SHLVL heuristics in the argument-forwarding test above.
+  // option, so children are direct. On Unix this is additionally proven below:
+  // the parent of the fake is the shim process itself.
   assert.ok(!readFileSync(shim, 'utf8').includes('shell:'),
     'shim must not pass a shell option to spawn');
   if (!isWindows) {
-    const fake = fakeExecutable(t, 'echo "0=$0"; echo "SHLVL=$SHLVL"', '');
+    const fake = fakeExecutable(t, 'echo "0=$0"; echo "PPID=$PPID"', '');
     const result = runShim(t, fake, []);
     assert.equal(result.status, 0);
     const lines = result.stdout.trim().split('\n');
     // $0 is the ABSOLUTE path of the fake script itself (not a shell), so the
     // line must end with the fake's file name.
     assert.match(lines.find(l => l.startsWith('0=')), /\/alef-fake$/, '$0 is the fake script itself, not a shell');
-    assert.match(lines.find(l => l.startsWith('SHLVL=')), /=1$/, 'no extra shell nesting');
+    assert.equal(lines.find(l => l.startsWith('PPID=')), `PPID=${result.pid}`, 'the shim is the immediate parent: no shell in between');
   }
 });
 

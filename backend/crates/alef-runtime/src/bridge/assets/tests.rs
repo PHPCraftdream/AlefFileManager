@@ -561,10 +561,12 @@ fn bounded_junction_replacement_never_returns_outside_bytes() {
         // Keep fixtures owned by the worker if its completion times out.
         let _fixtures = worker_fixtures;
         for _ in 0..20 {
-            fs::rename(root2.join("sub"), root2.join("saved")).unwrap();
+            // A reader that holds a handle inside the directory makes Windows refuse its
+            // rename or removal with "Access is denied": the writer waits for the reader.
+            until_released(|| fs::rename(root2.join("sub"), root2.join("saved")));
             link(&outside2, &root2.join("sub"));
-            fs::remove_dir(root2.join("sub")).unwrap();
-            fs::rename(root2.join("saved"), root2.join("sub")).unwrap();
+            until_released(|| fs::remove_dir(root2.join("sub")));
+            until_released(|| fs::rename(root2.join("saved"), root2.join("sub")));
         }
     });
     for _ in 0..200 {
@@ -574,6 +576,23 @@ fn bounded_junction_replacement_never_returns_outside_bytes() {
     }
     finish_worker(writer);
     assert_eq!(source.read("/sub/secret").unwrap().0, b"inside");
+}
+
+#[cfg(windows)]
+fn until_released(mut operation: impl FnMut() -> std::io::Result<()>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match operation() {
+            Ok(()) => return,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => panic!("the directory stayed busy or failed: {error}"),
+        }
+    }
 }
 #[cfg(unix)]
 #[test]

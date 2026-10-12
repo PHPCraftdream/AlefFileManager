@@ -479,3 +479,30 @@ async fn missing_entry_or_initial_window_documents_fail_before_module_installati
     .unwrap();
     bounded(bridge.shutdown()).await.unwrap();
 }
+
+#[test]
+fn an_encoded_percent_is_decoded_exactly_once() {
+    let source = Source::prepare(AssetInput::Archive {
+        package: package(&[
+            ("alef.ktav", b"private"),
+            ("dist/index.html", b"public"),
+            ("dist/A.txt", b"decoded"),
+        ]),
+        selected_root: "dist".into(),
+    })
+    .unwrap();
+    assert_eq!(source.read("/%41.txt").unwrap().0, b"decoded");
+    // %25 is a percent sign and no entry can have one in its name: a second decoding would find A.txt.
+    assert!(source.read("/%2541.txt").is_err());
+}
+
+#[test]
+fn the_metadata_folder_is_never_a_public_root_even_when_it_has_entries() {
+    // SHA-256 of "abc" in the hash list that the metadata folder of a package really holds.
+    let hashes = b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  alef.ktav\n";
+    let input = AssetInput::Archive {
+        package: package(&[("alef.ktav", b"abc"), ("META-INF/hashes", hashes)]),
+        selected_root: "META-INF".into(),
+    };
+    assert!(Source::prepare(input).is_err());
+}
