@@ -5,6 +5,7 @@
 mod archive;
 mod error;
 mod name;
+mod snapshot;
 mod verification;
 
 pub use error::PackageError;
@@ -88,6 +89,31 @@ impl<R: Read + Seek> Package<R> {
         self.read_index(index)
     }
 
+    /// Returns the fixed table's declared uncompressed size for an exact entry name.
+    pub fn entry_size(&self, name: &str) -> Option<u64> {
+        self.archive
+            .entries()
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.declared_size)
+    }
+
+    /// Preflights the fixed declared size against a caller limit, not a Format 1 rule.
+    /// Accepted reads still perform full verification, exactly as [`Self::read`].
+    pub fn read_limited(&mut self, name: &str, maximum: u64) -> Result<Vec<u8>, PackageError> {
+        let index = self
+            .archive
+            .entries()
+            .iter()
+            .position(|e| e.name == name)
+            .ok_or_else(|| PackageError::EntryNotFound(name.to_owned()))?;
+        let entry = &self.archive.entries()[index];
+        if entry.declared_size > maximum {
+            return Err(PackageError::ReadSizeLimit(maximum).at_entry(&entry.name));
+        }
+        self.read_index(index)
+    }
+
     fn read_index(&mut self, index: usize) -> Result<Vec<u8>, PackageError> {
         let bytes = self.archive.read_entry(index)?;
         let name = &self.archive.entries()[index].name;
@@ -108,6 +134,16 @@ impl<R: Read + Seek> Package<R> {
 impl<T: AsRef<[u8]>> Package<Cursor<T>> {
     pub fn from_bytes(bytes: T) -> Result<Self, PackageError> {
         Self::from_reader(Cursor::new(bytes))
+    }
+}
+
+impl Package<Cursor<Vec<u8>>> {
+    /// Opens one regular-file handle and fully verifies an owned archive snapshot.
+    /// `max_bytes` bounds compressed bytes; Format 1 limits still apply. Later path
+    /// replacement or file writes cannot change this package. Observed length changes
+    /// during acquisition are rejected; concurrent same-size writes are not atomic.
+    pub fn open_snapshot(path: impl AsRef<Path>, max_bytes: u64) -> Result<Self, PackageError> {
+        Self::from_bytes(snapshot::open(path.as_ref(), max_bytes)?)
     }
 }
 

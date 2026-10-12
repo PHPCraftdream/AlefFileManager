@@ -2,6 +2,69 @@
 use super::*;
 use std::io::{Cursor, Write};
 
+#[test]
+fn limited_reads_preflight_huge_declared_sizes_without_payload_io_or_allocation() {
+    use std::{cell::Cell, io, rc::Rc};
+
+    struct InspectionOnly {
+        cursor: Cursor<Vec<u8>>,
+        inspected: Rc<Cell<bool>>,
+    }
+    impl Read for InspectionOnly {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            assert!(!self.inspected.get(), "payload read after inspection");
+            self.cursor.read(out)
+        }
+    }
+    impl Seek for InspectionOnly {
+        fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+            assert!(!self.inspected.get(), "payload seek after inspection");
+            self.cursor.seek(from)
+        }
+    }
+
+    let mut record = Record::deflated("alef.ktav", b"tiny");
+    record.size = MAX_ENTRY_SIZE as u32;
+    let fixture = handmade(&[record]);
+    assert!(fixture.bytes.len() < 256);
+    let inspected = Rc::new(Cell::new(false));
+    // Inspect only: from_reader would perform the full payload pass and allocate.
+    let archive = inspect_archive(InspectionOnly {
+        cursor: Cursor::new(fixture.bytes),
+        inspected: Rc::clone(&inspected),
+    })
+    .unwrap();
+    inspected.set(true);
+    let mut package = crate::Package {
+        archive,
+        hashes: None,
+        metadata: Default::default(),
+        signer: crate::Signer::Unsigned,
+    };
+    for declared in [MAX_ENTRY_SIZE, isize::MAX as u64 + 1, u64::MAX] {
+        // Only the test mutates the internal table; unrepresentable capacities
+        // cannot be encoded in format 1. They must still hit caller preflight,
+        // not the archive size guard, declared+1 arithmetic or allocator.
+        package.archive.entries[0].declared_size = declared;
+        assert_eq!(package.entry_size("alef.ktav"), Some(declared));
+        assert_eq!(package.entry_size("ALEF.KTAV"), None);
+        for maximum in [0, declared - 1] {
+            let error = package.read_limited("alef.ktav", maximum).unwrap_err();
+            match error {
+                PackageError::Entry(name, inner) => {
+                    assert_eq!(name, "alef.ktav");
+                    assert!(matches!(*inner, PackageError::ReadSizeLimit(n) if n == maximum));
+                }
+                other => panic!("preflight did not precede allocation guards: {other:?}"),
+            }
+        }
+    }
+    assert!(matches!(
+        package.read_limited("missing", 0),
+        Err(PackageError::EntryNotFound(name)) if name == "missing"
+    ));
+}
+
 #[derive(Clone)]
 struct Record {
     name: Vec<u8>,

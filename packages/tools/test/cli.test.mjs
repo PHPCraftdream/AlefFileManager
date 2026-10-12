@@ -45,7 +45,7 @@ function failure(result, pattern) {
   assert.match(result.stderr, pattern); assert.doesNotMatch(result.stderr, /PRIVATE KEY|-----BEGIN/);
 }
 
-test('unknown_command_returns_exit_one', { timeout: 5000 }, () => scratch(async ({ cli }) => {
+test('unknown_command_returns_exit_one', bounded, () => scratch(async ({ cli }) => {
   failure(await cli(['bogus']), /alef-tron: Unknown command/);
 }));
 

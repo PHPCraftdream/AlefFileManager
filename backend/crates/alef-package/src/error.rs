@@ -5,6 +5,9 @@ use std::{error::Error, fmt, io};
 #[non_exhaustive]
 pub enum PackageError {
     Io(io::Error),
+    NotRegularFile,
+    SnapshotSizeLimit(u64),
+    SnapshotLengthChanged,
     InvalidUtf8(String),
     InvalidName(String, &'static str),
     DuplicateName(String),
@@ -35,6 +38,7 @@ pub enum PackageError {
     SignatureMismatch,
     MetadataChanged,
     EntryNotFound(String),
+    ReadSizeLimit(u64),
     Entry(String, Box<PackageError>),
 }
 
@@ -47,6 +51,13 @@ impl fmt::Display for PackageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "package I/O: {e}"),
+            Self::NotRegularFile => f.write_str("package snapshot requires a regular file"),
+            Self::SnapshotSizeLimit(limit) => {
+                write!(f, "package snapshot exceeds {limit} allowed bytes")
+            }
+            Self::SnapshotLengthChanged => {
+                f.write_str("package file length changed during snapshot acquisition")
+            }
             Self::InvalidUtf8(raw) => write!(f, "entry name {raw} is not UTF-8"),
             Self::InvalidName(name, reason) => write!(f, "invalid entry name {name:?}: {reason}"),
             Self::DuplicateName(name) => {
@@ -91,6 +102,9 @@ impl fmt::Display for PackageError {
             }
             Self::MetadataChanged => f.write_str("metadata differs from opening snapshot"),
             Self::EntryNotFound(name) => write!(f, "entry not found: {name:?}"),
+            Self::ReadSizeLimit(maximum) => {
+                write!(f, "declared payload exceeds {maximum} allowed bytes")
+            }
             Self::Entry(name, error) => write!(f, "entry {name:?}: {error}"),
         }
     }
