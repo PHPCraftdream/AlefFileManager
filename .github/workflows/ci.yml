@@ -131,6 +131,7 @@ jobs:
         run: |
           npm run lint
           npm run lint:structure
+          npm run test:structure
 
       - name: Rust tests
         run: npm run test:rust

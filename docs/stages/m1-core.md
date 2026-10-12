@@ -27,7 +27,7 @@ backend/
   src/                             File Manager до M3 (регистрирует свои команды через новый реестр)
 ```
 
-Зависимости: `alef-core` — без Servo и winit (tokio, serde, ktav `=0.8.0`, ts-rs, bytes). `alef-runtime` → `alef-core`. Правило структуры (≤ 7 элементов, ≤ 700 строк) — на каждом уровне.
+Зависимости: `alef-core` — без Servo и winit (tokio, serde, ktav `=0.8.0`, ts-rs, bytes). `alef-runtime` → `alef-core`. Правило структуры (≤ 7 элементов, ≤ 1000 строк) — на каждом уровне.
 
 ## 2. Транспорт v2
 

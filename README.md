@@ -23,7 +23,7 @@ npm run test:rust
 - `build`: TypeScript/Rsbuild production frontend и Rust workspace.
 - `start`: `alef --app frontend/app` на ранее собранном приложении; Rsbuild не нужен.
 - `check`: Oxlint, лимиты структуры, TypeScript и Clippy всего workspace с ошибкой на warnings.
-- `lint:structure`: в нашем коде (`frontend/src`, `frontend/test`, `backend/crates`, `scripts`, `packages`, `tests`, `experiments`) не более 7 элементов в папке и не более 700 строк в файле (`scripts/check-structure.mjs`).
+- `lint:structure`: в нашем коде (`frontend/src`, `frontend/test`, `backend/crates`, `scripts`, `packages`, `tests`, `experiments`) не более 7 элементов в папке и не более 1000 строк в файле (`scripts/quality/check-structure.mjs`, тесты — `npm run test:structure`; обе проверки идут в CI на всех ОС).
 - `test:rust`: Rust-тесты приложения и runtime.
 - `dev:web`: только asset server; обычный браузер не имеет доступа к native bridge.
 
