@@ -57,13 +57,13 @@ fn validate_assets(value: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub(super) fn assets_line(src: &str) -> usize {
+pub(super) fn field_line(src: &str, field: &str) -> usize {
     let mut depth = 0;
     let mut line = None;
     let _ = ktav::parse_events(src, |event| match event {
         ktav::ParseEvent::BeginObject | ktav::ParseEvent::BeginArray => depth += 1,
         ktav::ParseEvent::EndObject | ktav::ParseEvent::EndArray => depth -= 1,
-        ktav::ParseEvent::Key(key) if depth == 1 && key == "assets" => {
+        ktav::ParseEvent::Key(key) if depth == 1 && key == field => {
             // Plain and unescaped quoted keys borrow their original source slice.
             let offset = (key.as_ptr() as usize).checked_sub(src.as_ptr() as usize);
             if let Some(offset) = offset.filter(|&offset| offset < src.len()) {
@@ -85,7 +85,7 @@ pub(super) fn assets_line(src: &str) -> usize {
             .find_map(|(index, text)| {
                 let mut found = false;
                 let _ = ktav::parse_events(text, |event| {
-                    if matches!(event, ktav::ParseEvent::Key("assets")) {
+                    if matches!(event, ktav::ParseEvent::Key(key) if key == field) {
                         found = true;
                     }
                 });

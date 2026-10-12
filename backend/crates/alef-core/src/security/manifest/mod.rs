@@ -8,7 +8,10 @@ use super::window::WindowDef;
 use crate::{AlefError, ErrorCode};
 
 mod assets;
-use assets::{assets_line, deserialize_assets};
+use assets::{deserialize_assets, field_line};
+mod runtime;
+use runtime::deserialize_runtime;
+pub use runtime::{runtime_requirement_met, validate_package_version};
 
 /// External-resource policy; all fields are required.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -255,6 +258,15 @@ pub struct Manifest {
     pub name: String,
     /// Non-empty version string.
     pub version: String,
+    /// Optional runtime requirement using exactly `semver::VersionReq` grammar.
+    /// Absence makes no compatibility promise; explicit null is invalid.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_runtime",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub runtime: Option<String>,
     /// Public proper subdirectory; absence leaves `dist` selection to the asset source.
     // Explicit null is not absence: a present field must be a valid String.
     #[serde(
@@ -298,10 +310,13 @@ impl Manifest {
     pub fn from_ktav_str(src: &str) -> Result<Self, AlefError> {
         let manifest: Self = ktav::from_str(src).map_err(|error| {
             let text = error.to_string();
-            if text.starts_with("assets:") {
-                let line = assets_line(src);
+            if let Some(path) = ["assets", "runtime"]
+                .into_iter()
+                .find(|path| text.starts_with(&format!("{path}:")))
+            {
+                let line = field_line(src, path);
                 return AlefError::new(ErrorCode::ManifestInvalid, format!("{text} (line {line})"))
-                    .with_details(json!({"path": "assets", "line": line}));
+                    .with_details(json!({"path": path, "line": line}));
             }
             if let (Some(line), Some(span)) = (error.line(), error.span()) {
                 let (_, column) = span.line_col(src);

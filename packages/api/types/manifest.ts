@@ -186,6 +186,11 @@ export type Manifest = {
    */
   version: string,
   /**
+   * Optional runtime requirement using exactly `semver::VersionReq` grammar.
+   * Absence makes no compatibility promise; explicit null is invalid.
+   */
+  runtime?: string,
+  /**
    * Public proper subdirectory; absence leaves `dist` selection to the asset source.
    */
   assets?: string,
