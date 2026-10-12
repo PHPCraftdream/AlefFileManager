@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Disk publication boundary. All lookup is handle-relative; never check then reopen a path.
+//! Disk and archive publication through one portable pathname boundary.
+mod archive;
+#[cfg(test)]
+mod archive_tests;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
@@ -21,6 +24,7 @@ use std::{
 /// Kept separate from protocol routing so a future archive implements the same lookup contract.
 pub(crate) enum Source {
     Disk(File),
+    Archive(std::sync::Arc<archive::Archive>),
 }
 
 fn invalid() -> io::Error {
@@ -136,7 +140,28 @@ fn child(directory: &File, name: &str, is_directory: bool) -> io::Result<File> {
     os::child(directory, name, is_directory)
 }
 
+#[derive(Debug)]
+pub(super) struct AssetBytes {
+    pub(super) bytes: Vec<u8>,
+    pub(super) mime: String,
+    // Retained until bridge response-body handoff, not merely worker completion.
+    pub(super) permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
 impl Source {
+    pub(super) fn prepare(input: super::AssetInput) -> io::Result<Self> {
+        match input {
+            super::AssetInput::Disk {
+                application_dir,
+                selected_root,
+            } => Self::open(&application_dir, &selected_root),
+            super::AssetInput::Archive {
+                package,
+                selected_root,
+            } => archive::Archive::new(package, selected_root)
+                .map(|archive| Self::Archive(std::sync::Arc::new(archive))),
+        }
+    }
     pub(super) fn open(application: &Path, selected: &Path) -> io::Result<Self> {
         let relative = selected.strip_prefix(application).map_err(|_| invalid())?;
         if relative.to_str().ok_or_else(invalid)?.len() > 1024 {
@@ -166,15 +191,19 @@ impl Source {
 
     pub(super) fn read(&self, path: &str) -> io::Result<(Vec<u8>, String)> {
         let parts = pathname(path)?;
-        let Self::Disk(root) = self;
-        let mut directory = root.try_clone()?;
-        for part in &parts[..parts.len() - 1] {
-            directory = child(&directory, part, true)?;
-        }
+        let bytes = match self {
+            Self::Archive(archive) => archive.read(&parts)?,
+            Self::Disk(root) => {
+                let mut directory = root.try_clone()?;
+                for part in &parts[..parts.len() - 1] {
+                    directory = child(&directory, part, true)?;
+                }
+                let mut file = child(&directory, parts.last().unwrap(), false)?;
+                read_bounded(&mut file, MAX_FILE)?
+            }
+        };
         // pathname always yields at least one validated component, including for "/".
         let name = parts.last().unwrap();
-        let mut file = child(&directory, name, false)?;
-        let bytes = read_bounded(&mut file, MAX_FILE)?;
         Ok((
             bytes,
             mime_guess::from_path(name)
@@ -217,10 +246,23 @@ fn audit(directory: &File, depth: usize) -> io::Result<()> {
 pub(super) async fn read_asset(
     source: Option<std::sync::Arc<Source>>,
     path: String,
-) -> io::Result<(Vec<u8>, String)> {
+) -> io::Result<AssetBytes> {
     let source =
-        source.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Disk assets disabled"))?;
-    tokio::task::spawn_blocking(move || source.read(&path))
-        .await
-        .map_err(io::Error::other)?
+        source.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Assets disabled"))?;
+    // Admission is nonblocking and happens before submitting a blocking job. The worker
+    // owns the permit even if its async caller is cancelled; its result keeps owning it.
+    let permit = match source.as_ref() {
+        Source::Archive(archive) => Some(archive.admit()?),
+        Source::Disk(_) => None,
+    };
+    tokio::task::spawn_blocking(move || {
+        let (bytes, mime) = source.read(&path)?;
+        Ok(AssetBytes {
+            bytes,
+            mime,
+            permit,
+        })
+    })
+    .await
+    .map_err(io::Error::other)?
 }

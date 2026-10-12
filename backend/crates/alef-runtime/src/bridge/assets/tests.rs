@@ -2,7 +2,7 @@
 use super::*;
 use crate::{Bridge, BridgeOptions, Commands};
 use std::{fs, sync::Arc};
-fn app(selected: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+pub(super) fn app(selected: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let app = tempfile::tempdir().unwrap();
     let root = app.path().join(selected);
     fs::create_dir_all(&root).unwrap();
@@ -84,55 +84,133 @@ fn url_components_are_decoded_exactly_once() {
         source.read("/%252e%252e/alef.ktav").unwrap().0,
         b"literal percent"
     );
-    for invalid in [
-        "/%2e%2e/alef.ktav",
-        "/a%2fb",
-        "/a%5cb",
-        "/%00",
-        "/%GG",
-        "/%FF",
-        "//app.js",
-        "/a//b",
-        "/a/",
-        "/.",
-        "/..",
-        "/%7f",
-        "/%C2%85",
-    ] {
-        assert!(pathname(invalid).is_err(), "{invalid}");
-    }
     let url = servo::ServoUrl::parse("native://app/app.js?x=../alef.ktav#fragment").unwrap();
     assert_eq!(source.read(url.path()).unwrap().0, b"script");
 }
 #[test]
 fn portable_names_and_paths_must_obey_character_and_length_limits() {
-    for bad in [
-        "/APP.JS.",
-        "/app.js%20",
-        "/app.js:secret",
-        "/NUL.txt",
-        "/COM1.js",
-        "/COM%C2%B9.txt",
-        "/LPT%C2%B2",
-        "/LPT%C2%B3.js",
-        "/con",
-        "/a%01",
-        "/a%3fb",
-    ] {
-        assert!(pathname(bad).is_err(), "{bad}");
+    let (app, root) = app("dist");
+    let disk = Source::open(app.path(), &root).unwrap();
+    let archive = Source::prepare(super::archive_tests::input("dist")).unwrap();
+    for source in [&disk, &archive] {
+        for invalid in [
+            "/%2e%2e/alef.ktav",
+            "/a%2fb",
+            "/a%5cb",
+            "/%00",
+            "/%GG",
+            "/%FF",
+            "//app.js",
+            "/a//b",
+            "/a/",
+            "/.",
+            "/..",
+            "/%7f",
+            "/%C2%85",
+        ] {
+            assert_eq!(
+                source.read(invalid).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "{invalid}"
+            );
+        }
+        for bad in [
+            "app.js",
+            "/APP.JS.",
+            "/app.js%20",
+            "/app.js:secret",
+            "/NUL.txt",
+            "/COM1.js",
+            "/COM%C2%B9.txt",
+            "/LPT%C2%B2",
+            "/LPT%C2%B3.js",
+            "/con",
+            "/a%01",
+            "/a%3fb",
+            "/a%22b",
+            "/a%3cb",
+            "/a%3eb",
+            "/a%7cb",
+            "/a%",
+            "/a%0",
+            "/a%2Gb",
+            "/%C0%AF",
+            "/%ED%A0%80",
+            "/%F4%90%80%80",
+            "/a*b",
+            r"/a\b",
+            "/PRN",
+            "/AUX.log",
+            "/COM9",
+            "/LPT9.bin",
+        ] {
+            assert_eq!(
+                source.read(bad).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "{bad}"
+            );
+        }
+        for (length, kind) in [
+            (255, io::ErrorKind::NotFound),
+            (256, io::ErrorKind::InvalidInput),
+        ] {
+            assert_eq!(
+                source
+                    .read(&format!("/{}", "a".repeat(length)))
+                    .unwrap_err()
+                    .kind(),
+                kind
+            );
+        }
+        // The missing first component avoids host filesystem total-path limits. An archive
+        // cannot represent a 1024-byte relative name plus its root, but must still validate it.
+        let decoded = format!(
+            "/{}/{}/{}/{}/{}",
+            "a".repeat(255),
+            "b".repeat(255),
+            "c".repeat(255),
+            "d".repeat(254),
+            "e"
+        );
+        assert_eq!(decoded.len() - 1, 1024);
+        assert_eq!(
+            source.read(&decoded).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            source.read(&(decoded + "e")).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        // Encoding every letter reaches 3065 raw bytes at the decoded ceiling.
+        // 3072 raw bytes cannot pass the component and decoded limits simultaneously.
+        let raw = format!(
+            "/{}/{}/{}/{}/{}",
+            "%61".repeat(255),
+            "%62".repeat(255),
+            "%63".repeat(255),
+            "%64".repeat(254),
+            "%65"
+        );
+        assert_eq!(raw.len(), 3065);
+        assert_eq!(
+            source.read(&raw).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let at_raw_ceiling = raw.clone() + "%65%65e";
+        assert_eq!(at_raw_ceiling.len(), 3072);
+        assert_eq!(
+            source.read(&at_raw_ceiling).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let over = at_raw_ceiling + "e";
+        assert_eq!(over.len(), 3073);
+        assert_eq!(
+            source.read(&over).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
-    assert!(pathname(&format!("/{}", "a".repeat(255))).is_ok());
-    assert!(pathname(&format!("/{}", "a".repeat(256))).is_err());
-    let good = format!(
-        "/{}/{}/{}/{}",
-        "a".repeat(255),
-        "b".repeat(255),
-        "c".repeat(255),
-        "d".repeat(255)
-    );
-    assert!(pathname(&good).is_ok());
-    assert!(pathname(&(good + "/e")).is_err());
 }
+
 #[test]
 fn assets_require_exact_long_names_and_matching_case() {
     let (app, root) = app("dist");
@@ -311,12 +389,19 @@ async fn startup_uses_the_url_pathname_and_requires_an_entry_even_without_window
     let (app, root) = app("dist");
     let options = BridgeOptions {
         entry: Some("/app.js?x=../alef.ktav".into()),
-        application_dir: Some(app.path().into()),
         ..Default::default()
     };
-    let bridge = Bridge::with_options(Commands::new(), Some(&root), None, options)
-        .await
-        .unwrap();
+    let bridge = Bridge::with_options(
+        Commands::new(),
+        Some(crate::AssetInput::Disk {
+            application_dir: app.path().to_owned(),
+            selected_root: root.clone(),
+        }),
+        None,
+        options,
+    )
+    .await
+    .unwrap();
     assert_eq!(bridge.entry_url.path(), "/app.js");
     bridge.shutdown().await.unwrap();
     fs::remove_file(root.join("index.html")).unwrap();

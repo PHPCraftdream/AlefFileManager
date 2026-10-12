@@ -172,6 +172,7 @@ name = "alef-runtime"
 version = "0.1.0"
 dependencies = [
  "alef-core",
+ "alef-package",
  "bytes",
  "crossbeam-channel",
  "euclid",

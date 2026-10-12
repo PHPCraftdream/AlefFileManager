@@ -52,6 +52,18 @@ const DEFAULT_CSP: &str = "default-src native:; connect-src native:; img-src nat
 pub type ModuleInstaller =
     Box<dyn FnOnce(&mut Registry, Arc<dyn Host>) -> Result<(), AlefError> + Send>;
 
+/// Owned asset capability; archive packages must own their immutable snapshot bytes.
+pub enum AssetInput {
+    Disk {
+        application_dir: PathBuf,
+        selected_root: PathBuf,
+    },
+    Archive {
+        package: alef_package::Package<std::io::Cursor<Vec<u8>>>,
+        selected_root: String,
+    },
+}
+
 /// Embedder-supplied policy of the bridge; the default suits the File Manager.
 #[derive(Default)]
 pub struct BridgeOptions {
@@ -68,8 +80,8 @@ pub struct BridgeOptions {
     pub limits: Limits,
     /// Root-relative entry document (`/app.html`); `None` opens the root, served as `index.html`.
     pub entry: Option<String>,
-    /// Application handle boundary for nested selected roots. Embedders default to assets' parent.
-    pub application_dir: Option<PathBuf>,
+    /// Initial document references, resolved against the entry URL and preflighted before modules.
+    pub initial_document_urls: Vec<String>,
     /// Called when the headless entry finishes loading; runtime owns no module state.
     pub headless_loaded: Option<Box<dyn Fn() + Send>>,
     /// Called each headless iteration; true requests a launch-timeout exit (code 2).
@@ -207,12 +219,30 @@ impl Bridge {
         assets: Option<&Path>,
         development_url: Option<Url>,
     ) -> io::Result<Self> {
+        let assets = assets
+            .filter(|_| development_url.is_none())
+            .map(|selected| {
+                Ok::<_, io::Error>(AssetInput::Disk {
+                    application_dir: selected
+                        .parent()
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "Missing application boundary",
+                            )
+                        })?
+                        .to_owned(),
+                    selected_root: selected.to_owned(),
+                })
+            })
+            .transpose()?;
         Self::with_options(commands, assets, development_url, BridgeOptions::default()).await
     }
 
+    /// `None` is supported only for development callers, which never resolve disk assets.
     pub async fn with_options(
         commands: Commands,
-        assets: Option<&Path>,
+        assets: Option<AssetInput>,
         development_url: Option<Url>,
         options: BridgeOptions,
     ) -> io::Result<Self> {
@@ -220,27 +250,44 @@ impl Bridge {
         let native_entry = Url::parse("native://app/")
             .and_then(|base| base.join(&entry))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        if matches!(&assets, Some(AssetInput::Archive { .. }))
+            && (development_url.is_some() || crate::spikes::origin::enabled())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Archive assets cannot use development or origin-spike URLs",
+            ));
+        }
         let assets = if development_url.is_some() {
             None // Development never resolves, requires or serves disk, even for embedders.
-        } else if let Some(selected) = assets {
-            let application = options
-                .application_dir
-                .as_deref()
-                .or_else(|| selected.parent())
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "Missing application boundary")
-                })?;
-            let source = assets::Source::open(application, selected)?;
-            source.read(native_entry.path())?;
-            if crate::spikes::origin::enabled() {
-                crate::spikes::origin::set_assets(selected);
+        } else if let Some(input) = assets {
+            let selected = match &input {
+                AssetInput::Disk { selected_root, .. } => Some(selected_root.clone()),
+                AssetInput::Archive { .. } => None,
+            };
+            let source = assets::Source::prepare(input)?;
+            let source = Arc::new(source);
+            assets::read_asset(Some(source.clone()), native_entry.path().to_owned()).await?;
+            for reference in &options.initial_document_urls {
+                let url = native_entry
+                    .join(reference)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+                if (url.scheme(), url.host_str(), url.port()) != ("native", Some("app"), None) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Initial document must belong to the application",
+                    ));
+                }
+                assets::read_asset(Some(source.clone()), url.path().to_owned()).await?;
             }
-            Some(Arc::new(source))
+            if crate::spikes::origin::enabled() {
+                if let Some(selected) = selected {
+                    crate::spikes::origin::set_assets(&selected);
+                }
+            }
+            Some(source)
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Missing disk assets",
-            ));
+            return Err(io::Error::new(io::ErrorKind::NotFound, "Missing assets"));
         };
         let token = random_token()?;
         let mut entry_url = match development_url {
@@ -382,53 +429,60 @@ impl ProtocolHandler for MemoryProtocol {
             if let (Some(path), Some(sender)) = (transport_path, transport_sender) {
                 return self.transport(request, path, sender).await;
             }
-            let mut response = Response::new(
-                request.current_url().clone(),
-                ResourceFetchTiming::new(request.timing_type()),
-            );
-            let url = request.current_url().clone();
-            let result = if url.host_str() == Some("app") && request.method == http::Method::GET {
-                let assets = self.assets.clone();
-                let path = url.path().to_owned();
-                let mut task = transport::OwnedTask(
-                    self.handle
-                        .spawn(async move { assets::read_asset(assets, path).await }),
-                );
-                (&mut task.0)
-                    .await
-                    .map_err(io::Error::other)
-                    .and_then(|result| result)
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "Unknown private resource",
-                ))
-            };
-            let (status, bytes, content_type) = match result {
-                Ok((bytes, content_type)) => (200, bytes, content_type),
-                Err(error) => {
-                    let status = match error.kind() {
-                        io::ErrorKind::PermissionDenied => 403,
-                        io::ErrorKind::NotFound => 404,
-                        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => 400,
-                        io::ErrorKind::WouldBlock => 429,
-                        _ => 500,
-                    };
-                    (
-                        status,
-                        serde_json::to_vec(&json!({"error": error.to_string()}))
-                            .expect("JSON string"),
-                        "application/json".to_owned(),
-                    )
-                }
-            };
-            response.status = HttpStatus::new_raw(status, vec![]);
-            let csp =
-                (url.host_str() == Some("app")).then(|| self.csp.as_deref().unwrap_or(DEFAULT_CSP));
-            apply_headers(&mut response, &content_type, csp);
-            *response.body.lock() = ResponseBody::Done(bytes);
-            response
+            self.asset_response(request).await
         })
+    }
+}
+
+impl MemoryProtocol {
+    async fn asset_response(&self, request: &Request) -> Response {
+        let mut response = Response::new(
+            request.current_url().clone(),
+            ResourceFetchTiming::new(request.timing_type()),
+        );
+        let url = request.current_url().clone();
+        let result = if url.host_str() == Some("app") && request.method == http::Method::GET {
+            let assets = self.assets.clone();
+            let path = url.path().to_owned();
+            let mut task = transport::OwnedTask(
+                self.handle
+                    .spawn(async move { assets::read_asset(assets, path).await }),
+            );
+            (&mut task.0)
+                .await
+                .map_err(io::Error::other)
+                .and_then(|result| result)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Unknown private resource",
+            ))
+        };
+        let (status, bytes, content_type, permit) = match result {
+            Ok(asset) => (200, asset.bytes, asset.mime, asset.permit),
+            Err(error) => {
+                let status = match error.kind() {
+                    io::ErrorKind::PermissionDenied => 403,
+                    io::ErrorKind::NotFound => 404,
+                    io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => 400,
+                    io::ErrorKind::WouldBlock => 429,
+                    _ => 500,
+                };
+                (
+                    status,
+                    serde_json::to_vec(&json!({"error": error.to_string()})).expect("JSON string"),
+                    "application/json".to_owned(),
+                    None,
+                )
+            }
+        };
+        response.status = HttpStatus::new_raw(status, vec![]);
+        let csp =
+            (url.host_str() == Some("app")).then(|| self.csp.as_deref().unwrap_or(DEFAULT_CSP));
+        apply_headers(&mut response, &content_type, csp);
+        *response.body.lock() = ResponseBody::Done(bytes);
+        drop(permit); // Bytes now belong to Servo; renderer retention is outside admission.
+        response
     }
 }
 

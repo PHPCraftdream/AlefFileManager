@@ -133,7 +133,13 @@ async fn show(
     let answer_path = answer_path.to_owned();
     let mut bridge = Bridge::with_options(
         Commands::new(),
-        Some(pages),
+        Some(alef_runtime::AssetInput::Disk {
+            application_dir: pages
+                .parent()
+                .ok_or("Missing consent application boundary")?
+                .to_owned(),
+            selected_root: pages.to_owned(),
+        }),
         None,
         BridgeOptions {
             modules: Some(Box::new(move |registry, host| {

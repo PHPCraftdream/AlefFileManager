@@ -287,13 +287,12 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         .iter()
         .map(|url| url.origin().ascii_serialization())
         .collect();
-    let assets = dev_url.is_none().then_some(plan.assets.as_path());
     let (entry, windowless) = (plan.entry(), plan.windowless());
     let loaded = launch_state.clone();
     let tick = launch_state.clone();
     let mut bridge = Bridge::with_options(
         Commands::new(),
-        assets,
+        Some(plan.assets),
         dev_url,
         BridgeOptions {
             modules: Some(Box::new(move |registry, host| {
@@ -303,7 +302,12 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             csp: Some(plan.csp),
             permissions: Some(granted),
             entry: Some(entry),
-            application_dir: Some(app_dir.to_path_buf()),
+            initial_document_urls: plan
+                .manifest
+                .windows
+                .iter()
+                .map(|window| window.url.clone())
+                .collect(),
             headless_loaded: Some(Box::new(move || loaded.loaded())),
             headless_tick: Some(Box::new(move || tick.check_timeout())),
             ..BridgeOptions::default()
