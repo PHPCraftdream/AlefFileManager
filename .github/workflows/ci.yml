@@ -133,6 +133,9 @@ jobs:
           npm run lint:structure
           npm run test:structure
 
+      - name: Mutation harness tests
+        run: npm run test:mutate
+
       - name: Rust tests
         run: npm run test:rust
 

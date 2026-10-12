@@ -1,0 +1,114 @@
+[
+  {
+    "name": "the archive skips the shared pathname",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "Self::Archive(archive) => archive.read(&parts)?,",
+    "to": "Self::Archive(archive) => archive.read(&path.trim_start_matches('/').split('/').map(str::to_owned).collect::<Vec<_>>())?,",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the archive decodes twice",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "Self::Archive(archive) => archive.read(&parts)?,",
+    "to": "Self::Archive(archive) => archive.read(&parts.iter().map(|p| pathname(&format!(\"/{p}\")).map(|v| v.join(\"/\")).unwrap_or_else(|_| p.clone())).collect::<Vec<_>>())?,",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the archive lookup ignores case",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/archive.rs",
+    "from": "if !self.public_names.contains(&name) {",
+    "to": "if !self.public_names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the public prefix has no slash",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/archive.rs",
+    "from": ".filter(|name| name.starts_with(&prefix))",
+    "to": ".filter(|name| name.starts_with(root.as_str()))",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the lookup name has no separator",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/archive.rs",
+    "from": "let name = format!(\"{}/{}\", self.root, parts.join(\"/\"));",
+    "to": "let name = format!(\"{}{}\", self.root, parts.join(\"/\"));",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "a missing root is accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/archive.rs",
+    "from": "if public_names.is_empty() {",
+    "to": "if false {",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the case collisions are not audited",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/archive.rs",
+    "from": "if previous != part {",
+    "to": "if false {",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the size limit is not applied",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/archive.rs",
+    "from": ".read_limited(&name, self.max_bytes)",
+    "to": ".read_limited(&name, u64::MAX)",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the META-INF root is accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/archive.rs",
+    "from": "|| (index == 0 && part.eq_ignore_ascii_case(\"META-INF\"))",
+    "to": "|| false",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the admission is omitted",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "Source::Archive(archive) => Some(archive.admit()?),",
+    "to": "Source::Archive(_) => None,",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the permit is released at admission",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "Source::Archive(archive) => Some(archive.admit()?),",
+    "to": "Source::Archive(archive) => { drop(archive.admit()?); None }",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the admission is not answered with 429",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "io::ErrorKind::WouldBlock => 429,",
+    "to": "io::ErrorKind::WouldBlock => 500,",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the entry document is not preflighted",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "assets::read_asset(Some(source.clone()), native_entry.path().to_owned()).await?;",
+    "to": "();",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "the window documents are not preflighted",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "assets::read_asset(Some(source.clone()), url.path().to_owned()).await?;",
+    "to": "();",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "a foreign window document is accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "!= (\"native\", Some(\"app\"), None)",
+    "to": "!= (\"native\", Some(\"app\"), None) && false",
+    "package": "alef-runtime"
+  },
+  {
+    "name": "an archive may use a development url",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "(development_url.is_some() || crate::spikes::origin::enabled())",
+    "to": "(crate::spikes::origin::enabled())",
+    "package": "alef-runtime"
+  }
+]
