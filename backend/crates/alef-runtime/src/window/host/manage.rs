@@ -12,14 +12,10 @@ use alef_core::{
 };
 use euclid::Scale;
 use serde_json::Value;
-use servo::{
-    DevicePoint, Modifiers, Opts, RenderingContext, ServoBuilder, WebViewBuilder,
-    WindowRenderingContext,
-};
+use servo::{DevicePoint, Modifiers, Opts, ServoBuilder, WebViewBuilder};
 use url::Url;
 use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
-use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
 use super::displays::{physical_size, Displays};
@@ -177,16 +173,7 @@ impl App {
                 self.handle.set_theme(theme);
             }
         }
-        let rendering = Rc::new(
-            WindowRenderingContext::new(
-                event_loop.display_handle().map_err(io::Error::other)?,
-                window.window_handle().map_err(io::Error::other)?,
-                window.inner_size(),
-            )
-            .map_err(|error| {
-                io::Error::other(format!("Cannot create Servo graphics context: {error:?}"))
-            })?,
-        );
+        let rendering = crate::window::state::rendering::new(event_loop, &window, self.quiet)?;
         rendering.make_current().map_err(|error| {
             io::Error::other(format!("Cannot activate Servo graphics context: {error:?}"))
         })?;

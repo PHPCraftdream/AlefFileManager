@@ -25,9 +25,11 @@ export const exeName = process.platform === 'win32' ? '.exe' : '';
 /**
  * Nobody should have to watch a test: the runtime never shows its windows (`ALEF_E2E_QUIET=1`:
  * geometry, events and the rest are real, visibility and focus are the runtime's own bookkeeping).
- * Linux runs on a virtual display (`xvfb`) with real windows. `ALEF_E2E_VISIBLE=1` shows them.
+ * Linux defaults to a virtual display (`xvfb`) with real windows; `ALEF_E2E_QUIET=1` overrides it.
+ * `ALEF_E2E_VISIBLE=1` always shows them and disables software rendering.
  */
-export const quiet = process.platform !== 'linux' && process.env.ALEF_E2E_VISIBLE !== '1';
+export const quiet = process.env.ALEF_E2E_VISIBLE !== '1'
+  && (process.platform !== 'linux' || process.env.ALEF_E2E_QUIET === '1');
 
 let transpiled;
 
@@ -94,10 +96,20 @@ const quietBinaries = new Map();
  * focus: such a binary is not started. `ALEF_E2E_VISIBLE=1` accepts visible windows.
  */
 export function assertQuiet(exe) {
-  if (!quiet) return;
-  if (!quietBinaries.has(exe)) quietBinaries.set(exe, readFileSync(exe).includes('ALEF_E2E_QUIET'));
-  if (!quietBinaries.get(exe)) {
+  const software = process.env.ALEF_E2E_VISIBLE !== '1' && process.env.ALEF_E2E_SOFTWARE === '1';
+  if (!quiet && !software) return;
+  if (!quietBinaries.has(exe)) {
+    const binary = readFileSync(exe);
+    quietBinaries.set(exe, {
+      quiet: binary.includes('ALEF_E2E_QUIET'),
+      software: binary.includes('ALEF_E2E_SOFTWARE'),
+    });
+  }
+  if (quiet && !quietBinaries.get(exe).quiet) {
     throw new Error(`${exe} has no quiet mode, its windows would appear on your screen: build the current sources, or set ALEF_E2E_VISIBLE=1 to accept visible windows`);
+  }
+  if (software && !quietBinaries.get(exe).software) {
+    throw new Error(`${exe} has no ALEF_E2E_SOFTWARE support: build the current sources before requesting software rendering`);
   }
 }
 
@@ -114,7 +126,8 @@ const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '
 export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false }) {
   assertQuiet(exe);
   const child = spawn(exe, args, {
-    env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env },
+    env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env,
+      ...(process.env.ALEF_E2E_VISIBLE === '1' ? { ALEF_E2E_QUIET: '', ALEF_E2E_SOFTWARE: '' } : {}) },
     stdio: [input === undefined && !interactive ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
   if (input !== undefined || interactive) child.stdin.on('error', () => {});

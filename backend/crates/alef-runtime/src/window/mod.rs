@@ -118,19 +118,174 @@ fn quiet_enabled() -> bool {
 #[cfg(feature = "e2e")]
 fn quiet_from(read: &dyn Fn(&str) -> Option<String>) -> bool {
     let flag = |name| read(name).is_some_and(|value| value == "1");
-    flag("ALEF_E2E") && flag("ALEF_E2E_QUIET")
+    flag("ALEF_E2E") && flag("ALEF_E2E_QUIET") && !flag("ALEF_E2E_VISIBLE")
+}
+
+#[cfg(feature = "e2e")]
+fn software_from(read: &dyn Fn(&str) -> Option<String>, windows: bool) -> bool {
+    quiet_from(read) && (windows || read("ALEF_E2E_SOFTWARE").is_some_and(|value| value == "1"))
 }
 
 #[cfg(all(test, feature = "e2e"))]
 #[test]
-fn quiet_windows_need_the_end_to_end_mode_and_the_quiet_flag() {
-    let set = |names: &'static [&'static str]| {
-        move |name: &str| names.contains(&name).then(|| "1".to_owned())
+fn quiet_windows_do_not_depend_on_software_rendering() {
+    for software in [None, Some("1"), Some("0"), Some("true")] {
+        let read = |name: &str| {
+            match name {
+                "ALEF_E2E" | "ALEF_E2E_QUIET" => Some("1"),
+                "ALEF_E2E_SOFTWARE" => software,
+                "ALEF_E2E_VISIBLE" => None,
+                _ => panic!("unexpected flag: {name}"),
+            }
+            .map(str::to_owned)
+        };
+        assert!(quiet_from(&read));
+    }
+}
+
+#[cfg(all(test, feature = "e2e"))]
+#[test]
+fn quiet_windows_require_exact_flags_and_visible_windows_override_them() {
+    let check = |e2e: Option<&str>, quiet: Option<&str>, visible: Option<&str>, expected| {
+        let read = |name: &str| {
+            match name {
+                "ALEF_E2E" => e2e,
+                "ALEF_E2E_QUIET" => quiet,
+                "ALEF_E2E_VISIBLE" => visible,
+                _ => panic!("quiet mode must not read {name}"),
+            }
+            .map(str::to_owned)
+        };
+        assert_eq!(
+            quiet_from(&read),
+            expected,
+            "e2e={e2e:?} quiet={quiet:?} visible={visible:?}"
+        );
     };
-    assert!(quiet_from(&set(&["ALEF_E2E", "ALEF_E2E_QUIET"])));
-    assert!(!quiet_from(&set(&["ALEF_E2E_QUIET"])));
-    assert!(!quiet_from(&set(&["ALEF_E2E"])));
-    assert!(!quiet_from(&set(&[])));
+    check(None, Some("1"), None, false);
+    check(Some("1"), None, None, false);
+    check(Some("1"), Some("1"), None, true);
+    check(Some("1"), Some("1"), Some("1"), false);
+    for wrong in ["", "0", "true", "yes", "2", " 1", "1 "] {
+        check(Some(wrong), Some("1"), None, false);
+        check(Some("1"), Some(wrong), None, false);
+        check(Some("1"), Some("1"), Some(wrong), true);
+    }
+}
+
+#[cfg(all(test, feature = "e2e"))]
+#[test]
+fn software_rendering_requires_quiet_windows_and_windows_or_an_exact_software_flag() {
+    let cases = [
+        (None, None, None, None, false, false, false),
+        (None, None, None, None, true, false, false),
+        (None, Some("1"), Some("1"), None, true, false, false),
+        (Some("1"), None, Some("1"), None, true, false, false),
+        (Some("1"), Some("1"), None, None, true, true, true),
+        (Some("1"), Some("1"), None, None, false, true, false),
+        (Some("1"), Some("1"), Some("1"), None, false, true, true),
+        (Some("1"), Some("1"), Some("1"), None, true, true, true),
+        (Some("1"), Some("1"), None, Some("1"), true, false, false),
+        (
+            Some("1"),
+            Some("1"),
+            Some("1"),
+            Some("1"),
+            true,
+            false,
+            false,
+        ),
+        (
+            Some("1"),
+            Some("1"),
+            Some("1"),
+            Some("1"),
+            false,
+            false,
+            false,
+        ),
+    ];
+    let check = |e2e: Option<&str>,
+                 quiet: Option<&str>,
+                 software: Option<&str>,
+                 visible: Option<&str>,
+                 windows,
+                 expected_quiet,
+                 expected_software| {
+        let read = |name: &str| {
+            match name {
+                "ALEF_E2E" => e2e,
+                "ALEF_E2E_QUIET" => quiet,
+                "ALEF_E2E_SOFTWARE" => software,
+                "ALEF_E2E_VISIBLE" => visible,
+                _ => None,
+            }
+            .map(str::to_owned)
+        };
+        assert_eq!(quiet_from(&read), expected_quiet);
+        assert_eq!(software_from(&read, windows), expected_software,
+            "e2e={e2e:?} quiet={quiet:?} software={software:?} visible={visible:?} windows={windows}");
+    };
+    for (e2e, quiet, software, visible, windows, expected_quiet, expected_software) in cases {
+        check(
+            e2e,
+            quiet,
+            software,
+            visible,
+            windows,
+            expected_quiet,
+            expected_software,
+        );
+    }
+    for wrong in ["", "0", "true", "yes", "2", " 1", "1 "] {
+        for windows in [false, true] {
+            check(
+                Some(wrong),
+                Some("1"),
+                Some("1"),
+                None,
+                windows,
+                false,
+                false,
+            );
+            check(
+                Some("1"),
+                Some(wrong),
+                Some("1"),
+                None,
+                windows,
+                false,
+                false,
+            );
+            check(
+                Some("1"),
+                Some("1"),
+                Some(wrong),
+                None,
+                windows,
+                true,
+                windows,
+            );
+            check(
+                Some("1"),
+                Some("1"),
+                Some("1"),
+                Some(wrong),
+                windows,
+                true,
+                true,
+            );
+            check(
+                Some("1"),
+                Some("1"),
+                Some(wrong),
+                Some("1"),
+                windows,
+                false,
+                false,
+            );
+        }
+    }
 }
 
 #[cfg(not(feature = "e2e"))]

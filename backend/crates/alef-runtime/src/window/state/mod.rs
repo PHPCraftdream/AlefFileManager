@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Event-loop integration follows Servo 0.6's MPL-2.0 winit example.
+pub(super) mod rendering;
 pub(super) mod resize_wait;
 pub(super) mod restore;
 
@@ -14,7 +15,6 @@ use alef_core::{registry::window::WindowInfo, SessionId};
 use resize_wait::WakeGeneration;
 use servo::{
     DeviceIntRect, DeviceIntSize, DevicePoint, Modifiers, RenderingContext, Servo, WebView,
-    WindowRenderingContext,
 };
 use winit::window::{CursorIcon, ResizeDirection, Window};
 
@@ -40,7 +40,7 @@ pub(super) struct PendingClose {
 pub(super) struct State {
     pub(super) webview: WebView,
     pub(super) servo: Servo,
-    pub(super) rendering: Rc<WindowRenderingContext>,
+    pub(super) rendering: Rc<dyn RenderingContext>,
     pub(super) window: Rc<Window>,
     pub(super) animating: Rc<Cell<bool>>,
     pub(super) events: crate::bridge::EventBus,
@@ -92,6 +92,13 @@ pub(super) const REVEAL_POLL: Duration = Duration::from_millis(50);
 const REVEAL_SETTLE: Duration = Duration::from_millis(600);
 /// A page that never finishes loading must not leave the application invisible.
 const REVEAL_LIMIT: Duration = Duration::from_secs(10);
+
+fn reveal_window(quiet: Option<&mut Pretended>, native_reveal: impl FnOnce()) {
+    match quiet {
+        Some(pretended) => pretended.visible = true,
+        None => native_reveal(),
+    }
+}
 
 impl State {
     pub(super) fn synchronize_viewport(&mut self) -> io::Result<bool> {
@@ -164,16 +171,13 @@ impl State {
         } else {
             return Ok(());
         }
-        match self.quiet.as_mut() {
-            Some(pretended) => pretended.visible = true,
-            None => {
-                self.window.set_visible(true);
-                if let Some(maximized) = self.maximize_when_shown.take() {
-                    self.window.set_maximized(maximized);
-                }
-                self.window.focus_window();
+        reveal_window(self.quiet.as_mut(), || {
+            self.window.set_visible(true);
+            if let Some(maximized) = self.maximize_when_shown.take() {
+                self.window.set_maximized(maximized);
             }
-        }
+            self.window.focus_window();
+        });
         self.revealed = true;
         self.snapshot_dirty = true;
         Ok(())
