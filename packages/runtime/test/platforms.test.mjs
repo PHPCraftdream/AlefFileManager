@@ -12,7 +12,7 @@ test('platform_table_pins_the_four_supported_configurations_and_ci_binary_names'
     ['linux', 'x64', 'linux-x64', 'alef', 'linux-x64'],
   ]);
   const ci = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const rows = [...ci.matchAll(/- name: (windows-x64|macos-arm64|macos-x64|linux-x64)\r?\n\s+os: [^\r\n]+\r?\n\s+target: [^\r\n]+\r?\n\s+bin: ([^\s]+)/g)];
+  const rows = [...ci.matchAll(/- os: [^\r\n]+\r?\n\s+name: (windows-x64|macos-arm64|macos-x64|linux-x64)\r?\n\s+target: [^\r\n]+\r?\n\s+bin: ([^\s]+)/g)];
   assert.equal(rows.length, 4);
   assert.deepEqual(rows.map(row => [row[1], row[2]]), PLATFORMS.map(entry => [entry.ciName, entry.binary]));
 });
