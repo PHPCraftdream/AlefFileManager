@@ -128,6 +128,40 @@ pub fn load_manifest(app_dir: &Path) -> Result<Manifest, AlefError> {
 
 /// Derives the launch plan; `vars` are the directories behind the `$NAME` scope variables.
 pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<Plan, AlefError> {
+    let selected_root = app_dir.join(manifest.assets.as_deref().unwrap_or("dist"));
+    assemble(
+        manifest,
+        vars,
+        alef_runtime::AssetInput::Disk {
+            application_dir: app_dir.to_owned(),
+            selected_root,
+        },
+    )
+}
+
+/// Derives the launch plan of a verified package; the assets are the package itself.
+pub fn make_package_plan(
+    package: alef_package::Package<std::io::Cursor<Vec<u8>>>,
+    selected_root: &str,
+    manifest: Manifest,
+    vars: &PathVars,
+) -> Result<Plan, AlefError> {
+    assemble(
+        manifest,
+        vars,
+        alef_runtime::AssetInput::Archive {
+            package,
+            selected_root: selected_root.to_owned(),
+        },
+    )
+}
+
+/// The pipeline both sources share: permissions, CSP, launch mode and the manifest itself.
+fn assemble(
+    manifest: Manifest,
+    vars: &PathVars,
+    assets: alef_runtime::AssetInput,
+) -> Result<Plan, AlefError> {
     let permissions = Arc::new(
         PermissionSet::from_manifest(&manifest.permissions, vars)?
             .with_deep_links(&manifest.deep_links)?,
@@ -136,10 +170,7 @@ pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<
     Ok(Plan {
         permissions,
         csp,
-        assets: alef_runtime::AssetInput::Disk {
-            application_dir: app_dir.to_owned(),
-            selected_root: app_dir.join(manifest.assets.as_deref().unwrap_or("dist")),
-        },
+        assets,
         initial_mode: if !manifest.modes.is_empty() {
             None
         } else if !manifest.windows.is_empty() {
@@ -155,17 +186,7 @@ pub fn make_plan(app_dir: &Path, manifest: Manifest, vars: &PathVars) -> Result<
 
 /// The directories behind `$APPDATA`, `$HOME` and the other scope variables of application `id`.
 pub fn path_vars(app_dir: &Path, id: &str) -> Result<PathVars, AlefError> {
-    let plain = !id.is_empty()
-        && !id.starts_with('.')
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
-    if !plain {
-        return Err(AlefError::new(
-            ErrorCode::ManifestInvalid,
-            "id: must be a plain identifier (letters, digits, '.', '-', '_')",
-        ));
-    }
+    plain_id(id)?;
     let app = std::fs::canonicalize(app_dir).map_err(|error| {
         AlefError::new(
             ErrorCode::NotFound,
@@ -186,6 +207,44 @@ pub fn path_vars(app_dir: &Path, id: &str) -> Result<PathVars, AlefError> {
         desktop: dirs::desktop_dir().unwrap_or_else(|| home.join("Desktop")),
         temp: std::env::temp_dir(),
         app: Some(app),
+        home,
+    })
+}
+
+/// An `id` that is safe to join into filesystem paths unchanged.
+fn plain_id(id: &str) -> Result<(), AlefError> {
+    let plain = !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+    if !plain {
+        return Err(AlefError::new(
+            ErrorCode::ManifestInvalid,
+            "id: must be a plain identifier (letters, digits, '.', '-', '_')",
+        ));
+    }
+    Ok(())
+}
+
+/// The directories behind the `$NAME` scope variables of a package application: `$APP` has no
+/// filesystem meaning for an archive, and nothing is canonicalized from the package path.
+pub fn package_path_vars(id: &str) -> Result<PathVars, AlefError> {
+    plain_id(id)?;
+    let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    // Application-owned directories live under the manifest id, never directly in the base.
+    let owned = |base: Option<PathBuf>, fallback: &str| {
+        base.unwrap_or_else(|| home.join(fallback)).join(id)
+    };
+    Ok(PathVars {
+        app_data: owned(dirs::data_local_dir(), ".local/share"),
+        app_config: owned(dirs::config_dir(), ".config"),
+        app_cache: owned(dirs::cache_dir(), ".cache"),
+        documents: dirs::document_dir().unwrap_or_else(|| home.join("Documents")),
+        downloads: dirs::download_dir().unwrap_or_else(|| home.join("Downloads")),
+        desktop: dirs::desktop_dir().unwrap_or_else(|| home.join("Desktop")),
+        temp: std::env::temp_dir(),
+        app: None,
         home,
     })
 }
@@ -545,5 +604,104 @@ permissions: {{
                 .code,
             ErrorCode::NotFound
         );
+    }
+
+    #[test]
+    fn a_package_plan_and_a_directory_plan_are_built_by_one_pipeline() {
+        use crate::application::{source, support};
+        let text = support::manifest_text("").replace("read: []", "read: [ $APPDATA/data/* ]");
+        let folder = tempfile::tempdir().expect("tempdir");
+        let path = folder.path().join("app.alef");
+        std::fs::write(
+            &path,
+            support::zip(&[
+                ("alef.ktav", text.as_bytes()),
+                ("dist/index.html", b"<html></html>"),
+            ]),
+        )
+        .expect("write the package");
+        let crate::application::source::ApplicationSource::Package(prepared) =
+            source::load(&path).expect("a valid package")
+        else {
+            panic!("expected a package");
+        };
+        let id = prepared.manifest.id.clone();
+        let selected = prepared.selected_root.clone();
+        let vars = package_path_vars(&id).expect("vars");
+        assert!(vars.app.is_none(), "a package has no $APP directory");
+        assert!(vars.app_data.ends_with(&id), "{:?}", vars.app_data);
+        let package_plan = make_package_plan(
+            prepared.package,
+            &selected,
+            prepared.manifest.clone(),
+            &vars,
+        )
+        .expect("package plan");
+        let alef_runtime::AssetInput::Archive { selected_root, .. } = package_plan.assets else {
+            panic!("a package plan must use archive assets");
+        };
+        assert_eq!(selected_root, "dist");
+
+        let app_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(app_dir.path().join(MANIFEST_FILE), &text).expect("write the manifest");
+        let vars_d = path_vars(app_dir.path(), &id).expect("vars");
+        let directory_plan = make_plan(
+            app_dir.path(),
+            Manifest::from_ktav_str(&text).expect("manifest"),
+            &vars_d,
+        )
+        .expect("directory plan");
+        let alef_runtime::AssetInput::Disk { .. } = directory_plan.assets else {
+            panic!("directory plan must use disk assets");
+        };
+        assert_eq!(
+            directory_plan.permissions.rights(),
+            package_plan.permissions.rights()
+        );
+        assert_eq!(directory_plan.csp, package_plan.csp);
+        assert_eq!(directory_plan.manifest, package_plan.manifest);
+    }
+
+    #[test]
+    fn a_dollar_app_scope_is_refused_for_a_package_and_kept_for_a_directory() {
+        use crate::application::{source, support};
+        let text = support::manifest_text("").replace("read: []", "read: [ $APP/data/* ]");
+        let folder = tempfile::tempdir().expect("tempdir");
+        let path = folder.path().join("app.alef");
+        std::fs::write(
+            &path,
+            support::zip(&[
+                ("alef.ktav", text.as_bytes()),
+                ("dist/index.html", b"<html></html>"),
+            ]),
+        )
+        .expect("write the package");
+        let crate::application::source::ApplicationSource::Package(prepared) =
+            source::load(&path).expect("a valid package")
+        else {
+            panic!("expected a package");
+        };
+        let id = prepared.manifest.id.clone();
+        let selected = prepared.selected_root.clone();
+        let vars = package_path_vars(&id).expect("vars");
+        let error = match make_package_plan(prepared.package, &selected, prepared.manifest, &vars) {
+            Ok(_) => panic!("$APP must be refused for an archive"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::ManifestInvalid);
+        assert_eq!(
+            error.message,
+            "$APP is unavailable for archive applications"
+        );
+
+        let app_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(app_dir.path().join(MANIFEST_FILE), &text).expect("write the manifest");
+        let vars_d = path_vars(app_dir.path(), &id).expect("vars");
+        assert!(make_plan(
+            app_dir.path(),
+            Manifest::from_ktav_str(&text).expect("manifest"),
+            &vars_d
+        )
+        .is_ok());
     }
 }

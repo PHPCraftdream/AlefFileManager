@@ -51,10 +51,24 @@ impl AskedRight {
     }
 }
 
+/// The trust question next to the rights, when the application comes from a package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustAsk {
+    /// The full fingerprint of the signer; `None` for an unsigned package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    /// The SHA-256 digest of the exact archive bytes of an unsigned package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_digest: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub app: AppSummary,
     pub rights: Vec<AskedRight>,
+    /// The trust of the package signer, next to the rights.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<TrustAsk>,
     /// End-to-end runs only: the clicks of a user, played by the page.
     #[cfg(feature = "e2e")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +89,9 @@ pub struct Answered {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Answer {
     pub decisions: Vec<Answered>,
+    /// Whether the trust question was accepted, when it was asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<bool>,
 }
 
 /// The question for every right the manifest asks, with what was decided before; `describe` gives
@@ -97,6 +114,7 @@ pub fn request_for(
                 decision: stored.decided(right).then(|| stored.decision(right)),
             })
             .collect(),
+        trust: None,
         #[cfg(feature = "e2e")]
         automation: None,
     }
@@ -105,7 +123,10 @@ pub fn request_for(
 /// Believes an answer only if it is exactly the answer to the question: every right once, none
 /// that was not asked, and a risky right allowed only with its confirmation. The page is a stranger
 /// to this check: the window is the user's, but what it sends is not trusted to be whole.
-pub fn validate(request: &Request, answer: &Answer) -> Result<BTreeMap<Right, Decision>, String> {
+pub fn validate(
+    request: &Request,
+    answer: &Answer,
+) -> Result<(BTreeMap<Right, Decision>, Option<bool>), String> {
     let mut decided = BTreeMap::new();
     for given in &answer.decisions {
         let right = Right {
@@ -131,7 +152,12 @@ pub fn validate(request: &Request, answer: &Answer) -> Result<BTreeMap<Right, De
             return Err(format!("{} is not answered", asked.right()));
         }
     }
-    Ok(decided)
+    match (request.trust.as_ref(), answer.trust) {
+        (Some(_), None) => return Err("the trust question is not answered".to_owned()),
+        (None, Some(_)) => return Err("trust was not asked".to_owned()),
+        _ => {}
+    }
+    Ok((decided, answer.trust))
 }
 
 /// Where the files that pass the question and the answer lie: in the folder of the runtime, which
@@ -156,7 +182,9 @@ pub fn write_answer(path: &Path, answer: &Answer) -> io::Result<()> {
 
 /// Shows the window in a process of its own and waits for it. `Ok(None)`: the user closed it
 /// without answering. The files of the exchange are removed whatever happens.
-pub fn ask_in_window(request: &Request) -> Result<Option<BTreeMap<Right, Decision>>, String> {
+pub fn ask_in_window(
+    request: &Request,
+) -> Result<Option<(BTreeMap<Right, Decision>, Option<bool>)>, String> {
     let folder = exchange_folder();
     fs::create_dir_all(&folder).map_err(|e| io_text("the question cannot be put down", e))?;
     let stem = format!("{}", std::process::id());
@@ -227,6 +255,7 @@ mod tests {
                     confirmed: *confirmed,
                 })
                 .collect(),
+            trust: None,
         }
     }
 
@@ -259,6 +288,7 @@ mod tests {
         assert_eq!(request.rights[0].decision, None);
         let text = serde_json::to_string(&request).unwrap();
         assert!(!text.contains("automation"), "{text}");
+        assert!(!text.contains("trust"), "{text}");
         assert!(text.contains("\"permission\":\"clipboard.read\""));
     }
 
@@ -278,7 +308,7 @@ mod tests {
         assert!(page.contains("['tray', 'Tray icon']"));
         for decision in [Decision::Allow, Decision::Substitute, Decision::Deny] {
             let answered = answer(&[(&right, decision, false)]);
-            assert_eq!(validate(&request, &answered).unwrap()[&right], decision);
+            assert_eq!(validate(&request, &answered).unwrap().0[&right], decision);
         }
     }
 
@@ -310,7 +340,7 @@ mod tests {
             (&wanted[1], Decision::Allow, true),
             (&wanted[2], Decision::Deny, false),
         ]);
-        let decided = validate(&request, &whole).unwrap();
+        let decided = validate(&request, &whole).unwrap().0;
         assert_eq!(decided[&wanted[0]], Decision::Substitute);
         assert_eq!(decided[&wanted[1]], Decision::Allow);
         assert_eq!(decided[&wanted[2]], Decision::Deny);
@@ -352,6 +382,88 @@ mod tests {
             validate(&request, &softer).is_ok(),
             "a risky right that is not allowed needs no confirmation"
         );
+    }
+
+    #[test]
+    fn an_old_answer_without_trust_stays_valid_and_a_stray_trust_answer_is_refused() {
+        let wanted = rights();
+        let request = request_for(&app(), &wanted, &|_| None, &Consent::undecided());
+        let given = answer(&[
+            (&wanted[0], Decision::Allow, false),
+            (&wanted[1], Decision::Substitute, false),
+            (&wanted[2], Decision::Allow, false),
+        ]);
+        let (decided, trust) = validate(&request, &given).unwrap();
+        assert_eq!(trust, None);
+        assert_eq!(decided.len(), wanted.len());
+
+        // A trust answer to a question that did not ask trust is refused, the rights being complete.
+        let mut stray = answer(&[
+            (&wanted[0], Decision::Allow, false),
+            (&wanted[1], Decision::Substitute, false),
+            (&wanted[2], Decision::Allow, false),
+        ]);
+        stray.trust = Some(true);
+        assert_eq!(
+            validate(&request, &stray).unwrap_err(),
+            "trust was not asked"
+        );
+        // The rights are checked first: an answer without them is refused for them.
+        let incomplete = Answer {
+            decisions: Vec::new(),
+            trust: Some(true),
+        };
+        assert_eq!(
+            validate(&request, &incomplete).unwrap_err(),
+            "clipboard.read is not answered"
+        );
+    }
+
+    #[test]
+    fn a_trust_question_with_zero_rights_is_answered_by_the_trust_field_alone() {
+        let fp = "a".repeat(64);
+        let request = Request {
+            app: app(),
+            rights: Vec::new(),
+            trust: Some(TrustAsk {
+                fingerprint: Some(fp),
+                archive_digest: None,
+            }),
+            #[cfg(feature = "e2e")]
+            automation: None,
+        };
+        let (decided, trust) = validate(
+            &request,
+            &Answer {
+                decisions: Vec::new(),
+                trust: Some(true),
+            },
+        )
+        .unwrap();
+        assert_eq!(decided, BTreeMap::new());
+        assert_eq!(trust, Some(true));
+
+        let silent = Answer {
+            decisions: Vec::new(),
+            trust: None,
+        };
+        assert_eq!(
+            validate(&request, &silent).unwrap_err(),
+            "the trust question is not answered"
+        );
+
+        let stray = Answer {
+            decisions: vec![Answered {
+                permission: "clipboard.read".to_owned(),
+                scope: None,
+                decision: Decision::Allow,
+                confirmed: false,
+            }],
+            trust: Some(false),
+        };
+        assert!(validate(&request, &stray)
+            .unwrap_err()
+            .contains("was not asked"));
     }
 
     #[test]

@@ -307,8 +307,8 @@ pub fn settle_with(
                 // The window shows every right with what was decided before; its answer is the answer to all.
                 let request = window_request(asker, app, wanted, describe, &consent);
                 match ask_in_window(&request) {
-                    Ok(Some(answers)) => {
-                        for (right, decision) in answers {
+                    Ok(Some((decisions, _))) => {
+                        for (right, decision) in decisions {
                             consent.set(right, decision);
                         }
                     }
