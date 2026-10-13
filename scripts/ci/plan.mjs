@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // Convert a glob to an anchored regex: '**' -> '.*', '*' -> '[^/]*', '?' -> '[^/]', rest escaped.
-export function matchGlob(path, glob) {
+export function matchGlob(file, glob) {
   let source = '';
   for (let i = 0; i < glob.length; i++) {
     if (glob.startsWith('**', i)) {
@@ -23,11 +23,11 @@ export function matchGlob(path, glob) {
       source += glob[i].replace(/[.+^${}()|[\]\\]/g, '\\$&');
     }
   }
-  return new RegExp(`^${source}$`).test(path);
+  return new RegExp(`^${source}$`).test(file);
 }
 
-export function matchesAny(path, globs) {
-  return globs.some(glob => matchGlob(path, glob));
+export function matchesAny(file, globs) {
+  return globs.some(glob => matchGlob(file, glob));
 }
 
 // Docs-only: every file is docs/** or *.md; empty means NOT docs-only.
@@ -196,6 +196,29 @@ export function computePlan(input) {
   return plan;
 }
 
+// Dispatch overrides: a non-empty crates list tests exactly those crates; a non-empty e2e value
+// replaces the planned scenarios ('none' disables e2e) and, unless 'none', widens os to all runners.
+export function applyOverrides(planInput, overrides, runnersAll) {
+  const out = { ...planInput };
+  const crates = String(overrides.crates ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  if (crates.length > 0) {
+    out.crates = [...new Set(crates)].sort();
+    out.crates_all = false;
+    out.reason = `${out.reason}; manual crates override: ${out.crates.join(',')}`;
+  }
+  const e2e = String(overrides.e2e ?? '').trim();
+  if (e2e !== '') {
+    out.e2e = e2e;
+    if (e2e !== 'none') {
+      out.os = runnersAll;
+      out.reason = `${out.reason}; manual e2e override: ${e2e}`;
+    } else {
+      out.reason = `${out.reason}; manual e2e override: none`;
+    }
+  }
+  return out;
+}
+
 // Fallback: a CI run must not die because the planner hiccuped.
 function fullFallback(reason, data) {
   return {
@@ -329,6 +352,10 @@ function main() {
   } catch (error) {
     plan = fullFallback(`planner error: ${error?.message ?? String(error)}`, data);
   }
+  if (!plan.full) {
+    plan = applyOverrides(plan, { crates: args['--crates'], e2e: args['--e2e'] }, data.runners_all);
+  }
+  console.log(`reason: ${plan.reason}`);
   console.log(JSON.stringify(plan, null, 2));
 
   if (process.env.GITHUB_OUTPUT) {
@@ -338,6 +365,9 @@ function main() {
       `crates=${Array.isArray(plan.crates) ? plan.crates.join(',') : plan.crates}`,
       `js=${Array.isArray(plan.js) ? plan.js.join(',') : plan.js}`,
       `e2e=${plan.e2e}`,
+      `crates_all=${plan.crates_all}`,
+      `js_all=${plan.js_all}`,
+      `reason=${plan.reason}`,
       `docs_only=${plan.docs_only}`,
     ];
     appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');

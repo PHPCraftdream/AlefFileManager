@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { affectedJs, computePlan, e2eFor, isDocsOnly, matchGlob, matchesAny, reverseDependents } from './plan.mjs';
+import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));
@@ -140,7 +140,51 @@ test('a_changed_root_readme_md_is_docs_only_not_an_unknown_path', () => {
 test('the_cli_parses_full_false_as_an_affected_plan_not_full', () => {
   const planPath = fileURLToPath(new URL('./plan.mjs', import.meta.url));
   const out = spawnSync(process.execPath, [planPath, '--full', 'false', '--files', 'backend/crates/alef-core/src/lib.rs'], { encoding: 'utf8' });
-  assert.equal(JSON.parse(out.stdout).full, false);
+  assert.equal(JSON.parse(out.stdout.slice(out.stdout.indexOf('{'))).full, false);
+});
+
+test('applyOverrides_on_a_affected_plan_replaces_the_crate_list_and_sets_crates_all_false_and_keeps_linux', () => {
+  const p = plan(['backend/crates/alef-package/src/lib.rs']);
+  const out = applyOverrides(p, { crates: ' alef-modules, alef-modules ' }, data.runners_all);
+  assert.deepEqual(out.crates, ['alef-modules']);
+  assert.equal(out.crates_all, false);
+  assert.deepEqual(out.os, ['ubuntu-24.04']);
+});
+
+test('applyOverrides_with_an_empty_crates_value_leaves_the_plan_untouched_except_e2e_handling', () => {
+  const p = plan(['backend/crates/alef-package/src/lib.rs']);
+  const out = applyOverrides(p, { crates: '', e2e: '' }, data.runners_all);
+  assert.deepEqual(out, p);
+});
+
+test('applyOverrides_with_an_e2e_list_widens_os_to_all_runners_and_replaces_the_scenarios', () => {
+  const p = plan(['backend/crates/alef-package/src/lib.rs']);
+  const out = applyOverrides(p, { e2e: 'consent' }, data.runners_all);
+  assert.equal(out.e2e, 'consent');
+  assert.deepEqual(out.os, data.runners_all);
+});
+
+test('applyOverrides_with_e2e_none_disables_e2e_but_keeps_the_operating_systems_of_the_plan', () => {
+  const p = plan(['tests/e2e/scenarios/consent.mjs']);
+  const out = applyOverrides(p, { e2e: 'none' }, data.runners_all);
+  assert.equal(out.e2e, 'none');
+  assert.deepEqual(out.os, p.os);
+});
+
+test('applyOverrides_on_a_full_plan_is_not_applied_by_main', () => {
+  const planPath = fileURLToPath(new URL('./plan.mjs', import.meta.url));
+  const out = spawnSync(process.execPath, [planPath, '--event', 'push', '--ref', 'refs/heads/main', '--files', 'scripts/ci/plan.mjs', '--crates', 'alef-core'], { cwd: root, encoding: 'utf8' });
+  const parsed = JSON.parse(out.stdout.slice(out.stdout.indexOf('{')));
+  assert.equal(parsed.full, true);
+  assert.equal(parsed.crates, 'all');
+});
+
+test('the_cli_applies_crates_and_e2e_overrides_on_an_affected_plan', () => {
+  const planPath = fileURLToPath(new URL('./plan.mjs', import.meta.url));
+  const out = spawnSync(process.execPath, [planPath, '--event', 'push', '--ref', 'refs/heads/x', '--files', 'backend/crates/alef-core/src/lib.rs', '--crates', 'alef-core', '--e2e', 'core'], { cwd: root, encoding: 'utf8' });
+  const parsed = JSON.parse(out.stdout.slice(out.stdout.indexOf('{')));
+  assert.deepEqual(parsed.crates, ['alef-core']);
+  assert.equal(parsed.e2e, 'core');
 });
 
 test('matchGlob_matches_deep_wildcards_but_not_similar_prefixes_and_empty_files_are_not_docs_only', () => {
