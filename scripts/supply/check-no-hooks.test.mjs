@@ -19,7 +19,8 @@ test('ci_has_an_independent_linux_release_build_without_hooks', { timeout: 5000 
   const steps = yaml.split(/^      - /m);
   const release = steps.filter(step => step.startsWith('name: Release build without test hooks (Linux)\n'));
   assert.equal(release.length, 1, 'expected one independent release step');
-  assert.match(release[0], /^        if: runner\.os == 'Linux'\s*$/m);
+  // The planner may add its own condition (a docs-only push builds nothing); the step stays Linux-only.
+  assert.match(release[0], /^        if: runner\.os == 'Linux'( && .+)?\s*$/m);
   const run = release[0].match(/^        run: \|\r?\n((?: {10}[^\r\n]*\r?\n|\r?\n)*)/m);
   assert.ok(run, 'expected a release command block');
   const commands = run[1].split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#'));
