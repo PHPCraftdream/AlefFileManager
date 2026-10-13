@@ -510,16 +510,15 @@ mod tests {
 
     #[test]
     fn run_and_app_are_the_same_launch_and_a_positional_after_run_is_the_target() {
-        let expected = PathBuf::from("site");
-        for line in [
-            &["--app", "site"][..],
-            &["run", "site"],
-            &["run", "site.alef"],
+        for (line, expected) in [
+            (&["--app", "site"][..], "site"),
+            (&["run", "site"], "site"),
+            (&["run", "site.alef"], "site.alef"),
         ] {
             let Command::Run(launch) = parse(line).unwrap() else {
                 panic!("a run for {line:?}");
             };
-            assert_eq!(launch.target, expected, "{line:?}");
+            assert_eq!(launch.target, PathBuf::from(expected), "{line:?}");
         }
         assert!(parse(&["stray"]).unwrap_err().contains("unknown argument"));
         assert!(parse(&["run", "a", "b"])
