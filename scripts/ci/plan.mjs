@@ -214,6 +214,20 @@ export function applyOverrides(planInput, overrides, runnersAll) {
   return out;
 }
 
+export function dispatchOverridesGiven(overrides) {
+  return [overrides.crates, overrides.e2e].some(value => typeof value === 'string' && value.trim() !== '');
+}
+
+// The plan of a dispatch that names its own crates and scenarios: nothing but lint/structure
+// until the overrides add work.
+export function dispatchOnlyPlan(data) {
+  return {
+    full: false, os: data.runners_linux, crates: [], js: [], e2e: 'none',
+    lint: true, structure: true, fmt: true, reason: 'dispatch with overrides (no diff base)',
+    crates_all: false, js_all: false, docs_only: false,
+  };
+}
+
 // Fallback: a CI run must not die because the planner hiccuped.
 function fullFallback(reason, data) {
   return {
@@ -361,8 +375,14 @@ function main() {
   } catch (error) {
     plan = fullFallback(`planner error: ${error?.message ?? String(error)}`, data);
   }
+  const overrides = { crates: args['--crates'], e2e: args['--e2e'] };
+  // A dispatch with overrides on a ref that has no diff base (main itself) is the targeted run
+  // that was asked for, not a full one.
+  if (plan.full && event === 'workflow_dispatch' && !manualFull && dispatchOverridesGiven(overrides)) {
+    plan = dispatchOnlyPlan(data);
+  }
   if (!plan.full) {
-    plan = applyOverrides(plan, { crates: args['--crates'], e2e: args['--e2e'] }, data.runners_all);
+    plan = applyOverrides(plan, overrides, data.runners_all);
   }
   console.log(`reason: ${plan.reason}`);
   console.log(JSON.stringify(plan, null, 2));

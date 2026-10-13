@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny, resolveBase } from './plan.mjs';
+import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));
@@ -230,4 +230,20 @@ test('every_e2e_scenario_named_by_the_rules_is_known_to_the_runner', () => {
 test('a_changed_scenario_file_selects_the_scenarios_it_holds_not_its_file_name', () => {
   const p = plan(['tests/e2e/scenarios/manifests.mjs']);
   assert.equal(p.e2e, 'core,csp,manifest,permissions');
+});
+
+test('a_dispatch_with_overrides_and_no_diff_base_is_a_targeted_plan_not_a_full_one', () => {
+  const base = dispatchOnlyPlan(data);
+  const out = applyOverrides(base, { crates: 'alef-core', e2e: 'core' }, data.runners_all);
+  assert.equal(out.full, false);
+  assert.equal(out.crates_all, false);
+  assert.deepEqual(out.crates, ['alef-core']);
+  assert.equal(out.e2e, 'core');
+});
+
+test('overrides_count_only_when_a_non_blank_string_is_given', () => {
+  assert.equal(dispatchOverridesGiven({ crates: '', e2e: undefined }), false);
+  assert.equal(dispatchOverridesGiven({ crates: true, e2e: '  ' }), false);
+  assert.equal(dispatchOverridesGiven({ crates: 'alef', e2e: '' }), true);
+  assert.equal(dispatchOverridesGiven({ crates: '', e2e: 'none' }), true);
 });
