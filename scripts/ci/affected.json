@@ -18,6 +18,13 @@
   "e2e_smoke": ["core", "manifest", "permissions", "csp"],
   "e2e_rules": [
     { "glob": "tests/e2e/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
+    { "glob": "tests/e2e/scenarios/consent.mjs", "scenarios": ["consent","narrowing","ask","cancel","decisions"] },
+    { "glob": "tests/e2e/scenarios/data.mjs", "scenarios": ["fs","sqlite","store","crypto","webcrypto","secrets"] },
+    { "glob": "tests/e2e/scenarios/manifests.mjs", "scenarios": ["manifest"] },
+    { "glob": "tests/e2e/scenarios/mcp.mjs", "scenarios": ["mcp","mcp-stdio"] },
+    { "glob": "tests/e2e/scenarios/net.mjs", "scenarios": ["http","socket","websocket","serve"] },
+    { "glob": "tests/e2e/scenarios/startup.mjs", "scenarios": ["startup"] },
+    { "glob": "tests/e2e/scenarios/app/**", "scenarios": ["app", "console", "arguments", "startup", "autostart", "deeplink", "service", "launch-modes", "package"] },
     { "glob": "backend/crates/alef-core/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
     { "glob": "backend/crates/alef-runtime/src/bridge/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
     { "glob": "backend/crates/alef/src/consent/**", "scenarios": ["consent", "narrowing", "ask", "cancel", "decisions", "permissions"] },

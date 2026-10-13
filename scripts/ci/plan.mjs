@@ -112,11 +112,6 @@ export function e2eFor(files, rules, smoke, full, docsOnly) {
     matchGlob(f, 'backend/crates/alef-core/**') ||
     matchGlob(f, 'backend/crates/alef-runtime/src/bridge/**'));
   if (smokeHit) for (const s of smoke) scenarios.add(s);
-  // scenario files contribute their own scenario, derived from the file name
-  for (const file of files) {
-    const m = file.match(/^tests\/e2e\/scenarios\/[^/]+\.mjs$/);
-    if (m) scenarios.add(path.basename(file).replace(/\.mjs$/, ''));
-  }
   if (scenarios.size === 0) return 'none';
   return [...scenarios].sort().join(',');
 }
