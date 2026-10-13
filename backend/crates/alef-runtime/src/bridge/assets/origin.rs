@@ -377,7 +377,7 @@ fn serve(load: WebResourceLoad, url: Url, site: Arc<Site>) {
     match receiver.recv() {
         Ok(AssetMessage::Ok(asset)) => {
             // Capture the length first: the bytes move into the response.
-            let super::super::AssetBytes {
+            let super::AssetBytes {
                 bytes,
                 mime,
                 permit,
@@ -690,7 +690,7 @@ mod tests {
                 *at_finish.lock().expect("lock") = Some(archive.free_admissions());
             }
         };
-        let super::AssetBytes {
+        let super::super::AssetBytes {
             bytes,
             mime,
             permit,
