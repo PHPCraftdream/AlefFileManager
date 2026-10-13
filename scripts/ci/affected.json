@@ -1,0 +1,34 @@
+{
+  "runners_all": ["windows-latest", "macos-14", "macos-15-intel", "ubuntu-24.04"],
+  "runners_linux": ["ubuntu-24.04"],
+  "full_triggers": [".github/**", "scripts/ci/**", "scripts/cargo.mjs", "backend/Cargo.lock", "backend/Cargo.toml", "package.json", "package-lock.json", "rust-toolchain*", ".oxlintrc.json"],
+  "platform_sensitive": [
+    "backend/crates/alef-modules/src/system/**",
+    "backend/crates/alef-modules/src/desktop/**",
+    "backend/crates/alef-runtime/src/ui/**",
+    "backend/crates/alef-runtime/src/bridge/**",
+    "backend/crates/alef-runtime/src/window/**",
+    "backend/crates/alef/src/relaunch/**",
+    "backend/crates/alef/src/consent/**",
+    "**/*windows*",
+    "**/*unix*",
+    "**/*macos*",
+    "tests/e2e/**"
+  ],
+  "e2e_smoke": ["core", "manifest", "permissions", "csp"],
+  "e2e_rules": [
+    { "glob": "tests/e2e/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
+    { "glob": "backend/crates/alef-core/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
+    { "glob": "backend/crates/alef-runtime/src/bridge/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
+    { "glob": "backend/crates/alef/src/consent/**", "scenarios": ["consent", "narrowing", "ask", "cancel", "decisions", "permissions"] },
+    { "glob": "backend/crates/alef/src/relaunch/**", "scenarios": ["relaunch", "quit"] },
+    { "glob": "backend/crates/alef-runtime/src/window/**", "scenarios": ["window", "instance", "restore"] },
+    { "glob": "backend/crates/alef-modules/src/system/**", "scenarios": ["system", "autostart", "startup"] },
+    { "glob": "backend/crates/alef-modules/src/desktop/**", "scenarios": ["desktop", "menu", "tray", "shortcut"] },
+    { "glob": "backend/crates/alef-modules/src/net/**", "scenarios": ["http", "socket", "websocket", "serve"] },
+    { "glob": "backend/crates/alef-modules/src/data/**", "scenarios": ["fs", "sqlite", "store", "crypto", "webcrypto", "secrets"] },
+    { "glob": "packages/mcp/**", "scenarios": ["mcp", "mcp-stdio"] },
+    { "glob": "backend/crates/alef/src/args.rs", "scenarios": ["cli", "cli-commands", "arguments"] },
+    { "glob": "frontend/**", "scenarios": ["app", "console"] }
+  ]
+}

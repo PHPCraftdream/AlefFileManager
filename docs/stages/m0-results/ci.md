@@ -8,7 +8,7 @@
 ## Дизайн workflow
 
 - Шаги: checkout → Node 24 с `cache: npm` (lockfile в репозитории есть) → Python 3 (`setup-python`) → Rust stable (`dtolnay/rust-toolchain@stable`; MSRV 1.88 = `backend/Cargo.toml` `rust-version`, cargo проверяет сам) → кэши (`actions/cache`: cargo registry и `backend/target`, ключи `hashFiles('backend/Cargo.lock')`) → sccache → зависимости сборки по ОС → `npm ci` → `npm run lint` + `npm run lint:structure` (все ОС) → `npm run test:rust` (все ОС) → сборка (Linux: `npm run build`; прочие: `npm run build:rust`) → Linux e2e → артефакты (`upload-artifact@v4`, `if-no-files-found: error`).
-- sccache: `mozilla-actions/sccache-action@v0.0.7`, `SCCACHE_GHA_ENABLED`, `RUSTC_WRAPPER: sccache`; `scripts/cargo.mjs` и `scripts/dev.mjs` наследуют окружение (spawnSync), т.е. sccache действует и через npm-скрипты.
+- sccache: `mozilla-actions/sccache-action@v0.0.7`, `SCCACHE_GHA_ENABLED`, `RUSTC_WRAPPER: sccache`; `scripts/cargo.mjs` и `scripts/app/dev.mjs` наследуют окружение (spawnSync), т.е. sccache действует и через npm-скрипты.
 - e2e smoke (Linux): `ALEF_TRANSPORT_SPIKE=1 LIBGL_ALWAYS_SOFTWARE=1 timeout 180 xvfb-run -a … --frontend-dir experiments/transport-spike` — фронтенд-дист не нужен. Проверки: код выхода 0; в логе нет `panicked at`; последняя строка `spike report: {"phase":"main"` парсится как JSON, в нём нет верхнеуровневого `error` и есть непустой `results.echo`. Успешный и ошибочный отчёты страницы различаются именно этими полями (`experiments/transport-spike/spike.js:144-146`; успех содержит `results.echo`, заполненный на шаге 5); строку печатает `backend/crates/alef-runtime/src/bridge/mod.rs:266`.
 - `timeout-minutes: 300`.
 
@@ -56,7 +56,7 @@
 
 | Файл | Почему может сломать | Фикс |
 |---|---|---|
-| `scripts/cargo.mjs`, `scripts/dev.mjs` | жёсткий `--jobs 1` — холодная сборка длительная; влияние на время НЕ измерено, риск упереться в 300 мин | env-переменная (раздел ниже) |
+| `scripts/cargo.mjs`, `scripts/app/dev.mjs` | жёсткий `--jobs 1` — холодная сборка длительная; влияние на время НЕ измерено, риск упереться в 300 мин | env-переменная (раздел ниже) |
 | `backend/target` в actions/cache | debug-дерево Servo — десятки ГБ; лимит кэша GitHub 10 ГБ на репозиторий, кэш будет вытесняться | основной механизм — sccache; target-кэш сузить/убрать при необходимости |
 | сбой скачивания mozjs-архива | фолбэк-сборка SpiderMonkey: Windows — MozTools (на раннере нет); Linux/macOS — make+python (ставим в шаге зависимостей) | для Windows — MozillaBuild + `MOZTOOLS_PATH` как запасной план |
 | libclang для bindgen | Windows: LLVM (choco/образ); macOS: Xcode CLT; Linux: `libclang-dev` | при проблемах задать `LIBCLANG_PATH` |
@@ -147,3 +147,50 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 ## Дополнение: мутационное тестирование в CI
 
 После готовой фичи оркестратор ломает её важные строки по одной («мутации») и требует, чтобы хотя бы один тест упал: мутация, которую не заметил ни один тест, — это отсутствующий тест. Раньше это делал локальный скрипт (часы компиляций на машине пользователя), теперь это workflow `mutation.yml`: `gh workflow run mutation.yml -f list=archive`, затем `gh run watch <id> --exit-status`. Список — JSON-массив в `scripts/quality/mutations/<list>.json`; элемент — `{name, file, from, to, package, features?, test?}`: харнес (`scripts/quality/mutate.mjs`) заменяет единственное вхождение точного текста `from` на `to` в файле `file`, запускает `node scripts/cargo.mjs test --locked -p <package>` (для ускорения список делится на 4 шарда: `--shard i/4`) и относит исход к одной из четырёх категорий: **CAUGHT** — тесты упали (exit 101 и `FAILED` в выводе), **ESCAPED** — тесты прошли (мутант выжил: отсутствующий тест или избыточный код; чинится в продуктовом репозитории, не здесь), **INVALID** — мутант не компилируется или команда упала иначе (`error[`/`could not compile`); это дефект списка или окружения, запуск считается проваленным, **TIMEOUT** — зависание; считается поимкой, только если в выводе видно идущий тест (`test … …`), иначе это дефект. `ANCHOR_MISSING`/`ANCHOR_AMBIGUOUS` — якорь `from` не найден или найден не единожды: список надо чинить. Выживший мутант — вывод о продукте: добавить тест или удалить мёртвый код в продуктовом коде, а не в этом workflow.
+
+## Сегментация прогонов CI (планировщик `scripts/ci/plan.mjs`)
+
+Ярусы. Пуш в ветку задачи прогоняет только затронутое и только на Linux: cargo test по изменённым крейтам и их зависимым, JS-тесты затронутых пакетов, e2e-сценарии по правилам из `scripts/ci/affected.json`. Полный прогон — 4 ОС (windows-latest, macos-14, macos-15-intel, ubuntu-24.04), все крейты, все JS-пакеты, все e2e, 25–40 минут на ОС — выполняется только на: пуш в `main`, ночной schedule, `[full]` в сообщении коммита, ручной запуск с `full=true`. Docs-only изменение (только `docs/**` и `*.md`) запускает только structure+fmt.
+
+Входные данные. Изменённые файлы считаются как `git diff --name-only <before> <after>`; если база неизвестна (нет shа, diff упал или пуст) — консервативно берётся полный прогон. Вручную список файлов можно передать через `--files` (для отладки).
+
+Правила. Один файл данных — `scripts/ci/affected.json`: `full_triggers` (`.github/**`, `scripts/ci/**`, `scripts/cargo.mjs`, манифесты и локи, `rust-toolchain*`, `.oxlintrc.json`), `platform_sensitive` (system/desktop, ui/bridge/window, relaunch/consent, любые пути с `*windows*`/`*unix*`/`*macos*`, `tests/e2e/**` — такой путь поднимает прогон на все 4 ОС без полного прогона) и правила сопоставления путей сценариям e2e. Правило консервативное: путь, который не знает ни одно правило (не docs/backend/packages/frontend/scripts/tests и не корневые конфиги), расширяет план до полного.
+
+Как запустить полный прогон вручную: `gh workflow run ci.yml --ref <branch> -f full=true`.
+
+Проводка, которую оркестратор добавляет в ci.yml:
+
+```yaml
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      full: { description: 'Run the full matrix', type: boolean, default: false }
+  schedule:
+    - cron: '0 3 * * 1'   # nightly, full
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs: { full: ..., os: ..., crates: ..., js: ..., e2e: ..., docs_only: ... }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: plan
+        run: node scripts/ci/plan.mjs --event ${{ github.event_name }} --ref ${{ github.ref }} --before ${{ github.event.before || github.event.pull_request.base.sha }} --after ${{ github.sha }} --full ${{ github.event.inputs.full == 'true' }}
+  tests:
+    needs: plan
+    if: ${{ needs.plan.outputs.docs_only != 'true' }}
+    strategy: { matrix: { os: fromJSON(needs.plan.outputs.os) } }
+    steps:
+      # cargo test -p <each crate> when crates_all != 'true', else без -p
+      # JS: шаг if needs.plan.outputs.js != '[]'
+      # e2e: node tests/e2e/run.mjs --only ${{ needs.plan.outputs.e2e }} when != 'none'/'all'
+```
+
+Механика шагов: для `crates` джоб делает шаг-цикл по запятым (`node scripts/cargo.mjs test --locked -p <crate>`), когда `needs.plan.outputs.crates_all != 'true'`, иначе один шаг без `-p`. lint/structure/fmt выполняются всегда, независимо от плана (docs-only прогон состоит из них одних). JS-шаг включается, когда `needs.plan.outputs.js != '[]'`. При `e2e: all` — без `--only`, при `none` — шаг пропускается, иначе `node tests/e2e/run.mjs --only <список>`.
+
+Известный риск. OS-специфичный сбой при Linux-плане проявится только при merge в main: список `platform_sensitive` существует именно чтобы ловить такое раньше; после каждого post-merge сбоя соответствующий путь добавляют в список.
