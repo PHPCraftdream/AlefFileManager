@@ -166,7 +166,7 @@ function blob() {
   let seed = 0x2b6d9d3f;
   for (let index = 0; index < bytes.length; index += 1) {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
-    bytes[index] = seed & 255;
+    bytes[index] = seed >>> 24; // the low bits of this generator repeat every 256 bytes: the high ones do not
   }
   return bytes;
 }
