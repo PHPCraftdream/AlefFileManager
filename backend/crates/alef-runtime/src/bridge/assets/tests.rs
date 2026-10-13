@@ -639,3 +639,200 @@ fn file_links_and_bounded_replacement_races_never_return_outside_bytes() {
     finish_worker(writer);
     assert_eq!(source.read("/sub/file").unwrap().0, b"inside");
 }
+
+// Bridge wiring tests for the https origin live here (origin.rs has a line cap); they reuse
+// the public `prepare_assets`/`Bridge::with_options` surface instead of private helpers.
+mod wiring {
+    use super::app;
+    use super::origin::{test_site_host, SITE_TEST_LOCK};
+    use crate::bridge::{prepare_assets, AssetInput, ModuleInstaller};
+    use crate::{Bridge, BridgeOptions, Commands};
+    use alef_core::{AlefError, ErrorCode};
+    use std::future::Future;
+
+    async fn bounded<T>(future: impl Future<Output = T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(10), future)
+            .await
+            .expect("operation must complete within ten seconds")
+    }
+
+    fn disk_input(root_name: &str) -> (tempfile::TempDir, AssetInput) {
+        let (app, root) = app(root_name);
+        let input = AssetInput::Disk {
+            application_dir: app.path().to_owned(),
+            selected_root: root,
+        };
+        (app, input)
+    }
+
+    fn capability(bridge: &Bridge) -> Option<String> {
+        let fragment = bridge.entry_url.fragment()?;
+        url::form_urlencoded::parse(fragment.as_bytes())
+            .find(|(key, _)| key == "capability")
+            .map(|(_, value)| value.into_owned())
+    }
+
+    #[tokio::test]
+    async fn an_origin_host_loads_the_entry_from_https_and_disables_native_assets() {
+        let (_app, input) = disk_input("dist");
+        let prepared = bounded(prepare_assets(input, None, &[]))
+            .await
+            .expect("prepared assets");
+        let _guard = SITE_TEST_LOCK.lock().await;
+        let bridge = bounded(Bridge::with_options(
+            Commands::new(),
+            Some(prepared),
+            None,
+            BridgeOptions {
+                origin_host: Some("org2eexample2eapp".into()),
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("bridge");
+        assert!(
+            bridge
+                .entry_url
+                .as_str()
+                .starts_with("https://org2eexample2eapp.alef/"),
+            "{}",
+            bridge.entry_url
+        );
+        assert!(capability(&bridge).is_some_and(|token| !token.is_empty()));
+        assert_eq!(test_site_host().as_deref(), Some("org2eexample2eapp.alef"));
+        assert!(!bridge.test_serves_native_assets());
+        // Safe under the lock: the guard in `shutdown` clears the global only while it
+        // still points at this bridge's own site, never another bridge's.
+        drop(_guard);
+        bounded(bridge.shutdown()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_profile_dir_round_trips_through_the_bridge() {
+        let (_app, input) = disk_input("dist");
+        let prepared = bounded(prepare_assets(input, None, &[]))
+            .await
+            .expect("prepared assets");
+        let _guard = SITE_TEST_LOCK.lock().await;
+        let bridge = bounded(Bridge::with_options(
+            Commands::new(),
+            Some(prepared),
+            None,
+            BridgeOptions {
+                origin_host: Some("org2eexample2eapp".into()),
+                profile_dir: Some(std::path::PathBuf::from("profile-test")),
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("bridge");
+        assert_eq!(
+            bridge.profile_dir(),
+            Some(std::path::Path::new("profile-test"))
+        );
+        drop(_guard);
+        bounded(bridge.shutdown()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn without_an_origin_host_the_entry_stays_native_and_no_site_is_installed() {
+        let (_app, input) = disk_input("dist");
+        let prepared = bounded(prepare_assets(input, None, &[]))
+            .await
+            .expect("prepared assets");
+        let _guard = SITE_TEST_LOCK.lock().await;
+        let bridge = bounded(Bridge::with_options(
+            Commands::new(),
+            Some(prepared),
+            None,
+            BridgeOptions::default(),
+        ))
+        .await
+        .expect("bridge");
+        assert!(bridge.entry_url.as_str().starts_with("native://app/"));
+        assert!(bridge.test_serves_native_assets());
+        drop(_guard);
+        bounded(bridge.shutdown()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_bridge_construction_leaves_no_site_installed() {
+        let (_app, input) = disk_input("dist");
+        let prepared = bounded(prepare_assets(input, None, &[]))
+            .await
+            .expect("prepared assets");
+        let _guard = SITE_TEST_LOCK.lock().await;
+        let modules: ModuleInstaller = Box::new(|_, _| {
+            Err(AlefError::new(
+                ErrorCode::Internal,
+                "injected module failure",
+            ))
+        });
+        let outcome = bounded(Bridge::with_options(
+            Commands::new(),
+            Some(prepared),
+            None,
+            BridgeOptions {
+                origin_host: Some("org2eexample2eapp".into()),
+                modules: Some(modules),
+                ..Default::default()
+            },
+        ))
+        .await;
+        assert!(
+            outcome.is_err(),
+            "the injected module failure must fail construction"
+        );
+        assert_eq!(
+            test_site_host(),
+            None,
+            "the construction guard must have dropped the site"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_bridge_shutdown_does_not_disturb_the_https_bridge_site() {
+        let (_https_app, https_input) = disk_input("dist");
+        let (_native_app, native_input) = disk_input("dist");
+        let https = bounded(prepare_assets(https_input, None, &[]))
+            .await
+            .expect("https assets");
+        let native = bounded(prepare_assets(native_input, None, &[]))
+            .await
+            .expect("native assets");
+        let _guard = SITE_TEST_LOCK.lock().await;
+        let https_bridge = bounded(Bridge::with_options(
+            Commands::new(),
+            Some(https),
+            None,
+            BridgeOptions {
+                origin_host: Some("org2eexample2eapp".into()),
+                ..Default::default()
+            },
+        ))
+        .await
+        .expect("https bridge");
+        let native_bridge = bounded(Bridge::with_options(
+            Commands::new(),
+            Some(native),
+            None,
+            BridgeOptions::default(),
+        ))
+        .await
+        .expect("native bridge");
+        assert_eq!(test_site_host().as_deref(), Some("org2eexample2eapp.alef"));
+        bounded(native_bridge.shutdown()).await.unwrap();
+        assert_eq!(
+            test_site_host().as_deref(),
+            Some("org2eexample2eapp.alef"),
+            "the native shutdown must not clear the https site"
+        );
+        bounded(https_bridge.shutdown()).await.unwrap();
+        assert_eq!(
+            test_site_host(),
+            None,
+            "the https shutdown clears its own site"
+        );
+        drop(_guard);
+    }
+}

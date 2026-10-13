@@ -11,6 +11,124 @@ use url::Url;
 
 const CHUNK_BYTES: usize = 256 * 1024;
 
+/// One pipeline command for [`ServoChannel`]: the intercepted handle is not nameable
+/// (`InterceptedWebResourceLoad` is not re-exported by servo 0.6.0), so it lives inside
+/// a closure driven by this command.
+enum Pipeline {
+    Body(Vec<u8>),
+    Finish,
+}
+
+/// The head of an interception response: status and headers, type-agnostic.
+#[derive(Clone)]
+struct ResponseHead {
+    status: StatusCode,
+    headers: HeaderMap,
+}
+
+/// Where a started interception response goes: `start`, then body chunks, then `finish` —
+/// in this order, and never a cancel (the trait has no cancel operation).
+trait ResponseChannel {
+    fn start(&mut self, head: ResponseHead);
+    fn body(&mut self, chunk: Vec<u8>);
+    fn finish(&mut self);
+}
+
+/// A short HTTP reason phrase per status, as the spike used; the JSON error stays in the body.
+fn reason(status: StatusCode) -> &'static [u8] {
+    match status.as_u16() {
+        400 => b"Bad request",
+        403 => b"Forbidden",
+        404 => b"Not found",
+        405 => b"Method not allowed",
+        429 => b"Too many requests",
+        _ => b"Rejected by origin",
+    }
+}
+
+/// The production channel: starts the interception, streams the body to Servo, finishes it.
+struct ServoChannel {
+    load: Option<WebResourceLoad>,
+    url: Url,
+    #[allow(clippy::type_complexity)]
+    pipeline: Option<Box<dyn FnMut(Pipeline)>>,
+}
+
+impl ResponseChannel for ServoChannel {
+    fn start(&mut self, head: ResponseHead) {
+        let load = self.load.take().expect("the channel starts once");
+        let response = WebResourceResponse::new(self.url.clone())
+            .status_code(head.status)
+            .status_message(reason(head.status).to_vec())
+            .headers(head.headers);
+        let mut intercepted = Some(load.intercept(response));
+        self.pipeline = Some(Box::new(move |command| match command {
+            Pipeline::Body(chunk) => intercepted
+                .as_mut()
+                .expect("body after finish")
+                .send_body_data(chunk),
+            Pipeline::Finish => intercepted.take().expect("finish twice").finish(),
+        }));
+    }
+    fn body(&mut self, chunk: Vec<u8>) {
+        (self.pipeline.as_mut().expect("start before body"))(Pipeline::Body(chunk));
+    }
+    fn finish(&mut self) {
+        (self.pipeline.as_mut().expect("start before finish"))(Pipeline::Finish);
+    }
+}
+
+fn asset_head(mime: &str, csp: &str) -> ResponseHead {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(mime).expect("MIME header"),
+    );
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_str(csp).expect("CSP header"),
+    );
+    ResponseHead {
+        status: StatusCode::OK,
+        headers,
+    }
+}
+
+fn error_head(status: u16, csp: &str) -> ResponseHead {
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_str(csp).expect("CSP header"),
+    );
+    ResponseHead {
+        status: StatusCode::from_u16(status).expect("valid status"),
+        headers,
+    }
+}
+
+fn error_body() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "error": "Rejected by origin" })).expect("JSON body")
+}
+
+/// Hands one response over the channel; the admission permit (if any) is dropped only after
+/// `finish`, so the slot is held until the body has been handed over completely.
+fn respond(
+    channel: &mut impl ResponseChannel,
+    head: ResponseHead,
+    body: Vec<u8>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+) {
+    channel.start(head);
+    for chunk in body.chunks(CHUNK_BYTES) {
+        channel.body(chunk.to_vec());
+    }
+    channel.finish();
+    drop(permit);
+}
+
 /// The https analogue of `DEFAULT_CSP`: `'self'` covers the https origin, `native:` stays
 /// allowed for the transport.
 pub(crate) const DEFAULT_ORIGIN_CSP: &str = "default-src 'self'; connect-src 'self' native:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'";
@@ -27,6 +145,10 @@ pub(crate) struct Site {
 
 // std Mutex so tests can reset it; recover from poisoning, the site is plain data.
 static SITE: Mutex<Option<Arc<Site>>> = Mutex::new(None);
+
+/// Serializes the site-sensitive tests (here and in assets/tests.rs) against each other.
+#[cfg(test)]
+pub(crate) static SITE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn set_site(site: Option<Arc<Site>>) {
     *lock() = site;
@@ -223,52 +345,15 @@ pub(crate) fn web_resource(load: WebResourceLoad) {
     }
 }
 
-/// Status, headers and JSON body of an interception error; the same header contract as the
-/// native handler's error responses (bridge/mod.rs): JSON content type, nosniff, CSP.
-fn error_parts(status: u16, csp: &str, message: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(
-        CONTENT_SECURITY_POLICY,
-        HeaderValue::from_str(csp).expect("CSP header"),
-    );
-    let body = serde_json::to_vec(&serde_json::json!({ "error": message })).expect("JSON body");
-    (
-        StatusCode::from_u16(status).expect("valid status"),
-        headers,
-        body,
-    )
-}
-
 // The interception is never cancelled on an error: like the Failed arm, the rejection is a
 // complete HTTP response, not a network failure.
 fn reject(load: WebResourceLoad, url: Url, status: u16, csp: &str) {
-    let (status, headers, body) = error_parts(status, csp, "Rejected by origin");
-    let mut intercepted = load.intercept(
-        WebResourceResponse::new(url)
-            .status_code(status)
-            .status_message(body.clone())
-            .headers(headers),
-    );
-    intercepted.send_body_data(body);
-    intercepted.finish();
-}
-
-fn asset_response(url: Url, csp: &str, mime: &str) -> WebResourceResponse {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_str(mime).expect("MIME header"),
-    );
-    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-    headers.insert(
-        CONTENT_SECURITY_POLICY,
-        HeaderValue::from_str(csp).expect("CSP header"),
-    );
-    WebResourceResponse::new(url)
-        .headers(headers)
-        .status_code(StatusCode::OK)
+    let mut channel = ServoChannel {
+        load: Some(load),
+        url,
+        pipeline: None,
+    };
+    respond(&mut channel, error_head(status, csp), error_body(), None);
 }
 
 fn serve(load: WebResourceLoad, url: Url, site: Arc<Site>) {
@@ -291,29 +376,35 @@ fn serve(load: WebResourceLoad, url: Url, site: Arc<Site>) {
     // Read first: the response headers (mime) are only known after the lookup.
     match receiver.recv() {
         Ok(AssetMessage::Ok(asset)) => {
-            // Destructure up front: only `permit` is moved, the borrows end first.
-            let super::AssetBytes {
+            // Capture the length first: the bytes move into the response.
+            let super::super::AssetBytes {
                 bytes,
                 mime,
                 permit,
             } = asset;
-            let mut intercepted = load.intercept(asset_response(url, &site.csp, &mime));
-            for chunk in bytes.chunks(CHUNK_BYTES) {
-                intercepted.send_body_data(chunk.to_vec());
-            }
-            intercepted.finish();
-            eprintln!(
-                "origin: served {} B in {:?}",
-                bytes.len(),
-                started.elapsed()
-            );
-            // Kept until the body handoff, exactly like MemoryProtocol (bridge/mod.rs).
-            drop(permit);
+            let served = bytes.len();
+            let mut channel = ServoChannel {
+                load: Some(load),
+                url,
+                pipeline: None,
+            };
+            respond(&mut channel, asset_head(&mime, &site.csp), bytes, permit);
+            eprintln!("origin: served {served} B in {:?}", started.elapsed());
         }
         Ok(AssetMessage::Failed(status)) => {
             eprintln!("origin: read failed with HTTP {status}");
             // Errors are HTTP responses, never cancel.
-            reject(load, url, status, &site.csp);
+            let mut channel = ServoChannel {
+                load: Some(load),
+                url,
+                pipeline: None,
+            };
+            respond(
+                &mut channel,
+                error_head(status, &site.csp),
+                error_body(),
+                None,
+            );
         }
         Err(_) => {
             eprintln!("origin: reader task vanished"); // Drop finishes the interception.
@@ -332,19 +423,25 @@ mod tests {
             .expect("operation must complete within ten seconds")
     }
 
-    fn site_from_disk() -> (tempfile::TempDir, Arc<Site>) {
+    /// The disk fixture `site_from_disk` builds its site from; shared with the RAII tests.
+    fn disk_source() -> (tempfile::TempDir, Arc<super::super::Source>) {
         let app = tempfile::tempdir().expect("temporary directory");
         let root = app.path().join("dist");
         std::fs::create_dir_all(&root).expect("root dir");
         std::fs::write(root.join("index.html"), b"public").expect("index");
         std::fs::write(root.join("app.js"), b"script").expect("script");
-        let source = Arc::new(super::super::Source::prepare(
-            super::super::super::AssetInput::Disk {
+        let source = Arc::new(
+            super::super::Source::prepare(super::super::super::AssetInput::Disk {
                 application_dir: app.path().to_owned(),
-                selected_root: root.clone(),
-            },
-        ))
-        .expect("prepared source");
+                selected_root: root,
+            })
+            .expect("prepared source"),
+        );
+        (app, source)
+    }
+
+    fn site_from_disk() -> (tempfile::TempDir, Arc<Site>) {
+        let (app, source) = disk_source();
         (
             app,
             Arc::new(Site {
@@ -403,13 +500,13 @@ mod tests {
         let root = app.path().join("dist");
         std::fs::create_dir_all(&root).expect("root dir");
         std::fs::write(app.path().join("secret.txt"), b"secret").expect("secret");
-        let source = Arc::new(super::super::Source::prepare(
-            super::super::super::AssetInput::Disk {
+        let source = Arc::new(
+            super::super::Source::prepare(super::super::super::AssetInput::Disk {
                 application_dir: app.path().to_owned(),
                 selected_root: root,
-            },
-        ))
-        .expect("prepared source");
+            })
+            .expect("prepared source"),
+        );
         let site = Arc::new(Site {
             host: "org2eexample2eapp.alef".into(),
             origin: "https://org2eexample2eapp.alef".into(),
@@ -438,10 +535,10 @@ mod tests {
     // body releases the admission slot.
     #[tokio::test]
     async fn an_archive_permit_is_still_held_after_the_read_hands_its_bytes_over() {
-        let source = Arc::new(super::super::Source::prepare(
-            super::super::archive_tests::input("dist"),
-        ))
-        .expect("prepared archive");
+        let source = Arc::new(
+            super::super::Source::prepare(super::super::archive_tests::input("dist"))
+                .expect("prepared archive"),
+        );
         let site = Arc::new(Site {
             host: "org2eexample2eapp.alef".into(),
             origin: "https://org2eexample2eapp.alef".into(),
@@ -483,17 +580,138 @@ mod tests {
     }
 
     #[test]
-    fn error_parts_carry_the_native_error_headers_status_and_body() {
-        let (status, headers, body) = error_parts(404, DEFAULT_ORIGIN_CSP, "missing");
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(headers[CONTENT_TYPE], "application/json");
-        assert_eq!(headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
-        assert_eq!(headers[CONTENT_SECURITY_POLICY], DEFAULT_ORIGIN_CSP);
-        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+    fn error_head_carries_the_native_error_headers_and_status() {
+        let head = error_head(404, DEFAULT_ORIGIN_CSP);
+        assert_eq!(head.status, StatusCode::NOT_FOUND);
+        assert_eq!(head.headers[CONTENT_TYPE], "application/json");
+        assert_eq!(head.headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(head.headers[CONTENT_SECURITY_POLICY], DEFAULT_ORIGIN_CSP);
+        let parsed: serde_json::Value = serde_json::from_slice(&error_body()).expect("json body");
         assert!(parsed
             .get("error")
             .and_then(|value| value.as_str())
             .is_some());
+    }
+
+    /// A recording channel: captures start/body/finish; the trait has no cancel operation.
+    struct RecordingChannel {
+        head: Option<ResponseHead>,
+        body: Vec<u8>,
+        finished: bool,
+        on_finish: Option<Box<dyn FnOnce()>>,
+    }
+
+    impl ResponseChannel for RecordingChannel {
+        fn start(&mut self, head: ResponseHead) {
+            assert!(self.head.is_none(), "start twice");
+            self.head = Some(head);
+        }
+        fn body(&mut self, chunk: Vec<u8>) {
+            assert!(self.head.is_some(), "body before start");
+            self.body.extend_from_slice(&chunk);
+        }
+        fn finish(&mut self) {
+            assert!(self.head.is_some(), "finish before start");
+            if let Some(on_finish) = self.on_finish.take() {
+                on_finish();
+            }
+            self.finished = true;
+        }
+    }
+
+    #[test]
+    fn the_response_channel_starts_streams_the_body_and_finishes_without_cancelling() {
+        let mut channel = RecordingChannel {
+            head: None,
+            body: Vec::new(),
+            finished: false,
+            on_finish: None,
+        };
+        respond(
+            &mut channel,
+            asset_head("text/javascript", DEFAULT_ORIGIN_CSP),
+            b"abcdef".to_vec(),
+            None,
+        );
+        let head = channel.head.expect("start was not seen");
+        assert_eq!(head.status, StatusCode::OK);
+        assert_eq!(head.headers[CONTENT_TYPE], "text/javascript");
+        assert_eq!(channel.body, b"abcdef");
+        assert!(channel.finished, "finish was not seen");
+        // The trait has no cancel operation: a cancel cannot be expressed through `respond`.
+    }
+    #[test]
+    fn an_error_response_goes_through_the_channel_with_status_headers_and_json_body() {
+        let mut channel = RecordingChannel {
+            head: None,
+            body: Vec::new(),
+            finished: false,
+            on_finish: None,
+        };
+        respond(
+            &mut channel,
+            error_head(404, DEFAULT_ORIGIN_CSP),
+            error_body(),
+            None,
+        );
+        let head = channel.head.expect("start was not seen");
+        assert_eq!(head.status, StatusCode::NOT_FOUND);
+        assert_eq!(head.headers[CONTENT_TYPE], "application/json");
+        assert_eq!(head.headers[X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(head.headers[CONTENT_SECURITY_POLICY], DEFAULT_ORIGIN_CSP);
+        assert_eq!(channel.body, error_body());
+        assert!(channel.finished, "an error is a complete response");
+    }
+
+    #[tokio::test]
+    async fn the_permit_is_still_held_when_finish_reports_the_final_handoff() {
+        let source = Arc::new(
+            super::super::Source::prepare(super::super::archive_tests::input("dist"))
+                .expect("prepared archive"),
+        );
+        let site = Arc::new(Site {
+            host: "org2eexample2eapp.alef".into(),
+            origin: "https://org2eexample2eapp.alef".into(),
+            allowed: Vec::new(),
+            assets: source,
+            csp: DEFAULT_ORIGIN_CSP.into(),
+        });
+        let asset = bounded(read(&site, &Method::GET, "/"))
+            .await
+            .expect("index");
+        let super::super::Source::Archive(archive) = site.assets.as_ref() else {
+            panic!("the fixture must be an archive");
+        };
+        let at_finish = std::sync::Arc::new(std::sync::Mutex::new(None::<usize>));
+        let observer = {
+            let at_finish = at_finish.clone();
+            let archive = archive.clone();
+            move || {
+                *at_finish.lock().expect("lock") = Some(archive.free_admissions());
+            }
+        };
+        let super::AssetBytes {
+            bytes,
+            mime,
+            permit,
+        } = asset;
+        let mut recording = RecordingChannel {
+            head: None,
+            body: Vec::new(),
+            finished: false,
+            on_finish: Some(Box::new(observer)),
+        };
+        respond(&mut recording, asset_head(&mime, &site.csp), bytes, permit);
+        assert_eq!(
+            *at_finish.lock().expect("lock"),
+            Some(super::super::archive::RUNNING - 1),
+            "the permit must still be held when Finish reports the handoff"
+        );
+        assert_eq!(
+            archive.free_admissions(),
+            super::super::archive::RUNNING,
+            "released only after the handoff function returned"
+        );
     }
 
     #[test]
@@ -632,17 +850,43 @@ mod tests {
             ),
             Classification::Untouched
         );
-        for (origin, host) in [
-            ("https://example.com", "example.com"),
-            ("https://a.example.com:8443", "a.example.com"),
-            ("http://a.example.com", "a.example.com"),
+        for (origin, scheme, host) in [
+            ("https://example.com", "https", "example.com"),
+            ("https://a.example.com:8443", "https", "a.example.com"),
+            ("http://a.example.com", "http", "a.example.com"),
         ] {
             assert_eq!(
-                classify(site_origin, &allowed, origin, "https", Some(host)),
+                classify(site_origin, &allowed, origin, scheme, Some(host)),
                 Classification::Cancelled,
                 "{origin}"
             );
         }
+    }
+
+    // An older SiteGuard must only clear the site it owns, never the newer installed one.
+    #[tokio::test]
+    async fn dropping_an_older_site_guard_leaves_the_current_site_installed() {
+        let _guard = SITE_TEST_LOCK.lock().await;
+        let (_dir, source) = disk_source();
+        let older = install(
+            "old.org2eexample2eapp.alef".into(),
+            source.clone(),
+            None,
+            Vec::new(),
+        );
+        let current = install("org2eexample2eapp.alef".into(), source, None, Vec::new());
+        drop(older);
+        assert_eq!(
+            test_site_host().as_deref(),
+            Some("org2eexample2eapp.alef"),
+            "the older guard must not clear the newer site"
+        );
+        drop(current);
+        assert_eq!(
+            test_site_host(),
+            None,
+            "dropping the current guard must clear the site"
+        );
     }
 
     // Every Servo builder must share one option set: per-app profile root, temporary
@@ -657,126 +901,5 @@ mod tests {
         assert!(opts.temporary_storage);
         assert!(!opts.multiprocess);
         assert!(servo_opts(None).config_dir.is_none());
-    }
-
-    // Bridge wiring tests live here (bridge/mod.rs has a line cap); they reuse the public
-    // `prepare_assets`/`Bridge::with_options` surface instead of the private helpers there.
-    mod bridge_wiring {
-        use super::*;
-        use crate::bridge::{prepare_assets, AssetInput, Bridge, BridgeOptions, Commands};
-        use std::future::Future;
-
-        async fn bounded<T>(future: impl Future<Output = T>) -> T {
-            tokio::time::timeout(std::time::Duration::from_secs(10), future)
-                .await
-                .expect("operation must complete within ten seconds")
-        }
-
-        fn disk_input(root_name: &str) -> (tempfile::TempDir, AssetInput) {
-            let app = tempfile::tempdir().expect("temporary directory");
-            let root = app.path().join(root_name);
-            std::fs::create_dir_all(&root).expect("root dir");
-            std::fs::write(root.join("index.html"), b"public").expect("index");
-            (
-                app,
-                AssetInput::Disk {
-                    application_dir: app.path().to_owned(),
-                    selected_root: root,
-                },
-            )
-        }
-
-        fn capability(bridge: &Bridge) -> Option<String> {
-            let fragment = bridge.entry_url.fragment()?;
-            url::form_urlencoded::parse(fragment.as_bytes())
-                .find(|(key, _)| key == "capability")
-                .map(|(_, value)| value.into_owned())
-        }
-
-        /// Serializes the site-sensitive sections of these tests against each other.
-        static SITE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-        #[tokio::test]
-        async fn an_origin_host_loads_the_entry_from_https_and_disables_native_assets() {
-            let (_app, input) = disk_input("dist");
-            let prepared = bounded(prepare_assets(input, None, &[]))
-                .await
-                .expect("prepared assets");
-            let _guard = SITE_TEST_LOCK.lock().await;
-            let bridge = bounded(Bridge::with_options(
-                Commands::new(),
-                Some(prepared),
-                None,
-                BridgeOptions {
-                    origin_host: Some("org2eexample2eapp".into()),
-                    ..Default::default()
-                },
-            ))
-            .await
-            .expect("bridge");
-            assert!(
-                bridge
-                    .entry_url
-                    .as_str()
-                    .starts_with("https://org2eexample2eapp.alef/"),
-                "{}",
-                bridge.entry_url
-            );
-            assert!(capability(&bridge).is_some_and(|token| !token.is_empty()));
-            assert_eq!(test_site_host().as_deref(), Some("org2eexample2eapp.alef"));
-            assert!(!bridge.test_serves_native_assets());
-            // Safe under the lock: the guard in `shutdown` clears the global only while it
-            // still points at this bridge's own site, never another bridge's.
-            drop(_guard);
-            bounded(bridge.shutdown()).await.unwrap();
-        }
-
-        #[tokio::test]
-        async fn a_profile_dir_round_trips_through_the_bridge() {
-            let (_app, input) = disk_input("dist");
-            let prepared = bounded(prepare_assets(input, None, &[]))
-                .await
-                .expect("prepared assets");
-            let _guard = SITE_TEST_LOCK.lock().await;
-            let bridge = bounded(Bridge::with_options(
-                Commands::new(),
-                Some(prepared),
-                None,
-                BridgeOptions {
-                    origin_host: Some("org2eexample2eapp".into()),
-                    profile_dir: Some(std::path::PathBuf::from("profile-test")),
-                    ..Default::default()
-                },
-            ))
-            .await
-            .expect("bridge");
-            assert_eq!(
-                bridge.profile_dir(),
-                Some(std::path::Path::new("profile-test"))
-            );
-            drop(_guard);
-            bounded(bridge.shutdown()).await.unwrap();
-        }
-
-        #[tokio::test]
-        async fn without_an_origin_host_the_entry_stays_native_and_no_site_is_installed() {
-            let (_app, input) = disk_input("dist");
-            let prepared = bounded(prepare_assets(input, None, &[]))
-                .await
-                .expect("prepared assets");
-            let _guard = SITE_TEST_LOCK.lock().await;
-            let bridge = bounded(Bridge::with_options(
-                Commands::new(),
-                Some(prepared),
-                None,
-                BridgeOptions::default(),
-            ))
-            .await
-            .expect("bridge");
-            assert!(bridge.entry_url.as_str().starts_with("native://app/"));
-            assert!(bridge.test_serves_native_assets());
-            drop(_guard);
-            bounded(bridge.shutdown()).await.unwrap();
-        }
     }
 }

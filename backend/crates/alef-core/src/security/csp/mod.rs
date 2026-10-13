@@ -167,9 +167,27 @@ pub fn normalize_source(entry: &str) -> Option<String> {
     parse_origin(entry, "source", false).ok()
 }
 
+/// The default port of a special scheme (`:80` http, `:443` https/wss).
+fn default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(80),
+        "https" | "wss" => Some(443),
+        _ => None,
+    }
+}
+
+/// The port an origin comparison sees: the written port, or the scheme default.
+fn effective_port(scheme: &str, port: Option<&str>) -> Option<u16> {
+    match port {
+        Some(port) => port.parse::<u16>().ok(),
+        None => default_port(scheme),
+    }
+}
+
 /// True when the serialized request origin (`scheme://host[:port]`) is covered by `source`.
 /// Wildcard hosts (`*.domain`) cover any subdomain of `domain` (never `domain` itself) with an
-/// exact scheme and port; `data:`/`blob:` sources never cover an origin.
+/// exact scheme and port; a default port (`:443` https/wss, `:80` http) equals the omitted
+/// form; `data:`/`blob:` sources never cover an origin.
 pub fn origin_matches(source: &str, origin: &str) -> bool {
     let Some(normalized) = normalize_source(source) else {
         return false;
@@ -180,18 +198,21 @@ pub fn origin_matches(source: &str, origin: &str) -> bool {
     let Some((scheme, authority)) = normalized.split_once("://") else {
         return false;
     };
-    let Some(wild) = authority.strip_prefix("*.") else {
-        return false;
-    };
     let Some((request_scheme, request_authority)) = origin.split_once("://") else {
         return false;
     };
     if request_scheme != scheme {
         return false;
     }
-    let (wild_host, wild_port) = split_authority(wild);
     let (request_host, request_port) = split_authority(request_authority);
-    wild_port == request_port
+    let Some(wild) = authority.strip_prefix("*.") else {
+        // An exact source: same host, and the same port once defaults are filled in.
+        let (host, port) = split_authority(authority);
+        return host == request_host
+            && effective_port(scheme, port) == effective_port(request_scheme, request_port);
+    };
+    let (wild_host, wild_port) = split_authority(wild);
+    effective_port(scheme, wild_port) == effective_port(request_scheme, request_port)
         && request_host.len() > wild_host.len() + 1
         && request_host.ends_with(wild_host)
         && request_host.as_bytes()[request_host.len() - wild_host.len() - 1] == b'.'
@@ -212,6 +233,11 @@ mod tests {
     #[test]
     fn an_exact_source_matches_only_its_own_origin() {
         assert!(origin_matches("https://example.com", "https://example.com"));
+        // A default port equals the omitted form on both sides.
+        assert!(origin_matches(
+            "https://example.com:443",
+            "https://example.com"
+        ));
         assert!(!origin_matches(
             "https://example.com",
             "https://example.com:8443"
@@ -224,6 +250,15 @@ mod tests {
         let source = "https://*.example.com";
         assert!(origin_matches(source, "https://a.example.com"));
         assert!(origin_matches(source, "https://a.b.example.com"));
+        // A default port on the wildcard side equals the omitted form.
+        assert!(origin_matches(
+            "https://*.example.com:443",
+            "https://a.example.com"
+        ));
+        assert!(origin_matches(
+            "http://example.localhost:80",
+            "http://example.localhost"
+        ));
         assert!(!origin_matches(source, "https://example.com"));
         assert!(!origin_matches(source, "https://a.example.com:8443"));
         assert!(!origin_matches(source, "http://a.example.com"));
