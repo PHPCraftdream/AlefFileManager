@@ -109,7 +109,7 @@ test('a_changed_package_json_of_one_js_package_runs_that_package_and_its_depende
 
 test('a_changed_e2e_scenario_file_maps_to_the_smoke_set', () => {
   const p = plan(['tests/e2e/scenarios/consent.mjs']);
-  assert.equal(p.e2e, 'consent,core,csp,manifest,permissions');
+  assert.equal(p.e2e, 'ask,cancel,consent,core,csp,decisions,manifest,narrowing,permissions');
   assert.deepEqual(p.os, data.runners_all);
 });
 
@@ -217,4 +217,17 @@ test('a_rewritten_history_whose_before_is_missing_falls_back_to_the_merge_base',
 test('no_usable_base_and_no_merge_base_gives_null_so_the_plan_stays_full', () => {
   const git = () => ({ status: 1, stdout: '' });
   assert.equal(resolveBase(undefined, 'def456', git), null);
+});
+
+test('every_e2e_scenario_named_by_the_rules_is_known_to_the_runner', () => {
+  const runner = readFileSync(new URL('../../tests/e2e/run.mjs', import.meta.url), 'utf8');
+  const known = runner.match(/--only ([a-z0-9,-]+)]/)[1].split(',');
+  const named = new Set([...data.e2e_smoke, ...data.e2e_rules.flatMap(rule => rule.scenarios)]);
+  const unknown = [...named].filter(name => !known.includes(name));
+  assert.deepEqual(unknown, []);
+});
+
+test('a_changed_scenario_file_selects_the_scenarios_it_holds_not_its_file_name', () => {
+  const p = plan(['tests/e2e/scenarios/manifests.mjs']);
+  assert.equal(p.e2e, 'core,csp,manifest,permissions');
 });
