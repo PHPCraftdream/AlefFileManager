@@ -3,9 +3,16 @@
 # not build Servo, so they are quick. Actions are pinned by SHA (the tag is in the comment).
 name: Supply
 
+# Docs-only pushes skip Supply: it checks code, not documentation.
 on:
   push:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
   workflow_dispatch:
 
 concurrency:

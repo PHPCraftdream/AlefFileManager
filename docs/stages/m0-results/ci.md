@@ -150,50 +150,44 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 ## Сегментация прогонов CI (планировщик `scripts/ci/plan.mjs`)
 
-Ярусы. Пуш в ветку задачи прогоняет только затронутое и только на Linux: cargo test по изменённым крейтам и их зависимым, JS-тесты затронутых пакетов, e2e-сценарии по правилам из `scripts/ci/affected.json`. Полный прогон — 4 ОС (windows-latest, macos-14, macos-15-intel, ubuntu-24.04), все крейты, все JS-пакеты, все e2e, 25–40 минут на ОС — выполняется только на: пуш в `main`, ночной schedule, `[full]` в сообщении коммита, ручной запуск с `full=true`. Docs-only изменение (только `docs/**` и `*.md`) запускает только structure+fmt.
+Состав прогонов теперь такой. Полный прогон — только: пуш в `main`, ночной schedule, `[full]` в сообщении коммита, ручной запуск с `full=true`, изменения в `.github/**`, `scripts/ci/**`, манифестах и локах, `rust-toolchain*`, `.oxlintrc.json` либо путь, которого не знает ни одно правило. Иначе — затронутые крейты и их зависимые, затронутые JS-пакеты и e2e по правилам из `scripts/ci/affected.json`. Docs-only изменение (только `docs/**` и `*.md`) — только lint+structure на ubuntu-24.04: сборок, Rust/JS-тестов и e2e нет. `Supply` на docs-only пушах и PR не запускается (paths-ignore `docs/**`, `*.md`).
 
-Входные данные. Изменённые файлы считаются как `git diff --name-only <before> <after>`; если база неизвестна (нет shа, diff упал или пуст) — консервативно берётся полный прогон. Вручную список файлов можно передать через `--files` (для отладки).
+Входные данные. Изменённые файлы считаются как `git diff --name-only <before> <after>`; если база неизвестна (нет sha, diff упал или пуст) — консервативно берётся полный прогон. Вручную список файлов можно передать через `--files` (для отладки).
 
 Правила. Один файл данных — `scripts/ci/affected.json`: `full_triggers` (`.github/**`, `scripts/ci/**`, `scripts/cargo.mjs`, манифесты и локи, `rust-toolchain*`, `.oxlintrc.json`), `platform_sensitive` (system/desktop, ui/bridge/window, relaunch/consent, любые пути с `*windows*`/`*unix*`/`*macos*`, `tests/e2e/**` — такой путь поднимает прогон на все 4 ОС без полного прогона) и правила сопоставления путей сценариям e2e. Правило консервативное: путь, который не знает ни одно правило (не docs/backend/packages/frontend/scripts/tests и не корневые конфиги), расширяет план до полного.
 
-Как запустить полный прогон вручную: `gh workflow run ci.yml --ref <branch> -f full=true`.
+Проводка в ci.yml (готова, описание соответствует реальному файлу).
 
-Проводка, которую оркестратор добавляет в ci.yml:
+Джоб `plan` (ubuntu-24.04, checkout с `fetch-depth: 0`) запускает `node scripts/ci/plan.mjs` с флагами `--event`, `--ref`, `--before` (`github.event.before || pull_request.base.sha`), `--after github.sha`, `--full` (`inputs.full == 'true'`), `--crates`, `--e2e`; сообщение коммита передаётся через переменную окружения `COMMIT_MESSAGE` (`github.event.head_commit.message`). Все выходы планировщика опубликованы как выходы джоба: `full`, `os` (JSON-массив раннеров), `crates`, `crates_all`, `js`, `js_all`, `e2e`, `docs_only`, `reason`; строка `reason: …` видна в логе шага.
 
-```yaml
-on:
-  push:
-  pull_request:
-  workflow_dispatch:
-    inputs:
-      full: { description: 'Run the full matrix', type: boolean, default: false }
-  schedule:
-    - cron: '0 3 * * 1'   # nightly, full
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-jobs:
-  plan:
-    runs-on: ubuntu-24.04
-    outputs: { full: ..., os: ..., crates: ..., js: ..., e2e: ..., docs_only: ... }
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - id: plan
-        run: node scripts/ci/plan.mjs --event ${{ github.event_name }} --ref ${{ github.ref }} --before ${{ github.event.before || github.event.pull_request.base.sha }} --after ${{ github.sha }} --full ${{ github.event.inputs.full == 'true' }}
-  tests:
-    needs: plan
-    if: ${{ needs.plan.outputs.docs_only != 'true' }}
-    strategy: { matrix: { os: fromJSON(needs.plan.outputs.os) } }
-    steps:
-      # cargo test -p <each crate> when crates_all != 'true', else без -p
-      # JS: шаг if needs.plan.outputs.js != '[]'
-      # e2e: node tests/e2e/run.mjs --only ${{ needs.plan.outputs.e2e }} when != 'none'/'all'
-```
+События и входы. `push`, `pull_request`, `workflow_dispatch`, `schedule` — `cron: '37 2 * * *'` (ежедневно, полный прогон). Входы dispatch: `full` (boolean), `crates` (строка — список крейтов через запятую, переопределяет план), `e2e` (строка — список сценариев через запятую, переопределяет план; `none` выключает e2e). Overrides применяются только к неполному плану. Примеры:
 
-Механика шагов: для `crates` джоб делает шаг-цикл по запятым (`node scripts/cargo.mjs test --locked -p <crate>`), когда `needs.plan.outputs.crates_all != 'true'`, иначе один шаг без `-p`. lint/structure/fmt выполняются всегда, независимо от плана (docs-only прогон состоит из них одних). JS-шаг включается, когда `needs.plan.outputs.js != '[]'`. При `e2e: all` — без `--only`, при `none` — шаг пропускается, иначе `node tests/e2e/run.mjs --only <список>`.
+- полный прогон ветки: `gh workflow run ci.yml --ref <branch> -f full=true`;
+- только свои тесты: `gh workflow run ci.yml --ref <branch> -f crates=alef-modules -f e2e=fs,fs-substitute`.
 
-Известный риск. OS-специфичный сбой при Linux-плане проявится только при merge в main: список `platform_sensitive` существует именно чтобы ловить такое раньше; после каждого post-merge сбоя соответствующий путь добавляют в список.
+Concurrency: `group: ci-${{ github.ref }}`, `cancel-in-progress` — только у прогонов не-main (`${{ github.ref != 'refs/heads/main' }}`).
+
+Джоб `build`: `needs: plan`, матрица `os: ${{ fromJSON(needs.plan.outputs.os) }}` + `include` с прежними дескрипторами четырёх систем (name/target/bin по значению `os`). Шаги:
+
+- lint/structure, mutation-harness (`npm run test:mutate`) и проверка сгенерированных типов выполняются всегда; docs-only прогон — это они и есть: сборок, тестов и e2e нет;
+- cargo test: при `crates_all == 'true'` — прежний `npm run test:rust` (--workspace), иначе цикл `node scripts/cargo.mjs test --locked -p <crate> --no-fail-fast` по списку `crates`;
+- desktop-шаги (`-p alef-modules`) — только когда крейт alef-modules в плане (`crates_all == 'true'` или `contains(crates, 'alef-modules')`);
+- JS-шаги — когда пакет в списке `js` (или `js == 'all'`); `test:api` покрывает и frontend/test, поэтому включается и для `frontend`;
+- e2e: Linux — `--only <список>` при неполном плане, без `--only` при `all`, пропуск при `none`; каждая Windows-группа пересекает свой фиксированный список сценариев со списком плана и молча пропускается, если пересечение пусто; при `all` командные строки в точности прежние;
+- шаги сборки, пререквизиты (msvc/choco/brew/apt) и выгрузка артефактов включаются, когда есть Rust-работа (`crates_all == 'true'` или `crates != ''`) или e2e (`e2e != 'none'`) — сборка кормит e2e и выполняется и тогда, когда Rust-тесты не выбраны.
+
+Правило конца спринта: перед вливанием в main прогнать полный прогон вручную на ветке (`-f full=true`) — сегментированные прогоны ветки не гарантируют поведение на всех ОС.
+
+Известный риск. OS-специфичный сбой при Linux-плане проявится только при merge в main: проводка план уже применяет, но сам риск остаётся тем же — список `platform_sensitive` существует именно чтобы ловить такое раньше; после каждого post-merge сбоя соответствующий путь добавляют в список.
+
+## Протокол прогонов задач (оркестратор и агенты)
+
+1. Агент только правит; прогонов у себя не делает. В конце отчёта пишет строку `TARGETS: crates=…; e2e=…` — какие крейты и сценарии затрагивает изменение.
+2. Пуш ветки задачи сам запускает короткий прогон по плану (Linux, затронутые крейты, JS, e2e по правилам `affected.json`); оркестратор ждёт его скриптом `.rush/ci-watch.sh <ветка>`.
+3. Нужен точечный перезапуск других крейтов или сценариев — `.rush/ci-run.sh <ветка> targets crates=a,b e2e=x,y` (dispatch с переопределением плана, ожидание вердикта).
+4. Перед вливанием в `main` в конце спринта — полный прогон ветки на четырёх ОС: `.rush/ci-run.sh <ветка> full`. Пуш в `main`, ночной schedule и `[full]` в сообщении коммита дают полный прогон сами.
+5. Новый пуш в ту же ветку отменяет её незавершённый прогон (concurrency); прогон `main` не отменяется.
+6. Сбой на `main`, не пойманный сегментированным прогоном, чинится немедленно, а затронутый путь добавляется в `scripts/ci/affected.json` (`platform_sensitive` или правила сценариев).
 
 ## Замер CI (2026-10)
 
