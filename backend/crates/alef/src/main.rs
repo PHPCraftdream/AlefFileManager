@@ -561,6 +561,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alef_launch::consent::{Unanswered, Why};
 
     #[test]
     fn a_load_failure_maps_to_its_own_exit_code_and_prints_its_category() {
@@ -573,6 +574,7 @@ mod tests {
             (Some("MANIFEST_INVALID"), 2),
             (Some("RUNTIME_INCOMPATIBLE"), 2),
             (Some("PACKAGE_RUN_LIMIT"), 2),
+            (Some("SIGNATURE_REQUIRED"), 3),
             (None, 1),
         ] {
             let failure = Failure::load(LoadFailure {
@@ -585,6 +587,10 @@ mod tests {
                     if let Some(category) = category {
                         assert!(message.contains(category), "{message}");
                     }
+                }
+                Failure::Declined(message) if exit == 3 => {
+                    assert!(message.contains("SIGNATURE_REQUIRED"), "{message}");
+                    assert!(message.contains("detail"), "{message}");
                 }
                 Failure::Runtime(message) if exit == 1 => {
                     assert!(category.is_none());
@@ -667,5 +673,37 @@ mod tests {
                 answer: _
             }
         ));
+    }
+
+    #[test]
+    fn a_settlement_failure_maps_to_its_own_exit_code_family() {
+        let Failure::Usage(message) = Failure::from(SettleFailure::Documents(LoadFailure {
+            category: Some("MANIFEST_INVALID"),
+            detail: "assets: /index.html: missing".to_owned(),
+            exit: 2,
+        })) else {
+            panic!("a document failure is unusable input");
+        };
+        assert!(message.contains("MANIFEST_INVALID"), "{message}");
+        let Failure::Usage(_) = Failure::from(SettleFailure::Trust(TrustFailure::BadTrustKey(
+            "k".to_owned(),
+        ))) else {
+            panic!("a bad trust key is unusable input");
+        };
+        let Failure::Declined(_) = Failure::from(SettleFailure::Unanswered(Unanswered {
+            rights: Vec::new(),
+            why: Why::Nobody,
+        })) else {
+            panic!("unanswered rights are declined");
+        };
+        let Failure::Runtime(_) = Failure::from(SettleFailure::Store(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "io",
+        ))) else {
+            panic!("a store failure is operational");
+        };
+        let Failure::Runtime(_) = Failure::from(SettleFailure::Enforcement("e".to_owned())) else {
+            panic!("an enforcement failure is operational");
+        };
     }
 }

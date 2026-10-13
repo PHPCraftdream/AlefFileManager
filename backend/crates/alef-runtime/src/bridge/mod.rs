@@ -583,6 +583,160 @@ mod tests {
     use bytes::Bytes;
     use serde_json::Value;
 
+    async fn bounded<T>(future: impl Future<Output = T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(10), future)
+            .await
+            .expect("operation must complete within ten seconds")
+    }
+
+    fn disk_input(root_name: &str) -> (tempfile::TempDir, AssetInput) {
+        let app = tempfile::tempdir().unwrap();
+        let root = app.path().join(root_name);
+        std::fs::create_dir_all(root.join("dir")).unwrap();
+        for (name, bytes) in [
+            ("index.html", "public"),
+            ("app.js", "script"),
+            ("dir/start.html", "entry"),
+            ("dir/tool.html", "relative"),
+        ] {
+            std::fs::write(root.join(name), bytes).unwrap();
+        }
+        let input = AssetInput::Disk {
+            application_dir: app.path().to_owned(),
+            selected_root: root,
+        };
+        (app, input)
+    }
+
+    #[test]
+    fn the_native_entry_is_root_relative_and_defaults_to_the_index_path() {
+        assert_eq!(native_entry(None).unwrap().as_str(), "native://app/");
+        assert_eq!(
+            native_entry(Some("/dir/start.html?x=1#part"))
+                .unwrap()
+                .as_str(),
+            "native://app/dir/start.html?x=1#part"
+        );
+        for entry in [
+            "relative.html",
+            "//other/index.html",
+            r"/dir\index.html",
+            "https://evil/index.html",
+        ] {
+            assert_eq!(
+                native_entry(Some(entry)).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+                "{entry}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_documents_keep_their_path_context_and_check_every_relative_reference() {
+        for (entry, documents, kind, path) in [
+            (
+                Some("/missing.html"),
+                vec![],
+                io::ErrorKind::NotFound,
+                Some("/missing.html"),
+            ),
+            (
+                None,
+                vec!["/app.js", "/second.html"],
+                io::ErrorKind::NotFound,
+                Some("/second.html"),
+            ),
+            (
+                None,
+                vec!["/a%2fb"],
+                io::ErrorKind::InvalidInput,
+                Some("/a%2fb"),
+            ),
+            (
+                None,
+                vec!["native://app:123/app.js"],
+                io::ErrorKind::InvalidInput,
+                None,
+            ),
+            (
+                None,
+                vec!["native://other/app.js"],
+                io::ErrorKind::InvalidInput,
+                None,
+            ),
+            (
+                None,
+                vec!["https://app/app.js"],
+                io::ErrorKind::InvalidInput,
+                None,
+            ),
+        ] {
+            let documents: Vec<String> = documents.into_iter().map(str::to_owned).collect();
+            let (_app, input) = disk_input("dist");
+            let error = bounded(prepare_assets(input, entry, &documents))
+                .await
+                .err()
+                .expect("the document must fail");
+            assert_eq!(error.kind(), kind);
+            if let Some(path) = path {
+                assert!(
+                    error.to_string().starts_with(&format!("{path}: ")),
+                    "{error}"
+                );
+            }
+        }
+        let (_app, input) = disk_input("dist");
+        let prepared = bounded(prepare_assets(
+            input,
+            Some("/dir/start.html?x=1#part"),
+            &["tool.html?y=2#part".to_owned()],
+        ))
+        .await
+        .expect("the reference resolves against the entry directory");
+        assert!(!prepared.archive);
+        assert_eq!(
+            prepared.source.read("/dir/tool.html").unwrap().0,
+            b"relative"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_disk_assets_keep_the_selected_root_and_are_not_preflighted_twice() {
+        let (app, root) = {
+            let app = tempfile::tempdir().unwrap();
+            let root = app.path().join("web/build");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("index.html"), b"public").unwrap();
+            (app, root)
+        };
+        let prepared = bounded(prepare_assets(
+            AssetInput::Disk {
+                application_dir: app.path().to_owned(),
+                selected_root: root.clone(),
+            },
+            None,
+            &[],
+        ))
+        .await
+        .expect("prepared assets");
+        assert!(!prepared.archive);
+        assert_eq!(prepared.selected_root.as_ref(), Some(&root));
+        std::fs::remove_file(root.join("index.html")).unwrap();
+        assert_eq!(
+            prepared.source.read("/").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let bridge = bounded(Bridge::with_options(
+            Commands::new(),
+            Some(prepared),
+            None,
+            BridgeOptions::default(),
+        ))
+        .await
+        .expect("the already audited source is handed over");
+        bounded(bridge.shutdown()).await.unwrap();
+    }
+
     fn registry_with_hooks(enabled: bool) -> Registry {
         let mut commands = Commands::new();
         commands

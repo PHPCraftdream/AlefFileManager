@@ -131,15 +131,29 @@ mod tests {
     use super::*;
     use crate::{
         application::{
-            plan::{make_package_plan, package_path_vars},
+            plan::{make_package_plan, make_plan, package_path_vars, path_vars},
             source::{self, ApplicationSource},
             support,
         },
         consent::Asker,
     };
-    use std::path::Path;
+    use alef_core::security::{
+        consent::{Decision, Right},
+        manifest::Manifest,
+    };
+    use std::{path::Path, time::Duration};
+    use tokio::time::timeout;
 
-    fn package_plan(dir: &Path, files: &[(&str, String)]) -> (Plan, Identity, String) {
+    fn package_plan_with(
+        dir: &Path,
+        text: &str,
+        files: &[(&str, String)],
+    ) -> (Plan, Identity, String) {
+        let mut files = files.to_vec();
+        match files.iter().position(|(name, _)| *name == "alef.ktav") {
+            Some(at) => files[at].1 = text.to_owned(),
+            None => files.push(("alef.ktav", text.to_owned())),
+        }
         let bytes = support::unsigned_package(
             &files
                 .iter()
@@ -167,6 +181,15 @@ mod tests {
         }
     }
 
+    fn package_plan(dir: &Path, files: &[(&str, String)]) -> (Plan, Identity, String) {
+        let text = files
+            .iter()
+            .find(|(name, _)| *name == "alef.ktav")
+            .map(|(_, text)| text.clone())
+            .unwrap_or_else(|| support::manifest_text(""));
+        package_plan_with(dir, &text, files)
+    }
+
     fn prepared_files() -> Vec<(&'static str, String)> {
         vec![
             ("alef.ktav", support::manifest_text("")),
@@ -190,16 +213,20 @@ mod tests {
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
-        let failure = settle_launch(
-            plan,
-            &identity,
-            Some(&trust),
-            Some(&TrustAsker::Scripted(false)),
-            &Asker::Nobody,
-            &decisions,
-            None,
+        let failure = timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                Some(&trust),
+                Some(&TrustAsker::Scripted(false)),
+                &Asker::Nobody,
+                &decisions,
+                None,
+            ),
         )
         .await
+        .expect("settlement must complete within ten seconds")
         .err()
         .expect("the missing entry must fail");
         // `Scripted(false)` would refuse trust and `Nobody` would leave rights unanswered:
@@ -215,12 +242,12 @@ mod tests {
     #[tokio::test]
     async fn a_package_with_a_missing_window_document_also_fails_before_any_question() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let manifest = support::manifest_text("").replace("url: /index.html", "url: /gone.html");
-        let files = vec![
-            ("alef.ktav", manifest),
-            ("dist/index.html", "<html></html>".to_owned()),
-        ];
-        let (plan, identity, digest) = package_plan(dir.path(), &files);
+        let files = prepared_files();
+        let (mut plan, identity, digest) = package_plan(dir.path(), &files);
+        let mut second = plan.manifest.windows[0].clone();
+        second.label = "tool".to_owned();
+        second.url = "/gone.html".to_owned();
+        plan.manifest.windows.push(second);
         let trust = (
             None,
             digest.clone(),
@@ -230,16 +257,20 @@ mod tests {
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
-        let failure = settle_launch(
-            plan,
-            &identity,
-            Some(&trust),
-            Some(&TrustAsker::Scripted(false)),
-            &Asker::Nobody,
-            &decisions,
-            None,
+        let failure = timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                Some(&trust),
+                Some(&TrustAsker::Scripted(false)),
+                &Asker::Nobody,
+                &decisions,
+                None,
+            ),
         )
         .await
+        .expect("settlement must complete within ten seconds")
         .err()
         .expect("the missing window document must fail");
         let SettleFailure::Documents(documents) = failure else {
@@ -263,18 +294,157 @@ mod tests {
             },
         );
         let decisions = FileConsentStore::new(dir.path().join("consent"));
-        let settled = settle_launch(
-            plan,
-            &identity,
-            Some(&trust),
-            Some(&TrustAsker::Scripted(false)),
-            &Asker::Nobody,
-            &decisions,
-            None,
+        let settled = timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                Some(&trust),
+                Some(&TrustAsker::Scripted(false)),
+                &Asker::Nobody,
+                &decisions,
+                None,
+            ),
         )
         .await
+        .expect("settlement must complete within ten seconds")
         .expect("present documents launch");
         // The built source is handed over; nothing rebuilds it at the bridge.
         assert!(settled.assets.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_package_that_the_user_refuses_leaves_with_a_trust_refusal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = prepared_files();
+        let (plan, identity, digest) = package_plan(dir.path(), &files);
+        let trust = (
+            None,
+            digest.clone(),
+            TrustInputs {
+                trust_key: None,
+                allow_unsigned: false,
+            },
+        );
+        let decisions = FileConsentStore::new(dir.path().join("consent"));
+        let failure = timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                Some(&trust),
+                Some(&TrustAsker::Scripted(false)),
+                &Asker::Nobody,
+                &decisions,
+                None,
+            ),
+        )
+        .await
+        .expect("settlement must complete within ten seconds")
+        .err()
+        .expect("a refused unsigned package must fail");
+        let SettleFailure::Trust(TrustFailure::Refused(message)) = failure else {
+            panic!("a refusal must be a trust refusal: {failure:?}");
+        };
+        assert!(!message.is_empty(), "{message}");
+    }
+
+    #[tokio::test]
+    async fn the_documents_of_a_development_server_are_not_checked_before_the_launch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let text = support::manifest_text("");
+        std::fs::write(dir.path().join("alef.ktav"), &text).expect("write the manifest");
+        std::fs::create_dir(dir.path().join("dist")).expect("the empty dist folder");
+        let manifest = Manifest::from_ktav_str(&text).expect("a valid manifest");
+        let vars = path_vars(dir.path(), &manifest.id).expect("path variables");
+        let plan = make_plan(dir.path(), manifest, &vars).expect("a plan");
+        let identity =
+            crate::consent::identity_of(dir.path(), &plan.manifest.id).expect("an identity");
+        let decisions = FileConsentStore::new(dir.path().join("consent"));
+        let settled = timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                None,
+                None,
+                &Asker::Nobody,
+                &decisions,
+                Some(&Url::parse("http://127.0.0.1:3000/").unwrap()),
+            ),
+        )
+        .await
+        .expect("settlement must complete within ten seconds")
+        .expect("a development launch checks no documents");
+        assert!(settled.assets.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_package_plan_keeps_its_snapshot_when_the_original_archive_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let files = prepared_files();
+        let (plan, identity, _) = package_plan(dir.path(), &files);
+        std::fs::write(dir.path().join("app.alef"), b"not an archive anymore").unwrap();
+        let decisions = FileConsentStore::new(dir.path().join("consent"));
+        let settled = timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                None,
+                None,
+                &Asker::Nobody,
+                &decisions,
+                None,
+            ),
+        )
+        .await
+        .expect("settlement must complete within ten seconds")
+        .expect("the owned snapshot launches");
+        assert!(settled.assets.is_some());
+        assert_eq!(settled.plan.entry(), "/index.html");
+    }
+
+    #[tokio::test]
+    async fn an_answered_consent_is_saved_into_the_store_of_the_application() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let text = support::manifest_text("").replace("read: []", "read: [ $APPDATA/data/* ]");
+        let files: Vec<(&str, String)> = vec![("dist/index.html", "<html></html>".to_owned())];
+        let (plan, identity, digest) = package_plan_with(dir.path(), &text, &files);
+        let trust = (
+            None,
+            digest.clone(),
+            TrustInputs {
+                trust_key: None,
+                allow_unsigned: true,
+            },
+        );
+        let decisions = FileConsentStore::new(dir.path().join("consent"));
+        timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                Some(&trust),
+                Some(&TrustAsker::Scripted(false)),
+                &Asker::Grant(Decision::Allow),
+                &decisions,
+                None,
+            ),
+        )
+        .await
+        .expect("settlement must complete within ten seconds")
+        .expect("a granted launch");
+        let stored = decisions
+            .load(&identity)
+            .expect("the store reads back")
+            .expect("the decision must be persisted");
+        assert_eq!(
+            stored
+                .decisions()
+                .map(|(right, decision)| (right.clone(), decision))
+                .collect::<Vec<_>>(),
+            vec![(Right::scoped("fs.read", "$APPDATA/data/*"), Decision::Allow)]
+        );
     }
 }
