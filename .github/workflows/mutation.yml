@@ -3,8 +3,6 @@
 name: Mutation
 
 on:
-  push:
-    branches: [mutation-ci]
   workflow_dispatch:
     inputs:
       list:
@@ -12,7 +10,6 @@ on:
         type: string
         default: archive
 
-# Список на push всегда archive; отключение триггера push — после слияния ветки.
 concurrency:
   group: mutation-${{ github.ref }}
   cancel-in-progress: false
