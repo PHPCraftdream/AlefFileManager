@@ -285,8 +285,8 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
 
   const okNames = lines => new Set(lines.map(line => /check (\S+) ok /.exec(line)?.[1]).filter(Boolean));
   const reported = (lines, prefix) => {
-    const line = lines.find(line => line.includes(`ALEF_E2E ${prefix}=`));
-    return line === undefined ? undefined : line.slice(line.indexOf(`${prefix}=`) + prefix.length + 1);
+    const found = lines.find(candidate => candidate.includes(`ALEF_E2E ${prefix}=`));
+    return found === undefined ? undefined : found.slice(found.indexOf(`${prefix}=`) + prefix.length + 1);
   };
 
   return {
@@ -361,8 +361,8 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
         const noId = await buildPackage('noid', { mode: 'paths' }, { key: 'a', manifestOptions: { withId: false } });
         const runtime = await buildPackage('runtime', { mode: 'paths' }, { key: 'a', manifestOptions: { runtime: '>=99.0' } });
         const noAssets = await buildPackage('noassets', { mode: 'paths' }, { key: 'a', manifestOptions: { assets: 'nodist' } });
-        const shadowA_ = await buildPackage('shadow-a', { key: 'a', mode: 'shadow' }, { key: 'a' });
-        const shadowB_ = await buildPackage('shadow-b', { key: 'b', mode: 'shadow' }, { key: 'b' });
+        const shadowPackageA = await buildPackage('shadow-a', { key: 'a', mode: 'shadow' }, { key: 'a' });
+        const shadowPackageB = await buildPackage('shadow-b', { key: 'b', mode: 'shadow' }, { key: 'b' });
 
         // The corruption cases start from the exact bytes of the first signed package.
         const pristine = readFileSync(firstA.pkg);
@@ -526,8 +526,8 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           JSON.stringify(consents));
         // The shadow is only created by a substituted write; materialize it per signer.
         const shadowConsent = { ALEF_E2E_CONSENT: '*=allow;fs.write:$TEMP/**=substitute' };
-        const shadowRunA = await runPage(shadowA_.pkg, homeA, [], shadowConsent);
-        const shadowRunB = await runPage(shadowB_.pkg, homeB, [], shadowConsent);
+        const shadowRunA = await runPage(shadowPackageA.pkg, homeA, [], shadowConsent);
+        const shadowRunB = await runPage(shadowPackageB.pkg, homeB, [], shadowConsent);
         const shadows = [folderNames(homeA, 'shadow'), folderNames(homeB, 'shadow')];
         expect('two-signers-of-one-id-keep-separate-shadow-identities',
           shadowRunA.code === 0 && shadowRunB.code === 0
