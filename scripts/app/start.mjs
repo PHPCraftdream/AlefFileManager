@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const root = fileURLToPath(new URL('../', import.meta.url));
+const root = fileURLToPath(new URL('../../', import.meta.url));
 const executable = path.join(root, 'backend', 'target', 'debug', process.platform === 'win32' ? 'alef.exe' : 'alef');
 const application = path.join(root, 'frontend', 'app');
 if (!existsSync(executable) || !existsSync(path.join(application, 'alef.ktav'))) throw new Error('Run npm run build before npm start.');
