@@ -30,7 +30,7 @@ use alef_launch::{
 };
 use alef_modules::{
     desktop::args::{parse, Parsed},
-    register_all, AppInfo, Backends, Console, ModuleContext, Termination,
+    namespace_paths, register_all, AppInfo, Backends, Console, ModuleContext, Termination,
 };
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 use url::Url;
@@ -338,7 +338,20 @@ async fn run_package(
         selected_root,
         ..
     } = *prepared;
-    let vars = package_path_vars(&manifest.id)?;
+    let mut vars = package_path_vars(&manifest.id)?;
+    // Package data lives under the authority token, not the manifest id; the modules check this.
+    let data_base =
+        dirs::data_local_dir().unwrap_or_else(|| vars.home.join(".local").join("share"));
+    let config_base = dirs::config_dir().unwrap_or_else(|| vars.home.join(".config"));
+    let cache_base = dirs::cache_dir().unwrap_or_else(|| vars.home.join(".cache"));
+    namespace_paths(
+        &mut vars,
+        &data_base,
+        &config_base,
+        &cache_base,
+        &manifest.id,
+        &authority,
+    );
     let plan = make_package_plan(package, &selected_root, manifest, &vars)?;
     run_app(Run {
         process_args,
@@ -409,7 +422,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     };
     // The package is trusted before any right is decided: the trust question carries no rights.
     if let Some((signer, digest, inputs)) = &trust {
-        let asker = trust::asker_from_environment().map_err(Failure::Usage)?;
+        let trust_asker = trust::asker_from_environment().map_err(Failure::Usage)?;
         trust::decide_with_asker(
             &trust::trust_folder(),
             &summary.id,
@@ -419,11 +432,12 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
                 .map(|(key, fingerprint)| (key.as_str(), fingerprint.as_str())),
             digest,
             inputs,
-            &asker,
+            &trust_asker,
         )
         .map_err(Failure::trust)?;
     }
     // The user decides what the application gets of what its manifest asks for.
+    let asker = Asker::from_environment(grant, no_prompt).map_err(Failure::Usage)?;
     let decisions = store();
     let settled = settle_with(
         &summary,
@@ -603,7 +617,7 @@ mod tests {
 
     #[test]
     fn the_trust_and_consent_subcommands_reach_their_windows_without_touching_a_source() {
-        let trust = parse_args(["trust".to_owned(), "in".to_owned(), "out".to_owned()]).unwrap();
+        let trust = parse_args(["trust", "in", "out"].map(OsString::from)).unwrap();
         assert!(matches!(
             trust,
             Command::Trust {
@@ -611,8 +625,7 @@ mod tests {
                 answer: _
             }
         ));
-        let consent =
-            parse_args(["consent".to_owned(), "in".to_owned(), "out".to_owned()]).unwrap();
+        let consent = parse_args(["consent", "in", "out"].map(OsString::from)).unwrap();
         assert!(matches!(
             consent,
             Command::Consent {

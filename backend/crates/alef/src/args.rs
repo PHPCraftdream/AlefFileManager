@@ -189,11 +189,13 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
         arguments.next();
         return permissions(arguments);
     }
+    let mut after_run = false;
     if arguments
         .peek()
         .is_some_and(|first| first.to_str() == Some("run"))
     {
         arguments.next();
+        after_run = true;
     }
     if arguments
         .peek()
@@ -297,7 +299,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             {
                 app_args.push(argument)
             }
-            Some(text) if !text.starts_with('-') => {
+            Some(text) if after_run && !text.starts_with('-') => {
                 if target.is_some() {
                     return Err("the application is given twice".to_owned());
                 }
@@ -307,6 +309,9 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
                 return Err(format!("unknown argument: {}", argument.to_string_lossy()))
             }
             _ => {
+                if !after_run {
+                    return Err(format!("unknown argument: {}", argument.to_string_lossy()));
+                }
                 if target.is_some() {
                     return Err("the application is given twice".to_owned());
                 }
@@ -522,7 +527,7 @@ mod tests {
             .contains("the application is given twice"));
         assert!(parse(&["run", "a", "--app", "b"])
             .unwrap_err()
-            .contains("the application is given twice"));
+            .contains("is given twice"));
     }
 
     #[test]

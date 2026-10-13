@@ -289,11 +289,11 @@ mod tests {
     fn permissions_of_a_package_use_the_package_identity_and_never_touch_trust() {
         let scratch = tempfile::tempdir().unwrap();
         let store = FileConsentStore::new(scratch.path().join("store"));
+        let manifest = crate::application::support::manifest_text("")
+            .replace("read: false", "read: true")
+            .replace("env: []", "env: [ HOME ]");
         let (bytes, fingerprint) = crate::application::support::signed_package(&[
-            (
-                "alef.ktav",
-                crate::application::support::manifest_text("").as_bytes(),
-            ),
+            ("alef.ktav", manifest.as_bytes()),
             ("dist/index.html", b"<html></html>"),
         ]);
         let package = scratch.path().join("app.alef");
