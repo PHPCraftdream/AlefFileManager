@@ -38,6 +38,9 @@ pub struct WindowOptions {
     /// The file that remembers where the windows with `restore: true` were; without it they are
     /// not remembered.
     pub state_file: Option<PathBuf>,
+    /// Servo profile root (`Opts.config_dir`): web storage and the disk cache live under it.
+    /// `None` keeps the Servo default.
+    pub profile_dir: Option<PathBuf>,
 }
 
 impl WindowOptions {
@@ -47,6 +50,7 @@ impl WindowOptions {
             title: title.into(),
             icon_png,
             state_file: None,
+            profile_dir: None,
             windows: vec![WindowDef {
                 label: "main".to_owned(),
                 url: "/".to_owned(),
@@ -108,6 +112,8 @@ struct App {
     trays: crate::ui::integration::tray::Trays,
     menus: crate::ui::integration::menu::Menus,
     restore: Option<state::restore::Restore>,
+    /// Per-application Servo profile root (`Opts.config_dir`).
+    profile_dir: Option<PathBuf>,
 }
 
 #[cfg(feature = "e2e")]
@@ -366,6 +372,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         trays: crate::ui::integration::tray::Trays::default(),
         menus,
         restore: options.state_file.map(state::restore::Restore::load),
+        profile_dir: options.profile_dir,
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {

@@ -3,6 +3,7 @@
 mod archive;
 #[cfg(test)]
 mod archive_tests;
+pub(crate) mod origin;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

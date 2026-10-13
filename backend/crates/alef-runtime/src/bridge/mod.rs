@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `native://` protocol: application assets and the transport routes `call`/`stream`.
-mod assets;
+pub(crate) mod assets;
 pub(crate) mod commands;
 #[cfg(feature = "e2e")]
 mod e2e;
@@ -44,7 +44,8 @@ use crate::{Commands, RuntimeHandle};
 pub(crate) use events::EventBus;
 pub(crate) use windows::WindowRegistry;
 
-/// Content-Security-Policy of `native://app` documents unless the embedder supplies its own.
+/// Content-Security-Policy of `native://app` documents (embedder/consent paths) unless the
+/// embedder supplies its own; https-origin documents use `assets::origin::DEFAULT_ORIGIN_CSP`.
 const DEFAULT_CSP: &str = "default-src native:; connect-src native:; img-src native: data:; style-src native: 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'";
 
 /// Registers the command modules (`alef-modules`) in the registry of the bridge; it receives the
@@ -149,6 +150,16 @@ pub struct BridgeOptions {
     pub entry: Option<String>,
     /// Initial document references, resolved against the entry URL and preflighted before modules.
     pub initial_document_urls: Vec<String>,
+    /// DNS label of the application origin (from `alef_core::security::origin`); `Some` loads the
+    /// entry from `https://<label>.alef` and installs the https interception. `None` keeps
+    /// `native://app`.
+    pub origin_host: Option<String>,
+    /// Origins the manifest's `external` section allows; the interception refuses every other
+    /// external http(s) request before the network.
+    pub allowed_external_origins: Vec<String>,
+    /// Servo profile root (`Opts.config_dir`): web storage and the disk cache live under it.
+    /// `None` keeps the Servo default.
+    pub profile_dir: Option<std::path::PathBuf>,
     /// Called when the headless entry finishes loading; runtime owns no module state.
     pub headless_loaded: Option<Box<dyn Fn() + Send>>,
     /// Called each headless iteration; true requests a launch-timeout exit (code 2).
@@ -166,6 +177,12 @@ pub struct Bridge {
     transport: Arc<Transport>,
     pub(crate) headless_loaded: Option<Box<dyn Fn() + Send>>,
     pub(crate) headless_tick: Option<Box<dyn Fn() -> bool + Send>>,
+    pub(crate) profile_dir: Option<PathBuf>,
+    /// RAII owner of the installed interception site; cleared on drop, never inherited.
+    site: Option<assets::origin::SiteGuard>,
+    /// Test pin that origin mode disables `native://app` assets.
+    #[cfg(test)]
+    native_assets: Option<Arc<assets::Source>>,
 }
 
 /// A root-relative path (`/` or `/dir/app.html?x=1`); anything that could name another host or
@@ -339,15 +356,37 @@ impl Bridge {
             Some(prepared.source)
         };
         let token = random_token()?;
+        // Set in the origin arm; holding the guard before the fallible steps below means a
+        // failed construction drops the site instead of leaving a stale global behind.
+        let mut site_guard_slot: Option<assets::origin::SiteGuard> = None;
         let mut entry_url = match development_url {
             Some(base) => base
                 .join(&entry)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?,
-            None => crate::spikes::origin::entry_url().unwrap_or_else(|| {
-                Url::parse("native://app/")
-                    .and_then(|base| base.join(&entry))
-                    .expect("a validated root-relative entry")
-            }),
+            None => {
+                if let Some(base) = crate::spikes::origin::entry_url() {
+                    base
+                } else if let Some(label) = options.origin_host.as_deref() {
+                    // `assets` is `Some` here: the `None` arm above only happens in dev mode.
+                    let host = format!("{label}.alef");
+                    let source = assets.as_ref().expect("origin assets").clone();
+                    let base = Url::parse(&format!("https://{host}/"))
+                        .and_then(|base| base.join(&entry))
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+                    let site_guard = assets::origin::install(
+                        host,
+                        source,
+                        options.csp.clone(),
+                        options.allowed_external_origins.clone(),
+                    );
+                    site_guard_slot = Some(site_guard);
+                    base
+                } else {
+                    Url::parse("native://app/")
+                        .and_then(|base| base.join(&entry))
+                        .expect("a validated root-relative entry")
+                }
+            }
         };
         let fragment = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("capability", &token)
@@ -375,8 +414,14 @@ impl Bridge {
             Transport::new(config, registry, sessions.clone(), permissions).map_err(startup)?,
         );
         let windows = WindowRegistry::default();
+        // Origin mode serves assets through the https interception, never `native://app`.
+        let origin_mode = entry_url.scheme() == "https";
+        // Single source of truth: origin mode never serves `native://app` assets; the handler
+        // and the test pin consume the same binding, so the test asserts the state the
+        // handler actually uses.
+        let native_assets = if origin_mode { None } else { assets.clone() };
         let handler = MemoryProtocol {
-            assets,
+            assets: native_assets.clone(),
             handle: tokio::runtime::Handle::current(),
             transport: transport.clone(),
             windows: windows.clone(),
@@ -399,6 +444,10 @@ impl Bridge {
             transport,
             headless_loaded: options.headless_loaded,
             headless_tick: options.headless_tick,
+            profile_dir: options.profile_dir,
+            site: site_guard_slot,
+            #[cfg(test)]
+            native_assets,
         })
     }
 
@@ -431,8 +480,19 @@ impl Bridge {
         self.transport.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_serves_native_assets(&self) -> bool {
+        self.native_assets.is_some()
+    }
+
+    pub(crate) fn profile_dir(&self) -> Option<&Path> {
+        self.profile_dir.as_deref()
+    }
+
     /// Call after the Servo window has closed. Fjall owners are dropped off the UI thread.
     pub async fn shutdown(self) -> io::Result<()> {
+        // The guard clears the global only while it still points at this bridge's own site.
+        drop(self.site);
         self.ui.detach();
         self.sessions.close_all().await;
         tokio::task::spawn_blocking(move || drop((self.registry, self.commands, self.transport)))

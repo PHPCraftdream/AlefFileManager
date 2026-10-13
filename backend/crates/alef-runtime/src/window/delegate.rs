@@ -68,7 +68,7 @@ impl WebViewDelegate for Delegate {
     }
 
     fn load_web_resource(&self, _: WebView, load: WebResourceLoad) {
-        crate::spikes::origin::web_resource(load);
+        crate::bridge::assets::origin::web_resource(load);
     }
 
     fn request_navigation(&self, _: WebView, request: NavigationRequest) {

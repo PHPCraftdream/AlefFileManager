@@ -22,8 +22,10 @@ pub const MANIFEST_FILE: &str = "alef.ktav";
 /// `ALEF_HOME` moves the folder of the runtime.
 pub const APP_HOME_VARIABLE: &str = "ALEF_APP_HOME";
 
-/// Origin of the application documents; `build_csp` allows it explicitly (see its docs).
-const CSP_APP_ORIGIN: &str = "native://app";
+/// Origin shape of the application documents. Any `https://<label>.alef` origin yields the
+/// same policy (`'self'` already matches it; see `build_csp` docs), so the exact label of the
+/// launched application is not needed here.
+const CSP_APP_ORIGIN: &str = "https://app.alef";
 
 pub struct Plan {
     pub manifest: Manifest,
@@ -493,7 +495,7 @@ permissions: {{
         assert_eq!(plan.manifest.windows[0].url, "/index.html");
         assert!(plan
             .csp
-            .starts_with("default-src 'none'; script-src 'self' native://app;"));
+            .starts_with("default-src 'none'; script-src 'self';"));
         assert!(plan.csp.contains("connect-src 'self' native:"));
         assert_eq!(plan.manifest.id, "org.example.app");
     }

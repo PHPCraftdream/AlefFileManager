@@ -74,18 +74,81 @@ async function openStream(id, options = {}) {
   return new FrameStream(response);
 }
 
-async function rawChecks() {
+async function rawChecks({ originHost, otherOrigin, sentinelOrigin, crossWrite, crossKey }) {
+  // Origin checks only in https-origin mode (targets set them); native/dev stay honest without them.
+  if (originHost) {
+    await check('the-page-loads-from-its-own-https-origin', () => {
+      if (location.origin !== `https://${originHost}`) throw new Error(`origin ${location.origin}`);
+      if (!globalThis.isSecureContext) throw new Error('the https origin is not a secure context');
+    });
+    await check('web-storage-round-trips-in-the-secure-context', () => {
+      localStorage.setItem('alef-e2e-origin', originHost);
+      sessionStorage.setItem('alef-e2e-origin', originHost);
+      if (localStorage.getItem('alef-e2e-origin') !== originHost) throw new Error('localStorage lost the value');
+      if (sessionStorage.getItem('alef-e2e-origin') !== originHost) throw new Error('sessionStorage lost the value');
+      // Written only after this check passed: the second application looks for it.
+      if (crossWrite) localStorage.setItem(crossWrite, originHost);
+    });
+    await check('indexeddb-round-trips-in-the-secure-context', async () => {
+      if (!globalThis.indexedDB) throw new Error('indexedDB is missing in a secure context');
+      const outcome = await Promise.race([
+        (async () => {
+          const db = await new Promise((resolve, reject) => {
+            const open = indexedDB.open('alef-e2e-origin', 1);
+            open.onupgradeneeded = () => open.result.createObjectStore('kv');
+            open.onsuccess = () => resolve(open.result);
+            open.onerror = () => reject(open.error ?? new Error('indexedDB open failed'));
+          });
+          const value = await new Promise((resolve, reject) => {
+            let read;
+            const tx = db.transaction('kv', 'readwrite');
+            tx.objectStore('kv').put(originHost, 'host');
+            const request = tx.objectStore('kv').get('host');
+            request.onsuccess = () => { read = request.result; };
+            tx.oncomplete = () => resolve(read);
+            tx.onerror = () => reject(tx.error ?? new Error('indexedDB transaction failed'));
+          });
+          db.close();
+          return value;
+        })(),
+        sleep(10000).then(() => { throw new Error('indexedDB did not answer within 10 s'); }),
+      ]);
+      if (outcome !== originHost) throw new Error(`indexedDB lost the value: ${outcome}`);
+    });
+    // The sentinel is a real reachable server; refusal plus the runner's zero-hits judge is
+    // the only honest "refused before the network".
+    await check('an-unlisted-external-request-is-refused-before-the-network', async () => {
+      if (!sentinelOrigin) return 'no sentinel server in this scenario';
+      const refused = await Promise.race([
+        fetch(`${sentinelOrigin}/ping`).then(() => false, () => true),
+        sleep(10000).then(() => false),
+      ]);
+      if (!refused) throw new Error('the external request neither failed nor was refused within 10 s');
+    });
+    // Only the cross-application scenario supplies `otherOrigin`.
+    if (otherOrigin) {
+      await check('another-application-gets-another-origin', () => {
+        if (location.origin === otherOrigin) throw new Error('the second application reused the first origin');
+      });
+      await check('the-other-applications-web-storage-is-not-visible', () => {
+        const left = crossKey ? localStorage.getItem(crossKey) : null;
+        if (left !== null) throw new Error(`the first application left "${left}" behind`);
+      });
+    }
+  }
   await check('assets-public-url-and-headers', async () => {
     for (const path of ['hello%20world.txt', 'hello%20world.txt?x=../alef.ktav']) {
-      const response = await fetch(`native://app/${path}`);
+      const response = await fetch(`/${path}`);
       if (response.status !== 200) throw new Error(`${path}: HTTP ${response.status}`);
       if (await response.text() !== 'public space sentinel\n') throw new Error(`${path}: public asset body mismatch`);
       if (response.headers.get('access-control-allow-origin') !== null) throw new Error('assets must not grant CORS');
+      if (response.headers.get('x-content-type-options') !== 'nosniff') throw new Error('nosniff missing');
+      if (!response.headers.get('content-type')) throw new Error('content-type missing');
     }
   });
   await check('assets-root-private-and-invalid-paths', async () => {
     for (const path of ['alef.ktav', 'private.txt', 'a%2fb', 'a%5cb', '%00', '%GG', '%FF', '%252e%252e/alef.ktav']) {
-      const response = await fetch(`native://app/${path}`);
+      const response = await fetch(`/${path}`);
       if (response.ok) throw new Error(`${path} unexpectedly published`);
       const body = await response.text();
       if (body.includes('root private sentinel') || body.includes('id: org.')) throw new Error(`${path} leaked private bytes`);
@@ -302,8 +365,9 @@ function readState() {
 
 async function main() {
   const state = readState();
+  const { originHost, otherOrigin, sentinelOrigin, crossWrite, crossKey } = await (await fetch('targets.json')).json();
   if (state.phase === 1) {
-    await rawChecks();
+    await rawChecks({ originHost, otherOrigin, sentinelOrigin, crossWrite, crossKey });
     await libraryChecks();
     // A stream nobody finishes: the runtime must close its source when this document goes away.
     const { stream } = await callJson('e2e.flood', { total: 256 * MIB, piece: 64 * 1024 });

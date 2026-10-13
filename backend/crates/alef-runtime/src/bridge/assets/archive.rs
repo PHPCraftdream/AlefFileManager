@@ -10,7 +10,7 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Reads that run at once; each may hold up to `max_bytes` until its response is handed over.
-const RUNNING: usize = 4;
+pub(super) const RUNNING: usize = 4;
 /// Requests that wait for a running read; a page loads dozens of modules in one burst.
 const WAITING: usize = 256;
 
@@ -147,5 +147,9 @@ impl Archive {
     #[cfg(test)]
     pub(super) fn queued(&self) -> usize {
         WAITING - self.places.available_permits()
+    }
+    #[cfg(test)]
+    pub(super) fn free_admissions(&self) -> usize {
+        self.admissions.available_permits()
     }
 }

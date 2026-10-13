@@ -12,7 +12,7 @@ use alef_core::{
 };
 use euclid::Scale;
 use serde_json::Value;
-use servo::{DevicePoint, Modifiers, Opts, ServoBuilder, WebViewBuilder};
+use servo::{DevicePoint, Modifiers, ServoBuilder, WebViewBuilder};
 use url::Url;
 use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
@@ -182,12 +182,10 @@ impl App {
             None => {
                 let servo =
                     ServoBuilder::default()
-                        .opts(Opts {
-                            multiprocess: false,
-                            temporary_storage: true,
-                            ..Opts::default()
-                        })
-                        .preferences(crate::spikes::origin::preferences())
+                        .opts(crate::bridge::assets::origin::servo_opts(
+                            self.profile_dir.clone(),
+                        ))
+                        .preferences(crate::bridge::assets::origin::preferences())
                         .protocol_registry(self.registry.borrow_mut().take().ok_or_else(|| {
                             io::Error::other("Protocol registry already consumed")
                         })?)

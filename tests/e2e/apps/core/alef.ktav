@@ -1,4 +1,4 @@
-id: org.alef.e2e.core
+id: {{ID}}
 name: Alef e2e core
 version:: 0.0.0
 windows: [

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,consent,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,consent,origin,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package]
 //                          [--timeout-s 150] [--verbose]
 // Build beforehand: node scripts/cargo.mjs build -p alef --features e2e
 // This runner does not build the runtime.
@@ -41,6 +41,7 @@ const CORE_CHECKS = [
   'credit-window', 'abort-closes-the-source', 'events-stream',
   'lib-connect', 'lib-call-json', 'lib-binary-roundtrip-4MiB', 'lib-error-mapping', 'lib-readable-acks-by-itself',
   'lib-close-stops-the-source', 'lib-events', 'lib-window-watch',
+  'the-page-loads-from-its-own-https-origin', 'web-storage-round-trips-in-the-secure-context', 'indexeddb-round-trips-in-the-secure-context', 'an-unlisted-external-request-is-refused-before-the-network',
   ...['navigation', 'reload'].flatMap(how => [`${how}-new-token`, `${how}-old-token-denied`, `${how}-library-reconnects`]),
 ];
 
@@ -86,17 +87,68 @@ const scenarios = {
   ...mcpScenarios({ exe, verbose, timeoutMs }),
   ...netScenarios({ drive }),
   ...startupScenarios({ exe }),
-  core: () => drive({ name: 'core', app: 'core', expectedChecks: CORE_CHECKS, judge: judgeCore }),
+  // The interception must refuse an unlisted external request before the network: the page
+  // fetches the counting server and the judge independently asserts zero hits arrived.
+  async core() {
+    const server = await countingServer();
+    try {
+      return await drive({
+        name: 'core', app: 'core', replacements: { ID: 'org.alef.e2e.core' },
+        targets: { originHost: 'app-org-2ealef-2ee2e-2ecore.alef', sentinelOrigin: server.origin },
+        expectedChecks: CORE_CHECKS,
+        judge: (lines, result) => {
+          const problems = judgeCore(lines, result);
+          const arrived = server.hits.filter(hit => hit.startsWith('GET /ping')).length;
+          if (arrived !== 0) problems.push(`the unlisted external server was contacted ${arrived} time(s)`);
+          return problems;
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  },
 
   // The echo is corrupted on purpose: the runner must see exactly the two binary checks fail.
   induced: () => drive({
-    name: 'induced', app: 'core', env: { ALEF_E2E_BREAK: '1' }, expectedChecks: [],
+    name: 'induced', app: 'core', env: { ALEF_E2E_BREAK: '1' }, replacements: { ID: 'org.alef.e2e.core' }, expectedChecks: [],
     judge: (_lines, result) => {
       if (result?.[1] !== 'FAIL') return ['the induced failure was not detected'];
       const failed = result[2].split(',').filter(Boolean).sort();
       return JSON.stringify(failed) === JSON.stringify([...INDUCED].sort()) ? [] : [`expected exactly ${INDUCED} to fail, got ${failed}`];
     },
   }),
+
+  // The origin of an application is https://<label>.alef derived from its id: two ids get two
+  // origins and never see each other's web storage (docs/stages/m1-core.md, «origin https»).
+  async origin() {
+    const problems = [];
+    const encode = id => id.replaceAll(/[^a-z0-9]/g, ch => `-${ch.charCodeAt(0).toString(16)}`); // mirror of alef_core::security::origin for these test ids
+    const ids = { a: 'org.alef.e2e.origin-a', b: 'org.alef.e2e.origin-b' };
+    const hosts = Object.fromEntries(Object.entries(ids).map(([key, id]) => [key, `app-${encode(id)}.alef`]));
+    const baseChecks = ['the-page-loads-from-its-own-https-origin', 'web-storage-round-trips-in-the-secure-context', 'indexeddb-round-trips-in-the-secure-context', 'an-unlisted-external-request-is-refused-before-the-network'];
+    let first, second;
+    const server = await countingServer();
+    try {
+      first = await drive({
+        name: 'origin-a', app: 'core', replacements: { ID: ids.a },
+        targets: { originHost: hosts.a, sentinelOrigin: server.origin, crossWrite: 'alef-e2e-cross-app' },
+        expectedChecks: baseChecks,
+      });
+      problems.push(...first.problems);
+      second = await drive({
+        name: 'origin-b', app: 'core', replacements: { ID: ids.b },
+        targets: { originHost: hosts.b, sentinelOrigin: server.origin, otherOrigin: `https://${hosts.a}`, crossKey: 'alef-e2e-cross-app' },
+        expectedChecks: [...baseChecks, 'another-application-gets-another-origin', 'the-other-applications-web-storage-is-not-visible'],
+      });
+      problems.push(...second.problems.map(problem => `b: ${problem}`));
+      const arrived = server.hits.filter(hit => hit.startsWith('GET /ping')).length;
+      if (arrived !== 0) problems.push(`the unlisted external server was contacted ${arrived} time(s)`);
+    } finally {
+      await server.close();
+    }
+    if (hosts.a === hosts.b) problems.push('the two ids produced one host');
+    return { problems, lines: [...(first?.lines ?? []), ...(second?.lines ?? [])] };
+  },
 
   permissions: () => drive({
     name: 'permissions', app: 'permissions', env: { ALEF_E2E_ALLOWED: 'yes', ALEF_E2E_SECRET: 'no' },
