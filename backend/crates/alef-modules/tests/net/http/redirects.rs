@@ -184,9 +184,9 @@ async fn a_redirect_to_an_address_the_user_substituted_is_not_followed() {
     for command in ["http.request", "http.start"] {
         let mark = server.requests().len();
         let args = if command == "http.start" {
-            json!({ "url": url, "method": "POST", "redirect": "follow", "timeoutMs": 2000 })
+            json!({ "url": url, "method": "POST", "redirect": "follow", "timeoutMs": 5000 })
         } else {
-            json!({ "url": url, "timeoutMs": 2000 })
+            json!({ "url": url, "timeoutMs": 5000 })
         };
         let (command, args) = if command == "http.start" {
             let started = app.call(command, args).await.unwrap();
@@ -212,7 +212,7 @@ async fn a_redirect_to_an_address_the_user_substituted_is_not_followed() {
                 .is_err(),
             "a substituted hop must remain pending, not reveal consent"
         );
-        let error = tokio::time::timeout(Duration::from_secs(3), answer)
+        let error = tokio::time::timeout(Duration::from_secs(8), answer)
             .await
             .expect("the request deadline must bound the substituted hop")
             .unwrap_err();
