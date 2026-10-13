@@ -226,9 +226,10 @@ const corruptByte = (bytes, name, index) => patchEntry(bytes, name, data => {
 });
 
 export function packageScenarios({ exe, verbose, timeoutMs }) {
-  /** The XDG bases, shared by every home so the isolation comparison stays meaningful. */
+  /** The XDG bases, set by the scenario and shared by every home so the isolation comparison stays meaningful. */
+  const bases = {};
   const xdg = () => process.platform === 'linux'
-    ? { XDG_DATA_HOME: dataBase, XDG_CONFIG_HOME: configBase, XDG_CACHE_HOME: cacheBase }
+    ? { XDG_DATA_HOME: bases.data, XDG_CONFIG_HOME: bases.config, XDG_CACHE_HOME: bases.cache }
     : {};
 
   const environment = home => ({
@@ -309,10 +310,10 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
       const keyHomeB = join(dir, 'keys-b');
       const keyHomeC = join(dir, 'keys-c');
       // One shared base for every run: the isolation comparison below must be meaningful.
-      const dataBase = join(dir, 'xdg', 'data');
-      const configBase = join(dir, 'xdg', 'config');
-      const cacheBase = join(dir, 'xdg', 'cache');
-      for (const base of [dataBase, configBase, cacheBase]) mkdirSync(base, { recursive: true });
+      for (const name of ['data', 'config', 'cache']) {
+        bases[name] = join(dir, 'xdg', name);
+        mkdirSync(bases[name], { recursive: true });
+      }
 
       const fingerprint = {};
       let pinnedFingerprint;
