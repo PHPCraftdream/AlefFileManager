@@ -197,11 +197,18 @@ fn all_three_scopes_allow_override_and_deny_old_os_and_unrelated_files_for_both_
     let app = std::fs::canonicalize(scratch.path()).expect("app");
     let user_home = scratch.path().join("user-home");
     let profile = scratch.path().join("override");
-    let scope = "[ $APPDATA/profile/* $APPCONFIG/profile/* $APPCACHE/profile/* ]";
+    // Ktav separates list entries with newlines, not spaces.
+    let scopes = [
+        "$APPDATA/profile/*",
+        "$APPCONFIG/profile/*",
+        "$APPCACHE/profile/*",
+    ];
+    let scope = format!("[\n{}\n        ]", scopes.join("\n            "));
     let text = support::manifest_text("")
         .replace("read: []", &format!("read: {scope}"))
         .replace("write: []", &format!("write: {scope}"));
-    for is_package in [false, true] {
+    for (iteration, is_package) in [false, true].into_iter().enumerate() {
+        let source = if is_package { "package" } else { "directory" };
         let old = resolved(scratch.path(), None);
         let new = resolved(scratch.path(), Some(&profile));
         let (mut baseline, mut overridden) = if is_package {
@@ -225,6 +232,14 @@ fn all_three_scopes_allow_override_and_deny_old_os_and_unrelated_files_for_both_
             alef_modules::namespace_paths(&mut overridden, &new.0, &new.1, &new.2, ID, &authority);
         }
         let declaration = Manifest::from_ktav_str(&text).expect("manifest");
+        assert_eq!(
+            declaration.permissions.fs.read, scopes,
+            "iteration={iteration} source={source} permission=fs.read"
+        );
+        assert_eq!(
+            declaration.permissions.fs.write, scopes,
+            "iteration={iteration} source={source} permission=fs.write"
+        );
         let plan = if is_package {
             let prepared = package(scratch.path());
             make_package_plan(prepared.package, "dist", declaration, &overridden)
@@ -242,17 +257,22 @@ fn all_three_scopes_allow_override_and_deny_old_os_and_unrelated_files_for_both_
             for permission in [Permission::FsRead, Permission::FsWrite] {
                 let authorized = permissions
                     .authorize_path(permission, allowed.to_str(), &Grants::new())
-                    .expect("override allowed");
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "iteration={iteration} source={source} path={allowed:?} permission={permission:?}: {error:?}"
+                        )
+                    });
                 assert_eq!(
                     std::fs::canonicalize(&authorized).expect("canonical authorized child"),
-                    std::fs::canonicalize(&allowed).expect("canonical child")
+                    std::fs::canonicalize(&allowed).expect("canonical child"),
+                    "iteration={iteration} source={source} path={allowed:?} permission={permission:?}"
                 );
                 for target in [&denied, &unrelated] {
+                    let result =
+                        permissions.authorize_path(permission, target.to_str(), &Grants::new());
                     assert!(
-                        permissions
-                            .authorize_path(permission, target.to_str(), &Grants::new())
-                            .is_err(),
-                        "{target:?}"
+                        result.is_err(),
+                        "iteration={iteration} source={source} path={target:?} permission={permission:?}: {result:?}"
                     );
                 }
             }
