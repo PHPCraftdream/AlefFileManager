@@ -69,7 +69,7 @@ pub enum AssetInput {
 /// before any trust or consent decision and hand it to [`Bridge::with_options`].
 pub struct PreparedAssets {
     pub(crate) source: Arc<assets::Source>,
-    pub(crate) selected_root: Option<String>,
+    pub(crate) selected_root: Option<PathBuf>,
     pub(crate) archive: bool,
 }
 
