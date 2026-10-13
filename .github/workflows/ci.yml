@@ -6,10 +6,25 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      full:
+        description: 'Run the full matrix'
+        type: boolean
+        default: false
+      crates:
+        description: 'Comma list of crates to test (overrides the plan)'
+        type: string
+        default: ''
+      e2e:
+        description: 'Comma list of e2e scenarios (overrides the plan)'
+        type: string
+        default: ''
+  schedule:
+    - cron: '37 2 * * *'   # nightly, full
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -21,28 +36,66 @@ env:
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  # Планировщик: считает, что прогонять; выходы — входы матрицы build-джоба.
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      os: ${{ steps.plan.outputs.os }}
+      crates: ${{ steps.plan.outputs.crates }}
+      crates_all: ${{ steps.plan.outputs.crates_all }}
+      js: ${{ steps.plan.outputs.js }}
+      js_all: ${{ steps.plan.outputs.js_all }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+      docs_only: ${{ steps.plan.outputs.docs_only }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - id: plan
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          node scripts/ci/plan.mjs \
+            --event "${{ github.event_name }}" \
+            --ref "${{ github.ref }}" \
+            --before "${{ github.event.before || github.event.pull_request.base.sha }}" \
+            --after "${{ github.sha }}" \
+            --full "${{ inputs.full == 'true' }}" \
+            --crates "${{ inputs.crates }}" \
+            --e2e "${{ inputs.e2e }}"
+
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 300
+    needs: plan
     strategy:
       fail-fast: false
+      # Матрица берётся из плана: полный прогон — 4 ОС, затронутый — ubuntu-24.04.
       matrix:
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
         include:
-          - name: windows-x64
-            os: windows-latest
+          - os: windows-latest
+            name: windows-x64
             target: x86_64-pc-windows-msvc
             bin: alef.exe
-          - name: macos-arm64
-            os: macos-14
+          - os: macos-14
+            name: macos-arm64
             target: aarch64-apple-darwin
             bin: alef
-          - name: macos-x64
-            os: macos-15-intel
+          - os: macos-15-intel
+            name: macos-x64
             target: x86_64-apple-darwin
             bin: alef
-          - name: linux-x64
-            os: ubuntu-24.04
+          - os: ubuntu-24.04
+            name: linux-x64
             target: x86_64-unknown-linux-gnu
             bin: alef
     steps:
@@ -95,21 +148,21 @@ jobs:
 
       # Windows: MSVC/SDK — окружение через msvc-dev-cmd; LLVM — libclang для bindgen (mozjs_sys).
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
 
       - name: Servo build prerequisites (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: choco install --no-progress -y llvm cmake ninja
 
       - name: Servo build prerequisites (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: |
           xcode-select -p
           brew install cmake ninja
 
       # Обоснование каждого пакета по крейтам — docs/stages/m0-results/ci.md.
       - name: Servo build prerequisites (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -137,26 +190,34 @@ jobs:
         run: npm run test:mutate
 
       - name: Rust tests
+        if: needs.plan.outputs.crates_all == 'true'
         run: npm run test:rust
+
+      - name: Rust tests (affected crates)
+        if: needs.plan.outputs.crates_all != 'true'
+        run: |
+          for crate in $(echo "${{ needs.plan.outputs.crates }}" | tr ',' ' '); do
+            node scripts/cargo.mjs test --locked -p "$crate" --no-fail-fast || exit 1
+          done
 
       # The system clipboard and trash against the real desktop of the clean runner. They change what
       # a user has, so the tests run only on request (ALEF_TEST_DESKTOP=1); Linux needs a display.
       # The default shell stays: Git Bash on Windows puts its own link.exe before the MSVC one.
       - name: Desktop backends (clipboard, trash, secrets)
-        if: runner.os != 'Linux'
+        if: runner.os != 'Linux' && (needs.plan.outputs.crates_all == 'true' || contains(needs.plan.outputs.crates, 'alef-modules'))
         env:
           ALEF_TEST_DESKTOP: "1"
         run: node scripts/cargo.mjs test --locked -p alef-modules --test system --test desktop --test data -- --ignored --nocapture
 
       - name: Desktop backends (clipboard, trash; virtual display)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || contains(needs.plan.outputs.crates, 'alef-modules'))
         env:
           ALEF_TEST_DESKTOP: "1"
         run: xvfb-run -a node scripts/cargo.mjs test --locked -p alef-modules --test system --test desktop -- --ignored --nocapture
 
       # The Secret Service needs a session bus and a keyring daemon with its default collection unlocked.
       - name: Desktop backends (secrets; keyring of a session)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || contains(needs.plan.outputs.crates, 'alef-modules'))
         env:
           ALEF_TEST_DESKTOP: "1"
         run: |
@@ -170,29 +231,34 @@ jobs:
           node --test scripts/supply/check-no-hooks.test.mjs
 
       - name: "@alef-tron/api tests"
+        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/api,') || contains(format(',{0},', needs.plan.outputs.js), ',frontend,')
         run: npm run test:api
 
       - name: "@alef-tron/mcp tests"
+        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/mcp,')
         run: npm run test:mcp
 
       - name: "@alef-tron/tools tests"
+        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,')
         run: npm run test:tools
 
       - name: "create-alef-tron tests"
+        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/create-alef-tron,')
         run: npm run test:create
 
       - name: "@alef-tron/runtime tests"
+        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/runtime,')
         run: npm run test:runtime
 
       # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
       - name: Build (Rust, без frontend)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: node scripts/cargo.mjs build --locked --workspace --features alef/e2e
 
       # CI aa8837d: ANGLE build/DLL stage passed (#117); product default remains WGL.
       - name: Build (Rust, без frontend; ANGLE)
         id: build_windows_angle
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         shell: pwsh
         run: |
           $messages = @(node scripts/cargo.mjs build --locked --workspace --features alef/e2e,alef/angle --message-format=json-render-diagnostics)
@@ -208,25 +274,29 @@ jobs:
           }
 
       - name: Build (typecheck + frontend + Rust)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: |
           npm run build:frontend
           node scripts/cargo.mjs build --locked --workspace --features alef/e2e
 
       - name: Release build without test hooks (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: |
           node scripts/cargo.mjs build --locked -p alef --release
           node scripts/supply/check-no-hooks.mjs backend/target/release/alef
 
       # tests/e2e: the real alef binary on scenario applications; Servo renders through Mesa software GL.
       - name: e2e (alef on Servo, headless X11)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.plan.outputs.e2e != 'none'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         # The window scenarios (maximize, resize events) need a window manager; openbox is the smallest.
         run: |
-          xvfb-run -a -s "-screen 0 1280x1024x24" sh -c 'openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose'
+          only=""
+          if [ "${{ needs.plan.outputs.e2e }}" != "all" ]; then
+            only="--only ${{ needs.plan.outputs.e2e }}"
+          fi
+          xvfb-run -a -s "-screen 0 1280x1024x24" sh -c "openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose $only"
 
       # Historical WGL failures on GPUless Windows: WGL_NV_DX_interop / hardware D3D11
       # (RequiredExtensionUnavailable), including software contexts and Mesa llvmpipe (#107, #116).
@@ -234,63 +304,195 @@ jobs:
       - name: e2e (alef on Servo, Windows, scenarios without a window)
         if: runner.os == 'Windows'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in console service service-signal arguments launch-modes mcp-stdio startup manifest; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       # CI aa8837d: quiet ANGLE window, csp, permissions passed; core failed only on CRLF asset bytes,
       # not graphics. LF checkout fix and the six additional groups below await a rerun.
       # Independent groups follow a successful ANGLE build even when an earlier group fails (#117).
       - name: "e2e (alef on Servo, Windows, window: core)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only core
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in core; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, window: window)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only window
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in window; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, window: csp)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only csp
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in csp; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, window: permissions)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only permissions
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in permissions; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, transport/development: induced, dev)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only induced,dev
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in induced dev; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, consent: decisions)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only consent,narrowing,ask,cancel,decisions
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in consent narrowing ask cancel decisions; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, lifecycle/integration: app)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only app,quit,relaunch,instance,restore,autostart,deeplink
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in app quit relaunch instance restore autostart deeplink; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, desktop/system/processes: modules)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in system desktop menu tray shortcut shortcut-denied shortcut-substitute cli cli-substitute cli-commands; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, data: modules)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in fs fs-substitute sqlite sqlite-substitute store crypto webcrypto secrets secrets-substitute secrets-denied; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: "e2e (alef on Servo, Windows, network/MCP: modules)"
-        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
-        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp
+        run: |
+          plan=",${{ needs.plan.outputs.e2e }},"
+          selected=""
+          for s in http http-substitute socket socket-substitute websocket websocket-substitute serve serve-substitute mcp; do
+            if [ "${{ needs.plan.outputs.e2e }}" = "all" ] || echo "$plan" | grep -q ",$s,"; then
+              selected="$selected,$s"
+            fi
+          done
+          if [ -z "$selected" ]; then
+            echo "no planned scenario in this group"
+            exit 0
+          fi
+          node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only "${selected#,}"
 
       - name: Upload executable
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: alef-${{ matrix.name }}
@@ -298,7 +500,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload executable and ANGLE DLLs (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: alef-${{ matrix.name }}
@@ -309,7 +511,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload frontend app
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: alef-frontend-app
