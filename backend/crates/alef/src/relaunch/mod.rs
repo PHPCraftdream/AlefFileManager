@@ -12,6 +12,8 @@ use unix as platform;
 #[cfg(windows)]
 use windows as platform;
 
+pub mod runtime;
+
 /// Put the internal switch before URLs and `--`, which end runtime option parsing.
 pub fn window_args(arguments: &[OsString]) -> Vec<OsString> {
     // The `run` subcommand must stay first: after the switch it would be the target.

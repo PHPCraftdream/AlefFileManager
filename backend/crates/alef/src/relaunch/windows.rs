@@ -36,6 +36,28 @@ fn wide(s: &OsStr) -> io::Result<Vec<u16>> {
     out.push(0);
     Ok(out)
 }
+fn environment(extra: &[(String, String)]) -> io::Result<Vec<u16>> {
+    // Sorted `NAME=VALUE` pairs, NUL separated, double NUL terminated; overrides last.
+    let mut pairs: std::collections::BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    for (name, value) in extra {
+        if name.contains(['=', '\0']) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "NUL or = in environment name",
+            ));
+        }
+        pairs.insert(OsString::from(name), OsString::from(value));
+    }
+    let mut block = Vec::new();
+    for (name, value) in pairs {
+        block.extend(wide(&name)?);
+        block.pop(); // wide() appends the terminator; the separator is `=`
+        block.push(b'=' as u16);
+        block.extend(wide(&value)?); // keeps its terminator: the entry separator
+    }
+    block.push(0);
+    Ok(block)
+}
 fn quote(s: &OsStr, out: &mut Vec<u16>) -> io::Result<()> {
     out.push(b'"' as u16);
     let mut slashes = 0;
@@ -163,7 +185,26 @@ fn streams() -> io::Result<[Option<OwnedHandle>; 3]> {
     }
     Ok(owned)
 }
+pub(super) fn spawn_with(
+    program: &Path,
+    args: &[OsString],
+    extra: &[(String, String)],
+) -> io::Result<Child> {
+    spawn_command(program, args, extra)
+}
 pub(super) fn spawn(program: &Path, args: &[OsString]) -> io::Result<Child> {
+    spawn_command(program, args, &[])
+}
+fn spawn_command(
+    program: &Path,
+    args: &[OsString],
+    extra: &[(String, String)],
+) -> io::Result<Child> {
+    let environment = if extra.is_empty() {
+        None
+    } else {
+        Some(environment(extra)?)
+    };
     let exe = wide(program.as_os_str())?;
     let mut line = Vec::new();
     quote(program.as_os_str(), &mut line)?;
@@ -219,8 +260,9 @@ pub(super) fn spawn(program: &Path, args: &[OsString]) -> io::Result<Child> {
     startup.StartupInfo.hStdOutput = raw_stream(1);
     startup.StartupInfo.hStdError = raw_stream(2);
     // SAFETY: terminated executable/command buffers, live attribute arrays/handles, valid output
-    // structures. Null environment and cwd inherit exactly. JOB_LIST assignment is atomic with
-    // creation; any failure returns without an unguarded running child. No new console/group.
+    // structures. Null cwd inherits exactly; a built environment block replaces the inherited one.
+    // JOB_LIST assignment is atomic with creation; any failure returns without an unguarded
+    // running child. No new console/group.
     if unsafe {
         CreateProcessW(
             exe.as_ptr(),
@@ -229,7 +271,9 @@ pub(super) fn spawn(program: &Path, args: &[OsString]) -> io::Result<Child> {
             std::ptr::null(),
             i32::from(!handles.is_empty()),
             CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-            std::ptr::null(),
+            environment
+                .as_ref()
+                .map_or(std::ptr::null(), |block| block.as_ptr().cast()),
             std::ptr::null(),
             &startup.StartupInfo,
             &mut info,
@@ -265,5 +309,29 @@ impl Child {
             return Err(io::Error::last_os_error());
         }
         Ok(ExitStatus::from_raw(code))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_environment_block_is_nul_separated_and_double_nul_terminated_with_the_marker() {
+        let block = environment(&[("ALEF_TEST_MARKER".to_owned(), "1".to_owned())]).unwrap();
+        assert_eq!(&block[block.len() - 2..], [0, 0]);
+        let entries: Vec<String> = block[..block.len() - 1]
+            .split(|unit| *unit == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect();
+        assert!(entries.iter().any(|entry| entry == "ALEF_TEST_MARKER=1"));
+    }
+
+    #[test]
+    fn an_environment_name_with_a_separator_is_refused() {
+        for name in ["A=B", "A\0B"] {
+            assert!(environment(&[(name.to_owned(), "x".to_owned())]).is_err());
+        }
     }
 }

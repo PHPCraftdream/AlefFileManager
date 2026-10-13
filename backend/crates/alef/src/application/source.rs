@@ -36,6 +36,8 @@ pub struct LoadFailure {
     pub category: Option<&'static str>,
     pub detail: String,
     pub exit: u8,
+    /// The unmet runtime requirement, when the category is `RUNTIME_INCOMPATIBLE`.
+    pub runtime_requirement: Option<String>,
 }
 
 impl fmt::Display for LoadFailure {
@@ -113,6 +115,7 @@ pub fn load(path: &Path) -> Result<ApplicationSource, LoadFailure> {
             path.display()
         ),
         exit: 2,
+        runtime_requirement: None,
     })?;
     if meta.is_dir() {
         return Ok(ApplicationSource::Directory {
@@ -179,6 +182,7 @@ fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
                 category: Some("RUNTIME_INCOMPATIBLE"),
                 detail: crate::runtimes::command::incompatible_detail(requirement),
                 exit: 2,
+                runtime_requirement: Some(requirement.to_owned()),
             });
         }
     }
@@ -275,6 +279,7 @@ fn package_failure(error: &PackageError) -> LoadFailure {
             category: None,
             detail: format!("cannot read the package: {io}"),
             exit: 1,
+            runtime_requirement: None,
         },
         Error::NotRegularFile => failure("NOT_A_PACKAGE", "expected a format-1 Alef ZIP package"),
         Error::MissingManifest => failure("PACKAGE_MANIFEST", "missing root alef.ktav"),
@@ -312,6 +317,7 @@ fn failure(category: &'static str, detail: impl Into<String>) -> LoadFailure {
         category: Some(category),
         detail: detail.into(),
         exit: 2,
+        runtime_requirement: None,
     }
 }
 
@@ -335,6 +341,7 @@ fn io_failure(error: std::io::Error) -> LoadFailure {
         category: None,
         detail: format!("cannot read the package: {error}"),
         exit: 1,
+        runtime_requirement: None,
     }
 }
 
@@ -580,6 +587,7 @@ mod tests {
             "requires >=999.0; this executable provides {}; ",
             env!("CARGO_PKG_VERSION")
         )));
+        assert_eq!(failure.runtime_requirement, Some(">=999.0".to_owned()));
         for extra in ["runtime: ^0.1\n", ""] {
             let text = support::manifest_text(extra);
             assert!(prepare_load(&[

@@ -129,7 +129,7 @@ pub fn run(command: &RuntimeCommand) -> Result<String, StoreError> {
     run_in(command, &store::root())
 }
 
-/// Explains incompatibility using one ordered store snapshot, without relaunching.
+/// Explains incompatibility using one ordered store snapshot, without starting anything; the relaunch decision lives in relaunch::runtime.
 pub fn incompatible_detail_in(root: &Path, requirement: &str) -> String {
     let prefix = format!(
         "requires {requirement}; this executable provides {}",
@@ -137,12 +137,21 @@ pub fn incompatible_detail_in(root: &Path, requirement: &str) -> String {
     );
     let installed = match store::installed_in(root) {
         Ok(installed) => installed,
-        Err(error) => return format!("{prefix}; installed runtimes: unreadable at {}: {error}; runtime relaunch is not implemented in this slice", root.display()),
+        Err(error) => {
+            return format!(
+                "{prefix}; installed runtimes: unreadable at {}: {error}",
+                root.display()
+            )
+        }
     };
     if let Some(selected) = installed.iter().rev().find(|entry| {
         alef_core::security::manifest::runtime_requirement_met(requirement, &entry.version)
     }) {
-        return format!("{prefix}; selected installed runtime: {} at {}; runtime relaunch is not implemented in this slice", selected.version, selected.binary.display());
+        return format!(
+            "{prefix}; selected installed runtime: {} at {}",
+            selected.version,
+            selected.binary.display()
+        );
     }
     let versions = if installed.is_empty() {
         "none".to_owned()
@@ -153,7 +162,7 @@ pub fn incompatible_detail_in(root: &Path, requirement: &str) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    format!("{prefix}; installed runtimes: {versions}; no installed runtime satisfies {requirement}; install a matching local binary with alef runtime install <version> <path-to-alef-binary>; runtime relaunch is not implemented in this slice")
+    format!("{prefix}; installed runtimes: {versions}; no installed runtime satisfies {requirement}; install a matching local binary with alef runtime install <version> <path-to-alef-binary>")
 }
 
 /// Explains incompatibility against the launcher's default store.
@@ -357,7 +366,6 @@ mod tests {
                 .join(store::BINARY_NAME)
                 .display()
         )));
-        assert!(detail.contains("runtime relaunch is not implemented"));
         assert!(!detail.contains("alef runtime install"));
         assert!(!detail.contains("no installed runtime satisfies"));
     }
