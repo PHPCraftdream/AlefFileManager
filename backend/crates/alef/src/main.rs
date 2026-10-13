@@ -106,8 +106,18 @@ impl From<std::io::Error> for Failure {
     }
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
+    // Before any thread exists: the relaunch marker never reaches the applications' children.
+    relaunch::runtime::take_marker();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("the async runtime starts");
+    runtime.block_on(launch_main())
+}
+
+async fn launch_main() -> ExitCode {
     warn_end_to_end_build();
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     match launch(arguments).await {
@@ -268,7 +278,28 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         }
         Command::Run(launch) => launch,
     };
-    match source::load(&launch.target).map_err(Failure::load)? {
+    let loaded = match source::load(&launch.target) {
+        Ok(loaded) => loaded,
+        Err(failure) => {
+            if let Some(requirement) = failure.runtime_requirement.clone() {
+                // The relaunch decision comes before the diagnostic; an impossible relaunch
+                // falls back to the original failure with its category and exit code.
+                match relaunch::runtime::attempt(&requirement, &process_args).await {
+                    Ok(code) => return Ok(code),
+                    Err(relaunch::runtime::AttemptFailure::Incompatible(_)) => {
+                        return Err(Failure::load(failure));
+                    }
+                    Err(relaunch::runtime::AttemptFailure::Start(reason)) => {
+                        return Err(Failure::Runtime(format!(
+                            "RUNTIME_RELAUNCH_FAILED: {reason}"
+                        )));
+                    }
+                }
+            }
+            return Err(Failure::load(failure));
+        }
+    };
+    match loaded {
         ApplicationSource::Directory { dir } => {
             launch.check(false).map_err(Failure::Usage)?;
             run_directory(process_args, launch, dir).await
@@ -277,6 +308,20 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             launch.check(true).map_err(Failure::Usage)?;
             run_package(process_args, launch, prepared).await
         }
+    }
+}
+
+/// The directory source has no load failure to fall back to: the diagnostic comes from the
+/// same command module detail the package path uses.
+async fn relaunch_directory(requirement: &str, process_args: &[OsString]) -> Result<u8, Failure> {
+    match relaunch::runtime::attempt(requirement, process_args).await {
+        Ok(code) => Ok(code),
+        Err(relaunch::runtime::AttemptFailure::Incompatible(detail)) => {
+            Err(Failure::Usage(format!("RUNTIME_INCOMPATIBLE: {detail}")))
+        }
+        Err(relaunch::runtime::AttemptFailure::Start(reason)) => Err(Failure::Runtime(format!(
+            "RUNTIME_RELAUNCH_FAILED: {reason}"
+        ))),
     }
 }
 
@@ -312,6 +357,14 @@ async fn run_directory(
         ..
     } = launch;
     let manifest = load_manifest(&dir)?;
+    if let Some(requirement) = manifest.runtime.as_deref() {
+        if !alef_core::security::manifest::runtime_requirement_met(
+            requirement,
+            env!("CARGO_PKG_VERSION"),
+        ) {
+            return relaunch_directory(requirement, &process_args).await;
+        }
+    }
     let vars = path_vars(&dir, &manifest.id)?;
     let plan = make_plan(&dir, manifest, &vars)?;
     let identity = identity_of(&dir, &plan.manifest.id)?;
@@ -581,6 +634,7 @@ mod tests {
                 category,
                 detail: "detail".to_owned(),
                 exit,
+                runtime_requirement: None,
             });
             match &failure {
                 Failure::Usage(message) if exit == 2 => {
@@ -634,6 +688,19 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_relaunch_start_is_an_operational_runtime_relaunch_failed_failure() {
+        let Failure::Runtime(message) =
+            Failure::Runtime("RUNTIME_RELAUNCH_FAILED: denied".to_owned())
+        else {
+            panic!("a start failure is operational")
+        };
+        assert!(
+            message.starts_with("RUNTIME_RELAUNCH_FAILED: "),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn a_trust_failure_maps_to_unusable_refused_or_operational() {
         let Failure::Usage(message) = Failure::trust(TrustFailure::BadTrustKey("x".to_owned()))
         else {
@@ -681,6 +748,7 @@ mod tests {
             category: Some("MANIFEST_INVALID"),
             detail: "assets: /index.html: missing".to_owned(),
             exit: 2,
+            runtime_requirement: None,
         })) else {
             panic!("a document failure is unusable input");
         };

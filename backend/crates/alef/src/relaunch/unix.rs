@@ -24,7 +24,11 @@ pub(super) struct Child {
     done: bool,
 }
 
-pub(super) fn spawn(program: &Path, args: &[OsString]) -> io::Result<Child> {
+fn spawn_command(
+    program: &Path,
+    args: &[OsString],
+    extra: &[(String, String)],
+) -> io::Result<Child> {
     let signals = [
         signal(SignalKind::interrupt())?,
         signal(SignalKind::terminate())?,
@@ -32,6 +36,11 @@ pub(super) fn spawn(program: &Path, args: &[OsString]) -> io::Result<Child> {
     ];
     let mut command = Command::new(program);
     command.args(args).process_group(0);
+    command.envs(
+        extra
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    );
     #[cfg(target_os = "linux")]
     {
         // Linux binds PDEATHSIG to the creating thread, not the entire thread group. The Tokio
@@ -170,6 +179,10 @@ pub(super) fn spawn(program: &Path, args: &[OsString]) -> io::Result<Child> {
     })
 }
 
+pub(super) fn spawn(program: &Path, args: &[OsString]) -> io::Result<Child> {
+    spawn_command(program, args, &[])
+}
+
 impl Child {
     fn send(&self, sig: i32) {
         // SAFETY: positive id is the unreaped child/private group. No signal after wait succeeds.
@@ -203,4 +216,14 @@ impl Drop for Child {
             let _ = self.child.wait();
         }
     }
+}
+
+/// The runtime relaunch child: the stored binary with an inherited environment plus the
+/// relaunch marker, standard handles inherited.
+pub(super) fn spawn_with(
+    program: &Path,
+    args: &[OsString],
+    extra: &[(String, String)],
+) -> io::Result<Child> {
+    spawn_command(program, args, extra)
 }
