@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { affectedJs, applyOverrides, computePlan, e2eFor, isDocsOnly, matchGlob, matchesAny, reverseDependents } from './plan.mjs';
+import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));

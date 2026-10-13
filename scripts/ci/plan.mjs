@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // Convert a glob to an anchored regex: '**' -> '.*', '*' -> '[^/]*', '?' -> '[^/]', rest escaped.
-export function matchGlob(path, glob) {
+export function matchGlob(file, glob) {
   let source = '';
   for (let i = 0; i < glob.length; i++) {
     if (glob.startsWith('**', i)) {
@@ -23,11 +23,11 @@ export function matchGlob(path, glob) {
       source += glob[i].replace(/[.+^${}()|[\]\\]/g, '\\$&');
     }
   }
-  return new RegExp(`^${source}$`).test(path);
+  return new RegExp(`^${source}$`).test(file);
 }
 
-export function matchesAny(path, globs) {
-  return globs.some(glob => matchGlob(path, glob));
+export function matchesAny(file, globs) {
+  return globs.some(glob => matchGlob(file, glob));
 }
 
 // Docs-only: every file is docs/** or *.md; empty means NOT docs-only.
