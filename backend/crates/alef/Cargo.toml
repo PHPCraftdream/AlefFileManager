@@ -17,6 +17,7 @@ path = "src/main.rs"
 [features]
 e2e = ["alef-runtime/e2e", "alef-modules/e2e"]
 spike-origin = ["alef-runtime/spike-origin"]
+angle = ["alef-runtime/angle"]
 
 [dependencies]
 alef-core = { path = "../alef-core" }

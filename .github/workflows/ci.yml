@@ -186,8 +186,26 @@ jobs:
 
       # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
       - name: Build (Rust, без frontend)
-        if: runner.os != 'Linux'
+        if: runner.os == 'macOS'
         run: node scripts/cargo.mjs build --locked --workspace --features alef/e2e
+
+      # Experimental ANGLE selection; DLLs come from this build's Cargo event, CI results pending (#117).
+      - name: Build (Rust, без frontend; ANGLE)
+        id: build_windows_angle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $messages = @(node scripts/cargo.mjs build --locked --workspace --features alef/e2e,alef/angle --message-format=json-render-diagnostics)
+          if ($LASTEXITCODE -ne 0) { throw "Cargo ANGLE build failed with exit code $LASTEXITCODE" }
+          $outDirs = @($messages | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop } |
+            Where-Object { $_.reason -eq 'build-script-executed' -and $_.package_id -match 'mozangle@0\.5\.1$' } |
+            Select-Object -ExpandProperty out_dir -Unique)
+          if ($outDirs.Count -ne 1) { throw "Expected exactly one mozangle 0.5.1 Cargo out_dir; found $($outDirs.Count)" }
+          foreach ($dll in @('libEGL.dll', 'libGLESv2.dll')) {
+            $source = Join-Path $outDirs[0] $dll
+            if (!(Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing ANGLE DLL: $source" }
+            Copy-Item -LiteralPath $source -Destination 'backend/target/debug' -ErrorAction Stop
+          }
 
       - name: Build (typecheck + frontend + Rust)
         if: runner.os == 'Linux'
@@ -220,11 +238,45 @@ jobs:
         timeout-minutes: 30
         run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest
 
+      # Native contexts still request hardware without WARP retry; ANGLE CI results are pending.
+      # Separate groups run after a successful build even if an earlier scenario fails (#117).
+      - name: "e2e (alef on Servo, Windows, window: core)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only core
+
+      - name: "e2e (alef on Servo, Windows, window: window)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only window
+
+      - name: "e2e (alef on Servo, Windows, window: csp)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only csp
+
+      - name: "e2e (alef on Servo, Windows, window: permissions)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only permissions
+
       - name: Upload executable
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: alef-${{ matrix.name }}
           path: backend/target/debug/${{ matrix.bin }}
+          if-no-files-found: error
+
+      - name: Upload executable and ANGLE DLLs (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: alef-${{ matrix.name }}
+          path: |
+            backend/target/debug/alef.exe
+            backend/target/debug/libEGL.dll
+            backend/target/debug/libGLESv2.dll
           if-no-files-found: error
 
       - name: Upload frontend app
