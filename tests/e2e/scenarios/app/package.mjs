@@ -76,7 +76,7 @@ async function main() {
   }
   if (t.mode === 'shadow') {
     await checks.check('a-substituted-write-lands-in-the-shadow-of-this-identity', async () => {
-      await api.fs.writeText('$TEMP/shadow-probe.txt', 'stand-in');
+      await api.fs.writeText(t.shadowProbe, 'stand-in');
     });
   }
   if (t.mode === 'hold') {
@@ -304,6 +304,8 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
       const dir = mkdtempSync(join(os.tmpdir(), 'alef-e2e-package-'));
       const pkgs = join(dir, 'pkgs');
       mkdirSync(pkgs, { recursive: true });
+      const probeFolder = join(dir, 'shadow-probes');
+      mkdirSync(probeFolder, { recursive: true });
       const homeA = join(dir, 'home-a');
       const homeB = join(dir, 'home-b');
       const keyHomeA = join(dir, 'keys-a');
@@ -338,7 +340,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           writeFileSync(join(publicRoot, 'blob.bin'), blob());
           copyFileSync(join(here, 'harness.js'), join(publicRoot, 'harness.js'));
           for (const folder of ['src', 'types']) cpSync(join(api, folder), join(publicRoot, folder), { recursive: true });
-          writeFileSync(join(publicRoot, 'targets.json'), JSON.stringify({ probe: PROBE, ...targets }));
+          writeFileSync(join(publicRoot, 'targets.json'), JSON.stringify({ probe: PROBE, shadowProbe: join(probeFolder, 'probe.txt'), ...targets }));
           return site;
         };
         const buildPackage = async (name, targets, { key, unsigned = false, manifestOptions = {} } = {}) => {
@@ -530,10 +532,32 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
         const shadowRunA = await runPage(shadowPackageA.pkg, homeShadowA, ['--trust-key', fingerprint.a], shadowConsent);
         const shadowRunB = await runPage(shadowPackageB.pkg, homeShadowB, ['--trust-key', fingerprint.b], shadowConsent);
         const shadows = [folderNames(homeShadowA, 'shadow'), folderNames(homeShadowB, 'shadow')];
+        // Both signers target the same real path; only their own shadow may receive the write.
+        const shadowProbes = home => {
+          const probes = [];
+          let remaining = 256;
+          const visit = (folder, depth) => {
+            if (depth > 32) throw new Error('shadow probe traversal exceeded 32 levels');
+            for (const entry of readdirSync(folder, { withFileTypes: true })) {
+              if (--remaining < 0) throw new Error('shadow probe traversal exceeded 256 entries');
+              const path = join(folder, entry.name);
+              if (entry.isDirectory()) visit(path, depth + 1);
+              else if (entry.isFile() && entry.name === 'probe.txt') probes.push(path);
+            }
+          };
+          const root = join(home, 'shadow');
+          if (existsSync(root)) visit(root, 0);
+          return probes;
+        };
+        const probes = [shadowProbes(homeShadowA), shadowProbes(homeShadowB)];
         expect('two-signers-of-one-id-keep-separate-shadow-identities',
           shadowRunA.code === 0 && shadowRunB.code === 0
-          && shadows.every(names => names.length > 0) && shadows[0].every(name => !shadows[1].includes(name)),
-          `exit ${shadowRunA.code}/${shadowRunB.code}: ${JSON.stringify(shadows)}`);
+          && [shadowRunA, shadowRunB].every(run => verdictOf(run.lines)?.[1] === 'PASS'
+            && okNames(run.lines).has('a-substituted-write-lands-in-the-shadow-of-this-identity'))
+          && shadows.every(names => names.length > 0) && shadows[0].every(name => !shadows[1].includes(name))
+          && probes.every(paths => paths.length > 0 && paths.every(path => readFileSync(path, 'utf8') === 'stand-in'))
+          && !existsSync(join(probeFolder, 'probe.txt')),
+          `exit ${shadowRunA.code}/${shadowRunB.code}: shadows ${JSON.stringify(shadows)}; probes ${JSON.stringify(probes)}; real probe exists: ${existsSync(join(probeFolder, 'probe.txt'))}`);
 
         // Secrets isolation: the second signer never reads what the first one wrote. Only a persistent
         // Secret Service (ALEF_E2E_KEYRING=1, a session keyring) makes the check meaningful; without it
