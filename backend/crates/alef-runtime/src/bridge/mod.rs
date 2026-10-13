@@ -64,6 +64,65 @@ pub enum AssetInput {
     },
 }
 
+/// A built and audited asset source whose entry and initial window documents were already
+/// checked through the same lookup that serves requests; build it with [`prepare_assets`]
+/// before any trust or consent decision and hand it to [`Bridge::with_options`].
+pub struct PreparedAssets {
+    pub(crate) source: Arc<assets::Source>,
+    pub(crate) selected_root: Option<String>,
+    pub(crate) archive: bool,
+}
+
+/// Builds the source once and checks the entry document and every initial window document
+/// through the request lookup; every failure is the same `io::Error` the bridge returns.
+pub async fn prepare_assets(
+    input: AssetInput,
+    entry: Option<&str>,
+    initial_document_urls: &[String],
+) -> io::Result<PreparedAssets> {
+    let native_entry = native_entry(entry)?;
+    let selected_root = match &input {
+        AssetInput::Disk { selected_root, .. } => Some(selected_root.clone()),
+        AssetInput::Archive { .. } => None,
+    };
+    let archive = matches!(input, AssetInput::Archive { .. });
+    let source = Arc::new(assets::Source::prepare(input)?);
+    check_documents(&source, native_entry, initial_document_urls).await?;
+    Ok(PreparedAssets {
+        source,
+        selected_root,
+        archive,
+    })
+}
+
+fn native_entry(entry: Option<&str>) -> io::Result<Url> {
+    let entry = entry_path(entry)?;
+    Url::parse("native://app/")
+        .and_then(|base| base.join(&entry))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+}
+
+async fn check_documents(
+    source: &Arc<assets::Source>,
+    native_entry: Url,
+    initial_document_urls: &[String],
+) -> io::Result<()> {
+    assets::read_asset(Some(source.clone()), native_entry.path().to_owned()).await?;
+    for reference in initial_document_urls {
+        let url = native_entry
+            .join(reference)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        if (url.scheme(), url.host_str(), url.port()) != ("native", Some("app"), None) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Initial document must belong to the application",
+            ));
+        }
+        assets::read_asset(Some(source.clone()), url.path().to_owned()).await?;
+    }
+    Ok(())
+}
+
 /// Embedder-supplied policy of the bridge; the default suits the File Manager.
 #[derive(Default)]
 pub struct BridgeOptions {
@@ -236,58 +295,40 @@ impl Bridge {
                 })
             })
             .transpose()?;
+        let assets = match assets {
+            Some(input) => Some(prepare_assets(input, None, &[]).await?),
+            None => None,
+        };
         Self::with_options(commands, assets, development_url, BridgeOptions::default()).await
     }
 
     /// `None` is supported only for development callers, which never resolve disk assets.
     pub async fn with_options(
         commands: Commands,
-        assets: Option<AssetInput>,
+        assets: Option<PreparedAssets>,
         development_url: Option<Url>,
         options: BridgeOptions,
     ) -> io::Result<Self> {
         let entry = entry_path(options.entry.as_deref())?;
-        let native_entry = Url::parse("native://app/")
-            .and_then(|base| base.join(&entry))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        if matches!(&assets, Some(AssetInput::Archive { .. }))
-            && (development_url.is_some() || crate::spikes::origin::enabled())
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Archive assets cannot use development or origin-spike URLs",
-            ));
+        if let Some(assets) = &assets {
+            if assets.archive && (development_url.is_some() || crate::spikes::origin::enabled()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Archive assets cannot use development or origin-spike URLs",
+                ));
+            }
         }
         let assets = if development_url.is_some() {
             None // Development never resolves, requires or serves disk, even for embedders.
-        } else if let Some(input) = assets {
-            let selected = match &input {
-                AssetInput::Disk { selected_root, .. } => Some(selected_root.clone()),
-                AssetInput::Archive { .. } => None,
-            };
-            let source = assets::Source::prepare(input)?;
-            let source = Arc::new(source);
-            assets::read_asset(Some(source.clone()), native_entry.path().to_owned()).await?;
-            for reference in &options.initial_document_urls {
-                let url = native_entry
-                    .join(reference)
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-                if (url.scheme(), url.host_str(), url.port()) != ("native", Some("app"), None) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Initial document must belong to the application",
-                    ));
-                }
-                assets::read_asset(Some(source.clone()), url.path().to_owned()).await?;
-            }
-            if crate::spikes::origin::enabled() {
-                if let Some(selected) = selected {
-                    crate::spikes::origin::set_assets(&selected);
-                }
-            }
-            Some(source)
         } else {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "Missing assets"));
+            let prepared =
+                assets.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Missing assets"))?;
+            if crate::spikes::origin::enabled() {
+                if let Some(selected) = &prepared.selected_root {
+                    crate::spikes::origin::set_assets(selected);
+                }
+            }
+            Some(prepared.source)
         };
         let token = random_token()?;
         let mut entry_url = match development_url {

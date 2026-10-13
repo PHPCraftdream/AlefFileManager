@@ -59,6 +59,18 @@ impl Plan {
         }
     }
 
+    /// Moves the asset capability out: the source is built once, before trust, and handed to
+    /// the bridge; a second take returns an unusable placeholder, never a real capability.
+    pub fn take_assets(&mut self) -> alef_runtime::AssetInput {
+        std::mem::replace(
+            &mut self.assets,
+            alef_runtime::AssetInput::Disk {
+                application_dir: std::path::PathBuf::new(),
+                selected_root: std::path::PathBuf::new(),
+            },
+        )
+    }
+
     /// Undecided processes load the decision document, children load their first window.
     pub fn entry(&self) -> String {
         if self.initial_mode == Some(Mode::Window) {

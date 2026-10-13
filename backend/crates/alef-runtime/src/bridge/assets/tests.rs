@@ -393,10 +393,18 @@ async fn startup_uses_the_url_pathname_and_requires_an_entry_even_without_window
     };
     let bridge = Bridge::with_options(
         Commands::new(),
-        Some(crate::AssetInput::Disk {
-            application_dir: app.path().to_owned(),
-            selected_root: root.clone(),
-        }),
+        Some(
+            crate::prepare_assets(
+                crate::AssetInput::Disk {
+                    application_dir: app.path().to_owned(),
+                    selected_root: root.clone(),
+                },
+                Some("/app.js?x=../alef.ktav"),
+                &[],
+            )
+            .await
+            .unwrap(),
+        ),
         None,
         options,
     )

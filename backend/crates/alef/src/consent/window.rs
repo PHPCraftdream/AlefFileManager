@@ -131,15 +131,23 @@ async fn show(
 ) -> Result<(), String> {
     let request = Arc::new(request);
     let answer_path = answer_path.to_owned();
+    let pages = pages
+        .parent()
+        .ok_or("Missing consent application boundary")?
+        .to_owned();
+    let assets = alef_runtime::prepare_assets(
+        alef_runtime::AssetInput::Disk {
+            application_dir: pages.clone(),
+            selected_root: pages,
+        },
+        Some("/index.html"),
+        &[],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     let mut bridge = Bridge::with_options(
         Commands::new(),
-        Some(alef_runtime::AssetInput::Disk {
-            application_dir: pages
-                .parent()
-                .ok_or("Missing consent application boundary")?
-                .to_owned(),
-            selected_root: pages.to_owned(),
-        }),
+        Some(assets),
         None,
         BridgeOptions {
             modules: Some(Box::new(move |registry, host| {
