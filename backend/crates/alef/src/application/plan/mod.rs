@@ -18,6 +18,10 @@ use alef_core::{
 
 pub const MANIFEST_FILE: &str = "alef.ktav";
 
+/// Moves the data, config and cache bases of the applications (both sources), like
+/// `ALEF_HOME` moves the folder of the runtime.
+pub const APP_HOME_VARIABLE: &str = "ALEF_APP_HOME";
+
 /// Origin of the application documents; `build_csp` allows it explicitly (see its docs).
 const CSP_APP_ORIGIN: &str = "native://app";
 
@@ -196,6 +200,29 @@ fn assemble(
     })
 }
 
+/// The three application bases for an `ALEF_APP_HOME` value: used only when it is set,
+/// non-empty and absolute; anything else falls back to the OS directories.
+pub fn application_bases(
+    value: Option<&std::ffi::OsStr>,
+    os_bases: impl FnOnce() -> (PathBuf, PathBuf, PathBuf),
+) -> (PathBuf, PathBuf, PathBuf) {
+    match value.map(Path::new).filter(|home| home.is_absolute()) {
+        Some(home) => (home.join("data"), home.join("config"), home.join("cache")),
+        None => os_bases(),
+    }
+}
+
+/// The bases of the applications: `<ALEF_APP_HOME>/<data|config|cache>` or the OS directories.
+pub fn application_base_dirs(fallback_home: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    application_bases(std::env::var_os(APP_HOME_VARIABLE).as_deref(), || {
+        (
+            dirs::data_local_dir().unwrap_or_else(|| fallback_home.join(".local").join("share")),
+            dirs::config_dir().unwrap_or_else(|| fallback_home.join(".config")),
+            dirs::cache_dir().unwrap_or_else(|| fallback_home.join(".cache")),
+        )
+    })
+}
+
 /// The directories behind `$APPDATA`, `$HOME` and the other scope variables of application `id`.
 pub fn path_vars(app_dir: &Path, id: &str) -> Result<PathVars, AlefError> {
     plain_id(id)?;
@@ -206,21 +233,20 @@ pub fn path_vars(app_dir: &Path, id: &str) -> Result<PathVars, AlefError> {
         )
     })?;
     let home = dirs::home_dir().unwrap_or_else(|| app.clone());
-    // Application-owned directories live under the manifest id, never directly in the base.
-    let owned = |base: Option<PathBuf>, fallback: &str| {
-        base.unwrap_or_else(|| home.join(fallback)).join(id)
-    };
-    Ok(PathVars {
-        app_data: owned(dirs::data_local_dir(), ".local/share"),
-        app_config: owned(dirs::config_dir(), ".config"),
-        app_cache: owned(dirs::cache_dir(), ".cache"),
-        documents: dirs::document_dir().unwrap_or_else(|| home.join("Documents")),
-        downloads: dirs::download_dir().unwrap_or_else(|| home.join("Downloads")),
-        desktop: dirs::desktop_dir().unwrap_or_else(|| home.join("Desktop")),
-        temp: std::env::temp_dir(),
-        app: Some(app),
-        home,
-    })
+    let bases = application_base_dirs(&home);
+    path_vars_with_bases(app, id, home, bases)
+}
+
+/// [`path_vars`] with injected bases, so the tests never touch the process environment.
+fn path_vars_with_bases(
+    app: PathBuf,
+    id: &str,
+    home: PathBuf,
+    bases: (PathBuf, PathBuf, PathBuf),
+) -> Result<PathVars, AlefError> {
+    let mut vars = package_path_vars_with_bases(id, home, bases)?;
+    vars.app = Some(app);
+    Ok(vars)
 }
 
 /// An `id` that is safe to join into filesystem paths unchanged.
@@ -242,16 +268,24 @@ fn plain_id(id: &str) -> Result<(), AlefError> {
 /// The directories behind the `$NAME` scope variables of a package application: `$APP` has no
 /// filesystem meaning for an archive, and nothing is canonicalized from the package path.
 pub fn package_path_vars(id: &str) -> Result<PathVars, AlefError> {
-    plain_id(id)?;
     let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    let bases = application_base_dirs(&home);
+    package_path_vars_with_bases(id, home, bases)
+}
+
+/// [`package_path_vars`] with injected bases, so the tests never touch the process environment.
+fn package_path_vars_with_bases(
+    id: &str,
+    home: PathBuf,
+    bases: (PathBuf, PathBuf, PathBuf),
+) -> Result<PathVars, AlefError> {
+    plain_id(id)?;
+    let (data, config, cache) = bases;
     // Application-owned directories live under the manifest id, never directly in the base.
-    let owned = |base: Option<PathBuf>, fallback: &str| {
-        base.unwrap_or_else(|| home.join(fallback)).join(id)
-    };
     Ok(PathVars {
-        app_data: owned(dirs::data_local_dir(), ".local/share"),
-        app_config: owned(dirs::config_dir(), ".config"),
-        app_cache: owned(dirs::cache_dir(), ".cache"),
+        app_data: data.join(id),
+        app_config: config.join(id),
+        app_cache: cache.join(id),
         documents: dirs::document_dir().unwrap_or_else(|| home.join("Documents")),
         downloads: dirs::download_dir().unwrap_or_else(|| home.join("Downloads")),
         desktop: dirs::desktop_dir().unwrap_or_else(|| home.join("Desktop")),
@@ -717,3 +751,6 @@ permissions: {{
         .is_ok());
     }
 }
+
+#[cfg(test)]
+mod profile_tests;

@@ -21,8 +21,8 @@ use alef_launch::{
     consent::{identity_of, shadow_folder, store, watch, Asker, WATCH_EVERY},
     permissions,
     plan::{
-        launch_timeout_from_environment, load_manifest, make_package_plan, make_plan,
-        package_path_vars, path_vars, Plan,
+        application_base_dirs, launch_timeout_from_environment, load_manifest, make_package_plan,
+        make_plan, package_path_vars, path_vars, Plan,
     },
     relaunch,
     runtimes::{self, StoreError},
@@ -368,10 +368,7 @@ async fn run_package(
     } = *prepared;
     let mut vars = package_path_vars(&manifest.id)?;
     // Package data lives under the authority token, not the manifest id; the modules check this.
-    let data_base =
-        dirs::data_local_dir().unwrap_or_else(|| vars.home.join(".local").join("share"));
-    let config_base = dirs::config_dir().unwrap_or_else(|| vars.home.join(".config"));
-    let cache_base = dirs::cache_dir().unwrap_or_else(|| vars.home.join(".cache"));
+    let (data_base, config_base, cache_base) = application_base_dirs(&vars.home);
     namespace_paths(
         &mut vars,
         &data_base,

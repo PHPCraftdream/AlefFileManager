@@ -28,8 +28,8 @@ pub fn window_args(arguments: &[OsString]) -> Vec<OsString> {
     args
 }
 
-/// Relaunch only after bridge shutdown and console drain. Consent, ALEF_HOME and ALEF_E2E
-/// remain in the inherited environment; the child reads the already persisted consent.
+/// Relaunch only after bridge shutdown and console drain. Consent, ALEF_HOME, ALEF_APP_HOME and
+/// ALEF_E2E remain in the inherited environment; the child reads the already persisted consent.
 pub async fn window(arguments: &[OsString]) -> io::Result<u8> {
     let program = std::env::current_exe()?;
     let args = window_args(arguments);
