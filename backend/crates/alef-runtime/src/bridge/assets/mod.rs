@@ -249,10 +249,10 @@ pub(super) async fn read_asset(
 ) -> io::Result<AssetBytes> {
     let source =
         source.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Assets disabled"))?;
-    // Admission is nonblocking and happens before submitting a blocking job. The worker
-    // owns the permit even if its async caller is cancelled; its result keeps owning it.
+    // Admission waits in a bounded queue and happens before submitting a blocking job. The
+    // worker owns the permit even if its async caller is cancelled; its result keeps owning it.
     let permit = match source.as_ref() {
-        Source::Archive(archive) => Some(archive.admit()?),
+        Source::Archive(archive) => Some(archive.admit().await?),
         Source::Disk(_) => None,
     };
     tokio::task::spawn_blocking(move || {

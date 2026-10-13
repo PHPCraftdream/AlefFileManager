@@ -9,11 +9,17 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// Reads that run at once; each may hold up to `max_bytes` until its response is handed over.
+const RUNNING: usize = 4;
+/// Requests that wait for a running read; a page loads dozens of modules in one burst.
+const WAITING: usize = 256;
+
 pub(crate) struct Archive {
     package: Mutex<Package<Cursor<Vec<u8>>>>,
     root: String,
     public_names: HashSet<String>,
     admissions: Arc<Semaphore>,
+    places: Arc<Semaphore>,
     max_bytes: u64,
     #[cfg(test)]
     admitted: tokio::sync::Notify,
@@ -65,17 +71,28 @@ impl Archive {
             package: Mutex::new(package),
             root,
             public_names,
-            admissions: Arc::new(Semaphore::new(4)),
+            admissions: Arc::new(Semaphore::new(RUNNING)),
+            places: Arc::new(Semaphore::new(WAITING)),
             max_bytes: 64 * 1024 * 1024,
             #[cfg(test)]
             admitted: tokio::sync::Notify::new(),
         })
     }
 
-    pub(super) fn admit(&self) -> io::Result<OwnedSemaphorePermit> {
-        let permit = self.admissions.clone().try_acquire_owned().map_err(|_| {
-            io::Error::new(io::ErrorKind::WouldBlock, "Archive asset admission limit")
-        })?;
+    pub(super) async fn admit(&self) -> io::Result<OwnedSemaphorePermit> {
+        let permit = match self.admissions.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                let _place = self.places.clone().try_acquire_owned().map_err(|_| {
+                    io::Error::new(io::ErrorKind::WouldBlock, "Archive asset admission limit")
+                })?;
+                self.admissions
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(io::Error::other)?
+            }
+        };
         #[cfg(test)]
         self.admitted.notify_one();
         Ok(permit)
@@ -120,6 +137,15 @@ impl Archive {
     }
     #[cfg(test)]
     pub(super) async fn drained(&self) {
-        let _all = self.admissions.clone().acquire_many_owned(4).await.unwrap();
+        let _all = self
+            .admissions
+            .clone()
+            .acquire_many_owned(RUNNING as u32)
+            .await
+            .unwrap();
+    }
+    #[cfg(test)]
+    pub(super) fn queued(&self) -> usize {
+        WAITING - self.places.available_permits()
     }
 }

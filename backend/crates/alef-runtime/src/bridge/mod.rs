@@ -517,6 +517,11 @@ impl MemoryProtocol {
                     io::ErrorKind::WouldBlock => 429,
                     _ => 500,
                 };
+                #[cfg(feature = "e2e")]
+                eprintln!(
+                    "ALEF_E2E asset-refused status={status} path={} {error}",
+                    url.path()
+                );
                 (
                     status,
                     serde_json::to_vec(&json!({"error": error.to_string()})).expect("JSON string"),

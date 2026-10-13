@@ -332,16 +332,13 @@ async fn memory_protocol_assets_enforce_get_host_csp_nosniff_and_exact_mime() {
 }
 
 #[tokio::test]
-async fn four_queued_archive_jobs_reject_the_fifth_and_cancellation_keeps_admission() {
+async fn a_burst_beyond_the_running_archive_jobs_waits_for_a_free_slot() {
     let source = std::sync::Arc::new(Source::prepare(input("dist")).unwrap());
     let Source::Archive(archive) = source.as_ref() else {
         unreachable!()
     };
-    // The guard lives on a blocking worker, never across an await of the test;
-    // all synchronization waits are bounded.
     let archive = std::sync::Arc::clone(archive);
     let (locked, release) = archive.hold_package();
-    // Bounded wait until the blocking worker actually holds the package mutex.
     let _ = bounded(tokio::task::spawn_blocking(move || locked.recv().unwrap())).await;
     let mut jobs = Vec::new();
     for _ in 0..4 {
@@ -351,6 +348,49 @@ async fn four_queued_archive_jobs_reject_the_fifth_and_cancellation_keeps_admiss
         }));
         bounded(archive.admitted()).await;
     }
+    let fifth = tokio::spawn(read_asset(Some(source.clone()), "/".into()));
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!fifth.is_finished());
+    assert_eq!(archive.queued(), 1);
+    drop(release);
+    jobs.push(fifth);
+    for job in jobs {
+        assert_eq!(bounded(job).await.unwrap().unwrap().bytes, b"public");
+    }
+    bounded(archive.drained()).await;
+    assert_eq!(archive.queued(), 0);
+}
+
+#[tokio::test]
+async fn waiters_beyond_the_queue_are_refused_and_a_cancelled_waiter_gives_its_place_back() {
+    let source = std::sync::Arc::new(Source::prepare(input("dist")).unwrap());
+    let Source::Archive(archive) = source.as_ref() else {
+        unreachable!()
+    };
+    let archive = std::sync::Arc::clone(archive);
+    let (locked, release) = archive.hold_package();
+    let _ = bounded(tokio::task::spawn_blocking(move || locked.recv().unwrap())).await;
+    let mut jobs = Vec::new();
+    for _ in 0..4 {
+        let source = source.clone();
+        jobs.push(tokio::spawn(async move {
+            read_asset(Some(source), "/".into()).await
+        }));
+        bounded(archive.admitted()).await;
+    }
+    let mut waiting = Vec::new();
+    for _ in 0..256 {
+        waiting.push(tokio::spawn(read_asset(Some(source.clone()), "/".into())));
+    }
+    for _ in 0..1024 {
+        if archive.queued() == 256 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(archive.queued(), 256);
     assert_eq!(
         bounded(read_asset(Some(source.clone()), "/".into()))
             .await
@@ -366,28 +406,24 @@ async fn four_queued_archive_jobs_reject_the_fifth_and_cancellation_keeps_admiss
             .raw_code(),
         429
     );
-    let cancelled = jobs.pop().unwrap();
+    let cancelled = waiting.pop().unwrap();
     cancelled.abort();
     assert!(bounded(cancelled).await.unwrap_err().is_cancelled());
-    assert_eq!(
-        bounded(read_asset(Some(source.clone()), "/".into()))
-            .await
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::WouldBlock
-    );
+    assert_eq!(archive.queued(), 255);
+    waiting.push(tokio::spawn(read_asset(Some(source.clone()), "/".into())));
+    for _ in 0..1024 {
+        if archive.queued() == 256 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(archive.queued(), 256);
     drop(release);
-    for job in jobs {
-        drop(bounded(job).await.unwrap().unwrap());
+    for job in jobs.into_iter().chain(waiting) {
+        assert_eq!(bounded(job).await.unwrap().unwrap().bytes, b"public");
     }
     bounded(archive.drained()).await;
-    assert_eq!(
-        bounded(read_asset(Some(source), "/".into()))
-            .await
-            .unwrap()
-            .bytes,
-        b"public"
-    );
+    assert_eq!(archive.queued(), 0);
 }
 
 #[tokio::test]
@@ -401,14 +437,13 @@ async fn completed_archive_bytes_keep_admission_until_the_response_handoff() {
                 .unwrap(),
         );
     }
-    assert_eq!(
-        bounded(read_asset(Some(source.clone()), "/".into()))
-            .await
-            .unwrap_err()
-            .kind(),
-        io::ErrorKind::WouldBlock
-    );
+    let waiting = tokio::spawn(read_asset(Some(source.clone()), "/".into()));
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!waiting.is_finished());
     drop(bytes.pop());
+    assert_eq!(bounded(waiting).await.unwrap().unwrap().bytes, b"public");
     let handler = protocol(source.clone(), None);
     assert_eq!(
         bounded(handler.asset_response(&request("native://app/", http::Method::GET)))
