@@ -46,7 +46,12 @@ async function main() {
   if (t.mode === 'secrets-write') {
     try {
       await api.secrets.set(SERVICE, 'probe', 'one');
+      await api.secrets.set(SERVICE, 'canary', 'kept');
       await report('secrets-written');
+      // Read the probe back in the same process: distinguishes a lazy store from cross-process loss.
+      let back;
+      try { back = await api.secrets.getText(SERVICE, 'probe'); } catch (error) { back = \`error: \${error?.code ?? error}\`; }
+      await report('secrets-readback=' + JSON.stringify(back));
     } catch (error) {
       await report('secrets-unavailable');
     }
@@ -69,9 +74,16 @@ async function main() {
   }
   if (t.mode === 'secrets-clean') {
     await checks.check('the-secret-of-the-first-key-survives-for-the-same-identity', async () => {
-      const text = await api.secrets.getText(SERVICE, 'probe');
-      if (text !== 'one') throw new Error('the secret read as ' + JSON.stringify(text));
+      await report('secrets-plain-get=' + JSON.stringify(await api.secrets.getText(SERVICE, 'probe')));
+      let canary;
+      try { canary = await api.secrets.getText(SERVICE, 'canary'); } catch (error) { canary = \`error: \${error?.code ?? error}\`; }
+      await report('secrets-canary=' + JSON.stringify(canary));
+      // Strict: both items must survive until this run; only then remove them.
+      if (canary !== 'kept' || (await api.secrets.getText(SERVICE, 'probe')) !== 'one') {
+        throw new Error(\`the secret read as \${JSON.stringify(canary)}; probe as \${JSON.stringify(await api.secrets.getText(SERVICE, 'probe'))}\`);
+      }
       await api.secrets.delete(SERVICE, 'probe');
+      await api.secrets.delete(SERVICE, 'canary');
     });
   }
   if (t.mode === 'shadow') {
@@ -573,10 +585,21 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           read.code === 0 && read.lines.some(line => line.includes('secrets-isolated') || (!keyring && line.includes('secrets-unavailable')))
           && !read.lines.some(line => line.includes('secrets-shared')), `exit ${read.code}`);
         if (written && keyring) {
+          const readbackOk = write.lines.some(line => line.includes('secrets-readback="one"'));
           const clean = await runPage(secretsCleanA.pkg, homeA, []);
+          const plainGet = reported(clean.lines, 'secrets-plain-get');
+          const canary = reported(clean.lines, 'secrets-canary');
+          // Name the likely cause from the probes when the strict check fails.
+          const cause = !readbackOk
+            ? 'cause: the store did not keep the secret inside the writing process'
+            : canary === '"kept"' && plainGet === 'null'
+              ? "cause: the second signer's activity removed the first signer's secret (product suspicion: account-only lookup)"
+              : plainGet === 'null'
+                ? 'cause: the store did not keep the secret between processes (no persistent default collection)'
+                : 'cause: the stored value changed';
           expect('the-secret-of-the-first-key-survives-for-the-same-identity',
             clean.code === 0 && okNames(clean.lines).has('the-secret-of-the-first-key-survives-for-the-same-identity'),
-            `exit ${clean.code}`);
+            `exit ${clean.code}; ${cause}; plainGet=${plainGet}; canary=${canary}`);
         }
 
         // A directory run of the same id keeps the legacy location.
