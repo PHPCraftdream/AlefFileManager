@@ -1,23 +1,39 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The generic Alef runtime: `alef --app <directory> [--dev-url <url>]`.
-use std::{ffi::OsString, process::ExitCode, sync::Arc};
+use std::{ffi::OsString, path::PathBuf, process::ExitCode, sync::Arc};
 
-use alef_core::{error::AlefError, security::consent::ConsentStore};
+use alef_core::{
+    error::AlefError,
+    security::{
+        authority::Authority,
+        consent::{ConsentStore, Decision, Identity},
+        permissions::PathVars,
+    },
+};
 use alef_launch::{
+    application::{
+        source::{self, ApplicationSource, LoadFailure, Prepared},
+        trust::{self, TrustFailure, TrustInputs},
+        window as trust_window,
+    },
     args::{parse_args, Command, Launch, USAGE},
     consent::{
         ask::AppSummary, enforce, identity_of, runtime_home, settle_with, shadow_folder, store,
         watch, Asker, WATCH_EVERY,
     },
     permissions,
-    plan::{launch_timeout_from_environment, load_manifest, make_plan, path_vars},
+    plan::{
+        launch_timeout_from_environment, load_manifest, make_package_plan, make_plan,
+        package_path_vars, path_vars, Plan,
+    },
     relaunch,
 };
 use alef_modules::{
     desktop::args::{parse, Parsed},
-    register_all, AppInfo, Backends, Console, ModuleContext, Termination,
+    namespace_paths, register_all, AppInfo, Backends, Console, ModuleContext, Termination,
 };
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
+use url::Url;
 
 #[path = "consent/window.rs"]
 mod consent_window;
@@ -33,6 +49,28 @@ enum Failure {
     Usage(String),
     Declined(String),
     Runtime(String),
+}
+
+impl Failure {
+    /// The category of a source that cannot be loaded, at its own exit code.
+    fn load(failure: LoadFailure) -> Self {
+        match failure.exit {
+            2 => Self::Usage(failure.to_string()),
+            3 => Self::Declined(failure.to_string()),
+            _ => Self::Runtime(failure.to_string()),
+        }
+    }
+
+    /// Trust that was not established: unusable input, refusal, or a store failure.
+    fn trust(failure: TrustFailure) -> Self {
+        match failure {
+            TrustFailure::BadTrustKey(message) => {
+                Self::Usage(format!("INVALID_ARGUMENT: {message}"))
+            }
+            TrustFailure::Refused(message) => Self::Declined(message),
+            TrustFailure::Store(error) => Self::Runtime(error.to_string()),
+        }
+    }
 }
 
 impl From<AlefError> for Failure {
@@ -193,19 +231,169 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
                 .map_err(Failure::Runtime)?;
             return Ok(0);
         }
+        Command::Trust { request, answer } => {
+            install_tls()?;
+            trust_window::run(&request, &answer, DEFAULT_ICON.to_vec())
+                .await
+                .map_err(Failure::Runtime)?;
+            return Ok(0);
+        }
         Command::Run(launch) => launch,
     };
+    match source::load(&launch.target).map_err(Failure::load)? {
+        ApplicationSource::Directory { dir } => {
+            launch.check(false).map_err(Failure::Usage)?;
+            run_directory(process_args, launch, dir).await
+        }
+        ApplicationSource::Package(prepared) => {
+            launch.check(true).map_err(Failure::Usage)?;
+            run_package(process_args, launch, prepared).await
+        }
+    }
+}
+
+/// Everything the one launch pipeline needs after the source is loaded and the plan derived.
+struct Run {
+    process_args: Vec<OsString>,
+    dev_url: Option<Url>,
+    app_args: Vec<OsString>,
+    grant: Option<Decision>,
+    no_prompt: bool,
+    launch_window: bool,
+    plan: Plan,
+    vars: PathVars,
+    identity: Identity,
+    authority: Authority,
+    icon: Vec<u8>,
+    /// Package trust: the signer (key, fingerprint), the archive digest, and the inputs.
+    trust: Option<(Option<(String, String)>, String, TrustInputs)>,
+}
+
+/// The directory source: development, exactly as before packages existed.
+async fn run_directory(
+    process_args: Vec<OsString>,
+    launch: Launch,
+    dir: PathBuf,
+) -> Result<u8, Failure> {
     let Launch {
-        app_dir,
         dev_url,
         app_args,
         grant,
         no_prompt,
         launch_window,
+        ..
     } = launch;
-    let manifest = load_manifest(&app_dir)?;
-    let vars = path_vars(&app_dir, &manifest.id)?;
-    let mut plan = make_plan(&app_dir, manifest, &vars)?;
+    let manifest = load_manifest(&dir)?;
+    let vars = path_vars(&dir, &manifest.id)?;
+    let plan = make_plan(&dir, manifest, &vars)?;
+    let identity = identity_of(&dir, &plan.manifest.id)?;
+    let icon = std::fs::read(dir.join("icon.png")).unwrap_or_else(|_| DEFAULT_ICON.to_vec());
+    run_app(Run {
+        process_args,
+        dev_url,
+        app_args,
+        grant,
+        no_prompt,
+        launch_window,
+        plan,
+        vars,
+        identity,
+        authority: Authority::default(),
+        icon,
+        trust: None,
+    })
+    .await
+}
+
+/// The package source: verified before anything is trusted or decided.
+async fn run_package(
+    process_args: Vec<OsString>,
+    launch: Launch,
+    prepared: Box<Prepared>,
+) -> Result<u8, Failure> {
+    let Launch {
+        dev_url,
+        app_args,
+        grant,
+        no_prompt,
+        trust_key,
+        allow_unsigned,
+        launch_window,
+        ..
+    } = launch;
+    let identity = prepared.identity();
+    let signer = prepared
+        .fingerprint()
+        .zip(prepared.public_key_hex().map(|key| key.to_owned()))
+        .map(|(fingerprint, key)| (key, fingerprint.to_owned()));
+    let authority = prepared.authority.clone();
+    let archive_digest = prepared.archive_digest.clone();
+    let icon = prepared
+        .icon_png
+        .clone()
+        .unwrap_or_else(|| DEFAULT_ICON.to_vec());
+    let Prepared {
+        manifest,
+        package,
+        selected_root,
+        ..
+    } = *prepared;
+    let mut vars = package_path_vars(&manifest.id)?;
+    // Package data lives under the authority token, not the manifest id; the modules check this.
+    let data_base =
+        dirs::data_local_dir().unwrap_or_else(|| vars.home.join(".local").join("share"));
+    let config_base = dirs::config_dir().unwrap_or_else(|| vars.home.join(".config"));
+    let cache_base = dirs::cache_dir().unwrap_or_else(|| vars.home.join(".cache"));
+    namespace_paths(
+        &mut vars,
+        &data_base,
+        &config_base,
+        &cache_base,
+        &manifest.id,
+        &authority,
+    );
+    let plan = make_package_plan(package, &selected_root, manifest, &vars)?;
+    run_app(Run {
+        process_args,
+        dev_url,
+        app_args,
+        grant,
+        no_prompt,
+        launch_window,
+        plan,
+        vars,
+        identity,
+        authority,
+        icon,
+        trust: Some((
+            signer,
+            archive_digest,
+            TrustInputs {
+                trust_key,
+                allow_unsigned,
+            },
+        )),
+    })
+    .await
+}
+
+/// The pipeline both sources share; the result is the exit code the application asked for.
+async fn run_app(run: Run) -> Result<u8, Failure> {
+    let Run {
+        process_args,
+        dev_url,
+        app_args,
+        grant,
+        no_prompt,
+        launch_window,
+        plan,
+        vars,
+        identity,
+        authority,
+        icon,
+        trust,
+    } = run;
+    let mut plan = plan;
     if launch_window {
         plan.select_window_child()?;
     }
@@ -226,15 +414,31 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             return Ok(0);
         }
     };
-    // The user decides what the application gets of what its manifest asks for.
-    let identity = identity_of(&app_dir, &plan.manifest.id)?;
-    let decisions = store();
-    let asker = Asker::from_environment(grant, no_prompt).map_err(Failure::Usage)?;
+    // The application summary is needed by trust and by consent.
     let summary = AppSummary {
         id: plan.manifest.id.clone(),
         name: plan.manifest.name.clone(),
         version: plan.manifest.version.clone(),
     };
+    // The package is trusted before any right is decided: the trust question carries no rights.
+    if let Some((signer, digest, inputs)) = &trust {
+        let trust_asker = trust::asker_from_environment().map_err(Failure::Usage)?;
+        trust::decide_with_asker(
+            &trust::trust_folder(),
+            &summary.id,
+            &summary,
+            signer
+                .as_ref()
+                .map(|(key, fingerprint)| (key.as_str(), fingerprint.as_str())),
+            digest,
+            inputs,
+            &trust_asker,
+        )
+        .map_err(Failure::trust)?;
+    }
+    // The user decides what the application gets of what its manifest asks for.
+    let asker = Asker::from_environment(grant, no_prompt).map_err(Failure::Usage)?;
+    let decisions = store();
     let settled = settle_with(
         &summary,
         &plan.permissions.rights(),
@@ -261,7 +465,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     let window_state = vars.app_data.join("window-state.json");
     let termination = Termination::default();
     let context = ModuleContext {
-        authority: alef_core::security::authority::Authority::Directory,
+        authority,
         app: AppInfo {
             id: plan.manifest.id.clone(),
             name: plan.manifest.name.clone(),
@@ -282,7 +486,6 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     let console = context.console.clone();
 
     install_tls()?;
-    let icon = std::fs::read(app_dir.join("icon.png")).unwrap_or_else(|_| DEFAULT_ICON.to_vec());
     let allowed_origins = dev_url
         .iter()
         .map(|url| url.origin().ascii_serialization())
@@ -351,4 +554,84 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         return relaunch::window(&process_args).await.map_err(Failure::from);
     }
     Ok(u8::try_from(handle.exit_code()).unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_load_failure_maps_to_its_own_exit_code_and_prints_its_category() {
+        for (category, exit) in [
+            (Some("NOT_A_PACKAGE"), 2),
+            (Some("PACKAGE_FORMAT"), 2),
+            (Some("PACKAGE_INTEGRITY"), 2),
+            (Some("PACKAGE_SIGNATURE"), 2),
+            (Some("PACKAGE_MANIFEST"), 2),
+            (Some("MANIFEST_INVALID"), 2),
+            (Some("RUNTIME_INCOMPATIBLE"), 2),
+            (Some("PACKAGE_RUN_LIMIT"), 2),
+            (None, 1),
+        ] {
+            let failure = Failure::load(LoadFailure {
+                category,
+                detail: "detail".to_owned(),
+                exit,
+            });
+            match &failure {
+                Failure::Usage(message) if exit == 2 => {
+                    if let Some(category) = category {
+                        assert!(message.contains(category), "{message}");
+                    }
+                }
+                Failure::Runtime(message) if exit == 1 => {
+                    assert!(category.is_none());
+                    assert!(message.contains("detail"), "{message}");
+                }
+                _ => panic!("exit {exit}: wrong variant"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_trust_failure_maps_to_unusable_refused_or_operational() {
+        let Failure::Usage(message) = Failure::trust(TrustFailure::BadTrustKey("x".to_owned()))
+        else {
+            panic!("a bad trust key is unusable input");
+        };
+        assert!(message.contains("INVALID_ARGUMENT: x"), "{message}");
+        let Failure::Declined(message) =
+            Failure::trust(TrustFailure::Refused("SIGNER_CHANGED: r".to_owned()))
+        else {
+            panic!("a refusal is declined");
+        };
+        assert!(message.contains("SIGNER_CHANGED"), "{message}");
+        let Failure::Runtime(message) = Failure::trust(TrustFailure::Store(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "io",
+        ))) else {
+            panic!("a store failure is operational");
+        };
+        assert!(message.contains("io"), "{message}");
+    }
+
+    #[test]
+    fn the_trust_and_consent_subcommands_reach_their_windows_without_touching_a_source() {
+        let trust = parse_args(["trust", "in", "out"].map(OsString::from)).unwrap();
+        assert!(matches!(
+            trust,
+            Command::Trust {
+                request: _,
+                answer: _
+            }
+        ));
+        let consent = parse_args(["consent", "in", "out"].map(OsString::from)).unwrap();
+        assert!(matches!(
+            consent,
+            Command::Consent {
+                request: _,
+                answer: _
+            }
+        ));
+    }
 }

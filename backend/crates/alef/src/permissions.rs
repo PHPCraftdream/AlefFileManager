@@ -3,28 +3,52 @@
 //! line. The decisions are the user's: this is the same store the start of an application asks.
 use std::{fmt::Write as _, path::Path, sync::Arc};
 
-use alef_core::{
-    error::AlefError,
-    security::{
-        consent::{Consent, ConsentStore, Identity, Right},
-        permissions::PermissionSet,
-    },
+use alef_core::security::{
+    consent::{Consent, ConsentStore, Identity, Right},
+    permissions::PermissionSet,
 };
 
 use crate::{
+    application::{
+        plan::{make_package_plan, package_path_vars},
+        source,
+    },
     args::PermissionsCommand,
     consent::{identity_of, word_of},
     plan::{load_manifest, make_plan, path_vars},
 };
 
-/// Who the folder is and what its manifest asks for.
-fn asked_by(app_dir: &Path) -> Result<(Identity, Vec<Right>, Arc<PermissionSet>), AlefError> {
-    let manifest = load_manifest(app_dir)?;
-    let vars = path_vars(app_dir, &manifest.id)?;
-    let id = manifest.id.clone();
-    let plan = make_plan(app_dir, manifest, &vars)?;
-    let rights = plan.permissions.rights();
-    Ok((identity_of(app_dir, &id)?, rights, plan.permissions))
+/// Who the application is and what its manifest asks for, a folder or a package.
+fn asked_by(app_dir: &Path) -> Result<(Identity, Vec<Right>, Arc<PermissionSet>), String> {
+    match source::load(app_dir) {
+        Ok(source::ApplicationSource::Directory { dir }) => {
+            let manifest = load_manifest(&dir).map_err(|e| e.message)?;
+            let vars = path_vars(&dir, &manifest.id).map_err(|e| e.message)?;
+            let id = manifest.id.clone();
+            let plan = make_plan(&dir, manifest, &vars).map_err(|e| e.message)?;
+            let rights = plan.permissions.rights();
+            Ok((
+                identity_of(&dir, &id).map_err(|e| e.message)?,
+                rights,
+                plan.permissions,
+            ))
+        }
+        Ok(source::ApplicationSource::Package(prepared)) => {
+            // The identity is computed before `package` and `manifest` are consumed.
+            let identity = prepared.identity();
+            let vars = package_path_vars(&prepared.manifest.id).map_err(|e| e.message)?;
+            let plan = make_package_plan(
+                prepared.package,
+                &prepared.selected_root,
+                prepared.manifest.clone(),
+                &vars,
+            )
+            .map_err(|e| e.message)?;
+            let rights = plan.permissions.rights();
+            Ok((identity, rights, plan.permissions))
+        }
+        Err(failure) => Err(failure.to_string()),
+    }
 }
 
 fn io(error: std::io::Error) -> String {
@@ -46,7 +70,7 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
             }
         }
         PermissionsCommand::List { app: Some(app) } => {
-            let (identity, wanted, permissions) = asked_by(app).map_err(|e| e.message)?;
+            let (identity, wanted, permissions) = asked_by(app)?;
             let consent = store.load(&identity).map_err(io)?;
             let _ = writeln!(out, "{}", identity.app_id);
             if wanted.is_empty() {
@@ -69,7 +93,7 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
             right,
             decision,
         } => {
-            let (identity, wanted, _) = asked_by(app).map_err(|e| e.message)?;
+            let (identity, wanted, _) = asked_by(app)?;
             if !wanted.contains(right) {
                 return Err(format!(
                     "{} does not ask for {right}; it asks for: {}",
@@ -90,7 +114,7 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
             let _ = writeln!(out, "{right}: {}", word_of(*decision));
         }
         PermissionsCommand::Reset { app } => {
-            let (identity, _, _) = asked_by(app).map_err(|e| e.message)?;
+            let (identity, _, _) = asked_by(app)?;
             store.forget(&identity).map_err(io)?;
             let _ = writeln!(
                 out,
@@ -259,6 +283,65 @@ mod tests {
         };
         assert!(listed(&first).contains("allow\tclipboard.read"));
         assert!(listed(&second).contains("undecided\tclipboard.read"));
+    }
+
+    #[test]
+    fn permissions_of_a_package_use_the_package_identity_and_never_touch_trust() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = FileConsentStore::new(scratch.path().join("store"));
+        let manifest = crate::application::support::manifest_text("")
+            .replace("read: false", "read: true")
+            .replace("env: []", "env: [ HOME ]");
+        let (bytes, fingerprint) = crate::application::support::signed_package(&[
+            ("alef.ktav", manifest.as_bytes()),
+            ("dist/index.html", b"<html></html>"),
+        ]);
+        let package = scratch.path().join("app.alef");
+        std::fs::write(&package, &bytes).unwrap();
+        let list = PermissionsCommand::List {
+            app: Some(package.clone()),
+        };
+        let listed = run(&list, &store).unwrap();
+        assert!(listed.contains("org.example.app"), "{listed}");
+        assert!(listed.contains("undecided\tapp.env:HOME"), "{listed}");
+        let set = PermissionsCommand::Set {
+            app: package.clone(),
+            right: "clipboard.read".parse().unwrap(),
+            decision: Decision::Substitute,
+        };
+        assert_eq!(run(&set, &store).unwrap(), "clipboard.read: substitute\n");
+        assert!(run(&list, &store)
+            .unwrap()
+            .contains("substitute\tclipboard.read"));
+        let all = run(&PermissionsCommand::List { app: None }, &store).unwrap();
+        assert!(
+            all.contains(&format!("org.example.app\tpkg-signed:{fingerprint}\n")),
+            "{all}"
+        );
+        let reset = PermissionsCommand::Reset { app: package };
+        assert!(run(&reset, &store).unwrap().contains("asks again"));
+        // No trust pin was created or replaced: the pin path next to a scratch trust folder
+        // stays absent (the real `trust_folder` depends on process-global state).
+        assert!(!crate::application::trust::pin_path(
+            &scratch.path().join("trust"),
+            "org.example.app"
+        )
+        .exists());
+        // The decisions were stored under the package identity, which the source loader agrees on.
+        let prepared =
+            match crate::application::source::load(&scratch.path().join("app.alef")).unwrap() {
+                crate::application::source::ApplicationSource::Package(prepared) => *prepared,
+                crate::application::source::ApplicationSource::Directory { .. } => {
+                    panic!("expected a package")
+                }
+            };
+        assert_eq!(
+            prepared.identity(),
+            Identity {
+                app_id: "org.example.app".to_owned(),
+                signer: Some(format!("pkg-signed:{fingerprint}")),
+            }
+        );
     }
 
     #[test]

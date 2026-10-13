@@ -8,28 +8,35 @@ use url::Url;
 use crate::consent::decision_named;
 
 pub const USAGE: &str =
-    "alef --app <DIRECTORY> [--dev-url <http://127.0.0.1:PORT>] [--grant <DECISION>] [--no-prompt] [-- <APPLICATION ARGUMENTS>...]\n\
+    "alef run <PATH> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
+alef --app <DIRECTORY> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
 alef permissions list [<DIRECTORY>]\n\
 alef permissions set <DIRECTORY> <RIGHT> <DECISION>\n\
 alef permissions reset <DIRECTORY>\n\
-Runs the application in DIRECTORY: its alef.ktav manifest and assets, in embedded Servo.\n\
+alef trust <REQUEST> <ANSWER>\n\
+`run` and `--app` are the same launch: a directory runs as a development application,\n\
+a file is an Alef package. Runs it: its alef.ktav manifest and assets, in embedded Servo.\n\
   --app DIRECTORY   application directory containing alef.ktav\n\
   --dev-url URL     load the document from a development server on 127.0.0.1 instead of the files\n\
   --grant DECISION  decide every right the application asks for and you have not decided on yet:\n\
                     allow, substitute (a stand-in the application cannot tell from the real thing)\n\
                     or deny; the decision is remembered\n\
+  --trust-key KEY   the 64 lowercase hex fingerprint of the signer of a package: the\n\
+                    noninteractive equivalent of accepting the trust question\n\
+  --allow-unsigned  run an unsigned package for this launch without asking\n\
   --no-prompt       never show the permission window: an application with rights you have not\n\
                     decided on does not start\n\
   --                everything after it is the command line of the application\n\
                     (parsed by the `arguments` of its manifest; `-- --help` prints its usage)\n\
 permissions: what you decided for an application. RIGHT is `permission` or `permission:scope`\n\
   (clipboard.read, app.env:HOME, fs.read:$DOCUMENTS/**); `list` without DIRECTORY lists the applications\n\
-  you have decided for, `reset` makes the next start ask again";
+  you have decided for, `reset` makes the next start ask again\n\
+trust: answer a trust request";
 
 /// A validated launch request.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Launch {
-    pub app_dir: PathBuf,
+    pub target: PathBuf,
     pub dev_url: Option<Url>,
     /// The command line of the application: trailing URLs and everything after `--`.
     pub app_args: Vec<OsString>,
@@ -37,8 +44,34 @@ pub struct Launch {
     pub grant: Option<Decision>,
     /// `--no-prompt`: the permission window is never shown.
     pub no_prompt: bool,
+    /// `--trust-key`: the fingerprint the user vouches for; only a package accepts it.
+    pub trust_key: Option<String>,
+    /// `--allow-unsigned`: run an unsigned package without asking.
+    pub allow_unsigned: bool,
     /// Internal window-child selection; never an application option.
     pub launch_window: bool,
+}
+
+impl Launch {
+    /// Options that belong to the other source are refused with a usage error (exit code 2).
+    pub fn check(&self, package: bool) -> Result<(), String> {
+        if package {
+            if self.dev_url.is_some() {
+                return Err(
+                    "--dev-url is not accepted for a package: the manifest and its assets are the only source"
+                        .to_owned(),
+                );
+            }
+        } else {
+            if self.trust_key.is_some() {
+                return Err("--trust-key is only accepted for a package".to_owned());
+            }
+            if self.allow_unsigned {
+                return Err("--allow-unsigned is only accepted for a package".to_owned());
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `alef permissions ...`: what the user decided for an application.
@@ -61,6 +94,11 @@ pub enum Command {
     Permissions(PermissionsCommand),
     /// `alef consent <REQUEST> <ANSWER>`, started by the launcher itself: the permission window.
     Consent {
+        request: PathBuf,
+        answer: PathBuf,
+    },
+    /// `alef trust <REQUEST> <ANSWER>`, started by the launcher itself: the trust window.
+    Trust {
         request: PathBuf,
         answer: PathBuf,
     },
@@ -151,6 +189,14 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
         arguments.next();
         return permissions(arguments);
     }
+    let mut after_run = false;
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("run"))
+    {
+        arguments.next();
+        after_run = true;
+    }
     if arguments
         .peek()
         .is_some_and(|first| first.to_str() == Some("consent"))
@@ -169,9 +215,29 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             )),
         };
     }
-    let mut app_dir = None;
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("trust"))
+    {
+        arguments.next();
+        let request = arguments.next().ok_or("trust: <REQUEST> is required")?;
+        let answer = arguments.next().ok_or("trust: <ANSWER> is required")?;
+        return match arguments.next() {
+            None => Ok(Command::Trust {
+                request: PathBuf::from(request),
+                answer: PathBuf::from(answer),
+            }),
+            Some(extra) => Err(format!(
+                "trust: unexpected argument {}",
+                extra.to_string_lossy()
+            )),
+        };
+    }
+    let mut target = None;
     let mut dev = None;
     let mut grant = None;
+    let mut trust_key = None;
+    let mut allow_unsigned = false;
     let mut no_prompt = false;
     let mut launch_window = false;
     let mut app_args = Vec::new();
@@ -183,15 +249,16 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             }
             // A link can carry a quote that breaks out of its place in the command line: what
             // comes after a URL is never an option of the runtime.
-            Some(flag @ ("--app" | "--dev-url" | "--grant" | "--no-prompt" | "--launch-mode"))
-                if !app_args.is_empty() =>
-            {
+            Some(
+                flag @ ("--app" | "--dev-url" | "--grant" | "--no-prompt" | "--launch-mode"
+                | "--trust-key" | "--allow-unsigned"),
+            ) if !app_args.is_empty() => {
                 return Err(format!("{flag} is not accepted after a URL"));
             }
-            Some("--app") if app_dir.is_some() => return Err("--app is given twice".to_owned()),
+            Some("--app") if target.is_some() => return Err("--app is given twice".to_owned()),
             Some("--dev-url") if dev.is_some() => return Err("--dev-url is given twice".to_owned()),
             Some("--grant") if grant.is_some() => return Err("--grant is given twice".to_owned()),
-            Some("--app") => app_dir = Some(PathBuf::from(value(&mut arguments, "--app")?)),
+            Some("--app") => target = Some(PathBuf::from(value(&mut arguments, "--app")?)),
             Some("--dev-url") => {
                 let text = value(&mut arguments, "--dev-url")?;
                 dev = Some(dev_url(&text.to_string_lossy())?);
@@ -210,6 +277,19 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
                 }
                 launch_window = true;
             }
+            Some("--trust-key") if trust_key.is_some() => {
+                return Err("--trust-key is given twice".to_owned())
+            }
+            Some("--trust-key") => {
+                trust_key = Some(text_of(
+                    value(&mut arguments, "--trust-key")?,
+                    "--trust-key",
+                )?);
+            }
+            Some("--allow-unsigned") if allow_unsigned => {
+                return Err("--allow-unsigned is given twice".to_owned())
+            }
+            Some("--allow-unsigned") => allow_unsigned = true,
             Some("--no-prompt") => no_prompt = true,
             Some("--help" | "-h") => return Ok(Command::Help),
             Some(text)
@@ -219,15 +299,34 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             {
                 app_args.push(argument)
             }
-            _ => return Err(format!("unknown argument: {}", argument.to_string_lossy())),
+            Some(text) if after_run && !text.starts_with('-') => {
+                if target.is_some() {
+                    return Err("the application is given twice".to_owned());
+                }
+                target = Some(PathBuf::from(argument));
+            }
+            _ if argument.as_encoded_bytes().starts_with(b"-") => {
+                return Err(format!("unknown argument: {}", argument.to_string_lossy()))
+            }
+            _ => {
+                if !after_run {
+                    return Err(format!("unknown argument: {}", argument.to_string_lossy()));
+                }
+                if target.is_some() {
+                    return Err("the application is given twice".to_owned());
+                }
+                target = Some(PathBuf::from(argument));
+            }
         }
     }
-    let app_dir = app_dir.ok_or_else(|| "--app <DIRECTORY> is required".to_owned())?;
+    let target = target.ok_or_else(|| "--app <PATH> is required".to_owned())?;
     Ok(Command::Run(Launch {
-        app_dir,
+        target,
         dev_url: dev,
         app_args,
         grant,
+        trust_key,
+        allow_unsigned,
         no_prompt,
         launch_window,
     }))
@@ -301,6 +400,8 @@ mod tests {
             &["--dev-url", "http://127.0.0.1:3000/"],
             &["--no-prompt"],
             &["--launch-mode", "window"],
+            &["--trust-key", "a"],
+            &["--allow-unsigned"],
         ] {
             let mut line = vec!["--app", "site", "alef://open"];
             line.extend(after);
@@ -344,10 +445,12 @@ mod tests {
         assert_eq!(
             command,
             Command::Run(Launch {
-                app_dir: PathBuf::from("site"),
+                target: PathBuf::from("site"),
                 dev_url: Some(Url::parse("http://127.0.0.1:3000/").unwrap()),
                 app_args: Vec::new(),
                 grant: None,
+                trust_key: None,
+                allow_unsigned: false,
                 no_prompt: false,
                 launch_window: false,
             })
@@ -355,10 +458,12 @@ mod tests {
         assert_eq!(
             parse(&["--app", "site"]).unwrap(),
             Command::Run(Launch {
-                app_dir: PathBuf::from("site"),
+                target: PathBuf::from("site"),
                 dev_url: None,
                 app_args: Vec::new(),
                 grant: None,
+                trust_key: None,
+                allow_unsigned: false,
                 no_prompt: false,
                 launch_window: false,
             })
@@ -371,7 +476,7 @@ mod tests {
         let Command::Run(launch) = command else {
             panic!("a run, not the launcher help");
         };
-        assert_eq!(launch.app_dir, PathBuf::from("site"));
+        assert_eq!(launch.target, PathBuf::from("site"));
         let expected: Vec<OsString> = ["--help", "--app", "x", "-h", "--"]
             .iter()
             .map(OsString::from)
@@ -393,6 +498,117 @@ mod tests {
             .unwrap_err()
             .contains("unknown argument"));
         assert!(parse(&["stray"]).unwrap_err().contains("unknown argument"));
+    }
+
+    #[test]
+    fn a_multibyte_target_is_kept_as_an_os_string() {
+        let Command::Run(launch) = parse(&["run", "приложение"]).unwrap() else {
+            panic!("a run");
+        };
+        assert_eq!(launch.target, PathBuf::from("приложение"));
+    }
+
+    #[test]
+    fn run_and_app_are_the_same_launch_and_a_positional_after_run_is_the_target() {
+        for (line, expected) in [
+            (&["--app", "site"][..], "site"),
+            (&["run", "site"], "site"),
+            (&["run", "site.alef"], "site.alef"),
+        ] {
+            let Command::Run(launch) = parse(line).unwrap() else {
+                panic!("a run for {line:?}");
+            };
+            assert_eq!(launch.target, PathBuf::from(expected), "{line:?}");
+        }
+        assert!(parse(&["stray"]).unwrap_err().contains("unknown argument"));
+        assert!(parse(&["run", "a", "b"])
+            .unwrap_err()
+            .contains("the application is given twice"));
+        assert!(parse(&["run", "a", "--app", "b"])
+            .unwrap_err()
+            .contains("is given twice"));
+    }
+
+    #[test]
+    fn trust_flags_are_captured_and_refused_after_a_url() {
+        let Command::Run(launch) = parse(&[
+            "run",
+            "site.alef",
+            "--trust-key",
+            "aabb",
+            "--allow-unsigned",
+        ])
+        .unwrap() else {
+            panic!("a run");
+        };
+        assert_eq!(launch.trust_key.as_deref(), Some("aabb"));
+        assert!(launch.allow_unsigned);
+        assert!(
+            parse(&["run", "site.alef", "--trust-key", "a", "--trust-key", "b"])
+                .unwrap_err()
+                .contains("--trust-key is given twice")
+        );
+        assert!(
+            parse(&["run", "site.alef", "--allow-unsigned", "--allow-unsigned"])
+                .unwrap_err()
+                .contains("--allow-unsigned is given twice")
+        );
+        for after in [&["--trust-key", "a"][..], &["--allow-unsigned"]] {
+            let mut line = vec!["run", "site.alef", "alef://open"];
+            line.extend(after);
+            assert!(parse(&line)
+                .unwrap_err()
+                .contains("is not accepted after a URL"));
+        }
+    }
+
+    #[test]
+    fn options_of_the_other_source_are_refused_by_check() {
+        let mut launch = Launch {
+            target: PathBuf::from("site.alef"),
+            dev_url: Some(Url::parse("http://127.0.0.1:3000/").unwrap()),
+            app_args: Vec::new(),
+            grant: None,
+            trust_key: Some("aabb".to_owned()),
+            allow_unsigned: true,
+            no_prompt: false,
+            launch_window: false,
+        };
+        assert!(launch
+            .check(true)
+            .unwrap_err()
+            .contains("--dev-url is not accepted for a package"));
+        launch.dev_url = None;
+        assert_eq!(launch.check(true), Ok(()));
+        assert!(launch
+            .check(false)
+            .unwrap_err()
+            .contains("--trust-key is only accepted for a package"));
+        launch.trust_key = None;
+        assert!(launch
+            .check(false)
+            .unwrap_err()
+            .contains("--allow-unsigned is only accepted for a package"));
+        launch.allow_unsigned = false;
+        assert_eq!(launch.check(false), Ok(()));
+    }
+
+    #[test]
+    fn the_trust_subcommand_takes_exactly_a_request_and_an_answer() {
+        assert_eq!(
+            parse(&["trust", "in.json", "out.json"]).unwrap(),
+            Command::Trust {
+                request: PathBuf::from("in.json"),
+                answer: PathBuf::from("out.json"),
+            }
+        );
+        for bad in [
+            &["trust"][..],
+            &["trust", "in.json"],
+            &["trust", "a", "b", "c"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
