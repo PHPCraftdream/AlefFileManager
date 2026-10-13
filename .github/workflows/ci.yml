@@ -304,6 +304,7 @@ jobs:
       - name: e2e (alef on Servo, Windows, scenarios without a window)
         if: runner.os == 'Windows'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -324,6 +325,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, window: core)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -341,6 +343,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, window: window)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -358,6 +361,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, window: csp)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -375,6 +379,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, window: permissions)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -392,6 +397,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, transport/development: induced, dev)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -409,6 +415,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, consent: decisions)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -426,6 +433,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, lifecycle/integration: app)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -443,6 +451,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, desktop/system/processes: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -460,6 +469,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, data: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
@@ -477,6 +487,7 @@ jobs:
       - name: "e2e (alef on Servo, Windows, network/MCP: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
+        shell: bash
         run: |
           plan=",${{ needs.plan.outputs.e2e }},"
           selected=""
