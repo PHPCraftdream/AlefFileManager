@@ -474,7 +474,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
             `exit ${outcome.code}: ${outcome.err}`);
         };
         negative('a plain text file is not a package', ['run', plain], join(dir, 'home-n1'), 'NOT_A_PACKAGE', 2);
-        negative('a flipped byte with a fixed CRC is an integrity failure', ['run', crcPath], join(dir, 'home-n2'), 'PACKAGE_INTEGRITY', 2, ['CRC-32 mismatch']);
+        negative('a flipped byte with a fixed CRC is an integrity failure', ['run', crcPath], join(dir, 'home-n2'), 'PACKAGE_INTEGRITY', 2, ['SHA-256 mismatch']);
         negative('a rewritten hash list is a signature failure', ['run', signaturePath], join(dir, 'home-n3'), 'PACKAGE_SIGNATURE', 2);
         negative('a manifest without an id is invalid', ['run', noId.pkg], join(dir, 'home-n4'), 'MANIFEST_INVALID', 2);
         negative('an unmet runtime requirement is refused', ['run', runtime.pkg], join(dir, 'home-n5'), 'RUNTIME_INCOMPATIBLE', 2);
@@ -523,7 +523,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           consents.every(names => names.length > 0) && consents[0].every(name => !consents[1].includes(name)),
           JSON.stringify(consents));
         // The shadow is only created by a substituted write; materialize it per signer.
-        const shadowConsent = { ALEF_E2E_CONSENT: '*=allow;fs.write:$TEMP/**=substitute' };
+        const shadowConsent = { ALEF_E2E_CONSENT: 'fs.write:$TEMP/**=substitute;*=allow' };
         const shadowRunA = await runPage(shadowPackageA.pkg, homeA, [], shadowConsent);
         const shadowRunB = await runPage(shadowPackageB.pkg, homeB, [], shadowConsent);
         const shadows = [folderNames(homeA, 'shadow'), folderNames(homeB, 'shadow')];
@@ -532,16 +532,19 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           && shadows.every(names => names.length > 0) && shadows[0].every(name => !shadows[1].includes(name)),
           `exit ${shadowRunA.code}/${shadowRunB.code}: ${JSON.stringify(shadows)}`);
 
-        // Secrets isolation: the second signer never reads what the first one wrote.
+        // Secrets isolation: the second signer never reads what the first one wrote. Only a persistent
+        // Secret Service (ALEF_E2E_KEYRING=1, a session keyring) makes the check meaningful; without it
+        // the store may be absent or forget between processes, and the check passes vacuously.
+        const keyring = process.env.ALEF_E2E_KEYRING === '1';
         const write = await runPage(secretsWriteA.pkg, homeA, []);
         const written = write.code === 0 && write.lines.some(line => line.includes('secrets-written'));
         expect('the first signer stores its secret or reports no store', write.code === 0
-          && write.lines.some(line => line.includes('secrets-written') || line.includes('secrets-unavailable')), `exit ${write.code}`);
+          && write.lines.some(line => line.includes('secrets-written') || (!keyring && line.includes('secrets-unavailable'))), `exit ${write.code}`);
         const read = await runPage(secretsReadB.pkg, homeB, []);
         expect('the second signer never reads the secret of the first',
-          read.code === 0 && read.lines.some(line => line.includes('secrets-isolated') || line.includes('secrets-unavailable'))
+          read.code === 0 && read.lines.some(line => line.includes('secrets-isolated') || (!keyring && line.includes('secrets-unavailable')))
           && !read.lines.some(line => line.includes('secrets-shared')), `exit ${read.code}`);
-        if (written) {
+        if (written && keyring) {
           const clean = await runPage(secretsCleanA.pkg, homeA, []);
           expect('the-secret-of-the-first-key-survives-for-the-same-identity',
             clean.code === 0 && okNames(clean.lines).has('the-secret-of-the-first-key-survives-for-the-same-identity'),
