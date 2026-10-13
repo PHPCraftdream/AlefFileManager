@@ -139,7 +139,7 @@ mod tests {
     };
     use std::path::Path;
 
-    fn package_plan(dir: &Path, files: &[(&str, String)]) -> (Plan, source::Prepared) {
+    fn package_plan(dir: &Path, files: &[(&str, String)]) -> (Plan, Identity, String) {
         let bytes = support::unsigned_package(
             &files
                 .iter()
@@ -148,8 +148,10 @@ mod tests {
         );
         std::fs::write(dir.join("app.alef"), &bytes).expect("write the package");
         match source::load(&dir.join("app.alef")).expect("a verified package") {
-            ApplicationSource::Package(mut prepared) => {
+            ApplicationSource::Package(prepared) => {
                 let prepared = *prepared;
+                let identity = prepared.identity();
+                let digest = prepared.archive_digest.clone();
                 let vars =
                     package_path_vars(&prepared.manifest.id).expect("package path variables");
                 let plan = make_package_plan(
@@ -159,7 +161,7 @@ mod tests {
                     &vars,
                 )
                 .expect("a plan");
-                (plan, prepared)
+                (plan, identity, digest)
             }
             ApplicationSource::Directory { .. } => panic!("expected a package"),
         }
@@ -178,11 +180,10 @@ mod tests {
         // The selected root exists, but the entry document the manifest window names does not.
         let mut files = prepared_files();
         files[1] = ("dist/other.html", "<html></html>".to_owned());
-        let (plan, prepared) = package_plan(dir.path(), &files);
-        let identity = prepared.identity();
+        let (plan, identity, digest) = package_plan(dir.path(), &files);
         let trust = (
             None,
-            prepared.archive_digest.clone(),
+            digest.clone(),
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: false,
@@ -219,11 +220,10 @@ mod tests {
             ("alef.ktav", manifest),
             ("dist/index.html", "<html></html>".to_owned()),
         ];
-        let (plan, prepared) = package_plan(dir.path(), &files);
-        let identity = prepared.identity();
+        let (plan, identity, digest) = package_plan(dir.path(), &files);
         let trust = (
             None,
-            prepared.archive_digest.clone(),
+            digest.clone(),
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: false,
@@ -253,11 +253,10 @@ mod tests {
     async fn a_package_with_present_documents_reaches_trust_and_consent_and_keeps_its_source() {
         let dir = tempfile::tempdir().expect("tempdir");
         let files = prepared_files();
-        let (plan, prepared) = package_plan(dir.path(), &files);
-        let identity = prepared.identity();
+        let (plan, identity, digest) = package_plan(dir.path(), &files);
         let trust = (
             None,
-            prepared.archive_digest.clone(),
+            digest.clone(),
             TrustInputs {
                 trust_key: None,
                 allow_unsigned: true,
