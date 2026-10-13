@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Content security policy declarations.
+//! Content security policy declarations and the application origin host.
+pub mod origin;
 
 use std::net::Ipv4Addr;
 
@@ -159,4 +160,117 @@ fn parse_origin(entry: &str, directive: &str, https_only: bool) -> Result<String
         "{scheme}://{host}{}",
         port.map_or(String::new(), |p| format!(":{p}"))
     ))
+}
+
+/// Normalized manifest source, or `None` when the entry is not a valid source.
+pub fn normalize_source(entry: &str) -> Option<String> {
+    parse_origin(entry, "source", false).ok()
+}
+
+/// The default port of a special scheme (`:80` http, `:443` https/wss).
+fn default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(80),
+        "https" | "wss" => Some(443),
+        _ => None,
+    }
+}
+
+/// The port an origin comparison sees: the written port, or the scheme default.
+fn effective_port(scheme: &str, port: Option<&str>) -> Option<u16> {
+    match port {
+        Some(port) => port.parse::<u16>().ok(),
+        None => default_port(scheme),
+    }
+}
+
+/// True when the serialized request origin (`scheme://host[:port]`) is covered by `source`.
+/// Wildcard hosts (`*.domain`) cover any subdomain of `domain` (never `domain` itself) with an
+/// exact scheme and port; a default port (`:443` https/wss, `:80` http) equals the omitted
+/// form; `data:`/`blob:` sources never cover an origin.
+pub fn origin_matches(source: &str, origin: &str) -> bool {
+    let Some(normalized) = normalize_source(source) else {
+        return false;
+    };
+    if normalized == origin {
+        return true;
+    }
+    let Some((scheme, authority)) = normalized.split_once("://") else {
+        return false;
+    };
+    let Some((request_scheme, request_authority)) = origin.split_once("://") else {
+        return false;
+    };
+    if request_scheme != scheme {
+        return false;
+    }
+    let (request_host, request_port) = split_authority(request_authority);
+    let Some(wild) = authority.strip_prefix("*.") else {
+        // An exact source: same host, and the same port once defaults are filled in.
+        let (host, port) = split_authority(authority);
+        return host == request_host
+            && effective_port(scheme, port) == effective_port(request_scheme, request_port);
+    };
+    let (wild_host, wild_port) = split_authority(wild);
+    effective_port(scheme, wild_port) == effective_port(request_scheme, request_port)
+        && request_host.len() > wild_host.len() + 1
+        && request_host.ends_with(wild_host)
+        && request_host.as_bytes()[request_host.len() - wild_host.len() - 1] == b'.'
+}
+
+/// `host[:port]` for the non-IPv6 authorities `parse_origin` produces.
+fn split_authority(authority: &str) -> (&str, Option<&str>) {
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') && !port.is_empty() => (host, Some(port)),
+        _ => (authority, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_exact_source_matches_only_its_own_origin() {
+        assert!(origin_matches("https://example.com", "https://example.com"));
+        // A default port equals the omitted form on both sides.
+        assert!(origin_matches(
+            "https://example.com:443",
+            "https://example.com"
+        ));
+        assert!(!origin_matches(
+            "https://example.com",
+            "https://example.com:8443"
+        ));
+        assert!(!origin_matches("https://example.com", "http://example.com"));
+    }
+
+    #[test]
+    fn a_wildcard_source_covers_subdomains_but_not_the_domain_itself() {
+        let source = "https://*.example.com";
+        assert!(origin_matches(source, "https://a.example.com"));
+        assert!(origin_matches(source, "https://a.b.example.com"));
+        // A default port on the wildcard side equals the omitted form.
+        assert!(origin_matches(
+            "https://*.example.com:443",
+            "https://a.example.com"
+        ));
+        assert!(origin_matches(
+            "http://example.localhost:80",
+            "http://example.localhost"
+        ));
+        assert!(!origin_matches(source, "https://example.com"));
+        assert!(!origin_matches(source, "https://a.example.com:8443"));
+        assert!(!origin_matches(source, "http://a.example.com"));
+    }
+
+    #[test]
+    fn non_origin_sources_and_invalid_entries_match_nothing() {
+        // `data:`/`blob:` never cover a `scheme://host` origin; the bare-string equality
+        // arm cannot fire because an origin always carries `://`.
+        assert!(!origin_matches("data:", "https://example.com"));
+        assert!(!origin_matches("blob:", "https://example.com"));
+        assert!(!origin_matches("not a source", "https://example.com"));
+        assert!(!origin_matches("", "https://example.com"));
+    }
 }

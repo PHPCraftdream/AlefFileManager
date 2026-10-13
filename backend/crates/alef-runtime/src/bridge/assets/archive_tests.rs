@@ -65,7 +65,7 @@ pub(super) fn package(entries: &[(&str, &[u8])]) -> Package<Cursor<Vec<u8>>> {
     word(&mut out, 0);
     Package::from_bytes(out).expect("valid unsigned stored Format 1 ZIP")
 }
-pub(super) fn input(root: &str) -> AssetInput {
+pub(crate) fn input(root: &str) -> AssetInput {
     AssetInput::Archive {
         package: package(&[
             ("alef.ktav", b"private manifest"),

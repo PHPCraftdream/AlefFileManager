@@ -519,6 +519,27 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     // Where the windows that ask for it (`restore: true`) are written down between runs.
     let window_state = vars.app_data.join("window-state.json");
     let termination = Termination::default();
+    // Servo profile root, before `vars` moves into the module context.
+    let servo_profile = vars.app_data.join("servo");
+    // Directory apps derive the origin label from the manifest id; packages from the
+    // launcher-verified authority token. The label feeds both the entry URL and the
+    // CSP-scoped origin, so a bad id must exit like any other manifest failure.
+    let origin_host = alef_core::security::origin::origin_host(&plan.manifest.id, &authority)
+        .map_err(Failure::from)?;
+    // The interception exempts exactly the sources the manifest/CSP allows; wildcards
+    // (`*.example.com`) are kept as sources and resolved per request by `origin_matches`.
+    let external = &plan.manifest.external;
+    let allowed_external_origins: Vec<String> = external
+        .connect
+        .iter()
+        .chain(&external.load.scripts)
+        .chain(&external.load.styles)
+        .chain(&external.load.images)
+        .chain(&external.load.fonts)
+        .chain(&external.load.media)
+        .chain(&external.load.frames)
+        .filter_map(|entry| alef_core::security::csp::normalize_source(entry))
+        .collect();
     let context = ModuleContext {
         authority,
         app: AppInfo {
@@ -566,6 +587,9 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
                 .iter()
                 .map(|window| window.url.clone())
                 .collect(),
+            origin_host: Some(origin_host.clone()),
+            allowed_external_origins,
+            profile_dir: Some(servo_profile.clone()),
             headless_loaded: Some(Box::new(move || loaded.loaded())),
             headless_tick: Some(Box::new(move || tick.check_timeout())),
             ..BridgeOptions::default()
@@ -592,6 +616,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
             &mut bridge,
             WindowOptions {
                 windows: plan.manifest.windows.clone(),
+                profile_dir: Some(servo_profile),
                 ..WindowOptions::new(plan.manifest.name.clone(), icon)
                     .remembering_windows_in(window_state)
             },

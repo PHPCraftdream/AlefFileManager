@@ -13,9 +13,8 @@ use std::{
 
 use alef_core::registry::host::Host;
 use servo::{
-    ConsoleLogLevel, EventLoopWaker, LoadStatus, NavigationRequest, Opts, RenderingContext,
-    ServoBuilder, SoftwareRenderingContext, WebResourceLoad, WebView, WebViewBuilder,
-    WebViewDelegate,
+    ConsoleLogLevel, EventLoopWaker, LoadStatus, NavigationRequest, RenderingContext, ServoBuilder,
+    SoftwareRenderingContext, WebResourceLoad, WebView, WebViewBuilder, WebViewDelegate,
 };
 use url::Url;
 use winit::dpi::PhysicalSize;
@@ -69,7 +68,7 @@ impl WebViewDelegate for Delegate {
     }
 
     fn load_web_resource(&self, _: WebView, load: WebResourceLoad) {
-        crate::spikes::origin::web_resource(load);
+        crate::bridge::assets::origin::web_resource(load);
     }
 
     fn request_navigation(&self, _: WebView, request: NavigationRequest) {
@@ -118,12 +117,10 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         handle.windowless(move || waker.wake());
     }
     let servo = ServoBuilder::default()
-        .opts(Opts {
-            multiprocess: false,
-            temporary_storage: true,
-            ..Opts::default()
-        })
-        .preferences(crate::spikes::origin::preferences())
+        .opts(crate::bridge::assets::origin::servo_opts(
+            bridge.profile_dir().map(|path| path.to_owned()),
+        ))
+        .preferences(crate::bridge::assets::origin::preferences())
         .protocol_registry(bridge.take_registry()?)
         .event_loop_waker(Box::new(waker.clone()))
         .build();

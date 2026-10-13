@@ -90,6 +90,8 @@ export function prepareSite(name, app, { replacements = {}, targets = {} } = {})
   const manifest = join(site, 'alef.ktav');
   let text = readFileSync(manifest, 'utf8');
   for (const [key, value] of Object.entries(replacements)) text = text.replaceAll(`{{${key}}}`, value);
+  // An application with a fixed id (the core one) takes another id for scenarios that need two origins.
+  if (replacements.ID !== undefined && !text.includes(replacements.ID)) text = text.replace(/^id: .*$/m, `id: ${replacements.ID}`);
   writeFileSync(manifest, text);
   writeFileSync(join(publicRoot, 'targets.json'), JSON.stringify({ ...targets, app: site, sep }));
   return site;
