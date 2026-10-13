@@ -522,11 +522,14 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
         expect('two-signers-of-one-id-keep-separate-consent-decisions',
           consents.every(names => names.length > 0) && consents[0].every(name => !consents[1].includes(name)),
           JSON.stringify(consents));
-        // The shadow is only created by a substituted write; materialize it per signer.
+        // The shadow is only created by a substituted write, and a remembered decision is not asked
+        // again: each signer gets a fresh home, so the substitute answer is really given.
+        const homeShadowA = join(dir, 'home-shadow-a');
+        const homeShadowB = join(dir, 'home-shadow-b');
         const shadowConsent = { ALEF_E2E_CONSENT: 'fs.write:$TEMP/**=substitute;*=allow' };
-        const shadowRunA = await runPage(shadowPackageA.pkg, homeA, [], shadowConsent);
-        const shadowRunB = await runPage(shadowPackageB.pkg, homeB, [], shadowConsent);
-        const shadows = [folderNames(homeA, 'shadow'), folderNames(homeB, 'shadow')];
+        const shadowRunA = await runPage(shadowPackageA.pkg, homeShadowA, ['--trust-key', fingerprint.a], shadowConsent);
+        const shadowRunB = await runPage(shadowPackageB.pkg, homeShadowB, ['--trust-key', fingerprint.b], shadowConsent);
+        const shadows = [folderNames(homeShadowA, 'shadow'), folderNames(homeShadowB, 'shadow')];
         expect('two-signers-of-one-id-keep-separate-shadow-identities',
           shadowRunA.code === 0 && shadowRunB.code === 0
           && shadows.every(names => names.length > 0) && shadows[0].every(name => !shadows[1].includes(name)),
