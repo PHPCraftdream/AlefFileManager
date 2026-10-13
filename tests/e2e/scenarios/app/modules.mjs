@@ -559,8 +559,11 @@ export function moduleScenarios({ drive, exe, verbose }) {
     // with the right `cli.exec:node` substituted: the call hangs and falls with TIMEOUT, nothing starts.
     async cli() {
       const base = mkdtempSync(join(os.tmpdir(), 'alef-e2e-cli-'));
-      const work = join(base, 'work');
+      let work = join(base, 'work');
       mkdirSync(work);
+      // The child reports its cwd in the physical spelling (long names, resolved links); hand the
+      // page the same spelling so its readiness comparison matches.
+      work = realpathSync.native(work);
       try {
         return await drive({
           name: 'cli', app: 'modules/system/cli',
