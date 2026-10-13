@@ -14,10 +14,18 @@ use windows as platform;
 
 /// Put the internal switch before URLs and `--`, which end runtime option parsing.
 pub fn window_args(arguments: &[OsString]) -> Vec<OsString> {
-    [OsString::from("--launch-mode"), OsString::from("window")]
-        .into_iter()
-        .chain(arguments.iter().cloned())
-        .collect()
+    // The `run` subcommand must stay first: after the switch it would be the target.
+    let (first, rest) = match arguments.split_first() {
+        Some((first, rest)) if first.to_str() == Some("run") => (true, rest),
+        _ => (false, arguments),
+    };
+    let mut args = Vec::with_capacity(arguments.len() + 2);
+    if first {
+        args.push(OsString::from("run"));
+    }
+    args.extend([OsString::from("--launch-mode"), OsString::from("window")]);
+    args.extend(rest.iter().cloned());
+    args
 }
 
 /// Relaunch only after bridge shutdown and console drain. Consent, ALEF_HOME and ALEF_E2E
@@ -46,6 +54,7 @@ pub fn exit_code(status: ExitStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn the_window_switch_precedes_urls_and_the_separator_and_preserves_original_os_arguments() {
@@ -81,6 +90,37 @@ mod tests {
         );
         assert_eq!(&result[2..], &original);
         // Parsing sees the internal switch even when a URL or -- follows it.
+        let crate::args::Command::Run(run) = crate::args::parse_args(result).unwrap() else {
+            panic!("not a launch")
+        };
+        assert!(run.launch_window);
+    }
+
+    #[test]
+    fn the_run_subcommand_stays_first_when_a_window_child_is_relaunched() {
+        let original: Vec<OsString> = ["run", "pkg.alef", "alef://open"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let result = window_args(&original);
+        assert_eq!(
+            &result[..],
+            &["run", "--launch-mode", "window", "pkg.alef", "alef://open"].map(OsString::from)
+        );
+        let crate::args::Command::Run(run) = crate::args::parse_args(result).unwrap() else {
+            panic!("not a launch")
+        };
+        assert!(run.launch_window);
+        assert_eq!(run.target, PathBuf::from("pkg.alef"));
+        let original: Vec<OsString> = ["--app", "pkg.alef"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let result = window_args(&original);
+        assert_eq!(
+            &result[..],
+            &["--launch-mode", "window", "--app", "pkg.alef"].map(OsString::from)
+        );
         let crate::args::Command::Run(run) = crate::args::parse_args(result).unwrap() else {
             panic!("not a launch")
         };
