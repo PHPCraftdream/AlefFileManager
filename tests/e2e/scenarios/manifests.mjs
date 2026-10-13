@@ -7,7 +7,7 @@ import { join } from 'node:path';
 
 import { here } from '../lib.mjs';
 
-const base = readFileSync(join(here, 'apps', 'core', 'alef.ktav'), 'utf8').replaceAll('\r\n', '\n').replaceAll('{{ID}}', 'org.alef.e2e.core');
+const base = readFileSync(join(here, 'apps', 'core', 'alef.ktav'), 'utf8').replaceAll('\r\n', '\n');
 const WINDOW = /windows: \[\n    \{\n[\s\S]*?\n    \}\n\]\n/;
 
 function change(text, pattern, replacement) {
