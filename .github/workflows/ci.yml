@@ -195,10 +195,7 @@ jobs:
 
       - name: Rust tests (affected crates)
         if: needs.plan.outputs.crates_all != 'true'
-        run: |
-          for crate in $(echo "${{ needs.plan.outputs.crates }}" | tr ',' ' '); do
-            node scripts/cargo.mjs test --locked -p "$crate" --no-fail-fast || exit 1
-          done
+        run: node scripts/ci/test-crates.mjs "${{ needs.plan.outputs.crates }}"
 
       # The system clipboard and trash against the real desktop of the clean runner. They change what
       # a user has, so the tests run only on request (ALEF_TEST_DESKTOP=1); Linux needs a display.

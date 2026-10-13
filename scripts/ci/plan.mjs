@@ -302,6 +302,18 @@ function buildPackages(root) {
   return packages;
 }
 
+// A new branch (all-zero `before`) or a rewritten history has no usable base: compare with the
+// merge base of the default branch instead of widening the plan to a full run.
+export function resolveBase(before, after, git) {
+  const usable = sha => Boolean(sha) && !/^0+$/.test(sha) && git(["cat-file", "-e", `${sha}^{commit}`]).status === 0;
+  if (usable(before)) return before;
+  for (const ref of ["origin/main", "main"]) {
+    const base = git(["merge-base", ref, after]);
+    if (base.status === 0 && base.stdout.trim()) return base.stdout.trim();
+  }
+  return null;
+}
+
 function main() {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));
@@ -321,8 +333,10 @@ function main() {
     // empty --files string means empty-by-error => unknown
     files = String(rawFiles).split(/[\n,]/).map(s => s.trim()).filter(Boolean);
     filesKnown = files.length > 0;
-  } else if (before && after) {
-    const diff = spawnSync('git', ['diff', '--name-only', before, after], {
+  } else if (after) {
+    const git = gitArgs => spawnSync('git', gitArgs, { cwd: root, encoding: 'utf8', timeout: 30000 });
+    const base = resolveBase(before, after, git);
+    const diff = base === null ? { status: 1, stdout: '' } : spawnSync('git', ['diff', '--name-only', base, after], {
       cwd: root, encoding: 'utf8', timeout: 30000,
     });
     if (diff.status === 0 && diff.stdout.trim().length > 0) {
