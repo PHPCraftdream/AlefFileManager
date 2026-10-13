@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The generic Alef runtime: `alef --app <directory> [--dev-url <url>]`.
-use std::{ffi::OsString, path::PathBuf, process::ExitCode, sync::Arc};
+use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 
 use alef_core::{
     error::AlefError,
     security::{
         authority::Authority,
-        consent::{ConsentStore, Decision, Identity},
+        consent::{Decision, Identity},
         permissions::PathVars,
     },
 };
 use alef_launch::{
     application::{
+        pipeline::{self, SettleFailure},
         source::{self, ApplicationSource, LoadFailure, Prepared},
         trust::{self, TrustFailure, TrustInputs},
         window as trust_window,
     },
     args::{parse_args, Command, Launch, USAGE},
-    consent::{
-        ask::AppSummary, enforce, identity_of, runtime_home, settle_with, shadow_folder, store,
-        watch, Asker, WATCH_EVERY,
-    },
+    consent::{identity_of, shadow_folder, store, watch, Asker, WATCH_EVERY},
     permissions,
     plan::{
         launch_timeout_from_environment, load_manifest, make_package_plan, make_plan,
@@ -69,6 +67,19 @@ impl Failure {
             }
             TrustFailure::Refused(message) => Self::Declined(message),
             TrustFailure::Store(error) => Self::Runtime(error.to_string()),
+        }
+    }
+}
+
+impl From<SettleFailure> for Failure {
+    /// The shared pipeline: documents, trust, consent, enforcement.
+    fn from(failure: SettleFailure) -> Self {
+        match failure {
+            SettleFailure::Documents(failure) => Self::load(failure),
+            SettleFailure::Trust(failure) => Self::trust(failure),
+            SettleFailure::Unanswered(unanswered) => Self::Declined(unanswered.to_string()),
+            SettleFailure::Store(error) => Self::Runtime(error.to_string()),
+            SettleFailure::Enforcement(message) => Self::Runtime(message),
         }
     }
 }
@@ -414,50 +425,27 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
             return Ok(0);
         }
     };
-    // The application summary is needed by trust and by consent.
-    let summary = AppSummary {
-        id: plan.manifest.id.clone(),
-        name: plan.manifest.name.clone(),
-        version: plan.manifest.version.clone(),
+    let trust_asker = match &trust {
+        Some(_) => Some(trust::asker_from_environment().map_err(Failure::Usage)?),
+        None => None,
     };
-    // The package is trusted before any right is decided: the trust question carries no rights.
-    if let Some((signer, digest, inputs)) = &trust {
-        let trust_asker = trust::asker_from_environment().map_err(Failure::Usage)?;
-        trust::decide_with_asker(
-            &trust::trust_folder(),
-            &summary.id,
-            &summary,
-            signer
-                .as_ref()
-                .map(|(key, fingerprint)| (key.as_str(), fingerprint.as_str())),
-            digest,
-            inputs,
-            &trust_asker,
-        )
-        .map_err(Failure::trust)?;
-    }
-    // The user decides what the application gets of what its manifest asks for.
     let asker = Asker::from_environment(grant, no_prompt).map_err(Failure::Usage)?;
-    let decisions = store();
-    let settled = settle_with(
-        &summary,
-        &plan.permissions.rights(),
-        &|right| plan.permissions.describe(right),
-        decisions.load(&identity)?,
+    let settled = pipeline::settle_launch(
+        plan,
+        &identity,
+        trust.as_ref(),
+        trust_asker.as_ref(),
         &asker,
+        &store(),
+        dev_url.as_ref(),
     )
-    .map_err(|unanswered| Failure::Declined(unanswered.to_string()))?;
-    if settled.changed {
-        decisions.save(&identity, &settled.consent)?;
-    }
-    let settled_consent = settled.consent;
-    let granted = Arc::new(
-        (*plan.permissions)
-            .clone()
-            .with_consent(settled_consent.clone())
-            .with_protected(&runtime_home()),
-    );
-    enforce(&granted, &settled_consent).map_err(Failure::Runtime)?;
+    .await?;
+    let pipeline::SettledLaunch {
+        plan,
+        assets,
+        consent: _,
+        granted,
+    } = settled;
     let shadow = shadow_folder(&identity);
     // The user may take a right back while the application runs.
     let _following = watch(granted.clone(), store(), identity, WATCH_EVERY);
@@ -495,7 +483,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     let tick = launch_state.clone();
     let mut bridge = Bridge::with_options(
         Commands::new(),
-        Some(plan.assets),
+        assets,
         dev_url,
         BridgeOptions {
             modules: Some(Box::new(move |registry, host| {

@@ -79,6 +79,10 @@ pub(super) fn input(root: &str) -> AssetInput {
     }
 }
 
+async fn prepared(root: &str) -> crate::PreparedAssets {
+    crate::prepare_assets(input(root), None, &[]).await.unwrap()
+}
+
 #[test]
 fn archive_assets_resolve_exact_roots_and_decode_ascii_once() {
     for root in ["dist", "web/build"] {
@@ -160,7 +164,7 @@ fn archive_and_disk_assets_have_identical_mime_types() {
 async fn archive_startup_accepts_native_entries_and_refuses_development_urls() {
     let bridge = Bridge::with_options(
         Commands::new(),
-        Some(input("web/build")),
+        Some(prepared("web/build").await),
         None,
         BridgeOptions {
             entry: Some("/app.js?query=1".into()),
@@ -171,20 +175,14 @@ async fn archive_startup_accepts_native_entries_and_refuses_development_urls() {
     .unwrap();
     assert_eq!(bridge.entry_url.path(), "/app.js");
     bridge.shutdown().await.unwrap();
-    let missing = Bridge::with_options(
-        Commands::new(),
-        Some(input("dist")),
-        None,
-        BridgeOptions {
-            entry: Some("/missing".into()),
-            ..Default::default()
-        },
-    )
-    .await;
-    assert_eq!(missing.err().unwrap().kind(), io::ErrorKind::NotFound);
+    let missing = bounded(crate::prepare_assets(input("dist"), Some("/missing"), &[]))
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     let dev = Bridge::with_options(
         Commands::new(),
-        Some(input("dist")),
+        Some(prepared("dist").await),
         Some(url::Url::parse("http://localhost:3000/").unwrap()),
         BridgeOptions::default(),
     )
@@ -430,48 +428,43 @@ async fn completed_archive_bytes_keep_admission_until_the_response_handoff() {
 }
 
 #[tokio::test]
-async fn missing_entry_or_initial_window_documents_fail_before_module_installation() {
-    use std::sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    };
+async fn the_early_document_check_refuses_entry_and_window_documents_like_the_bridge_and_accepts_what_it_accepts(
+) {
     for (entry, documents, kind) in [
-        ("/missing", vec![], io::ErrorKind::NotFound),
-        ("/", vec!["/missing"], io::ErrorKind::NotFound),
+        (Some("/missing"), vec![], io::ErrorKind::NotFound),
+        (None, vec!["/missing"], io::ErrorKind::NotFound),
         (
-            "/",
+            None,
             vec!["native://other/app.js"],
             io::ErrorKind::InvalidInput,
         ),
-        ("/", vec!["/a%2fb"], io::ErrorKind::InvalidInput),
+        (None, vec!["https://evil/x"], io::ErrorKind::InvalidInput),
+        (None, vec!["/a%2fb"], io::ErrorKind::InvalidInput),
     ] {
-        let called = Arc::new(AtomicBool::new(false));
-        let callback = called.clone();
-        let options = BridgeOptions {
-            entry: Some(entry.into()),
-            initial_document_urls: documents.into_iter().map(str::to_owned).collect(),
-            modules: Some(Box::new(move |_, _| {
-                callback.store(true, Ordering::SeqCst);
-                Ok(())
-            })),
-            ..Default::default()
-        };
-        let result = bounded(Bridge::with_options(
-            Commands::new(),
-            Some(input("dist")),
-            None,
-            options,
-        ))
-        .await;
-        assert_eq!(result.err().unwrap().kind(), kind);
-        assert!(!called.load(Ordering::SeqCst));
+        let documents: Vec<String> = documents.into_iter().map(str::to_owned).collect();
+        let result = bounded(crate::prepare_assets(input("dist"), entry, &documents)).await;
+        assert_eq!(
+            result.err().unwrap().kind(),
+            kind,
+            "{entry:?} {documents:?}"
+        );
     }
+    let assets = bounded(crate::prepare_assets(
+        input("dist"),
+        Some("/%61pp.js?query=1#fragment"),
+        &["/app.js".to_owned(), "/%61pp.js".to_owned()],
+    ))
+    .await
+    .unwrap();
+    // The prepared source is the one the bridge would serve: the same exact-key lookup.
+    assert_eq!(assets.source.read("/").unwrap().0, b"public");
+    assert_eq!(assets.source.read("/app.js").unwrap().0, b"script");
     let bridge = bounded(Bridge::with_options(
         Commands::new(),
-        Some(input("dist")),
+        Some(assets),
         None,
         BridgeOptions {
-            initial_document_urls: vec!["/%61pp.js?query=1#fragment".into()],
+            entry: Some("/%61pp.js?query=1#fragment".into()),
             ..Default::default()
         },
     ))

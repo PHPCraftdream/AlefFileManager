@@ -7,7 +7,9 @@ mod ui;
 mod window;
 
 pub use bridge::commands::Commands;
-pub use bridge::{AssetInput, Bridge, BridgeOptions, ModuleInstaller};
+pub use bridge::{
+    prepare_assets, AssetInput, Bridge, BridgeOptions, ModuleInstaller, PreparedAssets,
+};
 pub use headless::run_headless;
 pub use store::Store;
 pub use ui::RuntimeHandle;
