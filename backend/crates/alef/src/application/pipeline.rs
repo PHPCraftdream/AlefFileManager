@@ -74,6 +74,7 @@ pub async fn settle_launch(
                         category: Some("MANIFEST_INVALID"),
                         detail: format!("assets: {error}"),
                         exit: 2,
+                        runtime_requirement: None,
                     })
                 })?,
         )

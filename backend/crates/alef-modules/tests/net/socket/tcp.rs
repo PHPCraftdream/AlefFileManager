@@ -283,9 +283,13 @@ async fn what_the_user_substituted_is_a_dead_network() {
             .is_err(),
         "the stand-in waits for connections and does not fail"
     );
-    assert!(tokio::net::TcpStream::connect(("127.0.0.1", port))
-        .await
-        .is_err());
+    // The stand-in holds no real socket. Connecting would race with parallel tests that
+    // may be handed the same just-released port; binding the port ourselves cannot.
+    drop(
+        TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("the port is still free: the stand-in opened nothing"),
+    );
     app.call("socket.close", json!({ "socket": reply["server"] }))
         .await
         .unwrap();
