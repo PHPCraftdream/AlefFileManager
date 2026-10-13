@@ -11,7 +11,11 @@ impl Scratch {
     fn new() -> Self {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alef-package-integrity");
         fs::create_dir_all(&root).unwrap();
-        for sequence in 0.. {
+        // One counter per process: a name is never reused while another test deletes its directory,
+        // which Windows answers with "Access is denied" instead of "already exists".
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        loop {
+            let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let path = root.join(format!("{}-{sequence}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => return Self(path),
@@ -19,7 +23,6 @@ impl Scratch {
                 Err(e) => panic!("scratch directory: {e}"),
             }
         }
-        unreachable!()
     }
     fn write(&self, bytes: &[u8]) -> PathBuf {
         let path = self.0.join("fixture.zip");
