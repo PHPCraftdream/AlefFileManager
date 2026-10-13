@@ -4,7 +4,8 @@
 pub mod application;
 pub mod args;
 pub mod consent;
-pub mod permissions;
+pub use consent::permissions;
 pub mod relaunch;
+pub mod runtimes;
 
 pub use application::plan;

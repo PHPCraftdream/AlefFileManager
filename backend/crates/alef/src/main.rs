@@ -25,6 +25,7 @@ use alef_launch::{
         package_path_vars, path_vars, Plan,
     },
     relaunch,
+    runtimes::{self, StoreError},
 };
 use alef_modules::{
     desktop::args::{parse, Parsed},
@@ -56,6 +57,15 @@ impl Failure {
             2 => Self::Usage(failure.to_string()),
             3 => Self::Declined(failure.to_string()),
             _ => Self::Runtime(failure.to_string()),
+        }
+    }
+
+    /// Runtime store errors retain their category and operational/usage exit code.
+    fn runtime_store(error: StoreError) -> Self {
+        if error.exit() == 2 {
+            Self::Usage(error.to_string())
+        } else {
+            Self::Runtime(error.to_string())
         }
     }
 
@@ -232,6 +242,13 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             print!(
                 "{}",
                 permissions::run(&command, &store()).map_err(Failure::Usage)?
+            );
+            return Ok(0);
+        }
+        Command::Runtime(command) => {
+            print!(
+                "{}",
+                runtimes::command::run(&command).map_err(Failure::runtime_store)?
             );
             return Ok(0);
         }
@@ -577,6 +594,38 @@ mod tests {
                     assert!(message.contains("detail"), "{message}");
                 }
                 _ => panic!("exit {exit}: wrong variant"),
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_store_failures_preserve_categories_and_usage_or_operational_exit_codes() {
+        for (error, category, exit) in [
+            (
+                StoreError::InvalidArgument("invalid".to_owned()),
+                "INVALID_ARGUMENT",
+                2,
+            ),
+            (
+                StoreError::AlreadyInstalled("present".to_owned()),
+                "ALREADY_INSTALLED",
+                2,
+            ),
+            (
+                StoreError::Store(std::io::Error::other("unreadable")),
+                "RUNTIME_STORE",
+                1,
+            ),
+        ] {
+            assert_eq!(error.exit(), exit);
+            match Failure::runtime_store(error) {
+                Failure::Usage(message) if exit == 2 => {
+                    assert!(message.starts_with(&format!("{category}: ")))
+                }
+                Failure::Runtime(message) if exit == 1 => {
+                    assert_eq!(message, "RUNTIME_STORE: unreadable")
+                }
+                _ => panic!("wrong failure variant for exit {exit}"),
             }
         }
     }
