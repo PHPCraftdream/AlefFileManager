@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny } from './plan.mjs';
+import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny, resolveBase } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));
@@ -192,4 +192,29 @@ test('matchGlob_matches_deep_wildcards_but_not_similar_prefixes_and_empty_files_
   assert.equal(matchGlob('tests/e2eX/y', 'tests/e2e/**'), false);
   assert.equal(matchesAny('backend/crates/alef/src/relaunch/windows.rs', ['**/*windows*']), true);
   assert.equal(isDocsOnly([]), false);
+});
+
+test('a_known_before_commit_is_the_diff_base', () => {
+  const git = args => ({ status: args[0] === 'cat-file' ? 0 : 1, stdout: '' });
+  assert.equal(resolveBase('abc123', 'def456', git), 'abc123');
+});
+
+test('a_new_branch_with_an_all_zero_before_uses_the_merge_base_with_the_default_branch', () => {
+  const calls = [];
+  const git = args => {
+    calls.push(args.join(' '));
+    return args[0] === 'merge-base' ? { status: 0, stdout: 'cafe01\n' } : { status: 1, stdout: '' };
+  };
+  assert.equal(resolveBase('0000000000000000000000000000000000000000', 'def456', git), 'cafe01');
+  assert.deepEqual(calls, ['merge-base origin/main def456']);
+});
+
+test('a_rewritten_history_whose_before_is_missing_falls_back_to_the_merge_base', () => {
+  const git = args => (args[0] === 'cat-file' ? { status: 128, stdout: '' } : { status: 0, stdout: 'beef02\n' });
+  assert.equal(resolveBase('abc123', 'def456', git), 'beef02');
+});
+
+test('no_usable_base_and_no_merge_base_gives_null_so_the_plan_stays_full', () => {
+  const git = () => ({ status: 1, stdout: '' });
+  assert.equal(resolveBase(undefined, 'def456', git), null);
 });
