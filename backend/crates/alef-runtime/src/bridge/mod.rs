@@ -107,7 +107,7 @@ async fn check_documents(
     native_entry: Url,
     initial_document_urls: &[String],
 ) -> io::Result<()> {
-    assets::read_asset(Some(source.clone()), native_entry.path().to_owned()).await?;
+    read_named(source, native_entry.path()).await?;
     for reference in initial_document_urls {
         let url = native_entry
             .join(reference)
@@ -118,9 +118,17 @@ async fn check_documents(
                 "Initial document must belong to the application",
             ));
         }
-        assets::read_asset(Some(source.clone()), url.path().to_owned()).await?;
+        read_named(source, url.path()).await?;
     }
     Ok(())
+}
+
+/// Reads one document through the request lookup; a failure names the document and keeps its kind.
+async fn read_named(source: &Arc<assets::Source>, path: &str) -> io::Result<()> {
+    assets::read_asset(Some(source.clone()), path.to_owned())
+        .await
+        .map(drop)
+        .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))
 }
 
 /// Embedder-supplied policy of the bridge; the default suits the File Manager.

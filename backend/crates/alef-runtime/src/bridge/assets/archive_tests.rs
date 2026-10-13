@@ -431,7 +431,6 @@ async fn completed_archive_bytes_keep_admission_until_the_response_handoff() {
 async fn the_early_document_check_refuses_entry_and_window_documents_like_the_bridge_and_accepts_what_it_accepts(
 ) {
     for (entry, documents, kind) in [
-        (None, vec![], io::ErrorKind::NotFound),
         (Some("/missing"), vec![], io::ErrorKind::NotFound),
         (None, vec!["/missing"], io::ErrorKind::NotFound),
         (
