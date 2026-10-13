@@ -1,0 +1,198 @@
+[
+  {
+    "name": "a pin of any key is taken for the signer",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "Some(existing) if existing.public_key == public_key => {",
+    "to": "Some(existing) if true => {",
+    "package": "alef"
+  },
+  {
+    "name": "an unsigned package ignores the signed pin",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if pinned.is_some() {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "an unsigned package is accepted without a question",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "let accept = inputs.allow_unsigned",
+    "to": "let accept = true || inputs.allow_unsigned",
+    "package": "alef"
+  },
+  {
+    "name": "the trust key is not compared with the signer",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if key != fingerprint {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "the trust key format is not checked",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if !hex64(key) {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "an acceptance does not pin",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "pin(folder, app_id, public_key).map_err(TrustFailure::Store)?;",
+    "to": "();",
+    "package": "alef"
+  },
+  {
+    "name": "a publication replaces an existing record",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "std::fs::hard_link(&temp, &final_path)",
+    "to": "std::fs::rename(&temp, &final_path)",
+    "package": "alef"
+  },
+  {
+    "name": "the loser of a race is told it won",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "Some(existing) if existing == *written => Ok(existing),",
+    "to": "Some(existing) => Ok(existing),",
+    "package": "alef"
+  },
+  {
+    "name": "a record fingerprint is not recomputed",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if fingerprint_of(&pin.public_key) != Some(pin.fingerprint.clone()) {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a record size is not limited",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if metadata.len() > RECORD_LIMIT {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a record version is not checked",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if pin.version != RECORD_VERSION {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a record of another id is accepted",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if pin.app_id != app_id {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a linked record is accepted",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "if metadata.file_type().is_symlink() {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a temporary file stays after a lost race",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "            let _ = std::fs::remove_file(&temp);\n            return resolve_race(folder, &record);",
+    "to": "            return resolve_race(folder, &record);",
+    "package": "alef"
+  },
+  {
+    "name": "the trust folder is not private",
+    "file": "backend/crates/alef/src/application/trust.rs",
+    "from": "std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))?;",
+    "to": "();",
+    "package": "alef"
+  },
+  {
+    "name": "the manifest is read without a limit",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "package.read_limited(MANIFEST_FILE, MANIFEST_LIMIT)",
+    "to": "package.read_limited(MANIFEST_FILE, u64::MAX)",
+    "package": "alef"
+  },
+  {
+    "name": "the version of a package is not validated",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "validate_package_version(&manifest.version)",
+    "to": "validate_package_version(\"1.0.0\")",
+    "package": "alef"
+  },
+  {
+    "name": "the runtime requirement is ignored",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "if !runtime_requirement_met(requirement, env!(\"CARGO_PKG_VERSION\")) {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a sidecar is accepted in a package",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "if is_sidecar_reference(reference) {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "the root prefix has no slash",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "let prefix = format!(\"{selected_root}/\");",
+    "to": "let prefix = selected_root.clone();",
+    "package": "alef"
+  },
+  {
+    "name": "a missing root is accepted",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "if !package.names().any(|name| name.starts_with(&prefix)) {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "the icon is read without a limit",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "package.read_limited(\"icon.png\", ICON_LIMIT)",
+    "to": "package.read_limited(\"icon.png\", u64::MAX)",
+    "package": "alef"
+  },
+  {
+    "name": "the dimensions of the icon are not checked",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "check_png_dimensions(&bytes)?;",
+    "to": "();",
+    "package": "alef"
+  },
+  {
+    "name": "a text file is a bad format instead of not a package",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "if !bytes.starts_with(b\"PK\\x03\\x04\") && !bytes.starts_with(b\"PK\\x05\\x06\") {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "the digest of an unsigned package is empty",
+    "file": "backend/crates/alef/src/application/source.rs",
+    "from": "let archive_digest = format!(\"{:x}\", Sha256::digest(&bytes));",
+    "to": "let archive_digest = String::new();",
+    "package": "alef"
+  },
+  {
+    "name": "a package accepts a development url",
+    "file": "backend/crates/alef/src/args.rs",
+    "from": "if self.dev_url.is_some() {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a directory accepts a trust key",
+    "file": "backend/crates/alef/src/args.rs",
+    "from": "if self.trust_key.is_some() {",
+    "to": "if false {",
+    "package": "alef"
+  },
+  {
+    "name": "a directory accepts the unsigned flag",
+    "file": "backend/crates/alef/src/args.rs",
+    "from": "if self.allow_unsigned {",
+    "to": "if false {",
+    "package": "alef"
+  }
+]
