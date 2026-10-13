@@ -393,19 +393,16 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           const text = raw.toString('latin1');
           const line = /([0-9a-f]{64})(  dist\/blob\.bin\n)/.exec(text);
           if (line === null) throw new Error('the hash list has no line for blob.bin');
-          // Search one-character replacements of the new hash for a same-length deflate stream.
-          const digits = '0123456789abcdef';
+          // The whole list is deflated again; some level yields a stream of the old length.
+          const edited = Buffer.from(`${text.slice(0, line.index)}${newHash}${text.slice(line.index + 64)}`, 'latin1');
           let replacement = null;
-          for (let at = 0; at < newHash.length && replacement === null; at += 1) {
-            for (const digit of digits) {
-              if (digit === newHash[at]) continue;
-              const candidate = deflateRawSync(Buffer.from(`${newHash.slice(0, at)}${digit}${newHash.slice(at + 1)}  dist/blob.bin\n`, 'latin1'), { level: 9 });
-              if (candidate.length === record.compressedSize) { replacement = candidate; break; }
-            }
+          for (let level = 1; level <= 9 && replacement === null; level += 1) {
+            const candidate = deflateRawSync(edited, { level });
+            if (candidate.length === record.compressedSize) replacement = candidate;
           }
           if (replacement === null) return null;
           bytes.subarray(dataAt, dataAt + record.compressedSize).set(replacement);
-          const crc = crc32(replacement);
+          const crc = crc32(edited);
           bytes.writeUInt32LE(crc, local + LOCAL_CRC);
           bytes.writeUInt32LE(crc, record.centralAt + CENTRAL_CRC);
           return bytes;
