@@ -14,11 +14,12 @@ import { here, startApp, transpileApi, verdictOf } from '../../lib.mjs';
 import { createKey, pack } from '../../../../packages/tools/src/index.mjs';
 
 const ID = 'org.alef.e2e.package';
-const SERVICE = ID;
 const PROBE = 'package-probe-42';
 
 const PAGE = `// The page of the package scenario: what it does is chosen by targets.json.
 import { api, guard, report, suite, verdict } from './harness.js';
+
+const SERVICE = ${JSON.stringify(ID)};
 
 const t = await (await fetch('targets.json')).json();
 
