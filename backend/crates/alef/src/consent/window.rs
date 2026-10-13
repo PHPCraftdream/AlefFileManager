@@ -131,14 +131,14 @@ async fn show(
 ) -> Result<(), String> {
     let request = Arc::new(request);
     let answer_path = answer_path.to_owned();
-    let pages = pages
+    let application_dir = pages
         .parent()
         .ok_or("Missing consent application boundary")?
         .to_owned();
     let assets = alef_runtime::prepare_assets(
         alef_runtime::AssetInput::Disk {
-            application_dir: pages.clone(),
-            selected_root: pages,
+            application_dir,
+            selected_root: pages.to_owned(),
         },
         Some("/index.html"),
         &[],
