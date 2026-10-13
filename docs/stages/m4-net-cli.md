@@ -201,9 +201,40 @@ app.exit(code): Promise<never>
 - `app.stdin` — читаемый поток (его берут один раз, повторный вызов — `BUSY`); `app.stdout` и `app.stderr` — записываемые потоки; что страница записала, уходит целиком и по порядку, каждый кусок сбрасывается. Без `console: true` все три — `NOT_AVAILABLE`. Закрытый читателем stdout закрывает поток страницы (следующая запись падает). Перед выходом `Console::drain` ждёт, пока записанное уйдёт (до 5 с), и перестаёт читать stdin.
 - `app.exit(code)` — `Promise<never>`: это `app.quit(code)`, после которого обещание не завершается, потому что процесс уходит (обработчик `before-quit`, запретивший выход, оставляет приложение работать, обещание остаётся ждать).
 - Завершение (`Termination`): сигнал спрашивает документы так же, как `app.quit` (событие `before-quit`, страница может помешать), затем выходит; второй сигнал завершает сразу. Коды: Unix — SIGINT 130, SIGTERM 143, SIGHUP 129; Windows — Ctrl+C 130, Ctrl+Break/закрытие консоли/выключение 143.
-- Windows без видеодрайвера: `SoftwareRenderingContext` не создаётся (на раннере CI — `RequiredExtensionUnavailable`), процесс завершается с кодом 1 и сообщением `no software rendering context (…)`; сценарии e2e там пропускаются с пояснением. Запасной путь (ANGLE/WARP, Mesa `opengl32.dll`) не выбран, это же вопрос M7. Бинарник на Windows остаётся консольным (подсистема GUI с `AttachConsole` — M7).
+- Windows без видеодрайвера: на WGL раннер CI ранее не создавал `SoftwareRenderingContext` (`RequiredExtensionUnavailable`), сценарии e2e с окном пропускались. Экспериментальная фича `alef/angle` передаётся в `alef-runtime/angle = ["dep:surfman", "dep:mozangle"]`: опциональная Windows-зависимость surfman включает `sm-angle-default` + `sm-angle-builtin`, а прямая опциональная зависимость `mozangle = { version = "=0.5.1", optional = true }` закрепляет точную версию и её активацию. В lockfile у runtime есть оба ребра, у surfman — ребро mozangle. Без фичи поведение по умолчанию (WGL) не меняется; только CI выбирает ANGLE. По сообщённым пользователем результатам CI `aa8837d` сборка ANGLE/стадия DLL, шесть безоконных сценариев и `window`, `csp`, `permissions` прошли на Windows без GPU. `core` упал только на точном теле asset из-за CRLF, не на графике (ожидается `public space sentinel\n`). Правило `tests/e2e/apps/** text eol=lf` исправляет checkout, не байты уже LF-индекса; контент fixtures и ожидания не меняются, renormalize не нужен. Повторный CI ожидается.
+- ANGLE не означает автоматический WARP для native-окон: `SoftwareRenderingContext` запрашивает software adapter (`backend/patches/servo-paint-api/rendering_context.rs:307–309`), который в ANGLE использует `D3D_DRIVER_TYPE_WARP`; `WindowRenderingContext` запрашивает `create_adapter()` (`:452–465`), а тот выбирает hardware без WARP retry (`backend/patches/surfman/src/angle/connection.rs:66–95`). Тихий e2e выбирает `SoftwareRenderingContext`: его software/WARP-путь подтверждён указанным CI. Запрос hardware без retry у native-конструктора — факт кода, а не доказательство неработоспособности ANGLE на раннере. Non-e2e native WARP fallback не проверен; универсальный автоматический WARP не заявлен. Изменение конструктора вне этой правки.
+- В опубликованном `mozangle 0.5.1/build.rs` сборка ANGLE использует `cc` с C++17, MSVC и Windows SDK; bindgen требует libclang и rustfmt. Вызовов Python/ninja для сборки ANGLE в этом скрипте нет. Текущие шаги CI уже предоставляют MSVC/SDK, LLVM, Rust toolchain и Python/ninja для остальных зависимостей Servo; новый install action не нужен. BSD-3-Clause уже разрешена политикой лицензий.
+- `build_windows_dll` пишет `libEGL.dll` и `libGLESv2.dll` в `OUT_DIR` через `/Fe`, но не копирует их к executable; `LoadLibraryA("libEGL.dll")` использует голое имя и порядок поиска DLL Windows (`backend/patches/surfman/src/base/egl/device.rs:20–24`). Шаг CI `build_windows_angle` проверяет код выхода Cargo, разбирает JSON-события `build-script-executed` для `mozangle@0.5.1`, требует ровно один уникальный `out_dir` и проверяет оба DLL как файлы перед явным копированием в `backend/target/debug`. Рекурсивного поиска по кэшированным результатам нет. Windows-артефакт `alef-${{ matrix.name }}` содержит `alef.exe`, `libEGL.dll`, `libGLESv2.dll`; отсутствие файлов — ошибка. Сборка/стадия DLL подтверждена сообщённым CI `aa8837d`; native rendering вне тихого e2e не подтверждён. Бинарник на Windows остаётся консольным (подсистема GUI с `AttachConsole` — M7).
 - Спайк убран: `experiments/headless/` и два шага CI «Headless spike»; сценарии `console`, `service`, `service-signal` проверяют режим на Linux в CI (xvfb и Mesa).
 - Не сделано: регистрация службы ОС (Windows Service, systemd, launchd) — M5, M7b; `AttachConsole` — M7.
+
+## CI: проверки и guards ANGLE
+
+Результаты ниже — сообщённый пользователем CI `aa8837d`, не новый локальный прогон. Проверки кода и конфигурации отдельно от результатов сценариев:
+
+- [x] Windows build прошёл: `--locked --features alef/e2e,alef/angle`; продукт по умолчанию остаётся WGL.
+- [x] В конфигурации Windows mozangle опционален и закреплён `=0.5.1`; lockfile: runtime → surfman/mozangle, surfman → mozangle.
+- [x] Guard сборки: ошибка Cargo немедленно завершает шаг; JSON выбирает ровно один уникальный `out_dir` mozangle 0.5.1. Успешная стадия подтверждена CI; ветка ошибки не выдаётся за испытанную.
+- [x] Стадия DLL прошла: оба файла проверяются `Test-Path -PathType Leaf` и копируются рядом с `backend/target/debug/alef.exe`.
+- [x] Конфигурация Windows upload включает executable и оба DLL; `if-no-files-found: error`, без поиска в кэше (не утверждение об отдельном испытании error guard).
+- [x] Шесть безоконных сценариев прошли: `console`, `service`, `arguments`, `launch-modes`, `mcp-stdio`, `manifest`.
+- [x] `window`, `csp`, `permissions` прошли на Windows без GPU в тихом software/WARP e2e.
+- [x] Scheduler: `core`, `window`, `csp`, `permissions` и шесть новых групп независимы после успешного `build_windows_angle`: `runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'`, без зависимости от успеха предыдущей группы. Безоконный шаг сохраняет прежний `if` и список. Внутри группы раннер выполняет выбранные сценарии последовательно, в порядке своего реестра, не строки `--only`.
+- [ ] `core` после LF checkout: повторный CI ожидается.
+- [ ] Шесть новых шагов ниже: результаты ожидаются. У каждого `timeout-minutes: 30`, `--timeout-s 150`, без увеличения таймаутов; идут после `permissions`, до upload.
+
+| Новая группа Windows | `--only` |
+|---|---|
+| transport/development | `induced,dev` |
+| consent | `consent,narrowing,ask,cancel,decisions` |
+| lifecycle/integration | `app,quit,relaunch,instance,restore,autostart,deeplink` |
+| desktop/system/processes | `system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands` |
+| data | `fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied` |
+| network/MCP | `http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp` |
+
+Все сценарии из help-строки раннера включены ровно один раз в Windows `--only`; дополнительных исключений из-за Linux/WM/D-Bus нет. `xvfb`/`openbox` — инфраструктура только Linux, не условие Windows e2e; `secrets` при e2e использует backend в памяти, не GNOME/keyring. `service-signal` намеренно пропускается на Windows; `startup` пропускается в quiet-режиме, видимый запуск — opt-in `ALEF_E2E_VISIBLE=1`. Настоящие клики tray/menu, автозапуск после перезагрузки и активация URL системной оболочкой остаются ручными проверками. В `fs` файловый symlink может быть пропущен без привилегии Windows; directory junction обязателен, не optional.
+
+Побочные эффекты ограничены: `autostart` использует уникальное значение `alef-<hexid>` в HKCU Run (`Software\\Microsoft\\Windows\\CurrentVersion\\Run`), `deeplink` — уникальную схему `alefe2e<UUID без дефисов>` в HKCU `Software\\Classes`. `tests/e2e/scenarios/app/app-integration.mjs` останавливает свои дочерние процессы и очищает свои записи в `finally`; owned crash journal позволяет восстановить очистку на следующем запуске, не трогая живой чужой раннер или чужие записи. Горячие клавиши снимаются при завершении рантаймов.
 
 ## Структура кода
 

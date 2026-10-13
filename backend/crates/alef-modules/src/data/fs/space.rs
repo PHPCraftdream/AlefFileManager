@@ -68,6 +68,27 @@ fn scope_folder(scope: &str) -> String {
     format!("{readable}-{hash:016x}")
 }
 
+/// The stand-in root in its physical spelling: the opened-handle check compares the path of the
+/// created file against this place, and the system reports long names and resolved links.
+fn canonical_root(root: &Path) -> Option<PathBuf> {
+    fs::create_dir_all(root).ok()?;
+    Some(strip_verbatim(fs::canonicalize(root).ok()?))
+}
+
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 #[derive(Debug, Clone)]
 pub(in crate::data) struct Space {
     /// Where the stand-ins of this application keep their content.
@@ -97,7 +118,8 @@ impl Space {
                 root: None,
             },
             Some(shadow) => {
-                let root = self.shadow.join(scope_folder(&shadow.scope));
+                let folder = self.shadow.join(scope_folder(&shadow.scope));
+                let root = canonical_root(&folder).unwrap_or(folder);
                 Place {
                     real: root.join(&shadow.inside),
                     shown: PathBuf::from(path),
@@ -125,5 +147,36 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn the_stand_in_root_is_canonicalized_through_links_so_the_opened_path_matches() {
+        let base = tempfile::tempdir().expect("temporary folder");
+        let physical = base.path().join("physical");
+        let inner = physical.join("inner");
+        fs::create_dir_all(&inner).expect("folders");
+        let linked = base.path().join("linked");
+        #[cfg(windows)]
+        let made = std::process::Command::new("cmd")
+            .args([
+                "/C",
+                "mklink",
+                "/J",
+                &linked.to_string_lossy(),
+                &physical.to_string_lossy(),
+            ])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&physical, &linked).is_ok();
+        if !made {
+            return;
+        }
+        let expected = strip_verbatim(fs::canonicalize(&inner).expect("canonical"));
+        assert_eq!(
+            canonical_root(&linked.join("inner")).expect("root"),
+            expected
+        );
     }
 }
