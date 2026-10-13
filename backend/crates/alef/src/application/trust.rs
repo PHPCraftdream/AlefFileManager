@@ -532,11 +532,28 @@ mod tests {
     #[test]
     fn an_oversized_record_is_refused_before_it_is_parsed() {
         let folder = tempfile::tempdir().unwrap();
-        std::fs::write(pin_path(folder.path(), ID), vec![b' '; 4097]).unwrap();
-        assert_eq!(
-            load(folder.path(), ID).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        // A valid record padded with blanks past the limit: only the size can refuse it.
+        let key = key('a');
+        let mut record = record_json(ID, &key, &fp(&key));
+        record.resize(RECORD_LIMIT as usize + 1, b' ');
+        std::fs::write(pin_path(folder.path(), ID), &record).unwrap();
+        let error = load(folder.path(), ID).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        record.truncate(RECORD_LIMIT as usize);
+        std::fs::write(pin_path(folder.path(), ID), &record).unwrap();
+        assert!(load(folder.path(), ID).unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_trust_folder_is_private_to_the_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().unwrap();
+        let folder = base.path().join("trust");
+        pin(&folder, ID, &key('a')).unwrap();
+        let mode = std::fs::metadata(&folder).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]
@@ -763,6 +780,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(failure, TrustFailure::BadTrustKey(_)));
         assert_eq!(failure.exit(), 2);
+        assert!(failure.to_string().contains("it must be 64 lowercase hex"));
         // (b) Valid hex, but another key.
         let other = "b".repeat(64);
         let failure = decide(
