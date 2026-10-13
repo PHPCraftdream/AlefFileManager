@@ -194,3 +194,96 @@ jobs:
 Механика шагов: для `crates` джоб делает шаг-цикл по запятым (`node scripts/cargo.mjs test --locked -p <crate>`), когда `needs.plan.outputs.crates_all != 'true'`, иначе один шаг без `-p`. lint/structure/fmt выполняются всегда, независимо от плана (docs-only прогон состоит из них одних). JS-шаг включается, когда `needs.plan.outputs.js != '[]'`. При `e2e: all` — без `--only`, при `none` — шаг пропускается, иначе `node tests/e2e/run.mjs --only <список>`.
 
 Известный риск. OS-специфичный сбой при Linux-плане проявится только при merge в main: список `platform_sensitive` существует именно чтобы ловить такое раньше; после каждого post-merge сбоя соответствующий путь добавляют в список.
+
+## Замер CI (2026-10)
+
+### Linux-x64 (CI, `main`)
+
+| Шаг | #142 | #136 | #127 |
+|---|---|---|---|
+| Ожидание очереди | 40.9 | 33.9 | 1.6 |
+| Весь джоб (всего) | 63.1 | 54.8 | 23.1 |
+| Шаг джоба (работа) | 22.2 | 20.9 | 21.5 |
+| Cache backend/target | 0.7 | 1.2 | 0.6 |
+| Servo build prerequisites | 0.4 | 0.8 | 0.4 |
+| Rust tests | 3.7 | 3.7 | 3.5 |
+| Desktop backends | 0.4 | 0.4 | 0.4 |
+| Generated TypeScript types | 0.5 | 0.4 | 0.4 |
+| Build (typecheck + frontend + Rust) | 2.4 | 2.2 | 2.3 |
+| Release build without test hooks | 11.5 | 9.7 | 11.2 |
+| e2e (alef on Servo, headless X11) | 1.4 | 1.3 | 1.5 |
+
+### Windows-x64 (CI, `main`)
+
+| Шаг | #142 | #136 | #127 |
+|---|---|---|---|
+| Ожидание очереди | 40.0 | 31.6 | 23.9 |
+| Шаг джоба (работа) | 39.3 | 19.2 | 20.0 |
+| Cache restore | — | 0.6 | 0.8 |
+| Servo prerequisites (Windows) | 2.2 | 2.0 | 2.1 |
+| Rust tests | 23.0 | 8.1 | 8.4 |
+| Desktop backends | 2.5 | 0.8 | 0.8 |
+| Generated TypeScript types | 0.9 | 1.0 | 1.0 |
+| Build (Rust, без frontend) | 5.1 | 4.5 | 4.5 |
+| Post Cache backend/target (сохранение) | 2.7 | — | — |
+
+### macOS-x64 (CI, `main`)
+
+| Шаг | #142 | #136 | #127 |
+|---|---|---|---|
+| Ожидание очереди | 39.8 | 34.5 | 24.5 |
+| Шаг джоба (работа) | 40.9 | 31.6 | 25.6 |
+| Rust tests | 24.8 | 13.8 | 12.0 |
+| Desktop backends | 2.9 | 1.4 | 1.3 |
+| Build (Rust, без frontend) | 8.0 | 10.7 | 6.5 |
+| Post Cache (сохранение) | 2.1 | — | — |
+
+### macOS-arm64 (CI, `main`)
+
+| Шаг | #142 | #136 | #127 |
+|---|---|---|---|
+| Ожидание очереди | 39.6 | 0.1 | 9.7 |
+| Шаг джоба (работа) | 11.4 | 11.5 | 11.3 |
+| Rust tests | 4.9 | 3.4 | 3.3 |
+| Build (Rust, без frontend) | 3.6 | 2.1 | 2.1 |
+
+### angle-win, последний завершённый (#140, failure; Windows-джоб)
+
+| Показатель | Мин |
+|---|---|
+| Ожидание очереди Windows-джоба | 45.0 |
+| Rust tests (Windows, ANGLE) | 20.9 |
+| Build (Rust, без frontend; ANGLE) | 13.5 |
+| Desktop backends | 2.2 |
+| e2e Windows lifecycle/integration: app | 0.5 |
+| e2e Windows desktop/system/processes: modules | 0.9 |
+| Весь джоб (работа) | 43.4 |
+
+Остальные джобы #140 прошли как обычно (Linux-джоб не отличается от `main`).
+
+### Ответы на вопросы замера
+
+1. Что доминирует по ОС: Linux — release-сборка (9.7–11.5 мин, ~50% работы джоба) и очередь (1.6–40.9 мин); Windows — Rust tests (8.1–23.0 мин) и очередь; macOS-x64 — Rust tests (12.0–24.8 мин) и build (6.5–10.7). Доля e2e на Linux — 1.3–1.5 мин из ~21–22 мин работы джоба ≈ 6–7%. Доля Windows ANGLE build — 13.5 из 43.4 мин ≈ 31%.
+2. Разбивка e2e по сценарным группам из списка шагов НЕ видна: API отдаёт только суммарное время шага; логи не скачивались (лимит запросов), поэтому per-group времена не получены.
+3. Дубли работы: (а) на Linux debug-Rust компилируется трижды (Rust tests → Build typecheck+frontend+Rust → release), суммарно ~17.6 мин Rust-компиляций; на Win/mac — дважды (tests + build), 5–28 мин суммарно; (б) lint/fmt/structure/types/JS-тесты чистых пакетов выполняются на всех четырёх ОС, хотя не зависят от системы (каждый шаг <20 c, поэтому в списках шагов не виден — суммарно до ~1 мин × 3 лишних ОС); (в) workflow `Supply` шагов CI не дублирует (cargo-deny, msrv alef-core 1.88 / alef-modules 1.90, patches — уникальные), вычисления ≤1 мин на джоб, но стеночное время запуска #73 — 41.2 мин из-за очереди (джоб cargo-deny ждал 38.5 мин); два предыдущих запуска Supply отменены concurrency. Пакетный сценарий дважды на Linux не подтверждается списками шагов (шаг e2e один).
+4. Кэш: restore `backend/target` 0.4–2.4 мин (максимум mac-x64 #127, 142 c), сохранение 2.1–2.7 мин (когда ключ новый). Холодный vs тёплый прогон одного джоба напрямую не сравнить без логов (sccache-счётчики в логах — пропущено по условию). Косвенный признак разброса кэша: Rust tests Windows 8.1–23.0 мин и macOS-x64 12.0–24.8 мин при прочих равных — вероятно разница warm/cold.
+5. Ранжированные экономии (оценка на прогон, риск):
+   1. Очередь: 30–45 мин стеночного времени на джоб матрицы — крупнейшая статья; убирается только бо́льшим числом/перезалуком раннеров (деньги), технического риска нет. Планировщик `scripts/ci/plan.mjs` сам очередь не убирает.
+   2. Схлопывание debug-компиляций в одну (tests+build): ~3–8 мин на Windows/mac-x64, ~2 мин на Linux; риск низкий (порядок шагов).
+   3. Стабилизация тёплого кэша `backend/target` (сохранять чаще/точнее ключи): до ~15 мин на Windows и mac-x64 в худших прогонах; риск средний (лимит кэша 10 ГБ, вытеснение).
+   4. Release-сборка на Linux: только `-p alef` уже сделано; экономить кэшированием release-цели/узким набором — ~2–4 мин; риск низкий.
+   5. Системо-независимые проверки (lint, fmt, structure, types, JS чистых пакетов) один раз на Linux: ~0.5–1 мин × 3 ОС; риск низкий.
+   6. Кэш choco-пакетов Windows (llvm, cmake) против шага prerequisites 2.0–2.2 мин: ~1.5 мин; риск низкий.
+   7. e2e Linux 1.4 мин — оптимизировать не стоит.
+   Оговорка: ветка `ci-plan` с `scripts/ci/plan.mjs` на удалённом репозитории отсутствует (404 на 2026-10-13), поэтому какие из экономий планировщик убирает сам — по данным НЕ проверено; оценка дана по описанию задачи.
+
+### Использованные запросы gh api (без токенов)
+
+```
+gh api "repos/PHPCraftdream/AlefFileManager/actions/runs?branch=main&status=success&per_page=15" --jq '.workflow_runs[] | select(.name=="CI")'
+gh api "repos/PHPCraftdream/AlefFileManager/actions/runs?branch=angle-win&per_page=20" --jq '.workflow_runs[] | select(.name=="CI")'
+gh api "repos/PHPCraftdream/AlefFileManager/actions/runs?branch=main&per_page=15" --jq '.workflow_runs[] | select(.name=="Supply")'
+gh api "repos/PHPCraftdream/AlefFileManager/actions/runs/<id>/jobs?per_page=100" --jq '.jobs[] | {name, conclusion, created_at, started_at, completed_at, steps: [.steps[] | {name, sec: ((.completed_at|sub("\\.[0-9]+Z$";"Z")|fromdate) - ((.started_at|sub("\\.[0-9]+Z$";"Z")|fromdate)))}]}'
+```
+
+Всего израсходовано 9 запросов `gh api`; логи не скачивались, запуски не запускались и не отменялись. Пар длин «>20 c» в таблицах нет: показаны все шаги с шаговым временем.
