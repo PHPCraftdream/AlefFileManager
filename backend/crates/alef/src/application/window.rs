@@ -206,3 +206,51 @@ async fn show(
     bridge.shutdown().await.map_err(|e| e.to_string())?;
     result.map_err(|e| e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        application::trust::TrustQuestion,
+        consent::ask::{AppSummary, TrustAsk},
+    };
+
+    fn app() -> AppSummary {
+        AppSummary {
+            id: "com.example.app".to_owned(),
+            name: "App".to_owned(),
+            version: "1.0.0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_trust_window_question_carries_no_rights_and_names_the_signer_or_the_digest() {
+        let signed = request_for_trust(
+            &app(),
+            &TrustQuestion::Signed {
+                fingerprint: "ab".to_owned(),
+            },
+        );
+        assert!(signed.rights.is_empty());
+        let TrustAsk {
+            fingerprint,
+            archive_digest,
+        } = signed.trust.expect("a trust question");
+        assert_eq!(fingerprint, Some("ab".to_owned()));
+        assert_eq!(archive_digest, None);
+
+        let unsigned = request_for_trust(
+            &app(),
+            &TrustQuestion::Unsigned {
+                archive_digest: "cd".to_owned(),
+            },
+        );
+        assert!(unsigned.rights.is_empty());
+        let TrustAsk {
+            fingerprint,
+            archive_digest,
+        } = unsigned.trust.expect("a trust question");
+        assert_eq!(fingerprint, None);
+        assert_eq!(archive_digest, Some("cd".to_owned()));
+    }
+}

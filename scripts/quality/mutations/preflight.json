@@ -1,0 +1,272 @@
+[
+  {
+    "name": "the document preflight is omitted",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "check_documents(&source, native_entry, initial_document_urls).await?;",
+    "to": "();",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "the error kind of a document failure is lost",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "io::Error::new(error.kind(), format!(\"{path}: {error}\"))",
+    "to": "io::Error::new(io::ErrorKind::Other, format!(\"{path}: {error}\"))",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "the path of a failed document is lost",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "format!(\"{path}: {error}\")",
+    "to": "format!(\"{error}\")",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "the archive flag of the prepared assets is lost",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "let archive = matches!(input, AssetInput::Archive { .. });",
+    "to": "let archive = false;",
+    "package": "alef-runtime",
+    "test": [
+      "archive_startup_accepts_native_entries_and_refuses_development_urls"
+    ]
+  },
+  {
+    "name": "the default entry names a missing document",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "let entry = entry.unwrap_or(\"/\");",
+    "to": "let entry = entry.unwrap_or(\"/gone\");",
+    "package": "alef-runtime",
+    "test": [
+      "the_native_entry_is_root_relative_and_defaults_to_the_index_path"
+    ]
+  },
+  {
+    "name": "the selected root metadata of disk assets is lost",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "AssetInput::Disk { selected_root, .. } => Some(selected_root.clone()),",
+    "to": "AssetInput::Disk { .. } => None,",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_disk_assets_keep_the_selected_root_and_are_not_preflighted_twice"
+    ]
+  },
+  {
+    "name": "the entry document is not read",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "read_named(source, native_entry.path()).await?;",
+    "to": "();",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "only the first initial document is checked",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "for reference in initial_document_urls {",
+    "to": "for reference in initial_document_urls.iter().take(1) {",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "document references are resolved against the root instead of the entry",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "let url = native_entry\n            .join(reference)",
+    "to": "let url = Url::parse(\"native://app/\").unwrap()\n            .join(reference)",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "a foreign document port is ignored",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "(url.scheme(), url.host_str(), url.port()) != (\"native\", Some(\"app\"), None)",
+    "to": "(url.scheme(), url.host_str()) != (\"native\", Some(\"app\"))",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "the initial documents are not read",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "read_named(source, url.path()).await?;",
+    "to": "();",
+    "package": "alef-runtime",
+    "test": [
+      "prepared_documents_keep_their_path_context_and_check_every_relative_reference"
+    ]
+  },
+  {
+    "name": "a relative entry path is accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "let valid = entry.starts_with('/')",
+    "to": "let valid = true",
+    "package": "alef-runtime",
+    "test": [
+      "the_native_entry_is_root_relative_and_defaults_to_the_index_path"
+    ]
+  },
+  {
+    "name": "an entry path containing a backslash is accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/mod.rs",
+    "from": "&& !entry.contains('\\\\')",
+    "to": "&& true",
+    "package": "alef-runtime",
+    "test": [
+      "the_native_entry_is_root_relative_and_defaults_to_the_index_path"
+    ]
+  },
+  {
+    "name": "the high digit of a percent escape is lost",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "decoded.push(a * 16 + b);",
+    "to": "decoded.push(b);",
+    "package": "alef-runtime",
+    "test": [
+      "url_components_are_decoded_exactly_once"
+    ]
+  },
+  {
+    "name": "a name ending with a dot or a space is accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "|| name.ends_with(['.', ' '])",
+    "to": "|| false",
+    "package": "alef-runtime",
+    "test": [
+      "portable_names_and_paths_must_obey_character_and_length_limits"
+    ]
+  },
+  {
+    "name": "a component of 256 bytes is accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "name.len() > 255",
+    "to": "name.len() > 256",
+    "package": "alef-runtime",
+    "test": [
+      "portable_names_and_paths_must_obey_character_and_length_limits"
+    ]
+  },
+  {
+    "name": "the CON, PRN, AUX and NUL device stems are accepted",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "if [\"CON\", \"PRN\", \"AUX\", \"NUL\"].contains(&stem.as_str())",
+    "to": "if false",
+    "package": "alef-runtime",
+    "test": [
+      "portable_names_and_paths_must_obey_character_and_length_limits"
+    ]
+  },
+  {
+    "name": "a bounded read truncates excess bytes instead of refusing them",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": ".take(max + 1).read_to_end(&mut bytes)?;",
+    "to": ".take(max).read_to_end(&mut bytes)?;",
+    "package": "alef-runtime",
+    "test": [
+      "a_file_over_the_ceiling_is_refused_however_it_grew"
+    ]
+  },
+  {
+    "name": "the decoded path ceiling is relaxed",
+    "file": "backend/crates/alef-runtime/src/bridge/assets/mod.rs",
+    "from": "+ parts.len() - 1 > 1024 {",
+    "to": "+ parts.len() - 1 > 1025 {",
+    "package": "alef-runtime",
+    "test": [
+      "portable_names_and_paths_must_obey_character_and_length_limits"
+    ]
+  },
+  {
+    "name": "the documents of a development server are checked",
+    "file": "backend/crates/alef/src/application/pipeline.rs",
+    "from": "let assets = if dev_url.is_some() {",
+    "to": "let assets = if false {",
+    "package": "alef",
+    "test": [
+      "the_documents_of_a_development_server_are_not_checked_before_the_launch"
+    ]
+  },
+  {
+    "name": "the early document failure carries the wrong category",
+    "file": "backend/crates/alef/src/application/pipeline.rs",
+    "from": "category: Some(\"MANIFEST_INVALID\"),",
+    "to": "category: Some(\"PACKAGE_FORMAT\"),",
+    "package": "alef",
+    "test": [
+      "a_package_with_a_missing_entry_document_fails_before_any_trust_or_consent_question"
+    ]
+  },
+  {
+    "name": "the early document failure leaves with the wrong exit code",
+    "file": "backend/crates/alef/src/application/pipeline.rs",
+    "from": "exit: 2,",
+    "to": "exit: 1,",
+    "package": "alef",
+    "test": [
+      "a_package_with_a_missing_entry_document_fails_before_any_trust_or_consent_question"
+    ]
+  },
+  {
+    "name": "the window document references are empty",
+    "file": "backend/crates/alef/src/application/pipeline.rs",
+    "from": ".map(|window| window.url.clone())",
+    "to": ".map(|_| String::new())",
+    "package": "alef",
+    "test": [
+      "a_package_with_a_missing_window_document_also_fails_before_any_question"
+    ]
+  },
+  {
+    "name": "only the first launcher window is checked",
+    "file": "backend/crates/alef/src/application/pipeline.rs",
+    "from": ".windows\n            .iter()",
+    "to": ".windows\n            .iter().take(1)",
+    "package": "alef",
+    "test": [
+      "a_package_with_a_missing_window_document_also_fails_before_any_question"
+    ]
+  },
+  {
+    "name": "a document settlement failure is treated as a runtime failure",
+    "file": "backend/crates/alef/src/main.rs",
+    "from": "SettleFailure::Documents(failure) => Self::load(failure),",
+    "to": "SettleFailure::Documents(failure) => Self::Runtime(failure.to_string()),",
+    "package": "alef",
+    "test": [
+      "a_settlement_failure_maps_to_its_own_exit_code_family"
+    ]
+  },
+  {
+    "name": "a trust settlement failure is treated as a runtime failure",
+    "file": "backend/crates/alef/src/main.rs",
+    "from": "SettleFailure::Trust(failure) => Self::trust(failure),",
+    "to": "SettleFailure::Trust(failure) => Self::Runtime(format!(\"{failure:?}\")),",
+    "package": "alef",
+    "test": [
+      "a_settlement_failure_maps_to_its_own_exit_code_family"
+    ]
+  },
+  {
+    "name": "a settlement with unanswered rights is treated as a runtime failure",
+    "file": "backend/crates/alef/src/main.rs",
+    "from": "SettleFailure::Unanswered(unanswered) => Self::Declined(unanswered.to_string()),",
+    "to": "SettleFailure::Unanswered(unanswered) => Self::Runtime(unanswered.to_string()),",
+    "package": "alef",
+    "test": [
+      "a_settlement_failure_maps_to_its_own_exit_code_family"
+    ]
+  }
+]

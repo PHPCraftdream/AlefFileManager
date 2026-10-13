@@ -619,6 +619,29 @@ permissions: {{
     }
 
     #[test]
+    fn taking_assets_twice_never_duplicates_the_application_capability() {
+        let mut plan = plan_of(manifest(SIZE, "[]")).expect("plan");
+        let alef_runtime::AssetInput::Disk {
+            application_dir,
+            selected_root,
+        } = plan.take_assets()
+        else {
+            panic!("disk capability");
+        };
+        assert_eq!(application_dir, Path::new(env!("CARGO_MANIFEST_DIR")));
+        assert_eq!(selected_root, application_dir.join("dist"));
+        let alef_runtime::AssetInput::Disk {
+            application_dir,
+            selected_root,
+        } = plan.take_assets()
+        else {
+            panic!("an unusable placeholder");
+        };
+        assert!(application_dir.as_os_str().is_empty());
+        assert!(selected_root.as_os_str().is_empty());
+    }
+
+    #[test]
     fn a_package_plan_and_a_directory_plan_are_built_by_one_pipeline() {
         use crate::application::{source, support};
         let text = support::manifest_text("").replace("read: []", "read: [ $APPDATA/data/* ]");
