@@ -76,6 +76,7 @@ async function main() {
   }
   if (t.mode === 'shadow') {
     await checks.check('a-substituted-write-lands-in-the-shadow-of-this-identity', async () => {
+      await api.fs.mkdir(t.shadowParent, { recursive: true });
       await api.fs.writeText(t.shadowProbe, 'stand-in');
     });
   }
@@ -340,7 +341,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           writeFileSync(join(publicRoot, 'blob.bin'), blob());
           copyFileSync(join(here, 'harness.js'), join(publicRoot, 'harness.js'));
           for (const folder of ['src', 'types']) cpSync(join(api, folder), join(publicRoot, folder), { recursive: true });
-          writeFileSync(join(publicRoot, 'targets.json'), JSON.stringify({ probe: PROBE, shadowProbe: join(probeFolder, 'probe.txt'), ...targets }));
+          writeFileSync(join(publicRoot, 'targets.json'), JSON.stringify({ probe: PROBE, shadowParent: probeFolder, shadowProbe: join(probeFolder, 'probe.txt'), ...targets }));
           return site;
         };
         const buildPackage = async (name, targets, { key, unsigned = false, manifestOptions = {} } = {}) => {
@@ -557,7 +558,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
           && shadows.every(names => names.length > 0) && shadows[0].every(name => !shadows[1].includes(name))
           && probes.every(paths => paths.length > 0 && paths.every(path => readFileSync(path, 'utf8') === 'stand-in'))
           && !existsSync(join(probeFolder, 'probe.txt')),
-          `exit ${shadowRunA.code}/${shadowRunB.code}: shadows ${JSON.stringify(shadows)}; probes ${JSON.stringify(probes)}; real probe exists: ${existsSync(join(probeFolder, 'probe.txt'))}`);
+          `exit ${shadowRunA.code}/${shadowRunB.code}: page verdicts ${JSON.stringify([shadowRunA, shadowRunB].map(run => verdictOf(run.lines)?.slice(1) ?? 'no verdict'))}; shadows ${JSON.stringify(shadows)}; probes ${JSON.stringify(probes)}; real probe exists: ${existsSync(join(probeFolder, 'probe.txt'))}`);
 
         // Secrets isolation: the second signer never reads what the first one wrote. Only a persistent
         // Secret Service (ALEF_E2E_KEYRING=1, a session keyring) makes the check meaningful; without it
