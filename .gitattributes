@@ -2,3 +2,4 @@ packages/api/types/*.ts text eol=lf
 # fixtures are searched and spliced as text by the tests; a CRLF checkout (Windows CI) must not change them
 *.ktav text eol=lf
 tests/fixtures/package-vectors.txt text eol=lf
+tests/e2e/apps/** text eol=lf

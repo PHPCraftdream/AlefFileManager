@@ -189,7 +189,7 @@ jobs:
         if: runner.os == 'macOS'
         run: node scripts/cargo.mjs build --locked --workspace --features alef/e2e
 
-      # Experimental ANGLE selection; DLLs come from this build's Cargo event, CI results pending (#117).
+      # CI aa8837d: ANGLE build/DLL stage passed (#117); product default remains WGL.
       - name: Build (Rust, без frontend; ANGLE)
         id: build_windows_angle
         if: runner.os == 'Windows'
@@ -228,18 +228,17 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1280x1024x24" sh -c 'openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose'
 
-      # The runner of Windows has no GPU, and the WGL backend of surfman needs the extension
-      # WGL_NV_DX_interop and a hardware Direct3D 11 device ("Cannot create Servo software graphics
-      # context: RequiredExtensionUnavailable"): every scenario whose application opens a window fails
-      # before the page runs, on the software context too, and with Mesa (llvmpipe) as the OpenGL of
-      # the machine too (#107, #116). These are the scenarios without a window.
+      # Historical WGL failures on GPUless Windows: WGL_NV_DX_interop / hardware D3D11
+      # (RequiredExtensionUnavailable), including software contexts and Mesa llvmpipe (#107, #116).
+      # CI aa8837d passed ANGLE build/DLLs and six no-window scenarios; the two intentional skips remain.
       - name: e2e (alef on Servo, Windows, scenarios without a window)
         if: runner.os == 'Windows'
         timeout-minutes: 30
         run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest
 
-      # Native contexts still request hardware without WARP retry; ANGLE CI results are pending.
-      # Separate groups run after a successful build even if an earlier scenario fails (#117).
+      # CI aa8837d: quiet ANGLE window, csp, permissions passed; core failed only on CRLF asset bytes,
+      # not graphics. LF checkout fix and the six additional groups below await a rerun.
+      # Independent groups follow a successful ANGLE build even when an earlier group fails (#117).
       - name: "e2e (alef on Servo, Windows, window: core)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
         timeout-minutes: 30
@@ -259,6 +258,36 @@ jobs:
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
         timeout-minutes: 30
         run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only permissions
+
+      - name: "e2e (alef on Servo, Windows, transport/development: induced, dev)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only induced,dev
+
+      - name: "e2e (alef on Servo, Windows, consent: decisions)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only consent,narrowing,ask,cancel,decisions
+
+      - name: "e2e (alef on Servo, Windows, lifecycle/integration: app)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only app,quit,relaunch,instance,restore,autostart,deeplink
+
+      - name: "e2e (alef on Servo, Windows, desktop/system/processes: modules)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands
+
+      - name: "e2e (alef on Servo, Windows, data: modules)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied
+
+      - name: "e2e (alef on Servo, Windows, network/MCP: modules)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success'
+        timeout-minutes: 30
+        run: node tests/e2e/run.mjs --exe backend/target/debug/alef.exe --timeout-s 150 --verbose --only http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp
 
       - name: Upload executable
         if: runner.os != 'Windows'
