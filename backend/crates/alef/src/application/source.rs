@@ -177,11 +177,7 @@ fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
         if !runtime_requirement_met(requirement, env!("CARGO_PKG_VERSION")) {
             return Err(LoadFailure {
                 category: Some("RUNTIME_INCOMPATIBLE"),
-                detail: format!(
-                    "requires {requirement}; this executable provides {}; \
-                     runtime selection is not available in this slice",
-                    env!("CARGO_PKG_VERSION")
-                ),
+                detail: crate::runtimes::command::incompatible_detail(requirement),
                 exit: 2,
             });
         }
@@ -579,11 +575,11 @@ mod tests {
             ("dist/index.html", b"<html></html>"),
         ]));
         assert_eq!(failure.category, Some("RUNTIME_INCOMPATIBLE"));
-        assert_eq!(
-            failure.detail,
-            "requires >=999.0; this executable provides 0.1.0; \
-             runtime selection is not available in this slice"
-        );
+        assert_eq!(failure.exit, 2);
+        assert!(failure.detail.starts_with(&format!(
+            "requires >=999.0; this executable provides {}; ",
+            env!("CARGO_PKG_VERSION")
+        )));
         for extra in ["runtime: ^0.1\n", ""] {
             let text = support::manifest_text(extra);
             assert!(prepare_load(&[

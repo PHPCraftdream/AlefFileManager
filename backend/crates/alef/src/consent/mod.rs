@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 pub mod ask;
 #[cfg(feature = "e2e")]
 mod hooks;
+pub mod permissions;
 #[cfg(feature = "e2e")]
 use hooks::{scripted_asker, window_asker, with_automation};
 #[cfg(test)]

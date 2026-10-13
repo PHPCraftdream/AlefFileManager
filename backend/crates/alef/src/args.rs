@@ -14,6 +14,9 @@ alef permissions list [<DIRECTORY>]\n\
 alef permissions set <DIRECTORY> <RIGHT> <DECISION>\n\
 alef permissions reset <DIRECTORY>\n\
 alef trust <REQUEST> <ANSWER>\n\
+alef runtime list\n\
+alef runtime install <VERSION> <SOURCE_BINARY>\n\
+alef runtime prune [--keep <VERSION>]... [--dry-run]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
 a file is an Alef package. Runs it: its alef.ktav manifest and assets, in embedded Servo.\n\
   --app DIRECTORY   application directory containing alef.ktav\n\
@@ -31,7 +34,9 @@ a file is an Alef package. Runs it: its alef.ktav manifest and assets, in embedd
 permissions: what you decided for an application. RIGHT is `permission` or `permission:scope`\n\
   (clipboard.read, app.env:HOME, fs.read:$DOCUMENTS/**); `list` without DIRECTORY lists the applications\n\
   you have decided for, `reset` makes the next start ask again\n\
-trust: answer a trust request";
+trust: answer a trust request\n\
+runtime: manage installed local runtime versions; install copies a local binary, no download\n\
+  VERSION is strict MAJOR.MINOR.PATCH; prune always keeps the running version";
 
 /// A validated launch request.
 #[derive(Debug, PartialEq, Eq)]
@@ -88,10 +93,25 @@ pub enum PermissionsCommand {
     Reset { app: PathBuf },
 }
 
+/// `alef runtime ...`: local runtime version management.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeCommand {
+    List,
+    Install {
+        version: String,
+        source_binary: PathBuf,
+    },
+    Prune {
+        keep: Vec<String>,
+        dry_run: bool,
+    },
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Run(Launch),
     Permissions(PermissionsCommand),
+    Runtime(RuntimeCommand),
     /// `alef consent <REQUEST> <ANSWER>`, started by the launcher itself: the permission window.
     Consent {
         request: PathBuf,
@@ -182,6 +202,13 @@ fn permissions(mut arguments: impl Iterator<Item = OsString>) -> Result<Command,
 /// Parses the arguments after the program name.
 pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
     let mut arguments = arguments.into_iter().peekable();
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("runtime"))
+    {
+        arguments.next();
+        return crate::runtimes::command::parse(arguments).map(Command::Runtime);
+    }
     if arguments
         .peek()
         .is_some_and(|first| first.to_str() == Some("permissions"))
