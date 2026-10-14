@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
+import { affectedJs, applyOverrides, computePlan, e2eFor, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));
@@ -245,6 +245,17 @@ test('every_e2e_scenario_named_by_the_rules_is_known_to_the_runner', () => {
 test('a_changed_scenario_file_selects_the_scenarios_it_holds_not_its_file_name', () => {
   const p = plan(['tests/e2e/scenarios/manifests.mjs']);
   assert.equal(p.e2e, 'core,csp,manifest,permissions');
+});
+
+test('a_change_in_the_workspace_packages_selects_the_devflow_scenario', () => {
+  for (const file of ['packages/create-alef-runtime/src/generate.mjs', 'packages/tools/src/pack.mjs', 'packages/runtime/src/resolve.mjs']) {
+    assert.equal(e2eFor([file], data.e2e_rules, data.e2e_smoke, false, false), 'devflow');
+  }
+});
+
+test('a_change_to_the_devflow_scenario_file_selects_devflow', () => {
+  const selected = e2eFor(['tests/e2e/scenarios/app/devflow.mjs'], data.e2e_rules, data.e2e_smoke, false, false).split(',');
+  assert.ok(selected.includes('devflow'), selected.join(','));
 });
 
 test('a_dispatch_with_overrides_and_no_diff_base_is_a_targeted_plan_not_a_full_one', () => {
