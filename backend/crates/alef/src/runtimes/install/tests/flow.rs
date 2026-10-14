@@ -186,7 +186,7 @@ fn record(home: &Path) -> AppRecord {
 async fn unsigned_install_and_empty_name_use_id_for_record_and_artifact() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let scratch = Scratch::new();
-        let manifest = support::manifest_text("").replace("name: Example", "name: \"\"");
+        let manifest = support::manifest_text("").replace("name: Example", "name::");
         let bytes = support::unsigned_package(&[
             ("alef.ktav", manifest.as_bytes()),
             ("dist/index.html", b"<html/>"),
