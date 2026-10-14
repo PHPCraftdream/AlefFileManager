@@ -32,7 +32,7 @@ impl Scratch {
         }
     }
 
-    fn child(&self, sequence: usize, args: &[&str]) -> (i32, String, String) {
+    fn child(&self, sequence: usize, args: &[&str], hook: bool) -> (i32, String, String) {
         let stdout_path = self.0.join(format!("stdout-{sequence}.log"));
         let stderr_path = self.0.join(format!("stderr-{sequence}.log"));
         let stdout = fs::File::create(&stdout_path).expect("create stdout log");
@@ -46,8 +46,15 @@ impl Scratch {
             .env("ALEF_HOME", home)
             .env("ALEF_APPLICATIONS_DIR", applications)
             .env("ALEF_APP_HOME", app_home)
-            .env_remove("ALEF_E2E_TRUST")
-            .env_remove("ALEF_E2E")
+            .env_remove("ALEF_E2E_TRUST");
+        if hook {
+            command.env("ALEF_E2E", "1").env("ALEF_E2E_RUN_TARGET", "1");
+        } else {
+            command
+                .env_remove("ALEF_E2E")
+                .env_remove("ALEF_E2E_RUN_TARGET");
+        }
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
@@ -119,8 +126,11 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
     let app_dir = home.join("apps").join(&hash);
 
     let package_arg = package.display().to_string();
-    let (code, out, err) =
-        scratch.child(0, &["install", &package_arg, "--trust-key", &fingerprint]);
+    let (code, out, err) = scratch.child(
+        0,
+        &["install", &package_arg, "--trust-key", &fingerprint],
+        false,
+    );
     assert_eq!(code, 0, "install failed; stdout={out:?}, stderr={err:?}");
     assert!(app_dir.join("app.json").is_file(), "app record missing");
     assert_eq!(
@@ -132,7 +142,7 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
         icon
     );
 
-    let (code, out, err) = scratch.child(1, &["apps", "--json"]);
+    let (code, out, err) = scratch.child(1, &["apps", "--json"], false);
     assert_eq!(code, 0, "apps failed; stdout={out:?}, stderr={err:?}");
     let rows: serde_json::Value = serde_json::from_str(out.trim()).expect("apps JSON");
     let rows = rows.as_array().expect("apps JSON array");
@@ -140,6 +150,47 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
     assert_eq!(rows[0]["id"], id);
     assert_eq!(rows[0]["version"], "1.0.0");
     assert_eq!(rows[0]["name"], "Install CI");
+
+    // M7d.1: `alef run <ID>` resolves the installed record; the hook prints the target and
+    // exits without starting the application (e2e builds only).
+    let stored = app_dir.join("1.0.0.alef");
+    let (code, out, err) = scratch.child(2, &["run", &id], true);
+    assert_eq!(code, 0, "run by id failed; stdout={out:?}, stderr={err:?}");
+    assert_eq!(out.trim(), stored.display().to_string(), "wrong run target");
+
+    let (code, out, err) = scratch.child(3, &["run", &package_arg], true);
+    assert_eq!(
+        code, 0,
+        "run by path failed; stdout={out:?}, stderr={err:?}"
+    );
+    assert_eq!(
+        out.trim(),
+        package_arg,
+        "an existing path must win over an id"
+    );
+
+    let missing = format!(
+        "org.alef.run.missing.p{}c{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let (code, out, err) = scratch.child(4, &["run", &missing], false);
+    assert_eq!(
+        code, 1,
+        "a missing id must fail; stdout={out:?}, stderr={err:?}"
+    );
+    assert!(
+        err.contains(&format!("NOT_INSTALLED: {missing}")),
+        "wrong error: {err:?}"
+    );
+
+    // `--app` never resolves an installed id: the previous missing-source error stays.
+    let (code, out, err) = scratch.child(5, &["--app", &id], false);
+    assert_eq!(
+        code, 2,
+        "--app with an id must not resolve; stdout={out:?}, stderr={err:?}"
+    );
+    assert!(err.contains("NOT_A_PACKAGE"), "wrong error: {err:?}");
 
     #[cfg(target_os = "linux")]
     {
@@ -190,15 +241,18 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
     );
 
     let package_arg = package.display().to_string();
-    let (code, out, err) =
-        scratch.child(2, &["install", &package_arg, "--trust-key", &fingerprint]);
+    let (code, out, err) = scratch.child(
+        6,
+        &["install", &package_arg, "--trust-key", &fingerprint],
+        false,
+    );
     assert_eq!(code, 0, "reinstall failed; stdout={out:?}, stderr={err:?}");
     assert!(
         out.contains("already installed"),
         "reinstall was not idempotent: {out:?}"
     );
 
-    let (code, out, err) = scratch.child(3, &["uninstall", &id]);
+    let (code, out, err) = scratch.child(7, &["uninstall", &id], false);
     assert_eq!(code, 0, "uninstall failed; stdout={out:?}, stderr={err:?}");
     assert!(
         !app_dir.exists(),
@@ -216,7 +270,7 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
         "desktop artifact remained"
     );
 
-    let (code, out, err) = scratch.child(4, &["apps", "--json"]);
+    let (code, out, err) = scratch.child(8, &["apps", "--json"], false);
     assert_eq!(
         code, 0,
         "apps after uninstall failed; stdout={out:?}, stderr={err:?}"

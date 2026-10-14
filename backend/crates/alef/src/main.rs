@@ -310,26 +310,19 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         }
         Command::Run(launch) => launch,
     };
+    let mut launch = launch;
+    if let alef_launch::install::RunTarget::Id(id) =
+        alef_launch::install::run_target(&launch.target, launch.positional)
+    {
+        return run_installed(&id, launch, process_args).await;
+    }
+    #[cfg(feature = "e2e")]
+    if alef_launch::install::print_run_target_hook(&launch.target) {
+        return Ok(0);
+    }
     let loaded = match source::load(&launch.target) {
         Ok(loaded) => loaded,
-        Err(failure) => {
-            if let Some(requirement) = failure.runtime_requirement.clone() {
-                // The relaunch decision comes before the diagnostic; an impossible relaunch
-                // falls back to the original failure with its category and exit code.
-                match relaunch::runtime::attempt(&requirement, &process_args).await {
-                    Ok(code) => return Ok(code),
-                    Err(relaunch::runtime::AttemptFailure::Incompatible(_)) => {
-                        return Err(Failure::load(failure));
-                    }
-                    Err(relaunch::runtime::AttemptFailure::Start(reason)) => {
-                        return Err(Failure::Runtime(format!(
-                            "RUNTIME_RELAUNCH_FAILED: {reason}"
-                        )));
-                    }
-                }
-            }
-            return Err(Failure::load(failure));
-        }
+        Err(failure) => return load_failure_exit(failure, &process_args).await,
     };
     match loaded {
         ApplicationSource::Directory { dir } => {
@@ -455,7 +448,12 @@ async fn run_package(
         selected_root,
         ..
     } = *prepared;
-    let installed = store_installed(&path, &manifest.id, &manifest.version);
+    let installed = alef_launch::install::installed_app(
+        &runtime_home(),
+        &path,
+        &manifest.id,
+        &manifest.version,
+    );
     let mut vars = package_path_vars(&manifest.id)?;
     // Package data lives under the authority token, not the manifest id; the modules check this.
     let (data_base, config_base, cache_base) = application_base_dirs(&vars.home);
@@ -493,37 +491,64 @@ async fn run_package(
     .await
 }
 
-/// Only a package the store of `alef install` runs may apply an update: the running file must be
-/// the package a valid `app.json` record of exactly this id and version references.
-fn store_installed(
-    package: &std::path::Path,
-    id: &str,
-    version: &str,
-) -> Option<alef_modules::net::updater::InstalledApp> {
-    store_installed_in(&runtime_home(), package, id, version)
+/// A failed load: the runtime relaunch decision comes before the diagnostic (the same
+/// rule the package path follows).
+async fn load_failure_exit(failure: LoadFailure, process_args: &[OsString]) -> Result<u8, Failure> {
+    if let Some(requirement) = failure.runtime_requirement.clone() {
+        // The relaunch decision comes before the diagnostic; an impossible relaunch
+        // falls back to the original failure with its category and exit code.
+        match relaunch::runtime::attempt(&requirement, process_args).await {
+            Ok(code) => return Ok(code),
+            Err(relaunch::runtime::AttemptFailure::Incompatible(_)) => {}
+            Err(relaunch::runtime::AttemptFailure::Start(reason)) => {
+                return Err(Failure::Runtime(format!(
+                    "RUNTIME_RELAUNCH_FAILED: {reason}"
+                )));
+            }
+        }
+    }
+    Err(Failure::load(failure))
 }
 
-/// [`store_installed`] against an explicit home, so tests can exercise the rule in isolation.
-fn store_installed_in(
-    home: &std::path::Path,
-    package: &std::path::Path,
+/// The `alef run <ID>` path: the recorded package through the same pipeline as a path.
+async fn run_installed(
     id: &str,
-    version: &str,
-) -> Option<alef_modules::net::updater::InstalledApp> {
-    use sha2::Digest as _;
-    let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
-    let app_dir = home.join("apps").join(&hash);
-    // read_record fails unless app.json exists, is plain, bounded, and passes its semantic
-    // validation (id hash, `package` = `<version>.alef`, absolute executable).
-    let record = alef_launch::install::read_record(&app_dir, &hash).ok()?;
-    if record.id != id || record.version != version {
-        return None;
+    launch: Launch,
+    process_args: Vec<OsString>,
+) -> Result<u8, Failure> {
+    let mut resolved = None;
+    let loaded = alef_launch::install::run_id(id, &mut |path| {
+        resolved = Some(path.to_owned());
+        source::load(path)
+    });
+    // The end-to-end hook reports the package the record resolved to, without starting it.
+    if let Some(path) = resolved {
+        #[cfg(feature = "e2e")]
+        if alef_launch::install::print_run_target_hook(&path) {
+            return Ok(0);
+        }
+        #[cfg(not(feature = "e2e"))]
+        drop(path);
     }
-    // Canonical comparison: a relative or linked path on the command line still matches, and
-    // nothing else in the store is mistaken for the running package.
-    let running = std::fs::canonicalize(package).ok()?;
-    let stored = std::fs::canonicalize(app_dir.join(&record.package)).ok()?;
-    (running == stored).then(|| alef_modules::net::updater::InstalledApp { package: stored })
+    let loaded = match loaded {
+        Ok(loaded) => loaded,
+        Err(alef_launch::install::RunLaunchFailure::Resolve(error)) => {
+            return Err(install_failure(error));
+        }
+        Err(alef_launch::install::RunLaunchFailure::Load(failure)) => {
+            return load_failure_exit(failure, &process_args).await;
+        }
+    };
+    match loaded {
+        ApplicationSource::Directory { dir } => {
+            launch.check(false).map_err(Failure::Usage)?;
+            run_directory(process_args, launch, dir).await
+        }
+        ApplicationSource::Package(prepared) => {
+            launch.check(true).map_err(Failure::Usage)?;
+            run_package(process_args, launch, prepared).await
+        }
+    }
 }
 
 /// The pipeline both sources share; the result is the exit code the application asked for.
@@ -924,65 +949,5 @@ mod tests {
         let Failure::Runtime(_) = Failure::from(SettleFailure::Enforcement("e".to_owned())) else {
             panic!("an enforcement failure is operational");
         };
-    }
-
-    fn store_fixture(home: &std::path::Path, id: &str, version: &str) -> std::path::PathBuf {
-        use sha2::Digest as _;
-        let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
-        let app_dir = home.join("apps").join(&hash);
-        std::fs::create_dir_all(&app_dir).unwrap();
-        let record = alef_launch::install::AppRecord {
-            id: id.to_owned(),
-            name: "Fixture".to_owned(),
-            version: version.to_owned(),
-            icon: None,
-            package: format!("{version}.alef"),
-            executable: home.join("alef"),
-            installed_time: 0,
-        };
-        std::fs::write(
-            app_dir.join("app.json"),
-            serde_json::to_vec(&record).unwrap(),
-        )
-        .unwrap();
-        let package = app_dir.join(format!("{version}.alef"));
-        std::fs::write(&package, b"package bytes").unwrap();
-        package
-    }
-
-    #[test]
-    fn an_application_without_a_store_record_is_not_installed() {
-        let home = tempfile::tempdir().unwrap();
-        assert_eq!(
-            store_installed_in(
-                home.path(),
-                home.path().join("elsewhere.alef").as_path(),
-                "org.example.app",
-                "1.0.0"
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn a_store_record_of_another_version_does_not_install_an_update() {
-        let home = tempfile::tempdir().unwrap();
-        let package = store_fixture(home.path(), "org.example.app", "2.0.0");
-        assert_eq!(
-            store_installed_in(home.path(), &package, "org.example.app", "1.0.0"),
-            None
-        );
-    }
-
-    #[test]
-    fn the_running_store_package_of_a_valid_record_is_installed() {
-        let home = tempfile::tempdir().unwrap();
-        let package = store_fixture(home.path(), "org.example.app", "1.0.0");
-        let installed = store_installed_in(home.path(), &package, "org.example.app", "1.0.0")
-            .expect("installed");
-        assert_eq!(
-            std::fs::canonicalize(&installed.package).unwrap(),
-            std::fs::canonicalize(&package).unwrap()
-        );
     }
 }

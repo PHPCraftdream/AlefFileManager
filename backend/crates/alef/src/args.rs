@@ -8,7 +8,7 @@ use url::Url;
 use crate::consent::decision_named;
 
 pub const USAGE: &str =
-    "alef run <PATH> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
+    "alef run <PATH|ID> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
 alef --app <DIRECTORY> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
 alef permissions list [<DIRECTORY>]\n\
 alef permissions set <DIRECTORY> <RIGHT> <DECISION>\n\
@@ -18,7 +18,9 @@ alef runtime list\n\
 alef runtime install <VERSION> <SOURCE_BINARY>\n\
 alef runtime prune [--keep <VERSION>]... [--dry-run]\nalef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\nalef uninstall <ID> [--purge-data]\nalef apps [--json]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
-a file is an Alef package. Runs it: its alef.ktav manifest and assets, in embedded Servo.\n\
+a file is an Alef package; when the argument is neither an existing file nor a directory,\n\
+it is the id of an application installed by `alef install` (`alef apps` lists them);\n\
+an existing file or directory always wins. Runs it: its alef.ktav manifest and assets, in embedded Servo.\n\
   --app DIRECTORY   application directory containing alef.ktav\n\
   --dev-url URL     load the document from a development server on 127.0.0.1 instead of the files\n\
   --grant DECISION  decide every right the application asks for and you have not decided on yet:\n\
@@ -55,6 +57,9 @@ pub struct Launch {
     pub allow_unsigned: bool,
     /// Internal window-child selection; never an application option.
     pub launch_window: bool,
+    /// The target came from the positional `run <ARG>` form: the only form where an
+    /// installed manifest id may be resolved.
+    pub positional: bool,
 }
 
 impl Launch {
@@ -316,9 +321,10 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
         arguments.next();
         after_run = true;
     }
-    if arguments
-        .peek()
-        .is_some_and(|first| first.to_str() == Some("consent"))
+    if !after_run
+        && arguments
+            .peek()
+            .is_some_and(|first| first.to_str() == Some("consent"))
     {
         arguments.next();
         let request = arguments.next().ok_or("consent: <REQUEST> is required")?;
@@ -334,9 +340,10 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             )),
         };
     }
-    if arguments
-        .peek()
-        .is_some_and(|first| first.to_str() == Some("trust"))
+    if !after_run
+        && arguments
+            .peek()
+            .is_some_and(|first| first.to_str() == Some("trust"))
     {
         arguments.next();
         let request = arguments.next().ok_or("trust: <REQUEST> is required")?;
@@ -359,6 +366,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
     let mut allow_unsigned = false;
     let mut no_prompt = false;
     let mut launch_window = false;
+    let mut positional = false;
     let mut app_args = Vec::new();
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
@@ -422,6 +430,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
                 if target.is_some() {
                     return Err("the application is given twice".to_owned());
                 }
+                positional = true;
                 target = Some(PathBuf::from(argument));
             }
             _ if argument.as_encoded_bytes().starts_with(b"-") => {
@@ -434,6 +443,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
                 if target.is_some() {
                     return Err("the application is given twice".to_owned());
                 }
+                positional = true;
                 target = Some(PathBuf::from(argument));
             }
         }
@@ -448,6 +458,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
         allow_unsigned,
         no_prompt,
         launch_window,
+        positional,
     }))
 }
 
@@ -572,6 +583,7 @@ mod tests {
                 allow_unsigned: false,
                 no_prompt: false,
                 launch_window: false,
+                positional: false,
             })
         );
         assert_eq!(
@@ -585,6 +597,7 @@ mod tests {
                 allow_unsigned: false,
                 no_prompt: false,
                 launch_window: false,
+                positional: false,
             })
         );
     }
@@ -756,6 +769,7 @@ mod tests {
             allow_unsigned: true,
             no_prompt: false,
             launch_window: false,
+            positional: false,
         };
         assert!(launch
             .check(true)
@@ -901,5 +915,52 @@ mod tests {
                 "accepted {bad}"
             );
         }
+    }
+
+    #[test]
+    fn a_target_shaped_like_an_installed_id_parses_as_a_path_and_the_usage_names_the_id_form() {
+        let Command::Run(run) = parse(&["run", "org.example.app"]).unwrap() else {
+            panic!("run")
+        };
+        assert_eq!(run.target, PathBuf::from("org.example.app"));
+        assert!(USAGE.contains("<PATH|ID>"));
+        assert!(USAGE.contains("`alef install`"));
+    }
+
+    #[test]
+    fn only_the_positional_run_form_carries_the_installed_id_target() {
+        let Command::Run(app) = parse(&["--app", "org.example.app"]).unwrap() else {
+            panic!("run")
+        };
+        assert!(!app.positional);
+        let Command::Run(run) = parse(&["run", "org.example.app"]).unwrap() else {
+            panic!("run")
+        };
+        assert!(run.positional);
+    }
+
+    #[test]
+    fn after_run_the_internal_command_names_are_targets_not_subcommands() {
+        for name in ["trust", "consent"] {
+            let Command::Run(run) = parse(&["run", name]).unwrap() else {
+                panic!("run {name}")
+            };
+            assert_eq!(run.target, PathBuf::from(name));
+            assert!(run.positional, "{name}");
+        }
+        assert!(matches!(
+            parse(&["trust", "a", "b"]),
+            Ok(Command::Trust {
+                request: _,
+                answer: _
+            })
+        ));
+        assert!(matches!(
+            parse(&["consent", "a", "b"]),
+            Ok(Command::Consent {
+                request: _,
+                answer: _
+            })
+        ));
     }
 }
