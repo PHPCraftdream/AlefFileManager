@@ -233,6 +233,9 @@ export async function bundle(packagePath, options = {}) {
     }) && !/[ .]$/.test(stem);
     check(usable, `default bundle name '${stem}' is not a safe file name; pass --name`);
   }
+  // The launcher is named after the stem inside the bundle root: it must not collide with the fixed entries.
+  check(!['app', 'bin', 'bundle.json', 'license', 'notice'].includes(stem.toLowerCase()),
+    `'${stem}' collides with a fixed entry of the bundle layout (app, bin, bundle.json, LICENSE, NOTICE); pass another name`);
   // NSIS embeds the stem in Windows paths and shortcut names: ASCII only.
   if (formats.includes('nsis')) {
     check(/^[A-Za-z0-9._-]+$/.test(stem),

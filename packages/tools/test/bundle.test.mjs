@@ -781,15 +781,15 @@ test('dir_launcher_resolves_through_a_symlink_to_the_real_layout', { skip: proce
   // fixture's `app` directory (which holds dist/).
   const out = path.join(root, 'bundles');
   await mkdir(out);
-  await bundle(packagePath, { runtime, platform: 'linux-x64', formats: ['dir'], name: 'app', out });
+  await bundle(packagePath, { runtime, platform: 'linux-x64', formats: ['dir'], name: 'tool', out });
   // The symlink lives in a DIFFERENT directory than the real launcher: without
   // readlink resolution DIR would be <root>/bin and the launcher would fail.
   await mkdir(path.join(root, 'bin'));
-  await symlink(path.join(out, 'app', 'app'), path.join(root, 'bin', 'link'));
+  await symlink(path.join(out, 'tool', 'tool'), path.join(root, 'bin', 'link'));
   const run = promisify(execFile);
   const { stdout } = await run('/bin/sh', [path.join(root, 'bin', 'link')], { timeout: 10000 });
   assert.equal(stdout.startsWith('alef-args:run '), true, stdout);
-  assert.ok(stdout.includes('bundles/app/app.alef'), stdout);
+  assert.ok(stdout.includes('bundles/tool/app/app.alef'), stdout);
   assert.ok(!stdout.includes('/bin/bin/'), stdout);
 }));
 test('symlinked_path_components_of_the_runtime_are_refused', { skip: process.platform === 'win32', timeout: 30000 }, () => bundleScratch(async root => {
@@ -811,3 +811,14 @@ test('letters_x_inside_prerelease_and_build_identifiers_are_not_wildcards', () =
   assert.throws(() => parseRuntimeRange('>=*'), /wildcard/);
   assert.throws(() => parseRuntimeRange('^x'), /wildcard/);
 });
+
+test('a_name_that_collides_with_a_fixed_layout_entry_is_refused', { skip: process.platform === 'win32', timeout: 30000 }, () => bundleScratch(async root => {
+  const { packagePath, runtime } = await makeFixture(root);
+  for (const name of ['app', 'bin', 'bundle.json', 'LICENSE']) {
+    await assert.rejects(
+      bundle(packagePath, { runtime, platform: 'linux-x64', formats: ['dir'], name, out: path.join(root, 'o-' + name.replace('.', '_')) }),
+      error => error.message.includes('collides with a fixed entry'),
+      name,
+    );
+  }
+}));
