@@ -482,7 +482,13 @@ pub async fn install_in(
         if previous.package != package_name {
             let previous_path = app_dir.join(&previous.package);
             if crate::runtimes::store::is_regular_file(&previous_path) {
-                std::fs::remove_file(previous_path).map_err(io_error)?;
+                // No fallible operation after the record commit: cleanup is best effort.
+                if let Err(error) = std::fs::remove_file(&previous_path) {
+                    eprintln!(
+                        "alef: APP_STORE: previous package cleanup failed at {}: {error}",
+                        previous_path.display()
+                    );
+                }
             }
         }
     }
@@ -496,7 +502,13 @@ pub async fn install_in(
                 if compare_versions(name, &version)
                     .is_ok_and(|order| order == std::cmp::Ordering::Less)
                 {
-                    std::fs::remove_file(path).map_err(io_error)?;
+                    // No fallible operation after the record commit: cleanup is best effort.
+                    if let Err(error) = std::fs::remove_file(&path) {
+                        eprintln!(
+                            "alef: APP_STORE: stale package cleanup failed at {}: {error}",
+                            path.display()
+                        );
+                    }
                 }
             }
         }

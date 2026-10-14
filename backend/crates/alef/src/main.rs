@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The generic Alef runtime: `alef --app <directory> [--dev-url <url>]`.
-use std::{ffi::OsString, path::PathBuf, process::ExitCode};
+use std::{ffi::OsString, path::PathBuf, process::ExitCode, time::Duration};
 
 use alef_core::{
     error::AlefError,
@@ -18,7 +18,7 @@ use alef_launch::{
         window as trust_window,
     },
     args::{parse_args, Command, Launch, USAGE},
-    consent::{identity_of, shadow_folder, store, watch, Asker, WATCH_EVERY},
+    consent::{identity_of, runtime_home, shadow_folder, store, watch, Asker, WATCH_EVERY},
     permissions,
     plan::{
         application_base_dirs, launch_timeout_from_environment, load_manifest, make_package_plan,
@@ -117,6 +117,8 @@ fn install_failure(error: alef_launch::install::InstallError) -> Failure {
 fn main() -> ExitCode {
     // Before any thread exists: the relaunch marker never reaches the applications' children.
     relaunch::runtime::take_marker();
+    // The predecessor pid is consumed once and never reaches the applications' children.
+    relaunch::take_replaces_pid();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -370,6 +372,8 @@ struct Run {
     icon: Vec<u8>,
     /// Package trust: the signer (key, fingerprint), the archive digest, and the inputs.
     trust: Option<(Option<(String, String)>, String, TrustInputs)>,
+    /// Set only when the package came from the user store of `alef install`.
+    installed: Option<alef_modules::net::updater::InstalledApp>,
 }
 
 /// The directory source: development, exactly as before packages existed.
@@ -412,6 +416,7 @@ async fn run_directory(
         authority: Authority::default(),
         icon,
         trust: None,
+        installed: None,
     })
     .await
 }
@@ -446,9 +451,11 @@ async fn run_package(
     let Prepared {
         manifest,
         package,
+        path,
         selected_root,
         ..
     } = *prepared;
+    let installed = store_installed(&path, &manifest.id, &manifest.version);
     let mut vars = package_path_vars(&manifest.id)?;
     // Package data lives under the authority token, not the manifest id; the modules check this.
     let (data_base, config_base, cache_base) = application_base_dirs(&vars.home);
@@ -481,8 +488,42 @@ async fn run_package(
                 allow_unsigned,
             },
         )),
+        installed,
     })
     .await
+}
+
+/// Only a package the store of `alef install` runs may apply an update: the running file must be
+/// the package a valid `app.json` record of exactly this id and version references.
+fn store_installed(
+    package: &std::path::Path,
+    id: &str,
+    version: &str,
+) -> Option<alef_modules::net::updater::InstalledApp> {
+    store_installed_in(&runtime_home(), package, id, version)
+}
+
+/// [`store_installed`] against an explicit home, so tests can exercise the rule in isolation.
+fn store_installed_in(
+    home: &std::path::Path,
+    package: &std::path::Path,
+    id: &str,
+    version: &str,
+) -> Option<alef_modules::net::updater::InstalledApp> {
+    use sha2::Digest as _;
+    let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
+    let app_dir = home.join("apps").join(&hash);
+    // read_record fails unless app.json exists, is plain, bounded, and passes its semantic
+    // validation (id hash, `package` = `<version>.alef`, absolute executable).
+    let record = alef_launch::install::read_record(&app_dir, &hash).ok()?;
+    if record.id != id || record.version != version {
+        return None;
+    }
+    // Canonical comparison: a relative or linked path on the command line still matches, and
+    // nothing else in the store is mistaken for the running package.
+    let running = std::fs::canonicalize(package).ok()?;
+    let stored = std::fs::canonicalize(app_dir.join(&record.package)).ok()?;
+    (running == stored).then(|| alef_modules::net::updater::InstalledApp { package: stored })
 }
 
 /// The pipeline both sources share; the result is the exit code the application asked for.
@@ -500,7 +541,16 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         authority,
         icon,
         trust,
+        installed,
     } = run;
+    // A restart into an update waits for the process it replaces to release its single-instance
+    // claim, so the new instance is never told "you are the second one" by the dying old one.
+    let replaces = relaunch::replaces_pid();
+    if replaces != 0 && !relaunch::wait_for_process_exit(replaces, Duration::from_secs(15)) {
+        return Err(Failure::Runtime(
+            "UPDATE_RELAUNCH_FAILED: the replaced process did not exit in time".to_owned(),
+        ));
+    }
     let mut plan = plan;
     if launch_window {
         plan.select_window_child()?;
@@ -543,6 +593,9 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         consent: _,
         granted,
     } = settled;
+    let termination = Termination::default();
+    // The updater context is only built when the pin matches the running signer; the applier
+    // reuses the launcher store and is pinned to that same signer.
     let updater_context = match (&authority, trust.as_ref(), plan.manifest.updater.clone()) {
         (
             Authority::SignedPackage { fingerprint },
@@ -567,12 +620,21 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
                 *byte = u8::from_str_radix(&pin.public_key[index * 2..index * 2 + 2], 16)
                     .map_err(|_| Failure::Runtime("invalid updater trust pin key".to_owned()))?;
             }
+            let executable = std::env::current_exe()
+                .map_err(|e| Failure::Runtime(format!("updater executable: {e}")))?;
             Some(alef_modules::net::updater::UpdaterContext {
                 config,
                 app_id: plan.manifest.id.clone(),
                 version: plan.manifest.version.clone(),
                 trusted_key: key,
                 data: vars.app_data.clone(),
+                installed,
+                applier: std::sync::Arc::new(alef_launch::install::StoreApplier::native(
+                    runtime_home(),
+                    executable,
+                    pin.fingerprint.clone(),
+                    termination.clone(),
+                )),
             })
         }
         _ => None,
@@ -582,7 +644,6 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     let _following = watch(granted.clone(), store(), identity, WATCH_EVERY);
     // Where the windows that ask for it (`restore: true`) are written down between runs.
     let window_state = vars.app_data.join("window-state.json");
-    let termination = Termination::default();
     // Servo profile root, before `vars` moves into the module context.
     let servo_profile = vars.app_data.join("servo");
     // Directory apps derive the origin label from the manifest id; packages from the
@@ -863,5 +924,65 @@ mod tests {
         let Failure::Runtime(_) = Failure::from(SettleFailure::Enforcement("e".to_owned())) else {
             panic!("an enforcement failure is operational");
         };
+    }
+
+    fn store_fixture(home: &std::path::Path, id: &str, version: &str) -> std::path::PathBuf {
+        use sha2::Digest as _;
+        let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
+        let app_dir = home.join("apps").join(&hash);
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let record = alef_launch::install::AppRecord {
+            id: id.to_owned(),
+            name: "Fixture".to_owned(),
+            version: version.to_owned(),
+            icon: None,
+            package: format!("{version}.alef"),
+            executable: home.join("alef"),
+            installed_time: 0,
+        };
+        std::fs::write(
+            app_dir.join("app.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let package = app_dir.join(format!("{version}.alef"));
+        std::fs::write(&package, b"package bytes").unwrap();
+        package
+    }
+
+    #[test]
+    fn an_application_without_a_store_record_is_not_installed() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            store_installed_in(
+                home.path(),
+                home.path().join("elsewhere.alef").as_path(),
+                "org.example.app",
+                "1.0.0"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_store_record_of_another_version_does_not_install_an_update() {
+        let home = tempfile::tempdir().unwrap();
+        let package = store_fixture(home.path(), "org.example.app", "2.0.0");
+        assert_eq!(
+            store_installed_in(home.path(), &package, "org.example.app", "1.0.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_running_store_package_of_a_valid_record_is_installed() {
+        let home = tempfile::tempdir().unwrap();
+        let package = store_fixture(home.path(), "org.example.app", "1.0.0");
+        let installed = store_installed_in(home.path(), &package, "org.example.app", "1.0.0")
+            .expect("installed");
+        assert_eq!(
+            std::fs::canonicalize(&installed.package).unwrap(),
+            std::fs::canonicalize(&package).unwrap()
+        );
     }
 }

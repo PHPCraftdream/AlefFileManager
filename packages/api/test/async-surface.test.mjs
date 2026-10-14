@@ -150,6 +150,7 @@ const ARGS = {
   'websocket.serve': [{}],
   'updater.check': [],
   'updater.download': [],
+  'updater.install': [],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -172,6 +173,7 @@ installRuntime({
     if (request.url === 'native://stream/9') return { chunks: [endFrame()] };
     if (request.url === 'native://call/updater.check') return { json: { available: false } };
     if (request.url === 'native://call/updater.download') return { json: { stream: 61, resource: 62 } };
+    if (request.url === 'native://call/updater.install') return { json: null };
     if (request.url === 'native://stream/61') return { chunks: [jsonFrame({ received: 1, total: 1, done: true }), endFrame()] };
     if (request.url === 'native://call/http.serve') return { json: { server: 6, requests: 51, address: { host: '127.0.0.1', port: 5 }, secure: false } };
     if (request.url === 'native://call/socket.connect') return { json: { socket: 1, read: 11, write: 12, localAddress: { host: '127.0.0.1', port: 2 }, remoteAddress: { host: '127.0.0.1', port: 1 } } };

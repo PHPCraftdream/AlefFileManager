@@ -36,6 +36,9 @@ pub enum ErrorCode {
     UpdateTimeout,
     UpdateBusy,
     UpdateIo,
+    UpdateNotInstalled,
+    UpdateNotDownloaded,
+    UpdateRelaunchFailed,
     Internal,
 }
 
@@ -61,6 +64,9 @@ impl ErrorCode {
             Self::UpdateTimeout => 408,
             Self::UpdateBusy => 429,
             Self::UpdateIo => 500,
+            Self::UpdateNotInstalled => 400,
+            Self::UpdateNotDownloaded => 409,
+            Self::UpdateRelaunchFailed => 500,
             Self::UpdateHashMismatch
             | Self::UpdateSignatureInvalid
             | Self::UpdateIdMismatch
@@ -98,6 +104,9 @@ impl ErrorCode {
             Self::UpdateTimeout => "UPDATE_TIMEOUT",
             Self::UpdateBusy => "UPDATE_BUSY",
             Self::UpdateIo => "UPDATE_IO",
+            Self::UpdateNotInstalled => "UPDATE_NOT_INSTALLED",
+            Self::UpdateNotDownloaded => "UPDATE_NOT_DOWNLOADED",
+            Self::UpdateRelaunchFailed => "UPDATE_RELAUNCH_FAILED",
             Self::Internal => "INTERNAL",
         }
     }
@@ -220,6 +229,9 @@ mod tests {
             ErrorCode::UpdateTimeout,
             ErrorCode::UpdateBusy,
             ErrorCode::UpdateIo,
+            ErrorCode::UpdateNotInstalled,
+            ErrorCode::UpdateNotDownloaded,
+            ErrorCode::UpdateRelaunchFailed,
             ErrorCode::Network,
             ErrorCode::Internal,
         ] {
@@ -288,6 +300,9 @@ mod tests {
             ErrorCode::UpdateTimeout,
             ErrorCode::UpdateBusy,
             ErrorCode::UpdateIo,
+            ErrorCode::UpdateNotInstalled,
+            ErrorCode::UpdateNotDownloaded,
+            ErrorCode::UpdateRelaunchFailed,
             ErrorCode::Network,
             ErrorCode::Internal,
         ]

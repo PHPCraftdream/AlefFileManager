@@ -7,7 +7,7 @@
     { "os": "macos-15-intel", "name": "macos-x64", "target": "x86_64-apple-darwin", "bin": "alef" },
     { "os": "ubuntu-24.04", "name": "linux-x64", "target": "x86_64-unknown-linux-gnu", "bin": "alef" }
   ],
-  "full_triggers": [".github/**", "scripts/ci/**", "scripts/cargo.mjs", "backend/Cargo.lock", "backend/Cargo.toml", "package.json", "package-lock.json", "rust-toolchain*", ".oxlintrc.json"],
+  "full_triggers": [".github/**", "scripts/ci/**", "scripts/cargo.mjs", "backend/Cargo.lock", "backend/Cargo.toml", "package.json", "package-lock.json", "rust-toolchain*", "scripts/release/**", ".oxlintrc.json"],
   "platform_sensitive": [
     "backend/crates/alef-modules/src/system/**",
     "backend/crates/alef-modules/src/desktop/**",

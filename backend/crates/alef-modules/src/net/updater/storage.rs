@@ -320,14 +320,15 @@ impl Drop for CancellationGuard {
     }
 }
 
-fn verify_publish_blocking(
-    _storage: Storage,
-    mut temp: NamedTempFile,
-    config: UpdaterContext,
-    offered: document::Document,
-    cancelled: Arc<AtomicBool>,
+/// Re-verifies a package file from disk exactly as `download` verified it: signature,
+/// trusted key, application id, version equal to the offer and strictly higher than the
+/// running version, and the size limit. The file sat on disk, so it is not trusted.
+pub(super) fn verify_package_file(
+    path: &Path,
+    config: &UpdaterContext,
+    offered: &document::Document,
 ) -> Result<(), AlefError> {
-    let mut pkg = Package::open_snapshot(temp.path(), MAX_PACKAGE_BYTES).map_err(|_| {
+    let mut pkg = Package::open_snapshot(path, MAX_PACKAGE_BYTES).map_err(|_| {
         AlefError::new(
             ErrorCode::UpdateSignatureInvalid,
             "package verification failed",
@@ -370,6 +371,49 @@ fn verify_publish_blocking(
             "package version does not match offer",
         ));
     }
+    Ok(())
+}
+
+/// Verifies the published `updates/<version>.alef` before the applier installs it.
+pub(super) async fn verify_stored_package(
+    _storage: &Storage,
+    config: &UpdaterContext,
+    offered: &document::Document,
+) -> Result<(), AlefError> {
+    let dir = config.data.join("updates");
+    let path = dir.join(format!("{}.alef", offered.version));
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AlefError::new(
+                ErrorCode::UpdateNotDownloaded,
+                "no downloaded update is on disk",
+            ));
+        }
+        Err(e) => return Err(io_error("inspect stored update", &path, e)),
+    };
+    if !meta.is_file() || meta.file_type().is_symlink() || is_reparse(&meta) {
+        return Err(io_error(
+            "validate stored update",
+            &path,
+            std::io::Error::other("unsafe stored update"),
+        ));
+    }
+    let config = config.clone();
+    let offered = offered.clone();
+    tokio::task::spawn_blocking(move || verify_package_file(&path, &config, &offered))
+        .await
+        .map_err(|_| AlefError::new(ErrorCode::Internal, "package verifier failed"))?
+}
+
+fn verify_publish_blocking(
+    _storage: Storage,
+    mut temp: NamedTempFile,
+    config: UpdaterContext,
+    offered: document::Document,
+    cancelled: Arc<AtomicBool>,
+) -> Result<(), AlefError> {
+    verify_package_file(temp.path(), &config, &offered)?;
     let dir = config.data.join("updates");
     let offered_version = alef_core::security::manifest::validate_package_version(&offered.version)
         .map_err(|_| AlefError::new(ErrorCode::UpdateBadDocument, "invalid version"))?;

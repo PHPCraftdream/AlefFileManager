@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! A window child inherits the original environment and standard streams. No shell or UTF-8
 //! conversion is involved. Platform guards are installed before any child application code runs.
-use std::{ffi::OsString, io, process::ExitStatus};
+use std::{
+    ffi::OsString,
+    io,
+    path::Path,
+    process::ExitStatus,
+    sync::atomic::{AtomicU32, Ordering},
+    time::{Duration, Instant},
+};
 
 #[cfg(unix)]
 mod unix;
@@ -28,6 +35,114 @@ pub fn window_args(arguments: &[OsString]) -> Vec<OsString> {
     args.extend([OsString::from("--launch-mode"), OsString::from("window")]);
     args.extend(rest.iter().cloned());
     args
+}
+
+/// Starts the program detached: it inherits the environment and streams but leaves the job of
+/// this process (Windows breakaway) and leads its own process group (Unix), so a restart
+/// outlives this one. On Windows a refused breakaway is an error: a child that stayed in a
+/// kill-on-close job would die with this process. The std child is dropped, never waited on.
+pub fn detached(program: &Path, arguments: &[OsString]) -> io::Result<()> {
+    detached_with(program, arguments, &[])
+}
+
+/// [`detached`] with extra environment entries on top of the inherited ones.
+pub fn detached_with(
+    program: &Path,
+    arguments: &[OsString],
+    extra: &[(String, String)],
+) -> io::Result<()> {
+    let mut command = std::process::Command::new(program);
+    command.args(arguments);
+    command.envs(extra.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0).spawn()?;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
+        // Refused when the job of this process does not allow the breakaway: the error is kept,
+        // a fallback child would stay inside the enclosing kill-on-close job and die with us.
+        command.creation_flags(CREATE_BREAKAWAY_FROM_JOB).spawn()?;
+    }
+    Ok(())
+}
+
+/// The pid of the process this restart replaces, taken once at start; the variable is removed so
+/// application children never inherit it. Garbage values are taken as "no predecessor" (the
+/// bounded wait then does nothing) — fail-open is safe here: the wait is an extra guarantee.
+pub const REPLACES_VARIABLE: &str = "ALEF_UPDATE_REPLACES_PID";
+static REPLACES_PID: AtomicU32 = AtomicU32::new(0);
+pub fn take_replaces_pid() {
+    let pid = std::env::var_os(REPLACES_VARIABLE)
+        .and_then(|value| value.to_str().and_then(|text| text.parse::<u32>().ok()))
+        .unwrap_or(0);
+    std::env::remove_var(REPLACES_VARIABLE);
+    REPLACES_PID.store(pid, Ordering::Relaxed);
+}
+pub fn replaces_pid() -> u32 {
+    REPLACES_PID.load(Ordering::Relaxed)
+}
+
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::WAIT_TIMEOUT,
+        System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+    };
+    // SAFETY: OpenProcess with a read-only right; a null handle means gone or never existed.
+    let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+    if raw.is_null() {
+        // Access denied: the process exists but is not observable.
+        return unsafe { windows_sys::Win32::Foundation::GetLastError() }
+            == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+    }
+    // SAFETY: a successful OpenProcess transfers unique handle ownership; the drop closes it.
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    // SAFETY: uniquely owned handle, zero-timeout read-only probe.
+    let alive = unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } == WAIT_TIMEOUT;
+    alive
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // A value wider than pid_t cannot name a process.
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        if stat
+            .rsplit_once(") ")
+            .is_some_and(|(_, tail)| tail.starts_with('Z'))
+        {
+            return false;
+        }
+    }
+    // SAFETY: signal zero probes existence only, nothing is delivered.
+    match unsafe { libc::kill(pid, 0) } {
+        0 => true,
+        -1 if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) => false,
+        // The process exists but is not ours.
+        _ => true,
+    }
+}
+
+/// Bounded wait until `pid` is gone. `true` when it exited (or was never alive), `false` on timeout.
+pub fn wait_for_process_exit(pid: u32, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        if !process_alive(pid) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Relaunch only after bridge shutdown and console drain. Consent, ALEF_HOME, ALEF_APP_HOME and
@@ -57,6 +172,50 @@ pub fn exit_code(status: ExitStatus) -> u8 {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_replaces_pid_is_fail_open_for_garbage_and_removed_from_the_environment() {
+        std::env::set_var(REPLACES_VARIABLE, "abc");
+        take_replaces_pid();
+        assert_eq!(replaces_pid(), 0);
+        assert!(std::env::var_os(REPLACES_VARIABLE).is_none());
+        std::env::set_var(REPLACES_VARIABLE, "424242");
+        take_replaces_pid();
+        assert_eq!(replaces_pid(), 424242);
+        assert!(std::env::var_os(REPLACES_VARIABLE).is_none());
+        // Reset the process-global so other tests see no predecessor.
+        take_replaces_pid();
+        assert_eq!(replaces_pid(), 0);
+    }
+
+    #[test]
+    fn wait_for_process_exit_returns_true_for_a_dead_pid() {
+        // A valid positive pid_t that is never a real process.
+        assert!(wait_for_process_exit(
+            i32::MAX as u32,
+            Duration::from_millis(200)
+        ));
+    }
+
+    #[test]
+    fn wait_for_process_exit_times_out_while_the_process_lives() {
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("sleep")
+            .arg("2")
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping", "-n", "2", "127.0.0.1"])
+            .spawn()
+            .unwrap();
+        assert!(!wait_for_process_exit(
+            child.id(),
+            Duration::from_millis(300)
+        ));
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     #[test]
     fn the_window_switch_precedes_urls_and_the_separator_and_preserves_original_os_arguments() {

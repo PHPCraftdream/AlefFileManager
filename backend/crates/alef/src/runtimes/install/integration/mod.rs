@@ -24,8 +24,9 @@ pub(crate) struct Artifact {
 }
 
 /// Implementations must undo every artifact they created if `install` returns an error.
-/// Kept internal until platform mutation semantics are implemented.
-pub(crate) trait Integration {
+/// Kept internal until platform mutation semantics are implemented. `Send` so the updater
+/// applier can hold one behind a mutex across threads.
+pub(crate) trait Integration: Send {
     fn install(&mut self, identity: &Artifact) -> io::Result<()>;
     fn remove(&mut self, id: &str, name: Option<&str>) -> io::Result<bool>;
 }
