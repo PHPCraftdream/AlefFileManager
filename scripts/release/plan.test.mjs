@@ -213,6 +213,49 @@ test('staging_a_manifest_without_files_copies_bin_src_and_templates_but_not_node
   }
 });
 
+test('the_release_build_uses_the_dist_profile_and_not_the_release_profile', () => {
+  const block = buildBlock();
+  assert.match(block, /--profile dist/);
+  assert.doesNotMatch(block, /--release\b/);
+});
+
+test('the_dist_binary_is_scanned_for_test_hooks_and_smoke_checked_from_dist', () => {
+  const block = buildBlock();
+  // the published binary is the one scanned: the exact dist path, per-OS bin substitution
+  assert.match(block, /check-no-hooks\.mjs backend\/target\/dist\/\$\{\{ matrix\.bin \}\}/);
+  assert.match(block, /backend\/target\/dist\/\$\{\{ matrix\.bin \}\} --help/);
+});
+
+test('the_size_report_step_appends_the_summary_and_writes_the_json_artifact', () => {
+  const block = buildBlock();
+  // the statements themselves, not just identifiers: removing either call must fail
+  assert.match(block, /appendFileSync\(process\.env\.GITHUB_STEP_SUMMARY/);
+  assert.match(block, /writeFileSync\('size-' \+ platform \+ '\.json'/);
+  assert.match(block, /size-\*\.json/);
+});
+
+test('the_dist_profile_strips_and_uses_thin_lto_while_plain_release_stays_untouched', () => {
+  const toml = readFileSync(new URL('../../backend/Cargo.toml', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
+  // Scoped to the [profile.dist] section only: a regex on the whole file cannot tell which profile a key belongs to.
+  const section = (name) => {
+    const start = toml.indexOf(`[${name}]`);
+    assert.notEqual(start, -1, `missing [${name}] section`);
+    const rest = toml.slice(start + 1);
+    const next = /^\[/m.exec(rest);
+    return rest.slice(0, next ? next.index : rest.length);
+  };
+  const dist = section('profile.dist');
+  assert.match(dist, /^inherits = "release"$/m);
+  assert.match(dist, /^strip = "symbols"$/m);
+  assert.match(dist, /^lto = "thin"$/m);
+  // If a plain [profile.release] section ever appears, it must not duplicate the dist settings (CI timings unchanged).
+  if (toml.includes('[profile.release]')) {
+    const release = section('profile.release');
+    assert.doesNotMatch(release, /^lto =/m);
+    assert.doesNotMatch(release, /^strip =/m);
+  }
+});
+
 test('the_real_packages_all_declare_one_version', () => {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   assert.equal(checkVersions(collectPackages(root)), '0.1.0');
