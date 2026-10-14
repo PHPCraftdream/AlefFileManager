@@ -10,8 +10,7 @@ use crate::{AlefError, ErrorCode};
 mod assets;
 use assets::{deserialize_assets, field_line};
 mod runtime;
-use runtime::deserialize_runtime;
-pub use runtime::{runtime_requirement_met, validate_package_version};
+pub use runtime::{deserialize_runtime, runtime_requirement_met, validate_package_version};
 mod updater;
 use updater::{deserialize_updater, validate_updater};
 

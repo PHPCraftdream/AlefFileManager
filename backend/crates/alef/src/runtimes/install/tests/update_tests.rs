@@ -24,6 +24,22 @@ fn fixture(version: &str) -> (Vec<u8>, String) {
     ])
 }
 
+fn runtime_fixture(version: &str, requirement: &str) -> (Vec<u8>, String) {
+    let manifest = support::manifest_text(&format!("runtime: {requirement}\n"))
+        .replace("version:: 1.0.0", &format!("version:: {version}"));
+    support::signed_package(&[
+        ("alef.ktav", manifest.as_bytes()),
+        ("dist/index.html", b"<html/>".as_slice()),
+    ])
+}
+
+/// Fakes an installed runtime version inside the scratch home's runtime store.
+fn place_runtime(home: &Path, version: &str) {
+    let folder = home.join("runtimes").join(version);
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(crate::runtimes::store::BINARY_NAME), b"binary").unwrap();
+}
+
 /// A package signed by a key other than the fixed support key: the record format is identical.
 fn alt_signed_package(files: &[(&str, &[u8])]) -> (Vec<u8>, String) {
     use base64::{engine::general_purpose::STANDARD, Engine};
@@ -166,6 +182,7 @@ fn applier(home: &Path, fingerprint: &str, fake: Shared) -> StoreApplier {
         home.to_owned(),
         home.join("current alef"),
         fingerprint.to_owned(),
+        home.join("runtimes"),
         Box::new(fake),
         alef_modules::Termination::default(),
     )
@@ -291,6 +308,60 @@ async fn a_stale_entry_that_cannot_be_removed_does_not_fail_the_update() {
         let installed = apply(&applier, &new).await.unwrap();
         assert!(installed.exists());
         assert!(stubborn.is_dir());
+    })
+    .await
+    .expect("bounded");
+}
+
+// An update satisfied only by an installed (not the running) runtime version must install; the
+// relaunch after the update then picks that runtime (M7a.4).
+#[tokio::test]
+async fn an_update_requiring_an_installed_runtime_version_installs_without_running_it() {
+    tokio::time::timeout(WAIT, async {
+        let home = Home::new();
+        place_runtime(home.path(), "9.0.0");
+        let (old, fingerprint) = fixture("1.0.0");
+        let fake = Shared::default();
+        let applier = Arc::new(applier(home.path(), &fingerprint, fake.clone()));
+        apply(&applier, &old).await.unwrap();
+        let (new, _) = runtime_fixture("2.0.0", "^9.0.0");
+        let installed = apply(&applier, &new).await.unwrap();
+        assert_eq!(record(home.path()).version, "2.0.0");
+        assert!(installed.exists());
+        assert!(!appdir(home.path()).join("1.0.0.alef").exists());
+    })
+    .await
+    .expect("bounded");
+}
+
+// An update whose runtime range is satisfied neither by the running nor by any installed runtime
+// is refused, and the previous installation stays exactly as it was.
+#[tokio::test]
+async fn an_update_requiring_an_unsatisfied_runtime_is_refused_and_the_old_install_is_unchanged() {
+    tokio::time::timeout(WAIT, async {
+        let home = Home::new();
+        place_runtime(home.path(), "1.5.0");
+        let (old, fingerprint) = fixture("1.0.0");
+        let fake = Shared::default();
+        let applier = Arc::new(applier(home.path(), &fingerprint, fake.clone()));
+        apply(&applier, &old).await.unwrap();
+        let old_package_path = appdir(home.path()).join("1.0.0.alef");
+        let old_package = std::fs::read(&old_package_path).unwrap();
+        let old_record = std::fs::read(appdir(home.path()).join("app.json")).unwrap();
+        let (new, _) = runtime_fixture("2.0.0", "^9.0.0");
+        assert!(apply(&applier, &new).await.is_err());
+        // The store looks exactly as before the refused update.
+        assert_eq!(record(home.path()).version, "1.0.0");
+        assert_eq!(std::fs::read(&old_package_path).unwrap(), old_package);
+        assert_eq!(
+            std::fs::read(appdir(home.path()).join("app.json")).unwrap(),
+            old_record
+        );
+        assert!(!appdir(home.path()).join("2.0.0.alef").exists());
+        // The integration was left pointing at the previous artifact.
+        let artifacts = fake.artifacts();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].package, appdir(home.path()).join("1.0.0.alef"));
     })
     .await
     .expect("bounded");

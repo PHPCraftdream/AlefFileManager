@@ -184,6 +184,13 @@ pub(crate) async fn session() -> Arc<Session> {
     .unwrap()
 }
 async fn check(endpoint: String) -> Result<Reply, AlefError> {
+    check_with(endpoint, "1.0.0", &[]).await
+}
+async fn check_with(
+    endpoint: String,
+    runtime_version: &str,
+    installed: &[&str],
+) -> Result<Reply, AlefError> {
     let ctx = UpdaterContext {
         config: Updater {
             endpoint,
@@ -191,6 +198,11 @@ async fn check(endpoint: String) -> Result<Reply, AlefError> {
         },
         app_id: "test.app".into(),
         version: "1.0.0".into(),
+        runtime_version: runtime_version.into(),
+        installed_runtime_versions: installed
+            .iter()
+            .map(|version| version.to_string())
+            .collect(),
         trusted_key: [7u8; 32],
         data: std::env::temp_dir().join("alef-updater-tests"),
         installed: Some(InstalledApp {
@@ -213,6 +225,13 @@ async fn check(endpoint: String) -> Result<Reply, AlefError> {
 }
 fn document(version: &str, package: &str) -> Vec<u8> {
     serde_json::json!({"version":version,"package":package,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).to_string().into_bytes()
+}
+fn document_with_runtime(version: &str, package: &str, runtime: Option<&str>) -> Vec<u8> {
+    let mut value = serde_json::json!({"version":version,"package":package,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
+    if let Some(runtime) = runtime {
+        value["runtime"] = runtime.into();
+    }
+    value.to_string().into_bytes()
 }
 
 #[tokio::test]
@@ -251,6 +270,133 @@ async fn check_returns_an_available_newer_update() {
     let reply = check(server.url.clone()).await.unwrap();
     assert!(
         matches!(reply, Reply::Json(value) if value == serde_json::json!({"available":true,"version":"1.2.0"}))
+    );
+}
+
+#[tokio::test]
+async fn check_reports_the_feed_runtime_range_satisfied_by_the_running_runtime() {
+    let server = Server::start(
+        document_with_runtime("1.2.0", "/package", Some("^1.0.0")),
+        hyper::StatusCode::OK,
+        false,
+    )
+    .await;
+    let reply = check_with(server.url.clone(), "1.5.0", &[]).await.unwrap();
+    assert!(
+        matches!(reply, Reply::Json(value) if value == serde_json::json!({"available":true,"version":"1.2.0","runtime":{"range":"^1.0.0","satisfied":true}}))
+    );
+}
+
+#[tokio::test]
+async fn check_reports_a_range_satisfied_by_an_installed_runtime_version() {
+    let server = Server::start(
+        document_with_runtime("1.2.0", "/package", Some("^2.0.0")),
+        hyper::StatusCode::OK,
+        false,
+    )
+    .await;
+    let reply = check_with(server.url.clone(), "1.0.0", &["2.0.0"])
+        .await
+        .unwrap();
+    assert!(
+        matches!(reply, Reply::Json(value) if value["runtime"]["satisfied"] == serde_json::json!(true))
+    );
+}
+
+#[tokio::test]
+async fn check_reports_an_installed_list_of_only_incompatible_versions_as_unsatisfied() {
+    let server = Server::start(
+        document_with_runtime("1.2.0", "/package", Some("^2.0.0")),
+        hyper::StatusCode::OK,
+        false,
+    )
+    .await;
+    let reply = check_with(server.url.clone(), "1.0.0", &["1.5.0"])
+        .await
+        .unwrap();
+    assert!(
+        matches!(reply, Reply::Json(value) if value == serde_json::json!({"available":true,"version":"1.2.0","runtime":{"range":"^2.0.0","satisfied":false}}))
+    );
+}
+
+#[tokio::test]
+async fn check_reports_an_unsatisfied_runtime_range() {
+    let server = Server::start(
+        document_with_runtime("1.2.0", "/package", Some("^2.0.0")),
+        hyper::StatusCode::OK,
+        false,
+    )
+    .await;
+    let reply = check_with(server.url.clone(), "1.0.0", &[]).await.unwrap();
+    assert!(
+        matches!(reply, Reply::Json(value) if value == serde_json::json!({"available":true,"version":"1.2.0","runtime":{"range":"^2.0.0","satisfied":false}}))
+    );
+}
+
+#[tokio::test]
+async fn check_omits_the_runtime_field_when_the_feed_declares_none() {
+    let server = Server::start(document("1.2.0", "/package"), hyper::StatusCode::OK, false).await;
+    let reply = check_with(server.url.clone(), "1.0.0", &["9.0.0"])
+        .await
+        .unwrap();
+    assert!(
+        matches!(reply, Reply::Json(value) if value == serde_json::json!({"available":true,"version":"1.2.0"}))
+    );
+}
+
+#[tokio::test]
+async fn check_rejects_a_feed_with_an_invalid_runtime_range() {
+    let server = Server::start(
+        document_with_runtime("1.2.0", "/package", Some("1.0.0.0")),
+        hyper::StatusCode::OK,
+        false,
+    )
+    .await;
+    let error = check_with(server.url.clone(), "1.0.0", &[])
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UpdateBadDocument);
+}
+
+#[tokio::test]
+async fn a_feed_range_that_differs_from_the_manifest_runtime_is_rejected_and_nothing_is_published()
+{
+    let scratch = tempfile::tempdir().unwrap();
+    let (package, key) = signed_package_with_runtime("2.0.0", "org.example.app", Some("^1.0.0"));
+    let config = signed_context(scratch.path(), key);
+
+    let publish = |config: &UpdaterContext, offered: document::Document| {
+        let storage = storage::Storage::prepare(&config.data).unwrap();
+        let mut temp = storage.temp().unwrap();
+        std::io::Write::write_all(temp.as_file_mut(), &package).unwrap();
+        let config = config.clone();
+        async move {
+            tokio::time::timeout(
+                WAIT,
+                storage::verify_and_publish(storage, temp, &config, &offered),
+            )
+            .await
+            .expect("package verification timed out")
+        }
+    };
+
+    let error = publish(&config, offered_with_runtime("2.0.0", Some("^9.0.0")))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UpdateBadDocument);
+    let entries: Vec<_> = std::fs::read_dir(scratch.path().join("updates"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, [std::ffi::OsString::from(".alef-update.lock")]);
+
+    // The matching range publishes and stores the exact package bytes.
+    publish(&config, offered_with_runtime("2.0.0", Some("^1.0.0")))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(scratch.path().join("updates/2.0.0.alef")).unwrap(),
+        package
     );
 }
 
@@ -327,6 +473,8 @@ async fn assert_transfer_error(server: &Server, sha256: String, limit: u64, expe
         },
         app_id: "test.app".into(),
         version: "1.0.0".into(),
+        runtime_version: "1.0.0".into(),
+        installed_runtime_versions: Vec::new(),
         trusted_key: [7u8; 32],
         data: scratch.path().to_path_buf(),
         installed: Some(InstalledApp {
@@ -339,6 +487,7 @@ async fn assert_transfer_error(server: &Server, sha256: String, limit: u64, expe
         notes: None,
         package: server.url.clone(),
         sha256,
+        runtime: None,
     };
     let session = session().await;
     let (writer, _stream) = session.streams().open_outgoing();
@@ -371,6 +520,8 @@ async fn download_rejects_invalid_packages_without_publishing_artifacts() {
         },
         app_id: "test.app".into(),
         version: "1.0.0".into(),
+        runtime_version: "1.0.0".into(),
+        installed_runtime_versions: Vec::new(),
         trusted_key: [7u8; 32],
         data: scratch.path().to_path_buf(),
         installed: Some(InstalledApp {
@@ -386,6 +537,7 @@ async fn download_rejects_invalid_packages_without_publishing_artifacts() {
         notes: None,
         package: "http://127.0.0.1/package".into(),
         sha256: "0".repeat(64),
+        runtime: None,
     };
 
     let error = tokio::time::timeout(
@@ -419,9 +571,19 @@ fn download_storage_lock_prevents_a_second_active_update() {
 }
 
 pub(crate) fn signed_package(version: &str, app_id: &str) -> (Vec<u8>, [u8; 32]) {
+    signed_package_with_runtime(version, app_id, None)
+}
+pub(crate) fn signed_package_with_runtime(
+    version: &str,
+    app_id: &str,
+    runtime: Option<&str>,
+) -> (Vec<u8>, [u8; 32]) {
     let key = Ed25519KeyPair::from_seed_unchecked(&[42u8; 32]).unwrap();
     let manifest = include_bytes!("../../../../alef-core/tests/fixtures/minimal.ktav");
-    let manifest = std::str::from_utf8(manifest).unwrap();
+    let mut manifest = std::str::from_utf8(manifest).unwrap().to_owned();
+    if let Some(runtime) = runtime {
+        manifest = format!("runtime: {runtime}\n{manifest}");
+    }
     assert!(manifest.contains("id: org.example.app"));
     assert!(manifest.contains("version:: 1.0.0"));
     let manifest = manifest
@@ -536,6 +698,8 @@ pub(crate) fn signed_context(data: &std::path::Path, trusted_key: [u8; 32]) -> U
         },
         app_id: "org.example.app".into(),
         version: "1.0.0".into(),
+        runtime_version: "1.0.0".into(),
+        installed_runtime_versions: Vec::new(),
         trusted_key,
         data: data.to_path_buf(),
         installed: Some(InstalledApp {
@@ -545,11 +709,15 @@ pub(crate) fn signed_context(data: &std::path::Path, trusted_key: [u8; 32]) -> U
     }
 }
 pub(crate) fn offered(version: &str) -> document::Document {
+    offered_with_runtime(version, None)
+}
+pub(crate) fn offered_with_runtime(version: &str, runtime: Option<&str>) -> document::Document {
     document::Document {
         version: version.into(),
         notes: None,
         package: "http://127.0.0.1/package".into(),
         sha256: String::new(),
+        runtime: runtime.map(str::to_owned),
     }
 }
 pub(crate) async fn verify_bytes(

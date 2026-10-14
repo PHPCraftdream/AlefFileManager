@@ -53,7 +53,7 @@ jobs:
           fi
       # Чистые unit-тесты планировщика: npm ci не нужен.
       - name: Planner and release unit tests
-        run: node --test scripts/ci/plan.test.mjs scripts/release/plan.test.mjs
+        run: node --test scripts/ci/plan.test.mjs scripts/release/plan.test.mjs scripts/release/size.test.mjs
 
   build:
     name: ${{ matrix.name }}
@@ -141,13 +141,17 @@ jobs:
       - name: npm ci
         run: npm ci
 
-      # В релизном бинарнике нет тестовых хуков — за этим следит scripts/supply/check-no-hooks.mjs в CI.
       - name: Release build without test hooks
-        run: node scripts/cargo.mjs build --locked -p alef --release
+        run: node scripts/cargo.mjs build --locked -p alef --profile dist
+
+      # В релизном бинарнике нет тестовых хуков — за этим следит scripts/supply/check-no-hooks.mjs в CI.
+      - name: Check the dist binary has no test hooks
+        shell: bash
+        run: node scripts/supply/check-no-hooks.mjs backend/target/dist/${{ matrix.bin }}
 
       - name: Smoke check
         shell: bash
-        run: backend/target/release/${{ matrix.bin }} --help
+        run: backend/target/dist/${{ matrix.bin }} --help
 
       # bsdtar под Git Bash — GNU tar, `-a` не умеет zip; Compress-Archive + формат sha256sum.
       - name: Pack (zip)
@@ -157,7 +161,7 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           $archive = "alef-$env:VERSION-${{ matrix.name }}.zip"
-          Compress-Archive -Path 'backend/target/release/alef.exe' -DestinationPath $archive
+          Compress-Archive -Path 'backend/target/dist/alef.exe' -DestinationPath $archive
           $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -Path "$archive.sha256" -Value "$hash  $archive"
 
@@ -167,9 +171,31 @@ jobs:
         run: |
           version="${{ needs.plan.outputs.version }}"
           archive="alef-${version}-${{ matrix.name }}.tar.gz"
-          tar -czf "$archive" -C backend/target/release alef
+          tar -czf "$archive" -C backend/target/dist alef
           # macOS has no sha256sum; shasum prints the same "<hash>  <file>" format.
           if command -v sha256sum >/dev/null; then sha256sum "$archive"; else shasum -a 256 "$archive"; fi > "$archive.sha256"
+
+      # Замер размера (docs/stages/m7-distribution.md, «Размер»): в job summary и в артефакт size-<platform>.json.
+      - name: Record binary and archive sizes
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          binary="backend/target/dist/${{ matrix.bin }}"
+          archive=$(ls alef-"$VERSION"-${{ matrix.name }}.* | grep -v '\.sha256$' | head -n 1)
+          node --input-type=module -e "
+            import { appendFileSync, writeFileSync } from 'node:fs';
+            import { sizeReport, formatSummary, writeJson } from './scripts/release/size.mjs';
+            const report = sizeReport({ binaryPath: process.argv[1], archivePath: process.argv[2], profile: 'dist' });
+            const platform = process.argv[3];
+            const row = formatSummary(report, platform);
+            console.log(row);
+            if (process.env.GITHUB_STEP_SUMMARY) {
+              appendFileSync(process.env.GITHUB_STEP_SUMMARY, '| platform | binary bytes | binary | archive bytes | archive | profile |\n| --- | --- | --- | --- | --- | --- |\n' + row + '\n');
+            }
+            const json = writeJson({ ...report, platform });
+            writeFileSync('size-' + platform + '.json', json);
+          " "$binary" "$archive" "${{ matrix.name }}"
 
       - name: Upload runtime artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -179,6 +205,7 @@ jobs:
             alef-*.zip
             alef-*.tar.gz
             alef-*.sha256
+            size-*.json
           if-no-files-found: error
 
   npm-publish:

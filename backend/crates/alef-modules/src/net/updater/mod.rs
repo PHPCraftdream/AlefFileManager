@@ -2,7 +2,7 @@
 //! Native updater feed check.
 use alef_core::{
     registry::{command::Reply, context::CallContext, dispatch::Registry},
-    security::manifest::Updater,
+    security::manifest::{runtime_requirement_met, Updater},
     AlefError, ErrorCode,
 };
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,11 @@ pub struct UpdaterContext {
     pub config: Updater,
     pub app_id: String,
     pub version: String,
+    /// The version of the runtime binary this process runs.
+    pub runtime_version: String,
+    /// Versions installed in the runtime store, computed by the launcher and passed in as data;
+    /// alef-modules never discovers them itself.
+    pub installed_runtime_versions: Vec<String>,
     pub trusted_key: [u8; 32],
     pub data: PathBuf,
     /// The running package path when it comes from the user store of `alef install`.
@@ -63,6 +68,25 @@ struct UpdaterCheckReply {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    runtime: Option<UpdaterRuntimeRequirement>,
+}
+
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export, export_to = "modules.ts")]
+struct UpdaterRuntimeRequirement {
+    range: String,
+    satisfied: bool,
+}
+
+/// The range is satisfied by the running runtime or by any installed runtime version.
+pub(super) fn runtime_satisfied(config: &UpdaterContext, range: &str) -> bool {
+    runtime_requirement_met(range, &config.runtime_version)
+        || config
+            .installed_runtime_versions
+            .iter()
+            .any(|version| runtime_requirement_met(range, version))
 }
 
 pub fn register_updater(
@@ -96,17 +120,23 @@ pub fn register_updater(
                 let bytes = client::get(&endpoint).await?;
                 let parsed = document::parse(&bytes, &endpoint, &config.version)?;
                 let reply = if let Some(doc) = parsed {
+                    let runtime = doc.runtime.as_ref().map(|range| UpdaterRuntimeRequirement {
+                        range: range.clone(),
+                        satisfied: runtime_satisfied(&config, range),
+                    });
                     *state.offered.lock().unwrap_or_else(|e| e.into_inner()) = Some(doc.clone());
                     UpdaterCheckReply {
                         available: true,
                         version: Some(doc.version),
                         notes: doc.notes,
+                        runtime,
                     }
                 } else {
                     UpdaterCheckReply {
                         available: false,
                         version: None,
                         notes: None,
+                        runtime: None,
                     }
                 };
                 Ok(Reply::Json(json!(reply)))

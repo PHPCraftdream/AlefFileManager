@@ -129,6 +129,15 @@ pub fn load(path: &Path) -> Result<ApplicationSource, LoadFailure> {
 }
 
 pub fn load_install(path: &Path) -> Result<(Prepared, Vec<u8>), LoadFailure> {
+    load_install_in(path, &crate::runtimes::store::root())
+}
+
+/// [`load_install`] against an explicit runtime-store root, so callers that own a home
+/// (the applier, tests) never depend on the process environment.
+pub fn load_install_in(
+    path: &Path,
+    runtime_store: &Path,
+) -> Result<(Prepared, Vec<u8>), LoadFailure> {
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
         Err(_) => return Err(not_a_package(path)),
@@ -142,16 +151,24 @@ pub fn load_install(path: &Path) -> Result<(Prepared, Vec<u8>), LoadFailure> {
     if !meta.is_file() {
         return Err(not_a_package(path));
     }
-    prepare_snapshot(path, true)
+    prepare_snapshot(path, true, runtime_store)
         .map(|(prepared, bytes)| (prepared, bytes.expect("retained installation snapshot")))
 }
 
 fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
-    prepare_snapshot(path, false).map(|(prepared, _)| prepared)
+    prepare_snapshot(path, false, Path::new("")).map(|(prepared, _)| prepared)
 }
 
-/// Freezes one bounded source snapshot; installation may retain those exact verified bytes.
-fn prepare_snapshot(path: &Path, retain: bool) -> Result<(Prepared, Option<Vec<u8>>), LoadFailure> {
+/// Freezes one bounded source snapshot; the install mode (used by `alef install` and the updater
+/// applier) retains those exact verified bytes and also accepts a range satisfied by an installed
+/// runtime version (the install-mode compatibility check lists the versions installed in
+/// `runtime_store`); the run mode stays strict so the launcher's relaunch (M7a.4) picks the right
+/// binary.
+fn prepare_snapshot(
+    path: &Path,
+    install: bool,
+    runtime_store: &Path,
+) -> Result<(Prepared, Option<Vec<u8>>), LoadFailure> {
     let file = std::fs::File::open(path).map_err(io_failure)?;
     let meta = file.metadata().map_err(io_failure)?;
     if !meta.is_file() {
@@ -163,7 +180,7 @@ fn prepare_snapshot(path: &Path, retain: bool) -> Result<(Prepared, Option<Vec<u
         )));
     }
     let mut bytes = Vec::new();
-    if retain {
+    if install {
         bytes
             .try_reserve_exact(usize::try_from(meta.len()).unwrap_or(usize::MAX))
             .map_err(|_| run_limit("cannot allocate the bounded installation snapshot"))?;
@@ -177,7 +194,7 @@ fn prepare_snapshot(path: &Path, retain: bool) -> Result<(Prepared, Option<Vec<u
         )));
     }
     let archive_digest = format!("{:x}", Sha256::digest(&bytes));
-    let retained_bytes = if retain {
+    let retained_bytes = if install {
         let mut snapshot = Vec::new();
         snapshot
             .try_reserve_exact(bytes.len())
@@ -214,7 +231,19 @@ fn prepare_snapshot(path: &Path, retain: bool) -> Result<(Prepared, Option<Vec<u
         )));
     }
     if let Some(requirement) = manifest.runtime.as_deref() {
-        if !runtime_requirement_met(requirement, env!("CARGO_PKG_VERSION")) {
+        // Install mode (alef install / the updater applier) also accepts an already installed
+        // runtime version; the relaunch after the update then selects it (M7a.4). The run
+        // mode stays strict so the launcher, not this loader, handles the mismatch.
+        let satisfied = runtime_requirement_met(requirement, env!("CARGO_PKG_VERSION"))
+            || (install
+                && crate::runtimes::store::installed_in(runtime_store)
+                    .map(|installed| {
+                        installed
+                            .iter()
+                            .any(|entry| runtime_requirement_met(requirement, &entry.version))
+                    })
+                    .unwrap_or(false));
+        if !satisfied {
             return Err(LoadFailure {
                 category: Some("RUNTIME_INCOMPATIBLE"),
                 detail: crate::runtimes::command::incompatible_detail(requirement),

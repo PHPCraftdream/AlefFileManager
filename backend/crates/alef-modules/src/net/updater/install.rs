@@ -88,7 +88,17 @@ pub(super) async fn install(
     alef_core::security::manifest::validate_package_version(&offered.version)
         .map_err(|_| AlefError::new(ErrorCode::UpdateBadDocument, "invalid offered version"))?;
     let storage = storage::Storage::prepare(&config.data)?;
-    storage::verify_stored_package(&storage, &config, &offered).await?;
+    let required_runtime = storage::verify_stored_package(&storage, &config, &offered).await?;
+    if let Some(range) = required_runtime {
+        if !super::runtime_satisfied(&config, &range) {
+            return Err(AlefError::new(
+                ErrorCode::UpdateRuntimeRequired,
+                format!(
+                    "the update requires runtime {range}; install it with `alef runtime install <version> <path-to-alef-binary>`"
+                ),
+            ));
+        }
+    }
     let path = config
         .data
         .join("updates")
@@ -104,8 +114,8 @@ pub(crate) mod tests {
     use crate::net::updater::{
         document, register_updater,
         tests::{
-            offered, permissions, session, signed_context, signed_package, verify_bytes, Server,
-            WAIT,
+            offered, offered_with_runtime, permissions, session, signed_context, signed_package,
+            signed_package_with_runtime, verify_bytes, Server, WAIT,
         },
         State, UpdaterContext,
     };
@@ -186,6 +196,116 @@ pub(crate) mod tests {
         tokio::time::timeout(WAIT, install(config, state, gate))
             .await
             .expect("install timed out")
+    }
+
+    #[tokio::test]
+    async fn install_refuses_an_update_whose_runtime_no_installed_version_satisfies() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) =
+            signed_package_with_runtime("2.0.0", "org.example.app", Some("^9.0.0"));
+        let mut config = signed_context(scratch.path(), key);
+        config.runtime_version = "1.0.0".into();
+        config.installed_runtime_versions = Vec::new();
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        let error = run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateRuntimeRequired);
+        assert!(error.message.contains("^9.0.0"), "{error:?}");
+        assert!(error.message.contains("alef runtime install"), "{error:?}");
+        assert!(fake.calls().is_empty());
+        assert_eq!(
+            std::fs::read(scratch.path().join("updates/2.0.0.alef")).unwrap(),
+            package
+        );
+    }
+
+    #[tokio::test]
+    async fn install_refuses_an_update_whose_installed_versions_do_not_satisfy_the_range() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) =
+            signed_package_with_runtime("2.0.0", "org.example.app", Some("^9.0.0"));
+        let mut config = signed_context(scratch.path(), key);
+        config.runtime_version = "1.0.0".into();
+        config.installed_runtime_versions = vec!["1.5.0".into()];
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        let error = run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateRuntimeRequired);
+        assert!(error.message.contains("^9.0.0"), "{error:?}");
+        assert!(error.message.contains("alef runtime install"), "{error:?}");
+        assert!(fake.calls().is_empty());
+        assert_eq!(
+            std::fs::read(scratch.path().join("updates/2.0.0.alef")).unwrap(),
+            package
+        );
+    }
+
+    #[tokio::test]
+    async fn install_proceeds_when_an_installed_runtime_version_satisfies_the_range() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) =
+            signed_package_with_runtime("2.0.0", "org.example.app", Some("^9.0.0"));
+        let mut config = signed_context(scratch.path(), key);
+        config.runtime_version = "1.0.0".into();
+        config.installed_runtime_versions = vec!["9.0.0".into()];
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap();
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            ("apply", scratch.path().join("updates").join("2.0.0.alef"))
+        );
+    }
+
+    #[tokio::test]
+    async fn install_rejects_a_feed_range_that_differs_from_the_manifest_runtime() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) =
+            signed_package_with_runtime("2.0.0", "org.example.app", Some("^1.0.0"));
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        let error = run_install(
+            config,
+            install_state(Some(offered_with_runtime("2.0.0", Some("^9.0.0")))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateBadDocument);
+        assert!(fake.calls().is_empty());
     }
 
     #[tokio::test]

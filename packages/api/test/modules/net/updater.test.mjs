@@ -109,3 +109,22 @@ test('a refusal of the install reaches the caller with its code', async () => {
   replies.set('updater.install', { status: 409, json: { code: 'UPDATE_NOT_DOWNLOADED', message: 'no downloaded update is offered' } });
   await assert.rejects(updater.install(), error => error instanceof AlefError && error.code === 'UPDATE_NOT_DOWNLOADED');
 });
+
+test('check reports the runtime requirement of the feed as it is', async () => {
+  replies.clear();
+  replies.set('updater.check', { json: { available: true, version: '2.0.0', runtime: { range: '^2.0.0', satisfied: false } } });
+  const before = runtime.calls('updater.check').length;
+  assert.deepEqual(await updater.check(), { available: true, version: '2.0.0', runtime: { range: '^2.0.0', satisfied: false } });
+  const calls = runtime.calls('updater.check');
+  assert.equal(calls.length, before + 1);
+  assert.deepEqual(runtime.argsOf(calls.at(-1)), {});
+
+  replies.set('updater.check', { json: { available: false } });
+  assert.deepEqual(await updater.check(), { available: false });
+});
+
+test('a refusal of the install for an unsatisfied runtime reaches the caller with its code', async () => {
+  replies.clear();
+  replies.set('updater.install', { status: 400, json: { code: 'UPDATE_RUNTIME_REQUIRED', message: 'the update requires runtime ^2.0.0; install it with `alef runtime install <version> <path-to-alef-binary>`' } });
+  await assert.rejects(updater.install(), error => error instanceof AlefError && error.code === 'UPDATE_RUNTIME_REQUIRED');
+});
