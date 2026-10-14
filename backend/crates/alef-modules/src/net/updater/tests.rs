@@ -100,13 +100,16 @@ impl Server {
                                     } else if content_length.is_some() {
                                         // A declared length longer than the body: send the headers with
                                         // the first chunk and then stay silent, like a slow server.
-                                        use futures_util::StreamExt;
-                                        Response::new(http_body_util::StreamBody::new(
-                                            futures_util::stream::iter([Ok::<_, Infallible>(
-                                                hyper::body::Frame::data(bytes::Bytes::from(body)),
-                                            )])
-                                            .chain(futures_util::stream::pending()),
-                                        ).boxed())
+                                        let first = futures_util::stream::iter([Ok::<_, Infallible>(
+                                            hyper::body::Frame::data(bytes::Bytes::from(body)),
+                                        )]);
+                                        Response::new(
+                                            http_body_util::StreamBody::new(futures_util::StreamExt::chain(
+                                                first,
+                                                futures_util::stream::pending(),
+                                            ))
+                                            .boxed(),
+                                        )
                                     } else {
                                         Response::new(http_body_util::Full::new(bytes::Bytes::from(body)).boxed())
                                     };
