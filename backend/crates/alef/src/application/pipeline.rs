@@ -40,7 +40,32 @@ pub struct SettledLaunch {
     pub granted: Arc<PermissionSet>,
 }
 
-/// Checks the documents, then settles trust and consent, in exactly this order.
+/// Validates and prepares package documents before any trust question or trust-store write.
+pub async fn prepare_documents(
+    plan: &mut Plan,
+    dev_url: Option<&Url>,
+) -> Result<Option<PreparedAssets>, LoadFailure> {
+    if dev_url.is_some() {
+        return Ok(None);
+    }
+    let entry = plan.entry();
+    let documents: Vec<String> = plan
+        .manifest
+        .windows
+        .iter()
+        .map(|window| window.url.clone())
+        .collect();
+    prepare_assets(plan.take_assets(), Some(&entry), &documents)
+        .await
+        .map(Some)
+        .map_err(|error| LoadFailure {
+            category: Some("MANIFEST_INVALID"),
+            detail: format!("assets: {error}"),
+            exit: 2,
+            runtime_requirement: None,
+        })
+}
+
 pub async fn settle_launch(
     mut plan: Plan,
     identity: &Identity,
@@ -55,30 +80,9 @@ pub async fn settle_launch(
         name: plan.manifest.name.clone(),
         version: plan.manifest.version.clone(),
     };
-    // The documents first: one lookup, the one requests use, before trust or consent writes.
-    let assets = if dev_url.is_some() {
-        None
-    } else {
-        let entry = plan.entry();
-        let documents: Vec<String> = plan
-            .manifest
-            .windows
-            .iter()
-            .map(|window| window.url.clone())
-            .collect();
-        Some(
-            prepare_assets(plan.take_assets(), Some(&entry), &documents)
-                .await
-                .map_err(|error| {
-                    SettleFailure::Documents(LoadFailure {
-                        category: Some("MANIFEST_INVALID"),
-                        detail: format!("assets: {error}"),
-                        exit: 2,
-                        runtime_requirement: None,
-                    })
-                })?,
-        )
-    };
+    let assets = prepare_documents(&mut plan, dev_url)
+        .await
+        .map_err(SettleFailure::Documents)?;
     // The package is trusted before any right is decided: the trust question carries no rights.
     if let Some((signer, digest, inputs)) = trust {
         let asker = trust_asker.ok_or_else(|| {

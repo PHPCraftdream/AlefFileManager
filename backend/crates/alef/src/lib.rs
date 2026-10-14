@@ -5,6 +5,8 @@ pub mod application;
 pub mod args;
 pub mod consent;
 pub use consent::permissions;
+#[path = "runtimes/install/mod.rs"]
+pub mod install;
 pub mod relaunch;
 pub mod runtimes;
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The local store of installed runtime versions: `<runtime_home()/runtimes>/<MAJOR.MINOR.PATCH>/<binary>`.
 pub mod command;
+#[path = "install.rs"]
 pub mod install;
 pub mod prune;
 pub mod store;
