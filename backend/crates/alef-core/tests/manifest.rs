@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+#[path = "fixtures/updater_manifest.rs"]
+mod updater_manifest;
+
 use alef_core::{
     security::{
         manifest::{ArgKind, Manifest},
