@@ -91,13 +91,7 @@ impl Server {
                                 let body = body.clone();
                                 let content_length = content_length.clone();
                                 async move {
-                                    let mut response = if suppress_length {
-                                        Response::new(http_body_util::StreamBody::new(
-                                            futures_util::stream::iter([Ok::<_, Infallible>(
-                                                hyper::body::Frame::data(bytes::Bytes::from(body)),
-                                            )]),
-                                        ).boxed())
-                                    } else if content_length.is_some() {
+                                    let mut response = if content_length.is_some() {
                                         // A declared length longer than the body: send the headers with
                                         // the first chunk and then stay silent, like a slow server.
                                         let first = futures_util::stream::iter([Ok::<_, Infallible>(
@@ -110,6 +104,12 @@ impl Server {
                                             ))
                                             .boxed(),
                                         )
+                                    } else if suppress_length {
+                                        Response::new(http_body_util::StreamBody::new(
+                                            futures_util::stream::iter([Ok::<_, Infallible>(
+                                                hyper::body::Frame::data(bytes::Bytes::from(body)),
+                                            )]),
+                                        ).boxed())
                                     } else {
                                         Response::new(http_body_util::Full::new(bytes::Bytes::from(body)).boxed())
                                     };

@@ -117,8 +117,12 @@ fn ensure_safe_dir(path: &Path) -> Result<(), AlefError> {
     };
     // Links above the data directory belong to the system (/var on macOS, /home on some Linux
     // setups); only what lies below the first existing ancestor is checked component by component.
+    // The final component is never resolved: a link planted there must be rejected, not followed.
     #[cfg(unix)]
-    let absolute = canonical_existing_prefix(&absolute)?;
+    let absolute = match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(name)) => canonical_existing_prefix(parent)?.join(name),
+        _ => absolute,
+    };
     let mut current = PathBuf::new();
     for component in absolute.components() {
         if matches!(component, std::path::Component::Prefix(_))
