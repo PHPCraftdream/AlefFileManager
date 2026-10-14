@@ -626,6 +626,15 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
                 config,
                 app_id: plan.manifest.id.clone(),
                 version: plan.manifest.version.clone(),
+                runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+                installed_runtime_versions: runtimes::installed()
+                    .map(|installed| {
+                        installed
+                            .into_iter()
+                            .map(|runtime| runtime.version)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 trusted_key: key,
                 data: vars.app_data.clone(),
                 installed,

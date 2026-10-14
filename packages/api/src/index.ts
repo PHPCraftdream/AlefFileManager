@@ -54,6 +54,7 @@ export {
 } from './net/http.ts';
 export { updater, type UpdaterDownloadOptions } from './net/updater.ts';
 export type { UpdaterCheckReply } from '../types/modules.ts';
+export type { UpdaterRuntimeRequirement } from '../types/modules.ts';
 export {
   socket,
   TcpServer,
