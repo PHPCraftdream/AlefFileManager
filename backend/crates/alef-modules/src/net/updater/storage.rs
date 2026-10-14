@@ -35,14 +35,22 @@ impl Storage {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let lock_file = options.open(&lock).map_err(io_error)?;
-        let meta = fs::symlink_metadata(&lock).map_err(io_error)?;
+        let lock_file = options
+            .open(&lock)
+            .map_err(|e| io_error("open lock", &lock, e))?;
+        let meta = fs::symlink_metadata(&lock).map_err(|e| io_error("inspect lock", &lock, e))?;
         if !meta.is_file() || meta.file_type().is_symlink() || is_reparse(&meta) {
-            return Err(io_error(std::io::Error::other("unsafe updater lock")));
+            return Err(io_error(
+                "validate lock",
+                &lock,
+                std::io::Error::other("unsafe updater lock"),
+            ));
         }
-        lock_file
-            .try_lock()
-            .map_err(|_| AlefError::new(ErrorCode::UpdateBusy, "another process is updating"))?;
+        lock_file.try_lock().map_err(|error| {
+            #[cfg(any(test, feature = "e2e"))]
+            eprintln!("updater storage operation=lock path={lock:?} error={error:?}");
+            AlefError::new(ErrorCode::UpdateBusy, "another process is updating")
+        })?;
         Ok(Self {
             updates,
             _lock_file: lock_file,
@@ -50,18 +58,33 @@ impl Storage {
     }
 
     pub(super) fn temp(&self) -> Result<NamedTempFile, AlefError> {
-        let temp = NamedTempFile::new_in(&self.updates).map_err(io_error)?;
-        let meta = fs::symlink_metadata(temp.path()).map_err(io_error)?;
+        let temp = NamedTempFile::new_in(&self.updates)
+            .map_err(|e| io_error("create temporary file", &self.updates, e))?;
+        let meta = fs::symlink_metadata(temp.path())
+            .map_err(|e| io_error("inspect temporary file", temp.path(), e))?;
         if !meta.is_file() || meta.file_type().is_symlink() || is_reparse(&meta) {
-            return Err(io_error(std::io::Error::other(
-                "unsafe updater temporary file",
-            )));
+            return Err(io_error(
+                "validate temporary file",
+                temp.path(),
+                std::io::Error::other("unsafe updater temporary file"),
+            ));
         }
         Ok(temp)
     }
 }
 
-fn io_error(_: std::io::Error) -> AlefError {
+pub(super) fn io_error(operation: &str, path: &Path, source: std::io::Error) -> AlefError {
+    #[cfg(any(test, feature = "e2e"))]
+    {
+        eprintln!("updater storage operation={operation} path={path:?} error={source:?}");
+        let mut cause = std::error::Error::source(&source);
+        while let Some(error) = cause {
+            eprintln!("updater storage operation={operation} source={error:?}");
+            cause = error.source();
+        }
+    }
+    #[cfg(not(any(test, feature = "e2e")))]
+    let _ = (operation, path, source);
     AlefError::new(ErrorCode::UpdateIo, "updater storage operation failed")
 }
 
@@ -69,43 +92,61 @@ fn ensure_safe_dir(path: &Path) -> Result<(), AlefError> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().map_err(io_error)?.join(path)
+        std::env::current_dir()
+            .map_err(|e| io_error("resolve data directory", path, e))?
+            .join(path)
     };
     let mut current = PathBuf::new();
     for component in absolute.components() {
-        if component == std::path::Component::RootDir {
+        if matches!(component, std::path::Component::Prefix(_))
+            || component == std::path::Component::RootDir
+        {
             current.push(component);
             continue;
         }
         current.push(component);
         match fs::symlink_metadata(&current) {
             Ok(meta) if meta.file_type().is_symlink() || is_reparse(&meta) => {
-                return Err(io_error(std::io::Error::other("link")));
+                return Err(io_error(
+                    "inspect directory",
+                    &current,
+                    std::io::Error::other("link"),
+                ));
             }
             Ok(meta) if !meta.is_dir() => {
-                return Err(io_error(std::io::Error::other("not directory")));
+                return Err(io_error(
+                    "inspect directory",
+                    &current,
+                    std::io::Error::other("not directory"),
+                ));
             }
             Ok(_) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 match create_private_dir(&current) {
                     Ok(()) => (),
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
-                    Err(e) => return Err(io_error(e)),
+                    Err(e) => return Err(io_error("create directory", &current, e)),
                 }
-                let meta = fs::symlink_metadata(&current).map_err(io_error)?;
+                let meta = fs::symlink_metadata(&current)
+                    .map_err(|e| io_error("inspect directory", &current, e))?;
                 if !meta.is_dir() || meta.file_type().is_symlink() || is_reparse(&meta) {
-                    return Err(io_error(std::io::Error::other("unsafe directory")));
+                    return Err(io_error(
+                        "validate directory",
+                        &current,
+                        std::io::Error::other("unsafe directory"),
+                    ));
                 }
                 #[cfg(windows)]
                 apply_private_acl(&current, true)?;
             }
-            Err(e) => return Err(io_error(e)),
+            Err(e) => return Err(io_error("inspect directory", &current, e)),
         }
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&absolute, fs::Permissions::from_mode(0o700)).map_err(io_error)?;
+        fs::set_permissions(&absolute, fs::Permissions::from_mode(0o700))
+            .map_err(|e| io_error("set directory permissions", &absolute, e))?;
     }
     Ok(())
 }
@@ -134,7 +175,8 @@ fn apply_private_acl(path: &Path, inherit: bool) -> Result<(), AlefError> {
             PSECURITY_DESCRIPTOR,
         },
     };
-    let current = crate::desktop::app::updater_owner_sids().map_err(io_error)?;
+    let current = crate::desktop::app::updater_owner_sids()
+        .map_err(|e| io_error("resolve ACL owner", path, e))?;
     let sddl = if inherit {
         format!("D:P(A;OICI;FA;;;{})(A;OICI;FA;;;SY)", current[0])
     } else {
@@ -152,7 +194,11 @@ fn apply_private_acl(path: &Path, inherit: bool) -> Result<(), AlefError> {
         )
     } == 0
     {
-        return Err(io_error(std::io::Error::last_os_error()));
+        return Err(io_error(
+            "set private ACL",
+            path,
+            std::io::Error::last_os_error(),
+        ));
     }
     let path_text: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: path and descriptor remain valid for the call; only the protected DACL is set.
@@ -163,10 +209,11 @@ fn apply_private_acl(path: &Path, inherit: bool) -> Result<(), AlefError> {
             descriptor,
         )
     };
+    let set_error = (result == 0).then(std::io::Error::last_os_error);
     // SAFETY: descriptor was allocated by the conversion routine.
     unsafe { LocalFree(descriptor) };
-    if result == 0 {
-        Err(io_error(std::io::Error::last_os_error()))
+    if let Some(error) = set_error {
+        Err(io_error("SetFileSecurityW", path, error))
     } else {
         Ok(())
     }
@@ -279,15 +326,20 @@ fn verify_publish_blocking(
     let offered_version = alef_core::security::manifest::validate_package_version(&offered.version)
         .map_err(|_| AlefError::new(ErrorCode::UpdateBadDocument, "invalid version"))?;
     let mut remove_after_publish = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(io_error)? {
-        let entry = entry.map_err(io_error)?;
+    for entry in fs::read_dir(&dir).map_err(|e| io_error("list updates", &dir, e))? {
+        let entry = entry.map_err(|e| io_error("read update entry", &dir, e))?;
         let path = entry.path();
         if path.extension().and_then(|x| x.to_str()) != Some("alef") {
             continue;
         }
-        let meta = fs::symlink_metadata(&path).map_err(io_error)?;
+        let meta =
+            fs::symlink_metadata(&path).map_err(|e| io_error("inspect update entry", &path, e))?;
         if !meta.is_file() || meta.file_type().is_symlink() || is_reparse(&meta) {
-            return Err(io_error(std::io::Error::other("unsafe update entry")));
+            return Err(io_error(
+                "validate update entry",
+                &path,
+                std::io::Error::other("unsafe update entry"),
+            ));
         }
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
@@ -342,8 +394,12 @@ fn verify_publish_blocking(
             "package verification cancelled",
         ));
     }
-    temp.as_file_mut().flush().map_err(io_error)?;
-    temp.as_file().sync_all().map_err(io_error)?;
+    temp.as_file_mut()
+        .flush()
+        .map_err(|e| io_error("flush verified package", temp.path(), e))?;
+    temp.as_file()
+        .sync_all()
+        .map_err(|e| io_error("sync verified package", temp.path(), e))?;
     let target = dir.join(format!("{}.alef", offered.version));
     if cancelled.load(Ordering::Acquire) {
         return Err(AlefError::new(
@@ -358,14 +414,14 @@ fn verify_publish_blocking(
                 "update already downloaded",
             )
         } else {
-            io_error(e.error)
+            io_error("publish update", &target, e.error)
         }
     })?;
     for path in remove_after_publish {
-        if let Err(prune_error) = fs::remove_file(path) {
+        if let Err(prune_error) = fs::remove_file(&path) {
             return match fs::remove_file(&target) {
-                Ok(()) => Err(io_error(prune_error)),
-                Err(rollback_error) => Err(io_error(std::io::Error::other(format!(
+                Ok(()) => Err(io_error("prune update", &path, prune_error)),
+                Err(rollback_error) => Err(io_error("rollback published update", &target, std::io::Error::other(format!(
                     "update pruning failed: {prune_error}; removing published update failed: {rollback_error}"
                 )))),
             };

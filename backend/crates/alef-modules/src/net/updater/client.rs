@@ -32,6 +32,20 @@ fn pool() -> &'static Pool {
         Client::builder(TokioExecutor::new()).build(connector)
     })
 }
+pub(super) fn diagnostic(stage: &str, uri: &str, error: &dyn std::error::Error) {
+    #[cfg(any(test, feature = "e2e"))]
+    {
+        eprintln!("updater {stage} uri={uri} error={error:?}");
+        let mut source = error.source();
+        while let Some(cause) = source {
+            eprintln!("updater {stage} source={cause:?}");
+            source = cause.source();
+        }
+    }
+    #[cfg(not(any(test, feature = "e2e")))]
+    let _ = (stage, uri, error);
+}
+
 fn err(code: ErrorCode, message: &'static str) -> AlefError {
     AlefError::new(code, message)
 }
@@ -44,11 +58,17 @@ pub(super) async fn get_response(url: &Url) -> Result<hyper::Response<Incoming>,
         .uri(uri)
         .body(http_body_util::Empty::new())
         .map_err(|_| err(ErrorCode::UpdateNetwork, "invalid updater request"))?;
-    let response = pool()
-        .request(request)
-        .await
-        .map_err(|_| err(ErrorCode::UpdateNetwork, "updater request failed"))?;
+    let response = pool().request(request).await.map_err(|error| {
+        diagnostic("connect-or-headers", url.as_str(), &error);
+        err(ErrorCode::UpdateNetwork, "updater request failed")
+    })?;
     if !response.status().is_success() {
+        #[cfg(any(test, feature = "e2e"))]
+        eprintln!(
+            "updater response status uri={} status={}",
+            url,
+            response.status()
+        );
         return Err(err(
             ErrorCode::UpdateNetwork,
             "updater server returned an error",
@@ -60,18 +80,30 @@ pub(super) async fn get_response(url: &Url) -> Result<hyper::Response<Incoming>,
 pub(super) async fn get(url: &Url) -> Result<Vec<u8>, AlefError> {
     let deadline = tokio::time::Instant::now() + DEADLINE;
     let operation = async {
-        let uri = Uri::try_from(url.as_str())
-            .map_err(|_| err(ErrorCode::UpdateNetwork, "invalid updater endpoint"))?;
+        let uri = Uri::try_from(url.as_str()).map_err(|error| {
+            diagnostic("uri", url.as_str(), &error);
+            err(ErrorCode::UpdateNetwork, "invalid updater endpoint")
+        })?;
         let request = Request::builder()
             .method(Method::GET)
             .uri(uri)
             .body(http_body_util::Empty::new())
-            .map_err(|_| err(ErrorCode::UpdateNetwork, "invalid updater request"))?;
-        let response: hyper::Response<Incoming> = pool()
-            .request(request)
-            .await
-            .map_err(|_| err(ErrorCode::UpdateNetwork, "updater request failed"))?;
+            .map_err(|error| {
+                diagnostic("request", url.as_str(), &error);
+                err(ErrorCode::UpdateNetwork, "invalid updater request")
+            })?;
+        let response: hyper::Response<Incoming> =
+            pool().request(request).await.map_err(|error| {
+                diagnostic("connect-or-headers", url.as_str(), &error);
+                err(ErrorCode::UpdateNetwork, "updater request failed")
+            })?;
         if !response.status().is_success() {
+            #[cfg(any(test, feature = "e2e"))]
+            eprintln!(
+                "updater response status uri={} status={}",
+                url,
+                response.status()
+            );
             return Err(err(
                 ErrorCode::UpdateNetwork,
                 "updater server returned an error",
@@ -92,8 +124,10 @@ pub(super) async fn get(url: &Url) -> Result<Vec<u8>, AlefError> {
         let mut body = response.into_body();
         let mut bytes = Vec::new();
         while let Some(frame) = body.frame().await {
-            let frame =
-                frame.map_err(|_| err(ErrorCode::UpdateNetwork, "updater response body failed"))?;
+            let frame = frame.map_err(|error| {
+                diagnostic("body-frame", url.as_str(), &error);
+                err(ErrorCode::UpdateNetwork, "updater response body failed")
+            })?;
             if let Some(data) = frame.data_ref() {
                 if bytes.len().saturating_add(data.len()) > LIMIT {
                     return Err(err(

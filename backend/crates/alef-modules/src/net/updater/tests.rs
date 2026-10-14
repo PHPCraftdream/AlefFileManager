@@ -18,7 +18,15 @@ use ring::{
     digest,
     signature::{Ed25519KeyPair, KeyPair},
 };
-use std::{convert::Infallible, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{
     net::TcpListener,
     task::{JoinHandle, JoinSet},
@@ -29,6 +37,8 @@ const WAIT: Duration = Duration::from_secs(5);
 struct Server {
     url: String,
     task: JoinHandle<()>,
+    connections: Arc<AtomicUsize>,
+    requests: Arc<AtomicUsize>,
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -59,16 +69,25 @@ impl Server {
             .unwrap()
             .unwrap();
         let address: SocketAddr = listener.local_addr().unwrap();
+        let connections_seen = Arc::new(AtomicUsize::new(0));
+        let requests_seen = Arc::new(AtomicUsize::new(0));
+        let connection_counter = connections_seen.clone();
+        let request_counter = requests_seen.clone();
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
             loop {
                 tokio::select! {
                     accepted = listener.accept() => {
-                        let Ok((socket, _)) = accepted else { break };
+                        let Ok((socket, peer)) = accepted else { break };
+                        let connection_number = connection_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                        eprintln!("updater test server connection={connection_number} peer={peer} endpoint=http://{address}/feed");
                         let body = body.clone();
                         let content_length = content_length.clone();
+                        let request_counter = request_counter.clone();
                         connections.spawn(async move {
-                            let service = service_fn(move |_request: Request<Incoming>| {
+                            let service = service_fn(move |request: Request<Incoming>| {
+                                let request_number = request_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                                eprintln!("updater test server request={request_number} path={}", request.uri().path());
                                 let body = body.clone();
                                 let content_length = content_length.clone();
                                 async move {
@@ -97,9 +116,17 @@ impl Server {
                                     Ok::<_, Infallible>(response)
                                 }
                             });
-                            let _ = hyper::server::conn::http1::Builder::new()
+                            let result = hyper::server::conn::http1::Builder::new()
                                 .serve_connection(TokioIo::new(socket), service)
                                 .await;
+                            if let Err(error) = result {
+                                eprintln!("updater test server serve_connection peer={peer} error={error:?}");
+                                let mut source = std::error::Error::source(&error);
+                                while let Some(cause) = source {
+                                    eprintln!("updater test server serve_connection source={cause:?}");
+                                    source = cause.source();
+                                }
+                            }
                         });
                     }
                     _ = connections.join_next(), if !connections.is_empty() => {}
@@ -110,6 +137,8 @@ impl Server {
         Self {
             url: format!("http://{address}/feed"),
             task,
+            connections: connections_seen,
+            requests: requests_seen,
         }
     }
 }
@@ -166,6 +195,24 @@ async fn check(endpoint: String) -> Result<Reply, AlefError> {
 }
 fn document(version: &str, package: &str) -> Vec<u8> {
     serde_json::json!({"version":version,"package":package,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}).to_string().into_bytes()
+}
+
+#[tokio::test]
+async fn client_get_response_reads_full_body() {
+    let expected = b"response body".to_vec();
+    let server = Server::start(expected.clone(), hyper::StatusCode::OK, false).await;
+    let url = url::Url::parse(&server.url).unwrap();
+    let response = tokio::time::timeout(WAIT, client::get_response(&url))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), hyper::StatusCode::OK);
+    let bytes = tokio::time::timeout(WAIT, response.into_body().collect())
+        .await
+        .unwrap()
+        .unwrap()
+        .to_bytes();
+    assert_eq!(bytes.as_ref(), expected);
 }
 
 #[tokio::test]
@@ -277,7 +324,14 @@ async fn assert_transfer_error(server: &Server, sha256: String, limit: u64, expe
         .await
         .unwrap()
         .unwrap_err();
-    assert_eq!(error.code, expected);
+    assert_eq!(
+        error.code,
+        expected,
+        "actual={error:?}; endpoint={}; connections={}; requests={}",
+        server.url,
+        server.connections.load(Ordering::Relaxed),
+        server.requests.load(Ordering::Relaxed)
+    );
     let entries: Vec<_> = std::fs::read_dir(scratch.path().join("updates"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
@@ -593,4 +647,56 @@ async fn signed_packages_reject_wrong_manifest_id_and_untrusted_key_without_arti
             .collect();
         assert_eq!(entries, [std::ffi::OsString::from(".alef-update.lock")]);
     }
+}
+
+#[test]
+fn storage_prepares_canonicalized_and_nested_windows_paths() {
+    let scratch = tempfile::tempdir().unwrap();
+    let canonical = scratch.path().canonicalize().unwrap();
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        assert!(matches!(
+            canonical.components().next(),
+            Some(Component::Prefix(prefix))
+                if matches!(prefix.kind(), Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _))
+        ));
+    }
+    let storage = storage::Storage::prepare(&canonical)
+        .unwrap_or_else(|error| panic!("canonicalized root failed: {error:?}"));
+    drop(storage);
+    let nested = canonical.join("nested");
+    let storage = storage::Storage::prepare(&nested)
+        .unwrap_or_else(|error| panic!("nested child failed: {error:?}"));
+    drop(storage);
+}
+
+#[cfg(unix)]
+#[test]
+fn storage_rejects_symlinked_ancestor() {
+    use std::os::unix::fs::symlink;
+    let scratch = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let link = scratch.path().join("linked");
+    symlink(outside.path(), &link).unwrap();
+    let error = storage::Storage::prepare(&link.join("child"))
+        .err()
+        .expect("symlinked ancestor rejected");
+    assert_eq!(error.code, ErrorCode::UpdateIo);
+    assert_eq!(error.message, "updater storage operation failed");
+    assert_eq!(error.details, None);
+}
+
+#[test]
+fn storage_errors_keep_os_diagnostics_out_of_public_messages_and_details() {
+    let scratch = tempfile::tempdir().unwrap();
+    let file = scratch.path().join("blocked");
+    std::fs::write(&file, b"not a directory").unwrap();
+
+    let error = storage::Storage::prepare(&file.join("child"))
+        .err()
+        .expect("a regular file cannot be a parent directory");
+    assert_eq!(error.code, ErrorCode::UpdateIo);
+    assert_eq!(error.message, "updater storage operation failed");
+    assert_eq!(error.details, None);
 }

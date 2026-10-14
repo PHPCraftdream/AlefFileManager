@@ -76,11 +76,14 @@ fn updater_is_optional_non_null_closed_and_validates_key_endpoint_and_scope() {
             "https://updates.example/*",
         ),
     ] {
-        let source = MINIMAL.replace(
-            "        http: []",
-            &format!("        http: [\n            :: {scope}\n        ]"),
-        ) + &format!("\nupdater: {{ endpoint: {endpoint}, publicKey: {key} }}\n");
-        assert!(Manifest::from_ktav_str(&source).is_ok(), "{endpoint}");
+        let source =
+            MINIMAL.replace(
+                "        http: []",
+                &format!("        http: [\n            :: {scope}\n        ]"),
+            ) + &format!("\nupdater: {{\n    endpoint:: {endpoint}\n    publicKey:: {key}\n}}\n");
+        let parsed = Manifest::from_ktav_str(&source)
+            .unwrap_or_else(|error| panic!("{endpoint}: {error:?}"));
+        assert_eq!(parsed.updater.as_ref().unwrap().endpoint, endpoint);
     }
     for (endpoint, key, scope) in [
         (
@@ -124,10 +127,11 @@ fn updater_is_optional_non_null_closed_and_validates_key_endpoint_and_scope() {
             "https://updates.example/*",
         ),
     ] {
-        let source = MINIMAL.replace(
-            "        http: []",
-            &format!("        http: [\n            :: {scope}\n        ]"),
-        ) + &format!("\nupdater: {{ endpoint: {endpoint}, publicKey: {key} }}\n");
+        let source =
+            MINIMAL.replace(
+                "        http: []",
+                &format!("        http: [\n            :: {scope}\n        ]"),
+            ) + &format!("\nupdater: {{\n    endpoint:: {endpoint}\n    publicKey:: {key}\n}}\n");
         assert_eq!(
             Manifest::from_ktav_str(&source).unwrap_err().code,
             ErrorCode::ManifestInvalid

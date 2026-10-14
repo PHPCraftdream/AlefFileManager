@@ -99,6 +99,30 @@ pub(super) fn validate_updater(updater: &Updater, scopes: &[String]) -> Result<(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::validate_updater;
+    use crate::security::manifest::Updater;
+
+    fn updater(endpoint: &str) -> Updater {
+        Updater {
+            endpoint: endpoint.into(),
+            public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+        }
+    }
+
+    #[test]
+    fn http_loopback_scope_is_allowed_but_non_loopback_ipv6_http_is_not() {
+        let loopback = updater("http://[::1]/feed");
+        assert!(validate_updater(&loopback, &["http://[::1]".into()]).is_ok());
+
+        let private = updater("http://[2001:db8::1]/feed");
+        let error = validate_updater(&private, &["http://[2001:db8::1]".into()])
+            .expect_err("non-loopback HTTP requires HTTPS");
+        assert!(error.message.contains("must use https except on loopback"));
+    }
+}
+
 fn base64_last_value(byte: u8) -> Option<u8> {
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         .iter()

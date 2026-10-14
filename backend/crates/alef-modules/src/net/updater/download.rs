@@ -159,13 +159,18 @@ pub(super) async fn transfer(
         ));
     }
     let mut temp = storage.temp()?;
-    let mut file = AsyncFile::from_std(temp.as_file().try_clone().map_err(AlefError::from)?);
+    let mut file = AsyncFile::from_std(
+        temp.as_file()
+            .try_clone()
+            .map_err(|e| storage::io_error("clone download file", temp.path(), e))?,
+    );
     let mut body = response.into_body();
     let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
     let mut received = 0u64;
     let mut next_progress = 256 * 1024u64;
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| {
+        let frame = frame.map_err(|error| {
+            client::diagnostic("download-body", &offered.package, &error);
             AlefError::new(ErrorCode::UpdateNetwork, "updater response body failed")
         })?;
         if let Some(data) = frame.data_ref() {
@@ -178,7 +183,9 @@ pub(super) async fn transfer(
                     "package exceeds 512 MiB",
                 ));
             }
-            file.write_all(data).await.map_err(AlefError::from)?;
+            file.write_all(data)
+                .await
+                .map_err(|e| storage::io_error("write download", temp.path(), e))?;
             hash.update(data);
             if received >= next_progress {
                 writer
@@ -189,8 +196,12 @@ pub(super) async fn transfer(
             }
         }
     }
-    file.flush().await.map_err(AlefError::from)?;
-    file.sync_all().await.map_err(AlefError::from)?;
+    file.flush()
+        .await
+        .map_err(|e| storage::io_error("flush download", temp.path(), e))?;
+    file.sync_all()
+        .await
+        .map_err(|e| storage::io_error("sync download", temp.path(), e))?;
     drop(file);
     if hex(hash.finish().as_ref()) != offered.sha256 {
         return Err(AlefError::new(
