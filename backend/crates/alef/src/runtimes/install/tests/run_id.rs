@@ -50,7 +50,7 @@ fn a_valid_id_without_a_store_directory_is_not_installed_with_exit_one() {
 #[test]
 fn a_damaged_record_is_a_clear_error_and_leaves_the_store_in_place() {
     let home = tempfile::tempdir().expect("tempdir");
-    let app_dir = home.join("apps").join(hash_of("org.example.app"));
+    let app_dir = home.path().join("apps").join(hash_of("org.example.app"));
     std::fs::create_dir_all(&app_dir).expect("app directory");
     std::fs::write(app_dir.join("app.json"), b"{not json").expect("damaged record");
     let error = resolve_installed_in(home.path(), "org.example.app").expect_err("damaged");
