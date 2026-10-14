@@ -168,7 +168,8 @@ jobs:
           version="${{ needs.plan.outputs.version }}"
           archive="alef-${version}-${{ matrix.name }}.tar.gz"
           tar -czf "$archive" -C backend/target/release alef
-          sha256sum "$archive" > "$archive.sha256"
+          # macOS has no sha256sum; shasum prints the same "<hash>  <file>" format.
+          if command -v sha256sum >/dev/null; then sha256sum "$archive"; else shasum -a 256 "$archive"; fi > "$archive.sha256"
 
       - name: Upload runtime artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
