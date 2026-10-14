@@ -106,6 +106,14 @@ impl From<std::io::Error> for Failure {
     }
 }
 
+fn install_failure(error: alef_launch::install::InstallError) -> Failure {
+    match error.exit() {
+        2 => Failure::Usage(error.to_string()),
+        3 => Failure::Declined(error.to_string()),
+        _ => Failure::Runtime(error.to_string()),
+    }
+}
+
 fn main() -> ExitCode {
     // Before any thread exists: the relaunch marker never reaches the applications' children.
     relaunch::runtime::take_marker();
@@ -274,6 +282,28 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
             trust_window::run(&request, &answer, DEFAULT_ICON.to_vec())
                 .await
                 .map_err(Failure::Runtime)?;
+            return Ok(0);
+        }
+        Command::Install {
+            package,
+            trust_key,
+            allow_unsigned,
+        } => {
+            let message = alef_launch::install::install(&package, trust_key, allow_unsigned)
+                .await
+                .map_err(|e| install_failure(e))?;
+            println!("{message}");
+            return Ok(0);
+        }
+        Command::Uninstall { id, purge_data } => {
+            alef_launch::install::uninstall(&id, purge_data).map_err(install_failure)?;
+            return Ok(0);
+        }
+        Command::Apps { json } => {
+            println!(
+                "{}",
+                alef_launch::install::apps(json).map_err(install_failure)?
+            );
             return Ok(0);
         }
         Command::Run(launch) => launch,

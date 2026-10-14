@@ -185,7 +185,7 @@ fn cleanup_result(version: &str, error: io::Error) -> Result<PathBuf, StoreError
 }
 
 /// Exclusive creation owns cleanup; collisions are never overwritten or deleted.
-fn new_temp(root: &Path) -> io::Result<(PathBuf, std::fs::File)> {
+pub(crate) fn new_temp(root: &Path) -> io::Result<(PathBuf, std::fs::File)> {
     loop {
         // Relaxed allocates a unique candidate, not a publication signal.
         let unique = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);

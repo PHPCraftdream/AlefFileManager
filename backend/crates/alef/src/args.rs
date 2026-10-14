@@ -16,7 +16,7 @@ alef permissions reset <DIRECTORY>\n\
 alef trust <REQUEST> <ANSWER>\n\
 alef runtime list\n\
 alef runtime install <VERSION> <SOURCE_BINARY>\n\
-alef runtime prune [--keep <VERSION>]... [--dry-run]\n\
+alef runtime prune [--keep <VERSION>]... [--dry-run]\nalef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\nalef uninstall <ID> [--purge-data]\nalef apps [--json]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
 a file is an Alef package. Runs it: its alef.ktav manifest and assets, in embedded Servo.\n\
   --app DIRECTORY   application directory containing alef.ktav\n\
@@ -112,6 +112,18 @@ pub enum Command {
     Run(Launch),
     Permissions(PermissionsCommand),
     Runtime(RuntimeCommand),
+    Install {
+        package: PathBuf,
+        trust_key: Option<String>,
+        allow_unsigned: bool,
+    },
+    Uninstall {
+        id: String,
+        purge_data: bool,
+    },
+    Apps {
+        json: bool,
+    },
     /// `alef consent <REQUEST> <ANSWER>`, started by the launcher itself: the permission window.
     Consent {
         request: PathBuf,
@@ -199,9 +211,89 @@ fn permissions(mut arguments: impl Iterator<Item = OsString>) -> Result<Command,
     Ok(Command::Permissions(command))
 }
 
+/// Strict parser for the install-management commands; malformed forms are usage errors.
+fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+    let verb = args
+        .next()
+        .and_then(|s| s.into_string().ok())
+        .ok_or("install command is required")?;
+    let command = match verb.as_str() {
+        "install" => {
+            let package = args
+                .next()
+                .filter(|path| !path.as_encoded_bytes().starts_with(b"-"))
+                .map(PathBuf::from)
+                .ok_or("install: <PACKAGE> is required")?;
+            let (mut key, mut unsigned) = (None, false);
+            while let Some(arg) = args.next() {
+                match arg.to_str() {
+                    Some("--trust-key") if key.is_none() => {
+                        key = Some(text_of(value(&mut args, "--trust-key")?, "trust key")?)
+                    }
+                    Some("--trust-key") => return Err("--trust-key is given twice".into()),
+                    Some("--allow-unsigned") if !unsigned => unsigned = true,
+                    Some("--allow-unsigned") => {
+                        return Err("--allow-unsigned is given twice".into())
+                    }
+                    _ => {
+                        return Err(format!(
+                            "install: unknown argument {}",
+                            arg.to_string_lossy()
+                        ))
+                    }
+                }
+            }
+            Command::Install {
+                package,
+                trust_key: key,
+                allow_unsigned: unsigned,
+            }
+        }
+        "uninstall" => {
+            let id = args
+                .next()
+                .ok_or("uninstall: <ID> is required")
+                .and_then(|s| text_of(s, "id"))?;
+            let purge_data = match args.next() {
+                None => false,
+                Some(s) if s == "--purge-data" => true,
+                Some(s) => {
+                    return Err(format!(
+                        "uninstall: unknown argument {}",
+                        s.to_string_lossy()
+                    ))
+                }
+            };
+            if args.next().is_some() {
+                return Err("uninstall: unexpected argument".into());
+            }
+            Command::Uninstall { id, purge_data }
+        }
+        "apps" => {
+            let json = match args.next() {
+                None => false,
+                Some(s) if s == "--json" => true,
+                Some(s) => return Err(format!("apps: unknown argument {}", s.to_string_lossy())),
+            };
+            if args.next().is_some() {
+                return Err("apps: unexpected argument".into());
+            }
+            Command::Apps { json }
+        }
+        _ => return Err(format!("unknown install command {verb:?}")),
+    };
+    Ok(command)
+}
+
 /// Parses the arguments after the program name.
 pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
     let mut arguments = arguments.into_iter().peekable();
+    if arguments
+        .peek()
+        .is_some_and(|first| matches!(first.to_str(), Some("install" | "uninstall" | "apps")))
+    {
+        return parse_install(arguments).map_err(|e| format!("INVALID_ARGUMENT: {e}"));
+    }
     if arguments
         .peek()
         .is_some_and(|first| first.to_str() == Some("runtime"))
@@ -525,6 +617,70 @@ mod tests {
             .unwrap_err()
             .contains("unknown argument"));
         assert!(parse(&["stray"]).unwrap_err().contains("unknown argument"));
+    }
+
+    #[test]
+    fn install_management_commands_are_strict_and_preserve_paths() {
+        assert_eq!(
+            parse(&[
+                "install",
+                "packages/app.alef",
+                "--trust-key",
+                "fingerprint",
+                "--allow-unsigned"
+            ])
+            .unwrap(),
+            Command::Install {
+                package: PathBuf::from("packages/app.alef"),
+                trust_key: Some("fingerprint".to_owned()),
+                allow_unsigned: true,
+            }
+        );
+        assert_eq!(
+            parse(&["uninstall", "app-id", "--purge-data"]).unwrap(),
+            Command::Uninstall {
+                id: "app-id".to_owned(),
+                purge_data: true
+            }
+        );
+        assert_eq!(
+            parse(&["apps", "--json"]).unwrap(),
+            Command::Apps { json: true }
+        );
+
+        for bad in [
+            &["install"][..],
+            &["install", "--allow-unsigned"],
+            &["install", "pkg", "--allow-unsigned", "--allow-unsigned"],
+            &["install", "pkg", "--trust-key", "a", "--trust-key", "b"],
+            &["install", "pkg", "extra"],
+            &["apps", "--json", "extra"],
+            &["apps", "--unknown"],
+            &["uninstall"],
+            &["uninstall", "id", "--purge-data", "--purge-data"],
+            &["uninstall", "id", "extra"],
+        ] {
+            assert!(
+                parse(bad).unwrap_err().contains("INVALID_ARGUMENT"),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn apps_default_and_install_unsigned_parse() {
+        assert_eq!(
+            parse(&["install", "folder/app.alef", "--allow-unsigned"]).unwrap(),
+            Command::Install {
+                package: PathBuf::from("folder/app.alef"),
+                trust_key: None,
+                allow_unsigned: true
+            }
+        );
+        assert_eq!(parse(&["apps"]).unwrap(), Command::Apps { json: false });
+        assert!(parse(&["install", "--trust-key"])
+            .unwrap_err()
+            .contains("INVALID_ARGUMENT"));
     }
 
     #[test]

@@ -128,9 +128,31 @@ pub fn load(path: &Path) -> Result<ApplicationSource, LoadFailure> {
     Err(not_a_package(path))
 }
 
-/// Freezes a bounded owned snapshot of the file and verifies it into a `Prepared`.
+pub fn load_install(path: &Path) -> Result<(Prepared, Vec<u8>), LoadFailure> {
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(_) => return Err(not_a_package(path)),
+    };
+    if meta.is_dir() {
+        return Err(failure(
+            "INVALID_ARGUMENT",
+            "application installation requires a package file",
+        ));
+    }
+    if !meta.is_file() {
+        return Err(not_a_package(path));
+    }
+    prepare_snapshot(path, true)
+        .map(|(prepared, bytes)| (prepared, bytes.expect("retained installation snapshot")))
+}
+
 fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
-    let mut file = std::fs::File::open(path).map_err(|error| io_failure(error))?;
+    prepare_snapshot(path, false).map(|(prepared, _)| prepared)
+}
+
+/// Freezes one bounded source snapshot; installation may retain those exact verified bytes.
+fn prepare_snapshot(path: &Path, retain: bool) -> Result<(Prepared, Option<Vec<u8>>), LoadFailure> {
+    let mut file = std::fs::File::open(path).map_err(io_failure)?;
     let meta = file.metadata().map_err(io_failure)?;
     if !meta.is_file() {
         return Err(not_a_package(path));
@@ -141,6 +163,11 @@ fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
         )));
     }
     let mut bytes = Vec::new();
+    if retain {
+        bytes
+            .try_reserve_exact(usize::try_from(meta.len()).unwrap_or(usize::MAX))
+            .map_err(|_| run_limit("cannot allocate the bounded installation snapshot"))?;
+    }
     file.take(ARCHIVE_LIMIT + 1)
         .read_to_end(&mut bytes)
         .map_err(io_failure)?;
@@ -150,6 +177,16 @@ fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
         )));
     }
     let archive_digest = format!("{:x}", Sha256::digest(&bytes));
+    let retained_bytes = if retain {
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| run_limit("cannot allocate the bounded installation snapshot"))?;
+        snapshot.extend_from_slice(&bytes);
+        Some(snapshot)
+    } else {
+        None
+    };
     // `NOT_A_PACKAGE` is for input that is not a ZIP at all; a recognizable ZIP that fails
     // the strict profile stays a format failure.
     if !bytes.starts_with(b"PK\x03\x04") && !bytes.starts_with(b"PK\x05\x06") {
@@ -241,17 +278,20 @@ fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
             archive_digest: archive_digest.clone(),
         },
     };
-    Ok(Prepared {
-        path: path.to_owned(),
-        manifest,
-        signer,
-        authority,
-        archive_digest,
-        icon_png,
-        public_key,
-        package,
-        selected_root,
-    })
+    Ok((
+        Prepared {
+            path: path.to_owned(),
+            manifest,
+            signer,
+            authority,
+            archive_digest,
+            icon_png,
+            public_key,
+            package,
+            selected_root,
+        },
+        retained_bytes,
+    ))
 }
 
 /// Bounds the PNG dimensions before anything decodes or allocates for the image.
@@ -722,5 +762,32 @@ mod tests {
             prepared.package.read("dist/index.html").expect("entry"),
             b"<html></html>".to_vec()
         );
+    }
+
+    #[test]
+    fn install_load_preserves_snapshot_after_replacement_and_rejects_directories() {
+        let files = default_files();
+        let bytes = support::zip(&referenced(&files));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("app.alef");
+        std::fs::write(&path, &bytes).expect("write package");
+        let (mut prepared, snapshot) = load_install(&path).expect("installation snapshot");
+        std::fs::write(&path, b"overwritten").expect("overwrite source");
+        assert_eq!(snapshot, bytes);
+        assert_eq!(
+            prepared
+                .package
+                .read("dist/index.html")
+                .expect("snapshot entry"),
+            b"<html></html>".to_vec()
+        );
+        let failure = load_install(dir.path()).err().expect("directory refusal");
+        assert_eq!(failure.category, Some("INVALID_ARGUMENT"));
+        assert_eq!(failure.exit, 2);
+        let missing = load_install(&dir.path().join("missing.alef"))
+            .err()
+            .expect("missing package refusal");
+        assert_eq!(missing.category, Some("NOT_A_PACKAGE"));
+        assert_eq!(missing.exit, 2);
     }
 }

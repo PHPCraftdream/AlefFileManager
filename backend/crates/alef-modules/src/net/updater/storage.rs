@@ -85,7 +85,10 @@ fn lock_exclusive(file: &File, path: &Path) -> Result<(), AlefError> {
                 eprintln!("updater storage operation=lock path={path:?} error={error:?}");
                 #[cfg(not(any(test, feature = "e2e")))]
                 let _ = (path, error);
-                return Err(AlefError::new(ErrorCode::UpdateBusy, "another process is updating"));
+                return Err(AlefError::new(
+                    ErrorCode::UpdateBusy,
+                    "another process is updating",
+                ));
             }
         }
     }
