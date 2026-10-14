@@ -97,6 +97,16 @@ impl Server {
                                                 hyper::body::Frame::data(bytes::Bytes::from(body)),
                                             )]),
                                         ).boxed())
+                                    } else if content_length.is_some() {
+                                        // A declared length longer than the body: send the headers with
+                                        // the first chunk and then stay silent, like a slow server.
+                                        use futures_util::StreamExt;
+                                        Response::new(http_body_util::StreamBody::new(
+                                            futures_util::stream::iter([Ok::<_, Infallible>(
+                                                hyper::body::Frame::data(bytes::Bytes::from(body)),
+                                            )])
+                                            .chain(futures_util::stream::pending()),
+                                        ).boxed())
                                     } else {
                                         Response::new(http_body_util::Full::new(bytes::Bytes::from(body)).boxed())
                                     };
@@ -673,15 +683,16 @@ fn storage_prepares_canonicalized_and_nested_windows_paths() {
 
 #[cfg(unix)]
 #[test]
-fn storage_rejects_symlinked_ancestor() {
+fn storage_rejects_a_link_planted_inside_the_data_directory() {
     use std::os::unix::fs::symlink;
     let scratch = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
-    let link = scratch.path().join("linked");
-    symlink(outside.path(), &link).unwrap();
-    let error = storage::Storage::prepare(&link.join("child"))
+    let data = scratch.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    symlink(outside.path(), data.join("updates")).unwrap();
+    let error = storage::Storage::prepare(&data)
         .err()
-        .expect("symlinked ancestor rejected");
+        .expect("a link below the data directory is rejected");
     assert_eq!(error.code, ErrorCode::UpdateIo);
     assert_eq!(error.message, "updater storage operation failed");
     assert_eq!(error.details, None);
@@ -699,4 +710,19 @@ fn storage_errors_keep_os_diagnostics_out_of_public_messages_and_details() {
     assert_eq!(error.code, ErrorCode::UpdateIo);
     assert_eq!(error.message, "updater storage operation failed");
     assert_eq!(error.details, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn storage_accepts_a_data_directory_below_a_system_link() {
+    use std::os::unix::fs::symlink;
+    let scratch = tempfile::tempdir().unwrap();
+    let real = scratch.path().join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = scratch.path().join("alias");
+    symlink(&real, &link).unwrap();
+    let storage = storage::Storage::prepare(&link.join("data"))
+        .expect("links above the data directory are the system's");
+    drop(storage);
+    assert!(real.join("data").join("updates").is_dir());
 }

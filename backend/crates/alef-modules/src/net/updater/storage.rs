@@ -88,6 +88,25 @@ pub(super) fn io_error(operation: &str, path: &Path, source: std::io::Error) -> 
     AlefError::new(ErrorCode::UpdateIo, "updater storage operation failed")
 }
 
+#[cfg(unix)]
+fn canonical_existing_prefix(path: &Path) -> Result<PathBuf, AlefError> {
+    let mut missing = Vec::new();
+    let mut existing = path.to_path_buf();
+    while !existing.exists() {
+        match existing.file_name() {
+            Some(name) => missing.push(name.to_owned()),
+            None => break,
+        }
+        if !existing.pop() {
+            break;
+        }
+    }
+    let mut resolved = fs::canonicalize(&existing)
+        .map_err(|e| io_error("resolve data directory", &existing, e))?;
+    resolved.extend(missing.iter().rev());
+    Ok(resolved)
+}
+
 fn ensure_safe_dir(path: &Path) -> Result<(), AlefError> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -96,6 +115,10 @@ fn ensure_safe_dir(path: &Path) -> Result<(), AlefError> {
             .map_err(|e| io_error("resolve data directory", path, e))?
             .join(path)
     };
+    // Links above the data directory belong to the system (/var on macOS, /home on some Linux
+    // setups); only what lies below the first existing ancestor is checked component by component.
+    #[cfg(unix)]
+    let absolute = canonical_existing_prefix(&absolute)?;
     let mut current = PathBuf::new();
     for component in absolute.components() {
         if matches!(component, std::path::Component::Prefix(_))
