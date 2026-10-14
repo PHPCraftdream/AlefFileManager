@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Removal of an installed package and its optionally owned application state.
 use super::{integration::Integration, store::AppLock, InstallError};
-use crate::{
-    application::{plan::package_path_vars, source, trust},
-    consent,
-};
+use crate::application::{plan::package_path_vars, source, trust};
 use alef_core::security::{
     authority::Authority,
     consent::{ConsentStore, FileConsentStore, Identity},

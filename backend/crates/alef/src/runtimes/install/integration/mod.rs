@@ -7,6 +7,7 @@ mod transaction;
 #[cfg(all(windows, not(any(test, feature = "e2e"))))]
 mod windows;
 pub(crate) use native::NativeIntegration;
+#[allow(unused_imports)]
 pub use render::{desktop_entry, mac_launcher, plist, safe_display_component, windows_arguments};
 
 use std::{io, path::PathBuf};

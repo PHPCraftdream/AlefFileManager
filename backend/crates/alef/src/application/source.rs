@@ -152,7 +152,7 @@ fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
 
 /// Freezes one bounded source snapshot; installation may retain those exact verified bytes.
 fn prepare_snapshot(path: &Path, retain: bool) -> Result<(Prepared, Option<Vec<u8>>), LoadFailure> {
-    let mut file = std::fs::File::open(path).map_err(io_failure)?;
+    let file = std::fs::File::open(path).map_err(io_failure)?;
     let meta = file.metadata().map_err(io_failure)?;
     if !meta.is_file() {
         return Err(not_a_package(path));

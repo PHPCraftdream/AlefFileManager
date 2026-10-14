@@ -252,7 +252,7 @@ fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Command, St
         "uninstall" => {
             let id = args
                 .next()
-                .ok_or("uninstall: <ID> is required")
+                .ok_or_else(|| "uninstall: <ID> is required".to_string())
                 .and_then(|s| text_of(s, "id"))?;
             let purge_data = match args.next() {
                 None => false,

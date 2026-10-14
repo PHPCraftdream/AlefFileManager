@@ -228,7 +228,7 @@ pub(crate) fn remove_artifact(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
-        Ok(meta) => {
+        Ok(_) => {
             validate(path, 0)?;
             if crate::runtimes::store::is_plain_directory(path) {
                 std::fs::remove_dir_all(path)
