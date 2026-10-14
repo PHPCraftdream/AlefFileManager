@@ -145,7 +145,7 @@ async function publishFile(target, bytes, force = false) {
       await link(temp, target);
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      if (force !== true) throw new Error(`Bundle: ${target} already exists (use --force)`);
+      if (force !== true) throw new Error(`Bundle: ${target} already exists (use --force)`, { cause: error });
       await rm(target, { recursive: true, force: true });
       await link(temp, target);
     }
@@ -158,7 +158,7 @@ async function publishDir(stage, target, force = false) {
     await mkdir(target, { recursive: false });
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;
-    if (force !== true) throw new Error(`Bundle: ${target} already exists (use --force)`);
+    if (force !== true) throw new Error(`Bundle: ${target} already exists (use --force)`, { cause: error });
     await rm(target, { recursive: true, force: true });
     await mkdir(target, { recursive: false });
   }

@@ -133,17 +133,17 @@ function caretHi(c) {
 
 const sameMmp = (a, b) => a.major === b.major && a.minor === b.minor && a.patch === b.patch;
 
-function comparatorAllows(version, comparator) {
-  if (comparator.op === '=') {
-    return sameMmp(comparator.lo, version) && comparePre(version.pre, comparator.lo.pre) === 0;
+function comparatorAllows(version, bound) {
+  if (bound.op === '=') {
+    return sameMmp(bound.lo, version) && comparePre(version.pre, bound.lo.pre) === 0;
   }
-  const order = compare(version, comparator.lo);
-  if (comparator.op === '>=') return order >= 0;
-  if (comparator.op === '>') return order > 0;
-  if (comparator.op === '<') return order < 0;
-  if (comparator.op === '<=') return order <= 0;
+  const order = compare(version, bound.lo);
+  if (bound.op === '>=') return order >= 0;
+  if (bound.op === '>') return order > 0;
+  if (bound.op === '<') return order < 0;
+  if (bound.op === '<=') return order <= 0;
   // Caret and tilde are inclusive-min/exclusive-max intervals.
-  return order >= 0 && compare(version, comparator.hi) < 0;
+  return order >= 0 && compare(version, bound.hi) < 0;
 }
 
 /** Mirrors runtime_requirement_met: any parse failure is simply false. */
@@ -159,8 +159,8 @@ export function satisfiesRange(version, range) {
   // comparator with a prerelease on the same major.minor.patch unlocks it.
   if (parsed.pre !== null && !comparators.some(c => (c.op === '>=' || c.op === '>' || c.op === '=')
     && c.lo.pre !== null && sameMmp(c.lo, parsed))) return false;
-  for (const comparator of comparators) {
-    if (!comparatorAllows(parsed, comparator)) return false;
+  for (const bound of comparators) {
+    if (!comparatorAllows(parsed, bound)) return false;
   }
   return true;
 }

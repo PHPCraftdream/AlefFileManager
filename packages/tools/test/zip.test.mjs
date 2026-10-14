@@ -307,9 +307,9 @@ test('the_shared_vectors_are_present_and_well_formed', () => {
 for (const line of vectorLines) {
   const [name, expect, hex] = line.split('\t');
   test(`shared_vector_${name.replaceAll('-', '_')}`, { timeout: 20000 }, async () => {
-    const bytes = Buffer.from(hex, 'hex');
-    if (expect === 'reject') { await assert.rejects(verify(bytes)); return; }
-    const info = await verify(bytes);
+    const data = Buffer.from(hex, 'hex');
+    if (expect === 'reject') { await assert.rejects(verify(data)); return; }
+    const info = await verify(data);
     if (expect === 'unsigned') assert.equal(info.status, 'Unsigned');
     else { assert.equal(info.status, 'Signed'); assert.equal(`signed:${info.fingerprint}`, expect); }
   });
