@@ -158,7 +158,7 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 Проводка в ci.yml (готова, описание соответствует реальному файлу).
 
-Джоб `plan` (ubuntu-24.04, checkout с `fetch-depth: 0`) запускает `node scripts/ci/plan.mjs` с флагами `--event`, `--ref`, `--before` (`github.event.before || pull_request.base.sha`), `--after github.sha`, `--full` (`inputs.full == 'true'`), `--crates`, `--e2e`; сообщение коммита передаётся через переменную окружения `COMMIT_MESSAGE` (`github.event.head_commit.message`). Все выходы планировщика опубликованы как выходы джоба: `full`, `os` (JSON-массив раннеров), `crates`, `crates_all`, `js`, `js_all`, `e2e`, `docs_only`, `reason`; строка `reason: …` видна в логе шага.
+Джоб `plan` (ubuntu-24.04, checkout с `fetch-depth: 0`) запускает `node scripts/ci/plan.mjs` с флагами `--event`, `--ref`, `--before` (`github.event.before || pull_request.base.sha`), `--after github.sha`, `--full` (`inputs.full == true`: вход boolean, сравнение со строкой всегда ложно), `--crates`, `--e2e`; сообщение коммита передаётся через переменную окружения `COMMIT_MESSAGE` (`github.event.head_commit.message`). Все выходы планировщика опубликованы как выходы джоба: `full`, `os` (JSON-массив раннеров), `crates`, `crates_all`, `js`, `js_all`, `e2e`, `docs_only`, `reason`; строка `reason: …` видна в логе шага.
 
 События и входы. `push`, `pull_request`, `workflow_dispatch`, `schedule` — `cron: '37 2 * * *'` (ежедневно, полный прогон). Входы dispatch: `full` (boolean), `crates` (строка — список крейтов через запятую, переопределяет план), `e2e` (строка — список сценариев через запятую, переопределяет план; `none` выключает e2e). Overrides применяются только к неполному плану. Примеры:
 
