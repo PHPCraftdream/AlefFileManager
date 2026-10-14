@@ -123,6 +123,31 @@ impl Integration for Shared {
     }
 }
 
+/// A scratch home below the resolved temp directory: on macOS the temp folder lies below the /var link,
+/// which the store refuses as a linked prefix.
+struct Home {
+    _guard: tempfile::TempDir,
+    path: std::path::PathBuf,
+}
+
+impl Home {
+    fn new() -> Self {
+        let guard = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let path = std::fs::canonicalize(guard.path()).unwrap();
+        #[cfg(not(unix))]
+        let path = guard.path().to_path_buf();
+        Self {
+            _guard: guard,
+            path,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 fn appdir(home: &Path) -> std::path::PathBuf {
     let hash = format!("{:x}", sha2::Sha256::digest(b"org.example.app"));
     home.join("apps").join(&hash)
@@ -158,7 +183,7 @@ async fn apply(applier: &StoreApplier, bytes: &[u8]) -> Result<std::path::PathBu
 #[tokio::test]
 async fn applying_a_higher_signed_version_installs_and_removes_the_old_package() {
     tokio::time::timeout(WAIT, async {
-        let home = tempfile::tempdir().unwrap();
+        let home = Home::new();
         let (old, fingerprint) = fixture("1.0.0");
         let fake = Shared::default();
         let applier = Arc::new(applier(home.path(), &fingerprint, fake.clone()));
@@ -202,7 +227,7 @@ async fn applying_a_higher_signed_version_installs_and_removes_the_old_package()
 #[tokio::test]
 async fn a_package_signed_by_another_key_is_refused_without_changing_the_store() {
     tokio::time::timeout(WAIT, async {
-        let home = tempfile::tempdir().unwrap();
+        let home = Home::new();
         let (old, fingerprint) = fixture("1.0.0");
         let fake = Shared::default();
         let applier = Arc::new(applier(home.path(), &fingerprint, fake.clone()));
@@ -226,7 +251,7 @@ async fn a_package_signed_by_another_key_is_refused_without_changing_the_store()
 #[tokio::test]
 async fn a_failure_after_publishing_rolls_back_to_the_previous_version() {
     tokio::time::timeout(WAIT, async {
-        let home = tempfile::tempdir().unwrap();
+        let home = Home::new();
         let (old, fingerprint) = fixture("1.0.0");
         let plain = Shared::default();
         let first = Arc::new(applier(home.path(), &fingerprint, plain.clone()));
@@ -254,7 +279,7 @@ async fn a_failure_after_publishing_rolls_back_to_the_previous_version() {
 #[tokio::test]
 async fn a_stale_entry_that_cannot_be_removed_does_not_fail_the_update() {
     tokio::time::timeout(WAIT, async {
-        let home = tempfile::tempdir().unwrap();
+        let home = Home::new();
         let (old, fingerprint) = fixture("1.0.0");
         let applier = Arc::new(applier(home.path(), &fingerprint, Shared::default()));
         apply(&applier, &old).await.unwrap();
@@ -276,7 +301,7 @@ async fn a_stale_entry_that_cannot_be_removed_does_not_fail_the_update() {
 #[tokio::test]
 async fn a_package_with_a_broken_signature_maps_to_update_signature_invalid() {
     tokio::time::timeout(WAIT, async {
-        let home = tempfile::tempdir().unwrap();
+        let home = Home::new();
         let (_, fingerprint) = fixture("1.0.0");
         let applier = applier(home.path(), &fingerprint, Shared::default());
         let manifest = support::manifest_text("").replace("version:: 1.0.0", "version:: 2.0.0");
@@ -295,7 +320,7 @@ async fn a_package_with_a_broken_signature_maps_to_update_signature_invalid() {
 #[tokio::test]
 async fn an_unsigned_package_is_refused_as_a_key_mismatch() {
     tokio::time::timeout(WAIT, async {
-        let home = tempfile::tempdir().unwrap();
+        let home = Home::new();
         let (_, fingerprint) = fixture("1.0.0");
         let applier = applier(home.path(), &fingerprint, Shared::default());
         let manifest = support::manifest_text("").replace("version:: 1.0.0", "version:: 2.0.0");
