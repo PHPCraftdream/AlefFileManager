@@ -121,6 +121,7 @@ name = "alef-modules"
 version = "0.1.0"
 dependencies = [
  "alef-core",
+ "alef-package",
  "apple-native-keyring-store",
  "arboard",
  "argon2",

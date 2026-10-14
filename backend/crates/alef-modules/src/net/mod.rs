@@ -9,6 +9,7 @@ use crate::ModuleContext;
 mod headers;
 pub mod http;
 pub mod socket;
+pub mod updater;
 pub mod websocket;
 
 pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Result<(), AlefError> {

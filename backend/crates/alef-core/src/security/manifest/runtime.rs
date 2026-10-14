@@ -24,6 +24,11 @@ pub(super) fn deserialize_runtime<'de, D: serde::Deserializer<'de>>(
         .map_err(|e| serde::de::Error::custom(format!("runtime: {e}")))
 }
 
+/// Compare strict SemVer strings by precedence. Build metadata does not affect ordering.
+pub fn compare_versions(left: &str, right: &str) -> Result<std::cmp::Ordering, semver::Error> {
+    Ok(Version::parse(left)?.cmp_precedence(&Version::parse(right)?))
+}
+
 /// Check a runtime requirement against a strict SemVer runtime version.
 ///
 /// Uses exactly `semver::VersionReq` grammar and matching semantics: comma-separated

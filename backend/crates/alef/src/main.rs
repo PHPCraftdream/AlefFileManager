@@ -513,6 +513,40 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         consent: _,
         granted,
     } = settled;
+    let updater_context = match (&authority, trust.as_ref(), plan.manifest.updater.clone()) {
+        (
+            Authority::SignedPackage { fingerprint },
+            Some((Some((_, expected_signer)), _, inputs)),
+            Some(config),
+        ) if fingerprint == expected_signer
+            && inputs
+                .trust_key
+                .as_deref()
+                .map_or(true, |given| given == expected_signer) =>
+        {
+            let pin = trust::load(&trust::trust_folder(), &plan.manifest.id)
+                .map_err(|error| Failure::Runtime(format!("updater trust pin: {error}")))?
+                .ok_or_else(|| Failure::Runtime("updater trust pin is missing".to_owned()))?;
+            if pin.fingerprint != *fingerprint || pin.fingerprint != *expected_signer {
+                return Err(Failure::Runtime(
+                    "updater trust pin does not match package signer".to_owned(),
+                ));
+            }
+            let mut key = [0u8; 32];
+            for (index, byte) in key.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&pin.public_key[index * 2..index * 2 + 2], 16)
+                    .map_err(|_| Failure::Runtime("invalid updater trust pin key".to_owned()))?;
+            }
+            Some(alef_modules::net::updater::UpdaterContext {
+                config,
+                app_id: plan.manifest.id.clone(),
+                version: plan.manifest.version.clone(),
+                trusted_key: key,
+                data: vars.app_data.clone(),
+            })
+        }
+        _ => None,
+    };
     let shadow = shadow_folder(&identity);
     // The user may take a right back while the application runs.
     let _following = watch(granted.clone(), store(), identity, WATCH_EVERY);
@@ -575,7 +609,8 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         dev_url,
         BridgeOptions {
             modules: Some(Box::new(move |registry, host| {
-                register_all(registry, host, &context)
+                register_all(registry, host, &context)?;
+                alef_modules::net::updater::register_updater(registry, &updater_context)
             })),
             allowed_origins,
             csp: Some(plan.csp),

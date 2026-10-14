@@ -52,6 +52,8 @@ export {
   type ServerResponse,
   type UpgradeOptions,
 } from './net/http.ts';
+export { updater, type UpdaterDownloadOptions } from './net/updater.ts';
+export type { UpdaterCheckReply } from '../types/modules.ts';
 export {
   socket,
   TcpServer,

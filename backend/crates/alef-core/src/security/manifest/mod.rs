@@ -12,6 +12,13 @@ use assets::{deserialize_assets, field_line};
 mod runtime;
 use runtime::deserialize_runtime;
 pub use runtime::{runtime_requirement_met, validate_package_version};
+mod updater;
+use updater::{deserialize_updater, validate_updater};
+
+/// Compare strict SemVer versions by precedence, ignoring build metadata.
+pub fn compare_versions(left: &str, right: &str) -> Result<std::cmp::Ordering, semver::Error> {
+    runtime::compare_versions(left, right)
+}
 
 /// External-resource policy; all fields are required.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -247,7 +254,20 @@ pub enum Mode {
     Window,
 }
 
-/// Application manifest with required security policy sections.
+/// Updater configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "manifest.ts")]
+pub struct Updater {
+    /// HTTPS feed endpoint, or HTTP on a loopback host.
+    pub endpoint: String,
+    /// Canonical RFC 4648 base64 encoding of a 32-byte Ed25519 public key.
+    #[serde(rename = "publicKey")]
+    #[ts(rename = "publicKey")]
+    pub public_key: String,
+}
+
+/// Application manifest.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export, export_to = "manifest.ts")]
@@ -303,6 +323,14 @@ pub struct Manifest {
     #[serde(default, rename = "deepLinks", skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<String>>")]
     pub deep_links: Vec<String>,
+    /// Optional signed-update feed configuration.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_updater",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub updater: Option<Updater>,
 }
 
 impl Manifest {
@@ -405,6 +433,9 @@ impl Manifest {
             }
         }
         validate_deep_links(&manifest.deep_links)?;
+        if let Some(updater) = &manifest.updater {
+            validate_updater(updater, &manifest.permissions.net.http)?;
+        }
         super::command::parse_cli(&manifest.permissions.cli)?;
         if let Some(arguments) = &manifest.arguments {
             validate_arguments(arguments).map_err(|(path, reason)| invalid(&path, reason))?;

@@ -8,6 +8,11 @@ pub mod deeplink;
 mod instance;
 mod integration;
 
+#[cfg(windows)]
+pub(crate) fn updater_owner_sids() -> std::io::Result<Vec<String>> {
+    instance::updater_owner_sids()
+}
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     ffi::OsString,

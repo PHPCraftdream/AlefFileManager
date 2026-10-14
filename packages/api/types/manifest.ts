@@ -170,7 +170,7 @@ export type FsPermissions = {
 export type Length = number | string;
 
 /**
- * Application manifest with required security policy sections.
+ * Application manifest.
  */
 export type Manifest = {
   /**
@@ -227,7 +227,11 @@ export type Manifest = {
   /**
    * Declared deep-link schemes; at most eight unique lowercase schemes of 1–64 bytes.
    */
-  deepLinks?: Array<string>, };
+  deepLinks?: Array<string>,
+  /**
+   * Optional signed-update feed configuration.
+   */
+  updater?: Updater, };
 
 /**
  * Launch modes selectable by application code (M5 integration manifest rules).
@@ -314,6 +318,19 @@ export type ShortcutPermissions = {
    * Whether global shortcuts are allowed.
    */
   global: boolean, };
+
+/**
+ * Updater configuration.
+ */
+export type Updater = {
+  /**
+   * HTTPS feed endpoint, or HTTP on a loopback host.
+   */
+  endpoint: string,
+  /**
+   * Canonical RFC 4648 base64 encoding of a 32-byte Ed25519 public key.
+   */
+  publicKey: string, };
 
 /**
  * A declared application window.

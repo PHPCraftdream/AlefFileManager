@@ -388,6 +388,11 @@ mod platform {
 }
 
 #[cfg(windows)]
+pub(crate) fn updater_owner_sids() -> io::Result<Vec<String>> {
+    pipe_security::own_sids()
+}
+
+#[cfg(windows)]
 mod pipe_security;
 
 #[cfg(windows)]

@@ -24,6 +24,18 @@ pub enum ErrorCode {
     Network,
     NotAvailable,
     ManifestInvalid,
+    UpdateNotAvailable,
+    UpdateBadDocument,
+    UpdateTooLarge,
+    UpdateHashMismatch,
+    UpdateSignatureInvalid,
+    UpdateIdMismatch,
+    UpdateKeyMismatch,
+    UpdateAlreadyDownloaded,
+    UpdateNetwork,
+    UpdateTimeout,
+    UpdateBusy,
+    UpdateIo,
     Internal,
 }
 
@@ -43,6 +55,18 @@ impl ErrorCode {
             Self::Busy => 429,
             Self::Network => 502,
             Self::NotAvailable => 501,
+            Self::UpdateNotAvailable => 404,
+            Self::UpdateTooLarge => 413,
+            Self::UpdateNetwork => 502,
+            Self::UpdateTimeout => 408,
+            Self::UpdateBusy => 429,
+            Self::UpdateIo => 500,
+            Self::UpdateHashMismatch
+            | Self::UpdateSignatureInvalid
+            | Self::UpdateIdMismatch
+            | Self::UpdateKeyMismatch
+            | Self::UpdateBadDocument => 400,
+            Self::UpdateAlreadyDownloaded => 409,
             Self::Internal => 500,
         }
     }
@@ -62,6 +86,18 @@ impl ErrorCode {
             Self::Network => "NETWORK",
             Self::NotAvailable => "NOT_AVAILABLE",
             Self::ManifestInvalid => "MANIFEST_INVALID",
+            Self::UpdateNotAvailable => "UPDATE_NOT_AVAILABLE",
+            Self::UpdateBadDocument => "UPDATE_BAD_DOCUMENT",
+            Self::UpdateTooLarge => "UPDATE_TOO_LARGE",
+            Self::UpdateHashMismatch => "UPDATE_HASH_MISMATCH",
+            Self::UpdateSignatureInvalid => "UPDATE_SIGNATURE_INVALID",
+            Self::UpdateIdMismatch => "UPDATE_ID_MISMATCH",
+            Self::UpdateKeyMismatch => "UPDATE_KEY_MISMATCH",
+            Self::UpdateAlreadyDownloaded => "UPDATE_ALREADY_DOWNLOADED",
+            Self::UpdateNetwork => "UPDATE_NETWORK",
+            Self::UpdateTimeout => "UPDATE_TIMEOUT",
+            Self::UpdateBusy => "UPDATE_BUSY",
+            Self::UpdateIo => "UPDATE_IO",
             Self::Internal => "INTERNAL",
         }
     }
@@ -172,6 +208,18 @@ mod tests {
             ErrorCode::Busy,
             ErrorCode::NotAvailable,
             ErrorCode::ManifestInvalid,
+            ErrorCode::UpdateNotAvailable,
+            ErrorCode::UpdateBadDocument,
+            ErrorCode::UpdateTooLarge,
+            ErrorCode::UpdateHashMismatch,
+            ErrorCode::UpdateSignatureInvalid,
+            ErrorCode::UpdateIdMismatch,
+            ErrorCode::UpdateKeyMismatch,
+            ErrorCode::UpdateAlreadyDownloaded,
+            ErrorCode::UpdateNetwork,
+            ErrorCode::UpdateTimeout,
+            ErrorCode::UpdateBusy,
+            ErrorCode::UpdateIo,
             ErrorCode::Network,
             ErrorCode::Internal,
         ] {
@@ -228,6 +276,18 @@ mod tests {
             ErrorCode::Busy,
             ErrorCode::NotAvailable,
             ErrorCode::ManifestInvalid,
+            ErrorCode::UpdateNotAvailable,
+            ErrorCode::UpdateBadDocument,
+            ErrorCode::UpdateTooLarge,
+            ErrorCode::UpdateHashMismatch,
+            ErrorCode::UpdateSignatureInvalid,
+            ErrorCode::UpdateIdMismatch,
+            ErrorCode::UpdateKeyMismatch,
+            ErrorCode::UpdateAlreadyDownloaded,
+            ErrorCode::UpdateNetwork,
+            ErrorCode::UpdateTimeout,
+            ErrorCode::UpdateBusy,
+            ErrorCode::UpdateIo,
             ErrorCode::Network,
             ErrorCode::Internal,
         ]
@@ -245,5 +305,7 @@ mod tests {
         assert_eq!(ErrorCode::ManifestInvalid.http_status(), 400);
         assert_eq!(ErrorCode::Internal.http_status(), 500);
         assert_eq!(ErrorCode::Network.http_status(), 502);
+        assert_eq!(ErrorCode::UpdateNotAvailable.http_status(), 404);
+        assert_eq!(ErrorCode::UpdateTooLarge.http_status(), 413);
     }
 }

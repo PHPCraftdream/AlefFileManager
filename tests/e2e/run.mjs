@@ -20,6 +20,7 @@ import { moduleScenarios } from './scenarios/app/modules.mjs';
 import { appIntegrationScenarios } from './scenarios/app/app-integration.mjs';
 import { launchModesScenarios } from './scenarios/app/launch-modes.mjs';
 import { packageScenarios } from './scenarios/app/package.mjs';
+import { updaterScenarios } from './scenarios/app/updater.mjs';
 import { startupScenarios } from './scenarios/startup.mjs';
 
 const args = process.argv.slice(2);
@@ -82,6 +83,7 @@ const scenarios = {
   ...launchModesScenarios({ exe, verbose, timeoutMs }),
   ...appIntegrationScenarios({ exe, verbose, timeoutMs }),
   ...packageScenarios({ exe, verbose, timeoutMs }),
+  ...updaterScenarios({ exe, verbose, timeoutMs }),
   ...consentScenarios({ drive, exe, verbose }),
   ...dataScenarios({ drive, exe, verbose }),
   ...mcpScenarios({ exe, verbose, timeoutMs }),
