@@ -80,6 +80,21 @@ test('a_workflow_change_runs_the_full_plan', () => {
   assert.equal(p.e2e, 'all');
 });
 
+test('a_release_workflow_change_runs_the_full_plan', () => {
+  const p = plan(['.github/workflows/release.yml']);
+  assert.equal(p.full, true);
+  assert.deepEqual(p.os, data.runners_all);
+  assert.equal(p.crates, 'all');
+  assert.deepEqual(p.js, ['all']);
+  assert.equal(p.e2e, 'all');
+});
+
+test('a_change_under_the_release_scripts_runs_the_full_plan', () => {
+  const p = plan(['scripts/release/plan.mjs']);
+  assert.equal(p.full, true);
+  assert.ok(p.reason.includes('scripts/release/**'), p.reason);
+});
+
 test('a_push_to_main_runs_the_full_plan', () => {
   const p = plan(['backend/crates/alef-core/src/lib.rs'], { ref: 'refs/heads/main' });
   assert.equal(p.full, true);
