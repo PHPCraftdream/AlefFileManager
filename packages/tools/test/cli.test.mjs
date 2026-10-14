@@ -561,7 +561,7 @@ test('killTree returns only after its process is reaped', { skip: process.platfo
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
 }));
 
-test('the bundle command validates usage and formats and produces a dir bundle', bounded, () => scratch(async ({ cli, root, dir }) => {
+test('the bundle command validates usage and formats and produces a dir bundle', bounded, () => scratch(async ({ cli, root }) => {
   const usage = /Usage: bundle <PACKAGE\.alef>/;
   failure(await cli(['bundle']), usage);
   failure(await cli(['bundle', 'p.alef']), usage); // missing --platform

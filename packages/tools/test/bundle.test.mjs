@@ -15,16 +15,10 @@ import { readZip } from '../src/zip.mjs';
 import { parseRuntimeRange, parseVersion, readManifestFields, satisfiesRange } from '../src/workflow/bundle-manifest.mjs';
 import {
   buildDeb, escapeDesktopValue, escapeNsis, escapeXml, quoteDesktopExec, renderBuildInstallerCmd,
-  renderControl, renderInfoPlist, renderNsisInstaller, writeAr, writeGzip, writeTar,
+  renderControl, renderInfoPlist, renderNsisInstaller, writeAr, writeTar,
 } from '../src/workflow/bundle-formats.mjs';
 
 const bounded = { timeout: 5000 };
-
-const manifest = (body) => `id: com.example.app
-name:: My App
-version:: 1.2.3
-runtime:: ^1.2
-${body}`;
 
 test('all_four_manifest_fields_are_read_from_a_realistic_ktav_text', bounded, () => {
   const fields = readManifestFields(`id: com.example.app
@@ -512,7 +506,7 @@ test('zip_and_tar_gz_archives_are_deterministic_and_round_trip_with_expected_nam
 test('hostile_manifest_names_are_escaped_correctly_in_desktop_plist_and_nsis_outputs', bundleBounded, () => bundleScratch(async root => {
   const hostile = 'He $said "hi" & 100% <b>';
   const { packagePath, runtime } = await makeFixture(root, { name: hostile, id: 'com.example.h-i' });
-  const deb = await bundle(packagePath, { runtime, platform: 'linux-x64', formats: ['deb'], name: 'hostile' });
+  await bundle(packagePath, { runtime, platform: 'linux-x64', formats: ['deb'], name: 'hostile' });
   const members = parseAr(await readFile(path.join(root, 'hostile.deb')));
   const dataTar = zlib.gunzipSync(members.find(member => member.name === 'data.tar.gz').data);
   const desktopEntry = parseUstar(dataTar).find(entry => entry.name === './usr/share/applications/he-said-hi-100-b.desktop');
@@ -526,10 +520,10 @@ test('hostile_manifest_names_are_escaped_correctly_in_desktop_plist_and_nsis_out
   assert.ok(text.includes('StartupWMClass=com.example.h-i'), text);
   assert.ok(text.includes('Terminal=false') && text.includes('Categories=Utility;'), text);
   assert.ok(!text.includes('Version=1.0'), text);
-  const app = await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['app'], name: 'hostile' });
+  await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['app'], name: 'hostile' });
   const plist = await readFile(path.join(root, 'hostile.app', 'Contents', 'Info.plist'), 'utf8');
   assert.ok(plist.includes('<string>He $said &quot;hi&quot; &amp; 100% &lt;b&gt;</string>'), plist);
-  const nsis = await bundle(packagePath, { runtime, platform: 'win32-x64', formats: ['nsis'], name: 'hostile' });
+  await bundle(packagePath, { runtime, platform: 'win32-x64', formats: ['nsis'], name: 'hostile' });
   const nsi = await readFile(path.join(root, 'hostile-nsis', 'installer.nsi'), 'utf8');
   assert.ok(nsi.includes('Name "He $$said $\\\"hi$\\\" & 100% <b>"'), nsi);
   assert.ok(nsi.includes('OutFile "hostile-setup.exe"'), nsi);
@@ -654,7 +648,7 @@ test('icon_png_is_carried_into_the_deb_data_tar_and_the_app_resources_with_a_pli
   const desktop = dataTar.subarray(desktopAt, desktopAt + 512).toString('utf8').split('\0')[0];
   assert.ok(desktop.includes('Icon=sample-app'), desktop);
   assert.ok(desktopEntry !== undefined);
-  const app = await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['app'], name: 'sample' });
+  await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['app'], name: 'sample' });
   const appDir = path.join(root, 'sample.app');
   assert.deepEqual(await readFile(path.join(appDir, 'Contents', 'Resources', 'icon.png')), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
   const plist = await readFile(path.join(appDir, 'Contents', 'Info.plist'), 'utf8');
@@ -761,7 +755,7 @@ test('force_reaches_every_publication_and_forced_artifacts_are_byte_identical', 
 }));
 test('zip_with_a_spaced_default_stem_sanitizes_every_entry_name', bundleBounded, () => bundleScratch(async root => {
   const { packagePath, runtime } = await makeFixture(root);
-  const result = await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['app', 'zip'] });
+  await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['app', 'zip'] });
   const zipStem = 'Sample_App-1.2.3-darwin-arm64';
   const zipPath = path.join(root, 'Sample App-1.2.3-darwin-arm64.app.zip');
   assert.ok((await lstat(zipPath)).isFile());
