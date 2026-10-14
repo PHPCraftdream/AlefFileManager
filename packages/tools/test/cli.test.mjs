@@ -560,3 +560,31 @@ test('killTree returns only after its process is reaped', { skip: process.platfo
   // No polling here: a process that is still dying or not yet reaped when killTree returns fails.
   assert.throws(() => process.kill(child.pid, 0), { code: 'ESRCH' });
 }));
+
+test('the bundle command validates usage and formats and produces a dir bundle', bounded, () => scratch(async ({ cli, root, dir }) => {
+  const usage = /Usage: bundle <PACKAGE\.alef>/;
+  failure(await cli(['bundle']), usage);
+  failure(await cli(['bundle', 'p.alef']), usage); // missing --platform
+  failure(await cli(['bundle', 'p.alef', '--platform', 'win32-x64', '--bogus']), /Unknown option: --bogus/);
+  failure(await cli(['bundle', 'p.alef', '--format', 'deb', '--platform', 'win32-x64']),
+    /Bundle: format deb is not available for platform win32-x64/); // format/platform validation precedes file reads
+  // Repeated --format is accepted; the failure comes later from the missing runtime.
+  failure(await cli(['bundle', 'p.alef', '--format', 'tar.gz', '--format', 'dir', '--platform', 'linux-x64']),
+    /Bundle: runtime binary path is required/);
+  // Successful dir-format run: key, signed package, fake runtime binary.
+  success(await cli(['keys']));
+  const app = path.join(root, 'bapp'); await mkdir(path.join(app, 'dist'), { recursive: true });
+  await writeFile(path.join(app, 'alef.ktav'),
+    'id: com.example.app\nname:: Sample App\nversion:: 1.2.3\nruntime:: ^1.2.3\nwindows: [\n    {\n        label: main\n        url: /index.html\n    }\n]\nexternal: {\n    connect: []\n    load: {\n        scripts: []\n        styles: []\n        images: []\n        fonts: []\n        media: []\n        frames: []\n    }\n}\npermissions: {\n    fs: {\n        read: []\n        write: []\n    }\n    cli: {\n        exec: []\n    }\n    net: {\n        http: []\n        socket: []\n    }\n    shell: {\n        openExternal: []\n    }\n    clipboard: {\n        read: false\n    }\n    shortcut: {\n        global: false\n    }\n    secrets: false\n    tray: false\n    window: {\n        create: false\n    }\n    app: {\n        env: []\n        autostart: false\n    }\n}\n');
+  await writeFile(path.join(app, 'dist', 'index.html'), '<html></html>\n');
+  const pkg = path.join(root, 'pkg.alef');
+  success(await cli(['pack', app, '--out', pkg]));
+  const runtime = path.join(root, 'runtime'); await writeFile(runtime, 'fake-runtime-bytes');
+  const out = path.join(root, 'bundles'); await mkdir(out);
+  const stdout = success(await cli(['bundle', pkg, '--runtime', runtime, '--platform', 'linux-x64',
+    '--format', 'dir', '--out', out, '--runtime-version', '1.5.0']));
+  const stemDir = path.join(out, 'Sample App-1.2.3-linux-x64');
+  assert.equal(stdout, `${stemDir}\n`);
+  assert.deepEqual(await readFile(path.join(stemDir, 'app', 'app.alef')), await readFile(pkg));
+  assert.deepEqual(await readFile(path.join(stemDir, 'bin', 'alef')), Buffer.from('fake-runtime-bytes'));
+}));

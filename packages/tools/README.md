@@ -14,6 +14,7 @@ alef-tron verify <file>
 alef-tron check [dir]
 alef-tron build [dir] [--out <dir>]
 alef-tron dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
+alef-tron bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
 alef-tron --help
 ```
 
@@ -66,6 +67,50 @@ from `ALEF_BIN`, `@alef-tron/runtime` `getRuntimePath()` or `alef` on PATH);
 shim are refused when they contain cmd.exe metacharacters (`& | < > ^ % ! "`
 or a newline). Not done: full manifest schema validation and bundle.
 
+`bundle` verifies the package first (signature, hashes, format 1; an unsigned
+package is refused without `allowUnsigned`; `--no-verify` is deliberately not
+implemented), then reads id/name/version/runtime from the verified `alef.ktav`
+snapshot. The runtime range is checked ONLY against an explicit
+`runtimeVersion`; the runtime binary is never executed (it has no
+`--version`); without `runtimeVersion` the check is skipped with a warning.
+Range semantics are a strict grammar: only comma-separated comparators with an
+operator from `=`, `>`, `>=`, `<`, `<=`, `^`, `~` and a FULL `x.y.z` version
+(BigInt u64 cores); prerelease bounds are allowed only for `=` and the
+comparisons; wildcards, bare and partial versions are refused with a clear
+error; invalid versions/ranges never match. The bundle is named `<name>-<version>-<platform>`; `--name`
+overrides the stem (strict ASCII charset, not `.` or `..`; required for
+`nsis`; zip entry prefixes are sanitized to the ZIP name charset when the stem
+has other characters). Default formats are `dir` plus the platform archive
+(zip for win32-x64, tar.gz otherwise). The `dir` layout is `bin/<runtime>`,
+`app/app.alef`, LICENSE/NOTICE copied exactly from the runtime's directory
+(each capped at 16 MiB, refusal beyond), `bundle.json` with SHA-256 of package
+and runtime, and a launcher calling `alef run <package>` (`.cmd` for
+win32-x64, `sh` elsewhere; the sh launchers resolve `$0` through symlinks,
+the `.cmd` launcher needs no resolution, mode 0755).
+Formats: `zip` (unix modes preserved via external attributes, entries limited
+to 512 MiB — a bigger runtime must use tar.gz), `tar.gz` (ustar, byte-sorted
+entries, deterministic, `SOURCE_DATE_EPOCH` or 0); `deb` (ar + control/data
+tar.gz; a `/opt/<pkg>` tree including a `run` wrapper at `/opt/<pkg>/<pkg>`, a
+`/usr/bin/<pkg>` symlink to the wrapper, a `.desktop` matching the runtime
+writer — Type/Name/Exec/Icon?/Terminal=false/Categories=Utility;/
+StartupWMClass, no `Version`; Architecture amd64, Package lowercase kebab,
+Maintainer from `--maintainer` or a placeholder); `nsis` (generated
+`installer.nsi` with `OutFile`, per-user `$LOCALAPPDATA\Programs`, a Start
+Menu shortcut with the `run` argument and a safe `.lnk` name, an HKCU
+uninstall key and AppUserModelId; `build-installer.cmd` text; makensis is NOT
+run); `app` (a thin `.app` tree, Info.plist with CFBundleIdentifier, launcher
+runs `run`; zipped to `<stem>.app.zip` when combined with `zip`, with modes).
+Safety: runtime and package paths are walked component-by-component and
+symlinked components are refused (OS temp-dir chain exempt); the runtime is at
+most 1 GiB: the `dir` and `nsis` layouts copy it streamed with a double hash
+check, while the `zip`/`tar.gz` and `app` formats materialize it in memory
+(bounded by the 1 GiB runtime limit and the 512 MiB zip entry limit); the
+package is bounded and identity-checked, publication is race-safe no-clobber
+(`link`/exclusive `mkdir`; `--force` replaces), output targets must be direct
+children of the output directory. Refusals: a format unavailable for the platform, existing
+outputs without `force`, output lexically at or containing the input paths,
+control characters in interpolated values, and `.`/`..` names.
+
 ## API
 
 | Export | Input / result |
@@ -78,6 +123,7 @@ or a newline). Not done: full manifest schema validation and bundle.
 | `check(dir = cwd)` | Promise of frozen `{ file, message }` |
 | `build(dir, { out?, timeoutMs?, stdio? })` | Promise of frozen `{ dir, out, assets }` |
 | `dev(dir, { readyTimeoutMs?, devStdio?, stdio?, appArgs?, alefBin? })` | Promise of frozen `{ code }`; runs until the runtime exits |
+| `bundle(packagePath, { runtime?, platform?, formats?, out?, name?, runtimeVersion?, maintainer?, allowUnsigned?, force? })` | Promise of frozen `{ stem, id, name, version, platform, formats, packageSha256, runtimeSha256, out, warnings }` |
 | `findRuntime(dir?, { alefBin?, runtimeModule?, path? })` | Promise of the runtime executable path |
 | `readZip(input)` | Path/URL or Uint8Array; Promise of frozen `{ entries, read }` |
 | `writeZip(entries, { method? })` | Buffer; entries `{ name, data: Uint8Array, method? }`; method 0/8, default automatic |
@@ -172,6 +218,6 @@ EOCD bounds/size checks; per-entry and total limits remain before immutable
 snapshot allocation and payload processing. Immutable snapshots and the
 bounded deflate path are retained.
 
-Deferred: dev/build/bundle/create-alef-tron, full JS Ktav/Alef manifest and
+Deferred: dev/build/create-alef-tron, full JS Ktav/Alef manifest and
 environment validation, runtime installation/launch, updater, npm publication
 and Rust/JS cross-reader integration. This is not the complete M7 workflow.
