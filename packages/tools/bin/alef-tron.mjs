@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT OR Apache-2.0
-import { pack, verify, check, createKey, listKeys, build, dev } from '../src/index.mjs';
+import { pack, verify, check, createKey, listKeys, build, dev, bundle } from '../src/index.mjs';
 
 const help = `alef-tron keys [name] | keys --list
 alef-tron pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <names>]
@@ -8,11 +8,16 @@ alef-tron verify <file>
 alef-tron check [dir]
 alef-tron build [dir] [--out <dir>]
 alef-tron dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
+alef-tron bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
 --include: repeat or use commas for .git,node_modules,.alef-tron;
 key home and .alef-tron are always excluded.
 check: basic text hygiene only; full runtime manifest validation is not performed.
 build: runs the configured build command and assembles an app directory;
 dev: runs the dev command, waits for alef-tron.devUrl, then the runtime.
+bundle: verifies the package, places the runtime next to it and produces installable artifacts;
+the runtime range accepts only full x.y.z comparators (=,>,>=,<,<=,^,~); wildcards, bare and partial versions are refused;
+--format may repeat; without it the dir layout plus the platform archive is built (zip for win32-x64, tar.gz otherwise);
+--no-verify intentionally does not exist.
 `;
 const fail = message => { throw new Error(message); };
 function argumentsFor(args, allowed, repeat = new Set()) {
@@ -86,6 +91,19 @@ async function main(args) {
     }
     const result = await dev(positional[0], devOptions);
     if (typeof result.code === 'number') process.exitCode = result.code; // null must not overwrite a signal exit code
+    return;
+  }
+  if (command === 'bundle') {
+    const { positional, options } = argumentsFor(args, { runtime: true, platform: true, format: true, out: true, name: true, 'runtime-version': true, maintainer: true, 'allow-unsigned': false, force: false }, new Set(['format']));
+    if (positional.length !== 1) fail('Usage: bundle <PACKAGE.alef> --runtime <alef-binary> --platform <platform> [options]');
+    if (options.platform === undefined) fail('Usage: bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]');
+    const result = await bundle(positional[0], {
+      runtime: options.runtime, platform: options.platform, formats: options.format, out: options.out,
+      name: options.name, runtimeVersion: options['runtime-version'], maintainer: options.maintainer,
+      allowUnsigned: options['allow-unsigned'] === true, force: options.force === true,
+    });
+    for (const artifact of result.out) process.stdout.write(`${artifact}\n`);
+    for (const warning of result.warnings) process.stderr.write(`alef-tron: warning: ${warning}\n`);
     return;
   }
   fail('Unknown command; use --help');

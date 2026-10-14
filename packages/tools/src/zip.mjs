@@ -74,7 +74,7 @@ function fields(header, central) {
 }
 
 /**
- * Return deterministic ZIP bytes. Entries are iterable { name, data, method? };
+ * Return deterministic ZIP bytes. Entries are iterable { name, data, method?, mode? };
  * data is a Uint8Array. By default use deflate only when smaller, otherwise stored.
  * Explicit entry.method or options.method (0 or 8) is a ZIP testing API;
  * package packing must use automatic selection.
@@ -87,13 +87,14 @@ export function writeZip(entries, options = {}) {
   for (const entry of entries) {
     check(records.length < MAX_ENTRIES, 'entry count limit');
     registerName(names, entry.name);
+    check(entry.mode === undefined || (Number.isInteger(entry.mode) && entry.mode >= 0 && entry.mode <= 0o777), 'invalid mode');
     check(entry.data instanceof Uint8Array, 'entry data must be bytes');
     sizeLimit(entry.name, entry.data.byteLength);
     total = add(total, entry.data.byteLength, MAX_TOTAL, 'total size limit');
     const data = Buffer.from(entry.data);
     const method = entry.method ?? defaultMethod;
     check(method === undefined || method === 0 || method === 8, 'unsupported compression method');
-    records.push({ name: Buffer.from(entry.name), data, method });
+    records.push({ name: Buffer.from(entry.name), data, method, mode: entry.mode });
   }
   records.sort((a, b) => Buffer.compare(a.name, b.name));
   const locals = []; const centrals = []; let offset = 0; let centralSize = 0;
@@ -113,7 +114,8 @@ export function writeZip(entries, options = {}) {
     local.writeUInt16LE(name.length, 26);
     central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(0x031e, 4);
     local.copy(central, 6, 4, 30);
-    central.writeUInt32LE((0o100644 * 65536) >>> 0, 38); central.writeUInt32LE(offset, 42);
+    // Unix mode rides in the external-attribute high word (S_IFREG | mode).
+    central.writeUInt32LE(((0o100000 | (record.mode ?? 0o644)) * 65536) >>> 0, 38); central.writeUInt32LE(offset, 42);
     locals.push(local, name, compressed); centrals.push(central, name);
     offset = add(offset, local.length + name.length + compressed.length, MAX_ARCHIVE, 'archive size limit');
     centralSize = add(centralSize, central.length + name.length, MAX_CENTRAL, 'central directory size limit');

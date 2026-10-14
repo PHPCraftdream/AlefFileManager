@@ -6,3 +6,4 @@ export { readZip, writeZip, validateName } from './zip.mjs';
 export { check } from './check.mjs';
 export { build } from './workflow/build.mjs';
 export { dev, findRuntime } from './workflow/dev.mjs';
+export { bundle } from './workflow/bundle.mjs';
