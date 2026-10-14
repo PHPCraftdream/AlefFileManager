@@ -10,7 +10,7 @@
 
 | | A. GStreamer-backend Servo | B. Нативный API |
 |---|---|---|
-| Что работает | стандартные `getUserMedia`, Web Audio, `<audio>`/`<video>` | `@alef-tron/api` `camera`, `microphone`, `audio` |
+| Что работает | стандартные `getUserMedia`, Web Audio, `<audio>`/`<video>` | `@alef-runtime/api` `camera`, `microphone`, `audio` |
 | Реализация | включить media-backend Servo с GStreamer | `nokhwa` (камера), `cpal` (аудио), кадры/сэмплы через транспорт v2, вывод в `<canvas>`/AudioWorklet |
 | Размер | +100 MB и более (GStreamer runtime на Windows/macOS) | небольшой |
 | Совместимость | стандартный веб-код и библиотеки | нестандартный API |

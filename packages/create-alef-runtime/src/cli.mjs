@@ -76,6 +76,6 @@ export async function cli(args = process.argv.slice(2), { input = process.stdin,
     } finally { reader.close(); }
   } else options.directory ??= 'my-alef-app'; // Do not construct a reader or touch input.
   const result = await generate(options, cwd);
-  output.write(`\nCreated ${result.target}\n\nNext steps:\n  cd "${result.directoryName}"\n  npm install\n  npm run dev\n  npm run build\n  npx alef-tron pack\n`);
+  output.write(`\nCreated ${result.target}\n\nNext steps:\n  cd "${result.directoryName}"\n  npm install\n  npm run dev\n  npm run build\n  npx alef-runtime pack\n`);
   return result;
 }

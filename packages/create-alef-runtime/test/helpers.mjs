@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const binPath = fileURLToPath(new URL('../bin/create-alef-tron.mjs', import.meta.url));
+export const binPath = fileURLToPath(new URL('../bin/create-alef-runtime.mjs', import.meta.url));
 
 export async function scratch(prefix = 'create-alef-test-') {
   const root = await mkdtemp(path.join(tmpdir(), prefix));
@@ -20,7 +20,7 @@ export function runCli(args, cwd, { input = null } = {}) {
     let stdout = ''; let stderr = '';
     const fail = message => { error ??= new Error(message); child.kill('SIGKILL'); };
     let error;
-    const timer = setTimeout(() => fail('create-alef-tron child exceeded its 30s timeout'), 30_000);
+    const timer = setTimeout(() => fail('create-alef-runtime child exceeded its 30s timeout'), 30_000);
     child.stdout.on('data', bytes => { stdout += bytes; if (stdout.length > 65_536) fail('child stdout exceeded its bound'); });
     child.stderr.on('data', bytes => { stderr += bytes; if (stderr.length > 65_536) fail('child stderr exceeded its bound'); });
     if (input !== null) child.stdin.end(input); else child.stdin.end();

@@ -21,7 +21,7 @@ export default defineConfig({
   plugins: [pluginReact(), pluginTailwindcss(), assembly],
   source: {
     entry: { index: './frontend/src/main.tsx' },
-    alias: { '@alef-tron/api': './packages/api/src/index.ts' },
+    alias: { '@alef-runtime/api': './packages/api/src/index.ts' },
   },
   html: {
     template: './frontend/index.html',

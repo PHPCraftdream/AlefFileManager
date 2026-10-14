@@ -17,12 +17,12 @@ async function stop(child) {
   if (child.pid) owned.delete(child.pid);
 }
 
-/** Runtime executable resolution order: ALEF_BIN, @alef-tron/runtime, PATH. */
+/** Runtime executable resolution order: ALEF_BIN, @alef-runtime/runtime, PATH. */
 export async function findRuntime(dir = process.cwd(), overrides = {}) {
   const fromEnv = overrides.alefBin ?? process.env.ALEF_BIN;
   if (fromEnv) return fromEnv;
   try {
-    const runtime = await import(overrides.runtimeModule ?? '@alef-tron/runtime');
+    const runtime = await import(overrides.runtimeModule ?? '@alef-runtime/runtime');
     if (typeof runtime.getRuntimePath === 'function') {
       const found = await runtime.getRuntimePath(dir);
       if (found) return found;
@@ -36,7 +36,7 @@ export async function findRuntime(dir = process.cwd(), overrides = {}) {
       try { accessSync(candidate, constants.X_OK); return candidate; } catch { /* keep scanning */ }
     }
   }
-  throw new Error('Alef runtime executable not found: set ALEF_BIN, install @alef-tron/runtime exporting getRuntimePath(), or put alef on PATH');
+  throw new Error('Alef runtime executable not found: set ALEF_BIN, install @alef-runtime/runtime exporting getRuntimePath(), or put alef on PATH');
 }
 
 /** Argv-only spawn; Windows needs a fixed ComSpec argv for .cmd/.bat shims, never an interpolated string. */
@@ -64,7 +64,7 @@ export async function dev(dir = process.cwd(), options = {}) {
   validateTimeout(readyTimeoutMs);
   const project = await readProject(dir);
   if (!project.dev) throw new Error('package.json: no dev command or scripts.dev');
-  if (!project.devUrl) throw new Error('package.json: a dev command without alef-tron.devUrl is not supported');
+  if (!project.devUrl) throw new Error('package.json: a dev command without alef-runtime.devUrl is not supported');
   const devProcess = own(startCommand(project.dev, { cwd: project.root, stdio: options.devStdio ?? 'inherit' }));
   let devFailure; let devExit;
   devProcess.once('error', error => { devFailure = error; });

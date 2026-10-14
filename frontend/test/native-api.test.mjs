@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // The page of the File Manager talks to the framework through frontend/src/native/api.ts: the language in the
-// store, the folder through fs. The runtime is a fake; the page imports @alef-tron/api as the bundler does.
+// store, the folder through fs. The runtime is a fake; the page imports @alef-runtime/api as the bundler does.
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
 import { dirname, resolve } from 'node:path';
@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const apiUrl = pathToFileURL(resolve(here, '../../packages/api/src/index.ts')).href;
 register(`data:text/javascript,${encodeURIComponent(`export async function resolve(specifier, context, next) {
-  if (specifier === '@alef-tron/api') return { url: ${JSON.stringify(apiUrl)}, shortCircuit: true };
+  if (specifier === '@alef-runtime/api') return { url: ${JSON.stringify(apiUrl)}, shortCircuit: true };
   return next(specifier, context);
 }`)}`);
 

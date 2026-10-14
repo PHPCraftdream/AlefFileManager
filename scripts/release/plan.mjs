@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // packages/runtime/src/platforms.mjs uses `ciName` as the join key; the suffix here is the
-// matching npm package suffix (@alef-tron/runtime-<suffix>).
+// matching npm package suffix (@alef-runtime/runtime-<suffix>).
 export const SUFFIX_BY_CI_NAME = {
   'windows-x64': 'win32-x64',
   'macos-arm64': 'darwin-arm64',
@@ -17,7 +17,7 @@ export const SUFFIX_BY_CI_NAME = {
   'linux-x64': 'linux-x64',
 };
 
-export const PUBLISH_TAIL = ['@alef-tron/runtime', '@alef-tron/api', '@alef-tron/mcp', '@alef-tron/tools', 'create-alef-tron'];
+export const PUBLISH_TAIL = ['@alef-runtime/runtime', '@alef-runtime/api', '@alef-runtime/mcp', '@alef-runtime/tools', 'create-alef-runtime'];
 
 // The build matrix has one source: the platforms table in scripts/ci/affected.json.
 export function loadPlatforms(root) {
@@ -29,7 +29,7 @@ export function platformPackageNames(platforms) {
   return platforms.map(p => {
     const suffix = SUFFIX_BY_CI_NAME[p.name];
     if (!suffix) throw new Error(`no platform suffix for CI name: ${p.name}`);
-    return `@alef-tron/runtime-${suffix}`;
+    return `@alef-runtime/runtime-${suffix}`;
   });
 }
 
@@ -59,18 +59,18 @@ export function checkVersions(packages) {
 }
 
 export function checkPlatformNames(names, packages) {
-  const runtime = packages.find(pkg => pkg.name === '@alef-tron/runtime');
-  if (!runtime) throw new Error('@alef-tron/runtime is not in packages');
+  const runtime = packages.find(pkg => pkg.name === '@alef-runtime/runtime');
+  if (!runtime) throw new Error('@alef-runtime/runtime is not in packages');
   const declared = new Set(Object.keys(runtime.optionalDependencies ?? {}));
   for (const name of names) {
-    if (!declared.has(name)) throw new Error(`platform package ${name} is missing from @alef-tron/runtime optionalDependencies`);
+    if (!declared.has(name)) throw new Error(`platform package ${name} is missing from @alef-runtime/runtime optionalDependencies`);
   }
 }
 
 export function checkTailPackages(order, packages) {
   const known = new Set(packages.map(pkg => pkg.name));
   for (const name of order) {
-    if (name.startsWith('@alef-tron/runtime-')) continue;
+    if (name.startsWith('@alef-runtime/runtime-')) continue;
     if (!known.has(name)) throw new Error(`${name} is not in packages`);
   }
 }

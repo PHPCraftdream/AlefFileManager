@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { pack, verify, check, createKey, listKeys, build, dev, bundle } from '../src/index.mjs';
 
-const help = `alef-tron keys [name] | keys --list
-alef-tron pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <names>]
-alef-tron verify <file>
-alef-tron check [dir]
-alef-tron build [dir] [--out <dir>]
-alef-tron dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
-alef-tron bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
---include: repeat or use commas for .git,node_modules,.alef-tron;
-key home and .alef-tron are always excluded.
+const help = `alef-runtime keys [name] | keys --list
+alef-runtime pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <names>]
+alef-runtime verify <file>
+alef-runtime check [dir]
+alef-runtime build [dir] [--out <dir>]
+alef-runtime dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
+alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
+--include: repeat or use commas for .git,node_modules,.alef-runtime;
+key home and .alef-runtime are always excluded.
 check: basic text hygiene only; full runtime manifest validation is not performed.
 build: runs the configured build command and assembles an app directory;
-dev: runs the dev command, waits for alef-tron.devUrl, then the runtime.
+dev: runs the dev command, waits for alef-runtime.devUrl, then the runtime.
 bundle: verifies the package, places the runtime next to it and produces installable artifacts;
 the runtime range accepts only full x.y.z comparators (=,>,>=,<,<=,^,~); wildcards, bare and partial versions are refused;
 --format may repeat; without it the dir layout plus the platform archive is built (zip for win32-x64, tar.gz otherwise);
@@ -59,7 +59,7 @@ async function main(args) {
     if (positional.length !== 1) fail('Usage: pack <dir> [options]');
     if (options.include) {
       options.include = options.include.flatMap(value => value.split(','));
-      if (new Set(options.include).size !== options.include.length || options.include.some(name => !['.git', 'node_modules', '.alef-tron'].includes(name))) fail('Invalid or repeated --include basename');
+      if (new Set(options.include).size !== options.include.length || options.include.some(name => !['.git', 'node_modules', '.alef-runtime'].includes(name))) fail('Invalid or repeated --include basename');
     }
     const result = await pack(positional[0], options);
     process.stdout.write(`${result.out}\n`); return;
@@ -103,10 +103,10 @@ async function main(args) {
       allowUnsigned: options['allow-unsigned'] === true, force: options.force === true,
     });
     for (const artifact of result.out) process.stdout.write(`${artifact}\n`);
-    for (const warning of result.warnings) process.stderr.write(`alef-tron: warning: ${warning}\n`);
+    for (const warning of result.warnings) process.stderr.write(`alef-runtime: warning: ${warning}\n`);
     return;
   }
   fail('Unknown command; use --help');
 }
 try { await main(process.argv.slice(2)); }
-catch (error) { process.stderr.write(`alef-tron: ${error.message.replace(/-----BEGIN [\s\S]*/g, '[redacted private material]')}\n`); process.exitCode = 1; }
+catch (error) { process.stderr.write(`alef-runtime: ${error.message.replace(/-----BEGIN [\s\S]*/g, '[redacted private material]')}\n`); process.exitCode = 1; }

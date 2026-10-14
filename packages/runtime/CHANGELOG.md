@@ -2,7 +2,7 @@
 
 ## 0.1.0 — M7a.2 (private)
 
-- Dependency-free Node >=22.12.0 ESM resolver `@alef-tron/runtime`: `ALEF_BIN`
+- Dependency-free Node >=22.12.0 ESM resolver `@alef-runtime/runtime`: `ALEF_BIN`
   regular file overrides, else platform package via `require.resolve`, else a
   single error naming platform, package, cause and fix. No fallback from an
   invalid `ALEF_BIN` to an installed package.

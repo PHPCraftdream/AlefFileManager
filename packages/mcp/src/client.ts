@@ -45,7 +45,7 @@ export async function connect(options: ConnectOptions): Promise<McpClient> {
   }
   const peer = new Peer(transport);
   try {
-    const result = await peer.request('initialize', { protocolVersion: options.protocolVersion ?? revisions[0], capabilities: {}, clientInfo: options.clientInfo ?? { name: '@alef-tron/mcp', version: '0.1.0' } }, options);
+    const result = await peer.request('initialize', { protocolVersion: options.protocolVersion ?? revisions[0], capabilities: {}, clientInfo: options.clientInfo ?? { name: '@alef-runtime/mcp', version: '0.1.0' } }, options);
     if (!object(result) || !revisions.some(version => version === result.protocolVersion) || !object(result.serverInfo) || !object(result.capabilities)) throw new Error('Server returned an unsupported initialization response.');
     peer.revision = result.protocolVersion as typeof peer.revision;
     await bounded(peer.notify('notifications/initialized'), timeout, options.signal);

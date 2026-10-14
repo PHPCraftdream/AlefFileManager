@@ -20,9 +20,9 @@ const graph = {
 };
 const allCrates = ['alef', 'alef-core', 'alef-modules', 'alef-package', 'alef-runtime'];
 const pkgs = [
-  { folder: 'packages/api', name: '@alef-tron/api', dependencies: {} },
-  { folder: 'packages/runtime', name: '@alef-tron/runtime', dependencies: { '@alef-tron/api': '^0.1.0' } },
-  { folder: 'packages/mcp', name: '@alef-tron/mcp', dependencies: {} },
+  { folder: 'packages/api', name: '@alef-runtime/api', dependencies: {} },
+  { folder: 'packages/runtime', name: '@alef-runtime/runtime', dependencies: { '@alef-runtime/api': '^0.1.0' } },
+  { folder: 'packages/mcp', name: '@alef-runtime/mcp', dependencies: {} },
 ];
 
 function plan(files, overrides = {}) {

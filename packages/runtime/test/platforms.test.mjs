@@ -18,7 +18,7 @@ test('platform_table_pins_the_four_supported_configurations_and_ci_binary_names'
 
 test('private_esm_meta_package_uses_the_single_shared_dependency_version_relation', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
-  assert.equal(manifest.name, '@alef-tron/runtime');
+  assert.equal(manifest.name, '@alef-runtime/runtime');
   assert.equal(manifest.version, '0.1.0');
   assert.equal(manifest.private, true);
   assert.equal(manifest.type, 'module');

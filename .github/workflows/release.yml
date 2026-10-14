@@ -263,7 +263,7 @@ jobs:
             if [ -n "$dir" ]; then
               node scripts/release/publish-package.mjs "$dir" "$VERSION" --dry-run
             else
-              node scripts/release/publish-package.mjs "dist/${name#@alef-tron/runtime-}" "$VERSION" --dry-run
+              node scripts/release/publish-package.mjs "dist/${name#@alef-runtime/runtime-}" "$VERSION" --dry-run
             fi
           done
       # npm читает NODE_AUTH_TOKEN из окружения; шаг dry-run выше секретов не видит.
@@ -284,7 +284,7 @@ jobs:
             if [ -n "$dir" ]; then
               node scripts/release/publish-package.mjs "$dir" "$VERSION"
             else
-              node scripts/release/publish-package.mjs "dist/${name#@alef-tron/runtime-}" "$VERSION"
+              node scripts/release/publish-package.mjs "dist/${name#@alef-runtime/runtime-}" "$VERSION"
             fi
           done
 

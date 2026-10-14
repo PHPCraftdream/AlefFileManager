@@ -6,12 +6,12 @@ Generated Alef application (`{{ID}}`). Requires Node >=22.12.0.
 npm install
 npm run dev
 npm run build
-npx alef-tron pack
+npx alef-runtime pack
 ```
 
 The bundler serves http://127.0.0.1:3000 and builds into `dist`. Run the
 page in Alef to use the native API; a plain browser has no native bridge.
-The package's `alef-tron` object records the dev/build commands and output.
+The package's `alef-runtime` object records the dev/build commands and output.
 
 `alef.ktav` is deliberately closed: no filesystem, network, external resource,
 clipboard-read, command, tray, autostart or runtime-window-creation grants.

@@ -1,28 +1,28 @@
-# @alef-tron/tools
+# @alef-runtime/tools
 
 Private 0.1.0 ESM package, MIT OR Apache-2.0. Node >=22.12.0;
 no dependencies, parser, Rust, runtime binary, generated types or build step.
-CLI bin: `alef-tron`; checkout: `node packages/tools/bin/alef-tron.mjs`.
+CLI bin: `alef-runtime`; checkout: `node packages/tools/bin/alef-runtime.mjs`.
 
 ## Commands
 
 ```sh
-alef-tron keys [name]
-alef-tron keys --list
-alef-tron pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <names>]
-alef-tron verify <file>
-alef-tron check [dir]
-alef-tron build [dir] [--out <dir>]
-alef-tron dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
-alef-tron bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
-alef-tron --help
+alef-runtime keys [name]
+alef-runtime keys --list
+alef-runtime pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <names>]
+alef-runtime verify <file>
+alef-runtime check [dir]
+alef-runtime build [dir] [--out <dir>]
+alef-runtime dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
+alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
+alef-runtime --help
 ```
 
 `keys` creates `default` unless named, refuses overwrite and prints
 `<name> <fingerprint>` followed by `key <base64>` (raw32 public Ed25519,
 not SPKI or private material). Listing prints names/fingerprints only.
 Fingerprints are lowercase SHA-256 of raw32. PKCS8 private PEMs live under
-`$ALEF_TRON_HOME/keys`, default `~/.alef-tron/keys`; API `home` overrides the
+`$ALEF_RUNTIME_HOME/keys`, default `~/.alef-runtime/keys`; API `home` overrides the
 environment. Creation uses 0700 directories, 0600 files and atomic exclusive
 publication; Windows does not provide equivalent POSIX permission guarantees.
 Never publish private PEMs.
@@ -35,7 +35,7 @@ existing output inside input is skipped. The CLI prints the output path.
 
 At every depth `.git` and `node_modules` are excluded unless included through
 repeated/comma-separated `--include`. Configured key home and case-insensitive
-`.alef-tron` basenames are always excluded, even when explicitly included.
+`.alef-runtime` basenames are always excluded, even when explicitly included.
 Input/output inside key home, symlinked entries, special files and copied
 private-key PEM markers fail; a link in the path above the input, the output or
 the key home is the user's own layout and is followed. Excluded trees are not traversed. This is not a general secret
@@ -55,14 +55,14 @@ semantics. Alef performs full manifest validation before launching the app.
 `build` runs the configured build command, then assembles `app-build` (or
 `--out`) with `alef.ktav`, optional `icon.png` and the outDir tree under the
 manifest assets directory; unsafe or overlapping destinations fail before any
-deletion. `dev` starts the configured dev command, polls `alef-tron.devUrl`
+deletion. `dev` starts the configured dev command, polls `alef-runtime.devUrl`
 until it answers (default 60 s, `--ready-timeout`), then spawns the runtime
 with `--app <root> --dev-url <url>` plus any args after `--`; the runtime is
-resolved from `ALEF_BIN`, `@alef-tron/runtime` `getRuntimePath()` or `alef`
+resolved from `ALEF_BIN`, `@alef-runtime/runtime` `getRuntimePath()` or `alef`
 on PATH. Both children are owned and cleaned up: the dev server is killed when
 the runtime exits, on dev death, readiness timeout and SIGINT/SIGTERM; the
 runtime exit code propagates. Only `dev` needs the runtime binary (resolved
-from `ALEF_BIN`, `@alef-tron/runtime` `getRuntimePath()` or `alef` on PATH);
+from `ALEF_BIN`, `@alef-runtime/runtime` `getRuntimePath()` or `alef` on PATH);
 `build` does not. On Windows, app arguments passed to a `.cmd`/`.bat` runtime
 shim are refused when they contain cmd.exe metacharacters (`& | < > ^ % ! "`
 or a newline). Not done: full manifest schema validation and bundle.
@@ -218,6 +218,6 @@ EOCD bounds/size checks; per-entry and total limits remain before immutable
 snapshot allocation and payload processing. Immutable snapshots and the
 bounded deflate path are retained.
 
-Deferred: dev/build/create-alef-tron, full JS Ktav/Alef manifest and
+Deferred: dev/build/create-alef-runtime, full JS Ktav/Alef manifest and
 environment validation, runtime installation/launch, updater, npm publication
 and Rust/JS cross-reader integration. This is not the complete M7 workflow.

@@ -5,15 +5,15 @@
   "type": "module",
   "engines": { "node": ">=22.12.0" },
   "scripts": {
-    "dev": "rsbuild dev",
-    "build": "rsbuild build"
+    "dev": "vite",
+    "build": "vite build"
   },
-  "dependencies": { "@alef-tron/api": "{{API}}" },
+  "dependencies": { "@alef-runtime/api": "{{API}}" },
   "devDependencies": {
-    "@alef-tron/tools": "{{TOOLS}}",
-    "@rsbuild/core": "{{RSBUILD}}"
+    "@alef-runtime/tools": "{{TOOLS}}",
+    "vite": "{{VITE}}"
   },
-  "alef-tron": {
+  "alef-runtime": {
     "dev": "npm run dev",
     "devUrl": "http://127.0.0.1:3000",
     "build": "npm run build",

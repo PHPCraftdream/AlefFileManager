@@ -17,22 +17,22 @@ export async function readProject(dir = process.cwd()) {
   try { pkg = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')); }
   catch (error) { if (error.code !== 'ENOENT') throw new Error(`package.json: ${error.message}`, { cause: error }); }
   if (!object(pkg)) throw new Error('package.json: must be an object');
-  const config = pkg['alef-tron'] ?? {};
-  if (!object(config) || (Object.hasOwn(pkg, 'alef-tron') && pkg['alef-tron'] === null)) throw new Error('package.json: alef-tron must be an object');
+  const config = pkg['alef-runtime'] ?? {};
+  if (!object(config) || (Object.hasOwn(pkg, 'alef-runtime') && pkg['alef-runtime'] === null)) throw new Error('package.json: alef-runtime must be an object');
   if (pkg.scripts !== undefined && !object(pkg.scripts)) throw new Error('package.json: scripts must be an object');
   const commands = {};
   for (const name of ['dev', 'build']) {
-    if (Object.hasOwn(config, name)) commands[name] = Object.freeze({ shell: string(config[name], `alef-tron.${name}`) });
+    if (Object.hasOwn(config, name)) commands[name] = Object.freeze({ shell: string(config[name], `alef-runtime.${name}`) });
     else if (Object.hasOwn(pkg.scripts ?? {}, name)) {
       string(pkg.scripts[name], `scripts.${name}`);
       commands[name] = Object.freeze({ npm: name });
     }
   }
-  const outDir = path.resolve(root, Object.hasOwn(config, 'outDir') ? string(config.outDir, 'alef-tron.outDir') : 'dist');
-  const devUrl = Object.hasOwn(config, 'devUrl') ? string(config.devUrl, 'alef-tron.devUrl') : undefined;
+  const outDir = path.resolve(root, Object.hasOwn(config, 'outDir') ? string(config.outDir, 'alef-runtime.outDir') : 'dist');
+  const devUrl = Object.hasOwn(config, 'devUrl') ? string(config.devUrl, 'alef-runtime.devUrl') : undefined;
   if (devUrl !== undefined) {
-    let url; try { url = new URL(devUrl); } catch { throw new Error('package.json: alef-tron.devUrl must be an HTTP(S) URL'); }
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('package.json: alef-tron.devUrl must be an HTTP(S) URL');
+    let url; try { url = new URL(devUrl); } catch { throw new Error('package.json: alef-runtime.devUrl must be an HTTP(S) URL'); }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('package.json: alef-runtime.devUrl must be an HTTP(S) URL');
   }
   return Object.freeze({ root, manifest, outDir, devUrl, ...commands });
 }

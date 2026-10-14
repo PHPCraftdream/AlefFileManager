@@ -14,10 +14,10 @@
     "isolatedModules": true,
     "allowImportingTsExtensions": true,
     "paths": {
-      "@alef-tron/mcp": [
+      "@alef-runtime/mcp": [
         "./packages/mcp/src/index.ts"
       ],
-      "@alef-tron/api": [
+      "@alef-runtime/api": [
         "./packages/api/src/index.ts"
       ]
     },

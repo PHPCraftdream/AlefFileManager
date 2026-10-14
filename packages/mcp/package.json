@@ -1,5 +1,5 @@
 {
-  "name": "@alef-tron/mcp",
+  "name": "@alef-runtime/mcp",
   "version": "0.1.0",
   "private": true,
   "description": "Dependency-free MCP over Alef streams and HTTP",

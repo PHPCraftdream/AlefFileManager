@@ -4,13 +4,13 @@
 
 ## 1. Цель и критерий готовности
 
-Alef — десктопный фреймворк: пользователь пишет приложение на HTML/CSS/JS(TS), запускает его во встроенном Servo и получает нативные возможности через `@alef-tron/api`. Rust пользователь не пишет; runtime распространяется готовыми бинарниками через npm.
+Alef — десктопный фреймворк: пользователь пишет приложение на HTML/CSS/JS(TS), запускает его во встроенном Servo и получает нативные возможности через `@alef-runtime/api`. Rust пользователь не пишет; runtime распространяется готовыми бинарниками через npm.
 
 **MVP готов, когда:**
 
-1. `npm create alef-tron` → `npm run dev` → `npm run build` даёт пакет приложения `.alef`, который запускает установленный runtime (`alef run app.alef`) под Windows, macOS и Linux без Rust. Установщик со встроенным runtime (единая сборка) — необязательная опция (§6.3).
+1. `npm create alef-runtime` → `npm run dev` → `npm run build` даёт пакет приложения `.alef`, который запускает установленный runtime (`alef run app.alef`) под Windows, macOS и Linux без Rust. Установщик со встроенным runtime (единая сборка) — необязательная опция (§6.3).
 2. Из JS доступны модули этапов M1–M5 (§8) с типами, правами и тестами на всех трёх ОС.
-3. Alef File Manager переписан на `@alef-tron/api` без собственного Rust-кода — это доказательство, что API достаточно для реального приложения.
+3. Alef File Manager переписан на `@alef-runtime/api` без собственного Rust-кода — это доказательство, что API достаточно для реального приложения.
 
 **Не цели MVP:** Node.js внутри runtime, мобильные платформы, печать, медиа (камера, микрофон, аудио — M6 отложен), обновление Servo с 0.6.
 
@@ -18,7 +18,7 @@ Alef — десктопный фреймворк: пользователь пи�
 
 ```
 ┌──────────────────────────── приложение пользователя (JS/TS) ────────────────────────────┐
-│                         @alef-tron/api  (типизированные модули)                               │
+│                         @alef-runtime/api  (типизированные модули)                               │
 │        core: transport · streams · events · resources · errors · handshake               │
 └───────────────▲─────────────────────────────────────────────────────────────▲───────────┘
    native://call, native://stream (fetch)                       события (поток документа)
@@ -57,9 +57,9 @@ backend/
     alef-runtime/       src/{lib.rs, bridge/, window/, ui/, dispatch/}   ← бывший backend/runtime
     alef/               src/main.rs  — генерический бинарник runtime
 packages/
-  api/                  @alef-tron/api
-  tools/                @alef-tron/tools: dev, build, bundle
-  create-alef-tron/      шаблон проекта
+  api/                  @alef-runtime/api
+  tools/                @alef-runtime/tools: dev, build, bundle
+  create-alef-runtime/      шаблон проекта
 apps/
   file-manager/         Alef File Manager как обычное JS-приложение + alef.ktav
 tests/
@@ -95,7 +95,7 @@ registry
 
 Ответ обработчика: `Json(T)`, `Bytes(Vec<u8>)` (отдаётся чанками) или `Stream(id)`.
 
-## 5. Контракт `@alef-tron/api` (JS)
+## 5. Контракт `@alef-runtime/api` (JS)
 
 ```
 packages/api/src/
@@ -110,8 +110,8 @@ packages/api/src/
 
 Соглашения:
 
-- импорт по модулю: `import { fs, window } from '@alef-tron/api'`;
-- **всё асинхронное, без исключений:** каждая функция возвращает `Promise`, поток или `AsyncIterable`; синхронных геттеров нет даже для «статичных» данных (`os.platform()`, `app.args()`) — всё идёт через транспорт. Rust-обработчики — `async`, блокирующий I/O только в `spawn_blocking`, UI-операции — через асинхронный `UiDispatcher`. Проверяется автоматически: тест `@alef-tron/api` обходит все экспортируемые функции модулей и требует `Promise`/`AsyncIterable`;
+- импорт по модулю: `import { fs, window } from '@alef-runtime/api'`;
+- **всё асинхронное, без исключений:** каждая функция возвращает `Promise`, поток или `AsyncIterable`; синхронных геттеров нет даже для «статичных» данных (`os.platform()`, `app.args()`) — всё идёт через транспорт. Rust-обработчики — `async`, блокирующий I/O только в `spawn_blocking`, UI-операции — через асинхронный `UiDispatcher`. Проверяется автоматически: тест `@alef-runtime/api` обходит все экспортируемые функции модулей и требует `Promise`/`AsyncIterable`;
 - последний аргумент — `{ signal?: AbortSignal }`;
 - потоки — стандартные `ReadableStream`/`WritableStream` и `AsyncIterable`;
 - ресурсы — классы с `close()` и `Symbol.asyncDispose` (`await using file = await fs.open(...)`);
@@ -122,7 +122,7 @@ packages/api/src/
 Пример целевого API:
 
 ```ts
-import { dialog, fs, http, window } from '@alef-tron/api';
+import { dialog, fs, http, window } from '@alef-runtime/api';
 
 const [path] = await dialog.open({ filters: [{ name: 'Text', extensions: ['txt'] }] });
 const text = await fs.readText(path);                 // путь выдан диалогом → грант
@@ -154,7 +154,7 @@ await window.current().setTitle(`Saved ${path}`);
 Принципы:
 
 - **Разделы безопасности обязательны.** `permissions` и `external` должны присутствовать в манифесте явно. Неявных значений по умолчанию в runtime нет: если раздела нет, приложение не запускается — ошибка `MANIFEST_INVALID` с путём к недостающему полю.
-- **По умолчанию закрыто.** Пустой список = запрещено. Шаблон `create-alef-tron` содержит эти разделы с закрытыми значениями, чтобы разработчик видел их и открывал осознанно.
+- **По умолчанию закрыто.** Пустой список = запрещено. Шаблон `create-alef-runtime` содержит эти разделы с закрытыми значениями, чтобы разработчик видел их и открывал осознанно.
 - **Внешние ресурсы** — и обращения (`fetch`, `WebSocket`, `EventSource`), и подключение (скрипты, стили, изображения, шрифты, медиа, фреймы) — задаются в `external`; runtime строит из них CSP документов приложения. Транспорт Alef (`native://call`/`stream`) от `external` не зависит.
 - **Нативные возможности** (`fs`, `cli`, `net`, `shell`, `clipboard.read`, `shortcut.global`, `secrets`, …) — в `permissions` со scopes. Сетевой доступ из нативного `http`/`socket` тоже ограничен своими scopes, независимо от CSP.
 
@@ -277,7 +277,7 @@ permissions: {
 
 - Файл `alef.ktav` в корне приложения, формат **Ktav 0.8** (crate `ktav = "=0.8.0"`, npm `@ktav-lang/ktav@0.8.0`; MIT OR Apache-2.0).
 - Runtime читает манифест через serde (`ktav::from_str`) в типизированную структуру: `deny_unknown_fields`, у разделов безопасности нет `#[serde(default)]` — отсутствующий раздел даёт `MANIFEST_INVALID` с именем поля (`missing field ...`). Строка и колонка (0-based байтовая колонка) есть только у синтаксических ошибок Ktav; у serde-ошибок типа полного пути поля нет — ограничение `ktav 0.8`.
-- Та же структура — источник TS-типов манифеста (`ts-rs`); `@alef-tron/tools` проверяет манифест при `dev`/`build` через `@ktav-lang/ktav` до запуска runtime.
+- Та же структура — источник TS-типов манифеста (`ts-rs`); `@alef-runtime/tools` проверяет манифест при `dev`/`build` через `@ktav-lang/ktav` до запуска runtime.
 - Версии и прочие значения, похожие на числа/ключевые слова, пишутся через `::` (`version:: 1.0.0`), иначе Ktav выведет тип.
 - `arguments` (необязателен): `options` (обязателен внутри раздела) — `name` (строчные буквы, цифры, дефис; `help` и `version` генерируются), необязательные `short` (один ASCII-символ; `h` и `V` заняты) и `description`, `type` — `string`/`number`/`boolean`; `positional` — `name` и `description`, без него лишний аргумент — ошибка использования. Разбор: `--name value`, `--name=value`, `-s value`, `-s=value`; флаг значения не берёт (`--flag`, `--flag=false`); `--` заканчивает опции; повтор — побеждает последнее значение; кластеров коротких опций нет. Ошибка → код выхода 2, `--help`/`-h`/`--version`/`-V` печатают текст и выходят с кодом 0 до открытия окна.
 
@@ -302,11 +302,11 @@ permissions: {
 
 ### 6.3. Модель поставки: runtime отдельно, приложение — пакет
 
-- **Runtime** (`alef`) ставится в систему один раз своим установщиком (для разработки — ещё и npm-пакетами `@alef-tron/runtime-*`). Версии лежат рядом: `<корень Alef>/<версия>/alef`; в системе один лаунчер `alef`, он выбирает версию по манифесту (как `javaw`/`py`). Обновление runtime не ломает установленные приложения: старые версии остаются, лишние убирает `alef runtime prune`.
+- **Runtime** (`alef`) ставится в систему один раз своим установщиком (для разработки — ещё и npm-пакетами `@alef-runtime/runtime-*`). Версии лежат рядом: `<корень Alef>/<версия>/alef`; в системе один лаунчер `alef`, он выбирает версию по манифесту (как `javaw`/`py`). Обновление runtime не ломает установленные приложения: старые версии остаются, лишние убирает `alef runtime prune`.
 - **Пакет `.alef`** — zip: `alef.ktav` в корне, ассеты, `icon.png`, `META-INF/` (список хешей файлов и подпись ed25519 разработчика). Ассеты читаются из архива без распаковки на диск (источник ассетов моста — каталог или архив; каталог остаётся для `dev`).
 - **Совместимость.** Манифест задаёт `runtime: ^X.Y`; лаунчер запускает подходящую установленную версию или сообщает, что поставить; `runtime.hello` проверяет протокол и API. Несколько версий рядом — потому что до 1.0 minor может ломать API.
 - **Запуск и установка.** `alef run app.alef -- <аргументы>` (и двойной клик по `.alef`) — запуск на месте. `alef install app.alef` (или согласие при первом запуске) копирует пакет в каталог приложений и создаёт идентичность приложения при общем бинарнике: Windows — ярлык с AppUserModelID; macOS — тонкая обёртка `.app` (`Info.plist`: id, имя, значок, описания TCC), запускающая `alef run`; Linux — `.desktop`. Ассоциации файлов, deep links и автозапуск регистрируются как `alef run <пакет> ...`.
-- **Единая сборка** (необязательная): `alef-tron bundle` кладёт runtime рядом с пакетом и собирает обычный установщик; приложение ставится одним файлом и не зависит от общего runtime.
+- **Единая сборка** (необязательная): `alef-runtime bundle` кладёт runtime рядом с пакетом и собирает обычный установщик; приложение ставится одним файлом и не зависит от общего runtime.
 - **Режимы** — окно, консоль, служба (§2): определяются манифестом. Службы ОС (Windows Service, systemd, launchd) регистрирует установка или автозапуск (M5); сам runtime в режиме службы не требует консоли и корректно завершается по сигналам.
 
 Подробности — `stages/m7-distribution.md`.
@@ -362,7 +362,7 @@ permissions: {
 | net | `http` | `request` без CORS: потоковые тела, таймауты, прокси, редиректы, cookies; download/upload с прогрессом; **сервер** `serve`: запросы потоком, upgrade в WebSocket, статика | `hyper` + `rustls` (в дереве) | `net.http` + scope хостов | M |
 | net | `socket` | TCP client/server, UDP, TLS | tokio, `rustls` | `net.socket` + scope host:port; серверы — scope `listen:host:port` (по умолчанию только loopback) | M |
 | net | `websocket` | клиент и сервер (`serve`, либо `upgrade` из `http.serve`) | `tokio-tungstenite` | `net.http` scope (клиент), `listen` (сервер) | S |
-| net | `mcp` (`@alef-tron/mcp`, JS-пакет поверх модулей) | MCP-сервер (tools/resources/prompts; stdio и Streamable HTTP) и клиент | JSON-RPC в JS поверх `http`, `websocket`, `cli` | права `http.serve`/`listen`, `cli`, `net` | M |
+| net | `mcp` (`@alef-runtime/mcp`, JS-пакет поверх модулей) | MCP-сервер (tools/resources/prompts; stdio и Streamable HTTP) и клиент | JSON-RPC в JS поверх `http`, `websocket`, `cli` | права `http.serve`/`listen`, `cli`, `net` | M |
 | devices | `camera`, `microphone`, `audio` | см. решение в M6 | GStreamer-backend Servo **или** `nokhwa`/`cpal` | `media.*` + запрос пользователю | L |
 | platform | `log`, `devtools`, `updater` | логи в файл, crash-репорты; Servo devtools; обновления | `tracing`, Servo devtools, позже | — | S/S/L |
 
@@ -375,15 +375,15 @@ permissions: {
 | Этап | Файл | Суть | Зависит от |
 |---|---|---|---|
 | M0 | `stages/m0-spikes.md` | 5 spike: origin приложения (M0.1), мультиоконность (M0.2), трей/меню/хоткеи/диалоги с циклом winit (M0.3), CI на Windows/macOS/Linux (M0.4), безоконный режим Servo (M0.5) | — |
-| M1 | `stages/m1-core.md` | crates, транспорт v2, сессии и ресурсы, реестр с правами, `alef.ktav`, ts-rs, `@alef-tron/api` core, бинарник `alef` | M0 |
+| M1 | `stages/m1-core.md` | crates, транспорт v2, сессии и ресурсы, реестр с правами, `alef.ktav`, ts-rs, `@alef-runtime/api` core, бинарник `alef` | M0 |
 | M2 | `stages/m2-desktop.md` | `app`, `path`, `window` (§6.2), `dialog`, `shell`, `clipboard`, `os`, `screen`, `notification` | M1 |
 | M2b | `stages/m2b-consent.md` | подтверждение и подмена прав (§6.4): исход «подменить», хранилище решений, окно согласия, `alef permissions` | M2 |
 | M3 | `stages/m3-data.md` | `fs` (с виртуализацией), `store`, `sqlite`, `crypto`/`secrets`; перевод File Manager, удаление `backend/src` | M2b |
 | M4 | `stages/m4-net-cli.md` | `http` (клиент и сервер), `socket`, `websocket` (клиент и сервер), `cli` (командная строка ОС, объявленные команды), режимы `app`: консоль и служба | M3, M0.5 |
-| M4b | `stages/m4b-mcp.md` | серверы и MCP: `@alef-tron/mcp` (сервер и клиент), безопасность локальных серверов | M4 |
+| M4b | `stages/m4b-mcp.md` | серверы и MCP: `@alef-runtime/mcp` (сервер и клиент), безопасность локальных серверов | M4 |
 | M5 | `stages/m5-integration.md` | `menu`, `tray`, `shortcut`, автозапуск, deep links | M2 |
 | M6 | `stages/m6-media.md` | медиа — **отложено**, вне MVP | — |
-| M7 | `stages/m7-distribution.md` | M7a runtime и лаунчер (установщики, версии рядом), M7b пакеты `.alef` (подпись, `alef install`, `@alef-tron/tools`, `updater`), M7c единая сборка (опция) | M3, M2b, M0.4 |
+| M7 | `stages/m7-distribution.md` | M7a runtime и лаунчер (установщики, версии рядом), M7b пакеты `.alef` (подпись, `alef install`, `@alef-runtime/tools`, `updater`), M7c единая сборка (опция) | M3, M2b, M0.4 |
 
 ## 9. Тестирование
 
@@ -403,8 +403,8 @@ permissions: {
 1. **Медиа — отложено.** M6 вне MVP; к выбору GStreamer/нативный API вернуться позже.
 2. **Платформы MVP — все популярные:** Windows x64, macOS (arm64, x64), Linux x64 (X11 и Wayland). Следствия: CI собирает и тестирует на трёх ОС начиная с M1; платформенный код только в `window/platform` и модулях за `cfg`; resize-синхронизация и интеграция трея/меню проверяются на каждой ОС отдельно (у macOS свой live resize, у Linux — X11/Wayland).
 3. **Внешние ресурсы и права определяет разработчик** в манифесте (§6.1): раздел `external` (обращения и подключение внешних ресурсов → CSP) и `permissions` обязательны, по умолчанию закрыты; без них приложение не запускается. Транспорт Alef от `external` не зависит.
-4. **Генерация TS-типов из Rust — делаем** (`ts-rs`, MIT) с M1: DTO команд и событий описываются в Rust, типы `@alef-tron/api` генерируются, CI проверяет, что сгенерированное совпадает с закоммиченным.
-5. **npm-scope — `@alef-tron/*`**: `@alef-tron/api`, `@alef-tron/tools` (команды `dev`/`build`/`bundle`; не `cli`, чтобы не путать с модулем API `cli` — командной строкой ОС), `@alef-tron/runtime-<platform>-<arch>`, шаблон — `create-alef-tron` (`npm create alef-tron`). Пакетов с такими именами в npm нет (проверено 2026-10-05); организацию `alef-tron` нужно зарегистрировать до публикации.
+4. **Генерация TS-типов из Rust — делаем** (`ts-rs`, MIT) с M1: DTO команд и событий описываются в Rust, типы `@alef-runtime/api` генерируются, CI проверяет, что сгенерированное совпадает с закоммиченным.
+5. **npm-scope — `@alef-runtime/*`**: `@alef-runtime/api`, `@alef-runtime/tools` (команды `dev`/`build`/`bundle`; не `cli`, чтобы не путать с модулем API `cli` — командной строкой ОС), `@alef-runtime/runtime-<platform>-<arch>`, шаблон — `create-alef-runtime` (`npm create alef-runtime`). Пакетов с такими именами в npm нет (проверено 2026-10-05); организацию `alef-runtime` нужно зарегистрировать до публикации.
 6. **Формат конфигурации — Ktav 0.8** (`alef.ktav`), см. §6.1.
 
 Приняты (2026-10-06):
@@ -413,7 +413,7 @@ permissions: {
 8. **Пакет — zip с расширением `.alef`**, подпись ed25519 над списком хешей внутри; ассеты читаются из архива.
 9. **Запуск на месте и установка:** `alef run` и `alef install` (ярлык, идентичность приложения, ассоциации).
 10. **Права подтверждает пользователь и может подменить любое** (§6.4): подмена, а не отказ; решения хранятся по `id` и ключу подписи; для `cli` приложение заранее объявляет фиксированные команды. Ядро согласия — отдельный этап M2b перед `fs`.
-11. **Серверы и MCP:** `http.serve`, `websocket.serve`, scope `listen:host:port` (по умолчанию только loopback, проверка `Host`/`Origin`); MCP — JS-пакет `@alef-tron/mcp` поверх модулей (M4b).
+11. **Серверы и MCP:** `http.serve`, `websocket.serve`, scope `listen:host:port` (по умолчанию только loopback, проверка `Host`/`Origin`); MCP — JS-пакет `@alef-runtime/mcp` поверх модулей (M4b).
 12. **Безоконные режимы** (консоль, служба) — через скрытый `WebView` на программном контексте; сначала спайк M0.5.
 
 ## 11. Риски

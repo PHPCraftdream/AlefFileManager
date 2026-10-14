@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// A fake native runtime for the @alef-tron/api tests: `fetch` and `location` stand in for Servo.
+// A fake native runtime for the @alef-runtime/api tests: `fetch` and `location` stand in for Servo.
 const encoder = new TextEncoder();
 
 export const INFO = {

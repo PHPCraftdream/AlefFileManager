@@ -4,9 +4,9 @@ import { cli } from '../src/cli.mjs';
 
 try {
   const [major, minor] = process.versions.node.split('.').map(Number);
-  if (major < 22 || (major === 22 && minor < 12)) throw new Error('create-alef-tron requires Node >=22.12.0.');
+  if (major < 22 || (major === 22 && minor < 12)) throw new Error('create-alef-runtime requires Node >=22.12.0.');
   await cli();
 } catch (error) {
-  console.error(`create-alef-tron: ${error.message}`);
+  console.error(`create-alef-runtime: ${error.message}`);
   process.exitCode = 1;
 }

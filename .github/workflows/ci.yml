@@ -216,23 +216,23 @@ jobs:
           npm run test:types
           node --test scripts/supply/check-no-hooks.test.mjs
 
-      - name: "@alef-tron/api tests"
+      - name: "@alef-runtime/api tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/api,') || contains(format(',{0},', needs.plan.outputs.js), ',frontend,')
         run: npm run test:api
 
-      - name: "@alef-tron/mcp tests"
+      - name: "@alef-runtime/mcp tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/mcp,')
         run: npm run test:mcp
 
-      - name: "@alef-tron/tools tests"
+      - name: "@alef-runtime/tools tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,')
         run: npm run test:tools
 
-      - name: "create-alef-tron tests"
-        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/create-alef-tron,')
+      - name: "create-alef-runtime tests"
+        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/create-alef-runtime,')
         run: npm run test:create
 
-      - name: "@alef-tron/runtime tests"
+      - name: "@alef-runtime/runtime tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/runtime,')
         run: npm run test:runtime
 

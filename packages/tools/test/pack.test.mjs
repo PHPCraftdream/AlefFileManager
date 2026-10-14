@@ -80,15 +80,15 @@ test('unsigned_packing_is_explicit_and_retains_canonical_hashes_while_missing_ke
   const info = await verify(result.out); assert.equal(info.status, 'Unsigned');
   assert.deepEqual(info.entries.map(entry => entry.name), ['META-INF/hashes', 'alef.ktav']);
 }));
-test('normal_excludes_can_be_included_but_the_key_home_and_alef_tron_never_can', bounded, () => scratch(async ({ dir }) => {
+test('normal_excludes_can_be_included_but_the_key_home_and_alef_runtime_never_can', bounded, () => scratch(async ({ dir }) => {
   const home = path.join(dir, 'secret-store'); await createKey(undefined, { home });
-  for (const name of ['.git', 'node_modules', '.alef-tron']) {
+  for (const name of ['.git', 'node_modules', '.alef-runtime']) {
     await mkdir(path.join(dir, name)); await writeFile(path.join(dir, name, 'asset'), 'hidden');
   }
   const options = { home, unsigned: true };
   let info = await verify((await pack(dir, options)).out);
   assert.deepEqual(info.entries.map(entry => entry.name), ['META-INF/hashes', 'alef.ktav']);
-  info = await verify((await pack(dir, { ...options, include: ['.git', 'node_modules', '.alef-tron'] })).out);
+  info = await verify((await pack(dir, { ...options, include: ['.git', 'node_modules', '.alef-runtime'] })).out);
   assert.deepEqual(info.entries.map(entry => entry.name), ['.git/asset', 'META-INF/hashes', 'alef.ktav', 'node_modules/asset']);
   await assert.rejects(pack(home, options), /key home/);
 }));

@@ -117,9 +117,9 @@ test('generated_package_json_is_valid_and_correctly_shaped', async () => {
       assert.equal(pkg.name, 'my.app');
       assert.equal(pkg.scripts.dev, bundler === 'rsbuild' ? 'rsbuild dev' : 'vite');
       assert.equal(pkg.scripts.build, bundler === 'rsbuild' ? 'rsbuild build' : 'vite build');
-      assert.deepEqual(pkg['alef-tron'], { dev: 'npm run dev', devUrl: 'http://127.0.0.1:3000', build: 'npm run build', outDir: 'dist' });
-      assert.equal(pkg.dependencies['@alef-tron/api'], '^0.1.0');
-      assert.equal(pkg.devDependencies['@alef-tron/tools'], '^0.1.0');
+      assert.deepEqual(pkg['alef-runtime'], { dev: 'npm run dev', devUrl: 'http://127.0.0.1:3000', build: 'npm run build', outDir: 'dist' });
+      assert.equal(pkg.dependencies['@alef-runtime/api'], '^0.1.0');
+      assert.equal(pkg.devDependencies['@alef-runtime/tools'], '^0.1.0');
       if (bundler === 'rsbuild') assert.equal(pkg.devDependencies['@rsbuild/core'], '2.2.9');
       else assert.equal(pkg.devDependencies.vite, '^6.0.0');
       await rm(path.join(root, 'My.App'), { recursive: true, force: true });

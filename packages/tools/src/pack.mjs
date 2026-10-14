@@ -41,7 +41,7 @@ export async function pack(dir, options = {}) {
   check(!(options.unsigned && options.key !== undefined), 'key and unsigned are mutually exclusive');
   check(options.unsigned === undefined || typeof options.unsigned === 'boolean', 'unsigned must be boolean');
   const include = options.include ?? [];
-  check(Array.isArray(include) && include.every(name => EXCLUDES.has(name) || name === '.alef-tron'), 'include must be an array of excluded basenames');
+  check(Array.isArray(include) && include.every(name => EXCLUDES.has(name) || name === '.alef-runtime'), 'include must be an array of excluded basenames');
   const root = path.resolve(dir);
   await noSymlinks(root);
   check((await lstat(root)).isDirectory(), 'input must be a directory');
@@ -61,7 +61,7 @@ export async function pack(dir, options = {}) {
     await noSymlinks(folder);
     for (const basename of await readdir(folder)) {
       const filename = path.join(folder, basename); const name = prefix + basename;
-      if (path.relative(actualOut, filename) === '' || within(actualHome, filename) || basename.toLowerCase() === '.alef-tron') continue;
+      if (path.relative(actualOut, filename) === '' || within(actualHome, filename) || basename.toLowerCase() === '.alef-runtime') continue;
       if (EXCLUDES.has(basename) && !include.includes(basename)) continue;
       try { validateName(name); }
       catch (error) { throw new Error(`${name}: ${error.message}`, { cause: error }); }
