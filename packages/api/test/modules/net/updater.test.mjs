@@ -93,3 +93,19 @@ test('a refusal of the call reaches the caller and nothing is closed', async () 
   await assert.rejects(updater.download(), error => error instanceof AlefError && error.code === 'PERMISSION_DENIED');
   assert.equal(closedWith().length, before);
 });
+
+test('install asks the runtime without arguments', async () => {
+  replies.clear();
+  const before = runtime.calls('updater.install').length;
+  replies.set('updater.install', { json: null });
+  await updater.install();
+  const calls = runtime.calls('updater.install');
+  assert.equal(calls.length, before + 1);
+  assert.deepEqual(runtime.argsOf(calls.at(-1)), {});
+});
+
+test('a refusal of the install reaches the caller with its code', async () => {
+  replies.clear();
+  replies.set('updater.install', { status: 409, json: { code: 'UPDATE_NOT_DOWNLOADED', message: 'no downloaded update is offered' } });
+  await assert.rejects(updater.install(), error => error instanceof AlefError && error.code === 'UPDATE_NOT_DOWNLOADED');
+});

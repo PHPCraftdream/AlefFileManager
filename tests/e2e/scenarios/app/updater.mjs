@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Signed package updater E2E: real packages, loopback feed, and sandboxed runtime homes.
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -38,6 +39,35 @@ try {
   await api.app.exit(0);
 }`;
 
+const UPDATE_PAGE = `import { updater } from './src/index.js';
+import { api, report } from './harness.js';
+
+const info = await api.app.info();
+if (info.version !== '1.0.0') {
+  const first = await api.app.requestSingleInstance();
+  if (first === true) {
+    await report('UPDATER_UPDATED=' + info.version);
+    await api.app.exit(0);
+  } else {
+    await report('UPDATER_SECOND_INSTANCE');
+    await api.app.exit(10);
+  }
+} else {
+  try {
+    const checked = await updater.check();
+    if (!checked || checked.available !== true || checked.version !== '2.0.0') throw new Error('no offer: ' + JSON.stringify(checked));
+    await updater.download();
+    await report('UPDATER_INSTALLING');
+    await updater.install();
+    // The promise never resolves on success; reaching this line means the runtime failed to replace us.
+    await report('UPDATER_INSTALL_RESOLVED');
+    await api.app.exit(10);
+  } catch (error) {
+    await report('UPDATER_INSTALL_ERROR=' + (error?.code ?? error?.message ?? String(error)));
+    await api.app.exit(10);
+  }
+}`;
+
 function appManifest(version, endpoint, publicKey, id = ID, scope = endpoint) {
   return manifest(version, endpoint, publicKey, id, scope).replace('windows: [ { label: main, url: /index.html, width: 640, height: 480 } ]', `windows: [\n { label: main, url: /index.html, width: 640, height: 480 }\n ]`);
 }
@@ -51,6 +81,8 @@ export function updaterScenarios({ exe, verbose, timeoutMs }) {
       const xdg = Object.fromEntries(['DATA', 'CONFIG', 'CACHE', 'STATE', 'RUNTIME'].map(name => [`XDG_${name}_HOME`, join(dir, 'xdg', name.toLowerCase())]));
       let server;
       let running;
+      let reportedPids = [];
+      let replacementExited = false;
       try {
         const key = await createKey(`update-${process.pid}`, { home: keyHome });
         const wrongKey = await createKey(`wrong-${process.pid}`, { home: join(dir, 'wrong-keys') });
@@ -61,7 +93,10 @@ export function updaterScenarios({ exe, verbose, timeoutMs }) {
           mkdirSync(join(base, 'dist'), { recursive: true });
           const publicKey = Buffer.from(name === 'wrong-key' ? wrongKey.key : key.key).toString('base64');
           writeFileSync(join(base, 'alef.ktav'), appManifest('2.0.0', server.origin, publicKey, appId, `${server.origin}/*`));
-          writeFileSync(join(base, 'dist', 'index.html'), '<!doctype html><title>candidate</title>');
+          writeFileSync(join(base, 'dist', 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><title>candidate</title><script type="module" src="page.js"></script></head><body></body></html>');
+          writeFileSync(join(base, 'dist', 'page.js'), UPDATE_PAGE);
+          copyFileSync(join(here, 'harness.js'), join(base, 'dist', 'harness.js'));
+          for (const folder of ['src', 'types']) cpSync(join(api, folder), join(base, 'dist', folder), { recursive: true });
           const out = join(dir, `${name}.alef`);
           await pack(base, { home: signingKey.startsWith('wrong-') ? join(dir, 'wrong-keys') : keyHome, key: signingKey, out });
           const data = readFileSync(out); packages.set(`/${name}.alef`, data);
@@ -129,12 +164,75 @@ export function updaterScenarios({ exe, verbose, timeoutMs }) {
             running = undefined;
           }
         }
+        // The full install-and-restart path: a running 1.0.0 downloads 2.0.0, offers it, installs
+        // it and is replaced by a detached 2.0.0 process; the install promise never resolves.
+        // The replacement proves the single-instance handover via app.requestSingleInstance.
+        const updateBase = join(dir, 'update-base');
+        mkdirSync(join(updateBase, 'dist'), { recursive: true });
+        writeFileSync(join(updateBase, 'alef.ktav'), appManifest('1.0.0', `${server.origin}/feed`, Buffer.from(key.key).toString('base64')));
+        copyFileSync(join(here, 'harness.js'), join(updateBase, 'dist', 'harness.js'));
+        writeFileSync(join(updateBase, 'dist', 'index.html'), '<!doctype html><html><head><meta charset="utf-8"><title>updater install</title><script type="module" src="page.js"></script></head><body></body></html>');
+        writeFileSync(join(updateBase, 'dist', 'page.js'), UPDATE_PAGE);
+        for (const folder of ['src', 'types']) cpSync(join(api, folder), join(updateBase, 'dist', folder), { recursive: true });
+        const updatePkg = join(dir, 'update-1.0.0.alef');
+        await pack(updateBase, { home: keyHome, key: `update-${process.pid}`, out: updatePkg });
+        const installHome = join(dir, 'home-update');
+        mkdirSync(installHome, { recursive: true });
+        const installed = spawnSync(exe, ['install', updatePkg, '--trust-key', key.fingerprint], {
+          env: { ...process.env, ALEF_E2E: '1', ALEF_HOME: installHome, ALEF_APPLICATIONS_DIR: join(dir, 'links-update'), ...xdg },
+          encoding: 'utf8',
+          timeout: timeoutMs,
+        });
+        if (installed.status !== 0) problems.push(`alef install failed: ${installed.status} ${installed.stderr}`);
+        const storeDir = join(installHome, 'apps', createHash('sha256').update(ID).digest('hex'));
+        const storePath = join(storeDir, '1.0.0.alef');
+        if (!existsSync(storePath)) problems.push('the store has no 1.0.0.alef after alef install');
+        running = startApp({ exe, verbose, args: ['run', storePath], env: { ALEF_HOME: installHome, ALEF_APP_HOME: installHome, ALEF_E2E_CONSENT: '*=allow', ALEF_APPLICATIONS_DIR: join(dir, 'links-update'), ...xdg } });
+        try {
+          await running.waitFor(line => line.includes('UPDATER_INSTALLING'), timeoutMs, 'the old version to offer and download the update');
+          const exit = await running.waitForExit(timeoutMs);
+          if (exit?.code !== 0) problems.push(`the old version exited with ${exit ? exit.code : 'no exit'}`);
+          // Record every runtime pid as soon as it appears, so a failing wait still leaves the
+          // detached replacement recorded for the failure cleanup below.
+          const readyDeadline = Date.now() + timeoutMs;
+          while (running.lines.filter(line => line.startsWith('ALEF_READY')).length < 2) {
+            if (running.exit) break;
+            if (Date.now() > readyDeadline) throw new Error('the replacement process never became ready');
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          reportedPids = running.lines
+            .filter(line => line.startsWith('ALEF_READY'))
+            .map(line => /pid=(\d+)/.exec(line)?.[1])
+            .filter(pid => pid !== undefined && /^\d+$/.test(pid))
+            .map(Number);
+          await running.waitFor(line => line.includes('UPDATER_UPDATED=2.0.0'), timeoutMs, 'the new version to report itself', { survivesExit: true });
+          if (running.lines.some(line => line.includes('UPDATER_INSTALL_RESOLVED'))) problems.push('updater.install resolved in the old process');
+          const failed = running.lines.find(line => line.includes('UPDATER_INSTALL_ERROR='));
+          if (failed) problems.push(`updater.install failed: ${failed}`);
+          if (running.lines.some(line => line.includes('UPDATER_SECOND_INSTANCE'))) problems.push('the replacement was told it is a second instance');
+          const pids = running.lines.filter(line => line.startsWith('ALEF_READY')).map(line => /pid=(\d+)/.exec(line)?.[1]);
+          if (pids.length < 2 || pids[0] === pids[1]) problems.push(`expected a replacement process, saw ${JSON.stringify(pids)}`);
+          const stored = existsSync(storeDir) ? readdirSync(storeDir).sort() : [];
+          if (!stored.includes('2.0.0.alef') || stored.includes('1.0.0.alef')) problems.push(`store after update: ${stored.join(', ')}`);
+          if (await running.waitForClosed(30000)) replacementExited = true;
+          else problems.push('the new version did not exit');
+        } finally {
+          if (running && !running.exit) running.stop();
+          await running?.waitForExit(5000);
+          await running?.waitForClosed(5000);
+          running = undefined;
+        }
       } catch (error) { problems.push(error.stack ?? error.message); }
       finally {
         if (running) {
           if (!running.exit) running.stop();
           await running.waitForExit(5000);
           await running.waitForClosed(5000);
+        }
+        if (!replacementExited) {
+          for (const pid of reportedPids) {
+            if (Number.isFinite(pid)) { try { process.kill(pid); } catch { /* already gone */ } }
+          }
         }
         await server?.close();
         rmSync(dir, { recursive: true, force: true });

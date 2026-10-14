@@ -35,4 +35,7 @@ export const updater = {
       }
     }
   },
+
+  /** Installs the downloaded update and restarts into it. The promise never resolves: the process is replaced. */
+  install: (): Promise<never> => call<never>('updater.install', {}),
 };
