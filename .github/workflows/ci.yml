@@ -260,7 +260,9 @@ jobs:
           node scripts/cargo.mjs build --locked --workspace --features alef/e2e
 
       - name: Release build without test hooks (Linux)
-        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
+        # Only the crates that carry test hooks (alef, alef-runtime, alef-modules) can leak them into a
+        # release build; the full run before every merge covers the rest.
+        if: runner.os == 'Linux' && (needs.plan.outputs.full == 'true' || contains(format(',{0},', needs.plan.outputs.crates), ',alef,') || contains(format(',{0},', needs.plan.outputs.crates), ',alef-runtime,') || contains(format(',{0},', needs.plan.outputs.crates), ',alef-modules,'))
         run: |
           node scripts/cargo.mjs build --locked -p alef --release
           node scripts/supply/check-no-hooks.mjs backend/target/release/alef
