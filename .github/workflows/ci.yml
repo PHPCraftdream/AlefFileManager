@@ -172,6 +172,12 @@ jobs:
       - name: Mutation harness tests
         run: npm run test:mutate
 
+      # Unit-тесты собственных скриптов: планировщик и релиз (чистый node, без сборки).
+      - name: Script tests (planner, release)
+        run: |
+          npm run test:ci
+          npm run test:release
+
       - name: Rust tests
         if: needs.plan.outputs.crates_all == 'true'
         run: npm run test:rust

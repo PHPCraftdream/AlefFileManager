@@ -1,0 +1,320 @@
+# Релизный workflow по тегу v* (docs/stages/m7-distribution.md, «CI и выпуск»). Пуш ветки
+# release-check/** — тот же прогон в режиме dry-run: ничего не публикуется и релиз не создаётся.
+name: Release
+
+on:
+  push:
+    branches:
+      - 'release-check/**'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      real: ${{ steps.plan.outputs.real }}
+      version: ${{ steps.plan.outputs.version }}
+      order: ${{ steps.plan.outputs.order }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: node scripts/release/plan.mjs --event "$EVENT" --ref "$REF"
+      - name: Real mode needs NPM_TOKEN and the release environment
+        if: steps.plan.outputs.real == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::real publishing needs the NPM_TOKEN repository secret and the protected 'release' environment; push a release-check/* branch for a dry run"
+            exit 1
+          fi
+      # Чистые unit-тесты планировщика: npm ci не нужен.
+      - name: Planner and release unit tests
+        run: node --test scripts/ci/plan.test.mjs scripts/release/plan.test.mjs
+
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.x"
+
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable branch on 2026-10-11
+        with:
+          toolchain: 1.99.0
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ matrix.name }}-${{ hashFiles('backend/Cargo.lock') }}
+
+      - name: Cache backend/target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: backend/target
+          key: cargo-target-${{ matrix.name }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ matrix.name }}-
+
+      - uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
+
+      # The Actions cache service has outages (the first run died on `sccache: error: Server startup
+      # failed`): the cache is an optimisation, so build with plain rustc when it cannot start.
+      - name: sccache health check
+        shell: bash
+        run: |
+          if ! sccache --start-server; then
+            echo "::warning::sccache cannot start (cache service down); building without it"
+            echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+          fi
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+
+      - name: Servo build prerequisites (Windows)
+        if: runner.os == 'Windows'
+        run: choco install --no-progress -y llvm cmake ninja
+
+      - name: Servo build prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          xcode-select -p
+          brew install cmake ninja
+
+      - name: Servo build prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang libclang-dev cmake ninja-build pkg-config \
+            build-essential python3 curl git \
+            libfontconfig1-dev libfreetype-dev \
+            libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libegl1-mesa-dev libgl1-mesa-dev \
+            libx11-6 libxcb1 libxcursor1 libxrandr2 libxi6 \
+            libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
+            libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri \
+            libfontconfig1 libfreetype6 \
+            xvfb openbox
+
+      - name: npm ci
+        run: npm ci
+
+      # В релизном бинарнике нет тестовых хуков — за этим следит scripts/supply/check-no-hooks.mjs в CI.
+      - name: Release build without test hooks
+        run: node scripts/cargo.mjs build --locked -p alef --release
+
+      - name: Smoke check
+        shell: bash
+        run: backend/target/release/${{ matrix.bin }} --version
+
+      # bsdtar под Git Bash — GNU tar, `-a` не умеет zip; Compress-Archive + формат sha256sum.
+      - name: Pack (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          $archive = "alef-$env:VERSION-${{ matrix.name }}.zip"
+          Compress-Archive -Path 'backend/target/release/alef.exe' -DestinationPath $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path "$archive.sha256" -Value "$hash  $archive"
+
+      - name: Pack (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          version="${{ needs.plan.outputs.version }}"
+          archive="alef-${version}-${{ matrix.name }}.tar.gz"
+          tar -czf "$archive" -C backend/target/release alef
+          sha256sum "$archive" > "$archive.sha256"
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: alef-runtime-${{ matrix.name }}
+          path: |
+            alef-*.zip
+            alef-*.tar.gz
+            alef-*.sha256
+          if-no-files-found: error
+
+  npm-publish:
+    name: npm-publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [plan, build]
+    # Provenance подписывается через OIDC — нужен id-token; чтение артефактов run — actions: read.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # registry-url пишет .npmrc с ${NODE_AUTH_TOKEN} — без него переменная окружения не действует.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: npm ci
+        run: npm ci
+      # Действия download-artifact в репозитории нет — качаем через gh run download.
+      - name: Download build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        shell: bash
+        run: |
+          mkdir artifacts
+          node -e "JSON.parse(process.env.MATRIX).include.forEach(p => console.log(p.name))" \
+            | while read -r name; do
+                gh run download "$GITHUB_RUN_ID" -n "alef-runtime-$name" -D "artifacts/$name"
+              done
+      # В артефакте лежит архив и контрольная сумма — бинарник для генератора нужно распаковать.
+      - name: Extract the binaries from the archives
+        env:
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        shell: bash
+        run: |
+          node -e "JSON.parse(process.env.MATRIX).include.forEach(p => console.log(p.name))" \
+            | while read -r name; do
+                if ls "artifacts/$name"/*.zip >/dev/null 2>&1; then
+                  unzip -o "artifacts/$name"/*.zip -d "artifacts/$name"
+                else
+                  tar -xzf "artifacts/$name"/*.tar.gz -C "artifacts/$name"
+                fi
+              done
+          ls artifacts/*/alef*
+      - name: Generate platform packages
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        shell: bash
+        run: |
+          mkdir dist
+          node --input-type=module -e "
+            import { loadPlatforms, SUFFIX_BY_CI_NAME } from './scripts/release/plan.mjs';
+            for (const p of loadPlatforms('.')) console.log([SUFFIX_BY_CI_NAME[p.name], p.name, p.bin].join(' '));
+          " | while read -r suffix name bin; do
+            node packages/runtime/scripts/make-platform-package.mjs "$suffix" "artifacts/$name/$bin" "dist/$suffix" "$VERSION"
+          done
+      # Сначала платформенные пакеты, затем мета- и tooling-пакеты.
+      - name: Show publish order
+        env:
+          ORDER: ${{ needs.plan.outputs.order }}
+        run: |
+          echo "publish order: $ORDER"
+      - name: Publish (dry run)
+        if: needs.plan.outputs.real != 'true'
+        shell: bash
+        env:
+          ORDER: ${{ needs.plan.outputs.order }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          node --input-type=module -e "
+            import { collectPackages } from './scripts/release/plan.mjs';
+            for (const p of collectPackages('.')) console.log(p.name + '\t' + p.dir);
+          " > name-dir.tsv
+          echo "$ORDER" | tr ',' '\n' | while read -r name; do
+            dir=$(awk -F '\t' -v n="$name" '$1 == n { print $2 }' name-dir.tsv)
+            if [ -n "$dir" ]; then
+              node scripts/release/publish-package.mjs "$dir" "$VERSION" --dry-run
+            else
+              node scripts/release/publish-package.mjs "dist/${name#@alef-tron/runtime-}" "$VERSION" --dry-run
+            fi
+          done
+      # npm читает NODE_AUTH_TOKEN из окружения; шаг dry-run выше секретов не видит.
+      - name: Publish (real)
+        if: needs.plan.outputs.real == 'true'
+        shell: bash
+        env:
+          ORDER: ${{ needs.plan.outputs.order }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          node --input-type=module -e "
+            import { collectPackages } from './scripts/release/plan.mjs';
+            for (const p of collectPackages('.')) console.log(p.name + '\t' + p.dir);
+          " > name-dir.tsv
+          echo "$ORDER" | tr ',' '\n' | while read -r name; do
+            dir=$(awk -F '\t' -v n="$name" '$1 == n { print $2 }' name-dir.tsv)
+            if [ -n "$dir" ]; then
+              node scripts/release/publish-package.mjs "$dir" "$VERSION"
+            else
+              node scripts/release/publish-package.mjs "dist/${name#@alef-tron/runtime-}" "$VERSION"
+            fi
+          done
+
+  github-release:
+    name: github-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: [plan, build]
+    # Единственная джоба с contents: write — создание релиза и загрузка архивов; чтение артефактов run — actions: read.
+    if: needs.plan.outputs.real == 'true'
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Download build artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        shell: bash
+        run: |
+          mkdir artifacts
+          node -e "JSON.parse(process.env.MATRIX).include.forEach(p => console.log(p.name))" \
+            | while read -r name; do
+                gh run download "$GITHUB_RUN_ID" -n "alef-runtime-$name" -D "artifacts/$name"
+              done
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          gh release create "$TAG" --title "Alef ${TAG#v}" --generate-notes artifacts/*/alef-*.zip artifacts/*/alef-*.tar.gz artifacts/*/alef-*.sha256
