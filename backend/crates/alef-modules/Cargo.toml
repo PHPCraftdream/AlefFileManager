@@ -37,7 +37,7 @@ hyper = { version = "=1.11.1", default-features = false, features = ["client", "
 hyper-util = { version = "=0.1.21", default-features = false, features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls = { version = "=0.27.10", default-features = false, features = ["http1", "http2", "webpki-tokio", "aws-lc-rs", "tls12"] }
 http-body-util = { version = "=0.1.5", features = ["channel"] }
-rustls = { version = "=0.23.45", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 webpki-roots = "=1.0.9"
 async-tungstenite = { version = "=0.35.0", default-features = false, features = ["handshake", "tokio-runtime"] }
