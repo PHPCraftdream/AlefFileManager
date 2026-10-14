@@ -8,14 +8,14 @@ import { pathToFileURL } from 'node:url';
 
 const template = new URL('../templates/base/src/permissions.js', import.meta.url);
 
-// The template imports `@alef-tron/api`; a stub package next to a copy of the file lets the real
+// The template imports `@alef-runtime/api`; a stub package next to a copy of the file lets the real
 // source run against fakes without installing anything.
 async function loadExample() {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'create-alef-template-')));
-  const stub = path.join(root, 'node_modules', '@alef-tron', 'api');
+  const stub = path.join(root, 'node_modules', '@alef-runtime', 'api');
   await mkdir(stub, { recursive: true });
   await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
-  await writeFile(path.join(stub, 'package.json'), '{"name":"@alef-tron/api","type":"module","exports":"./index.js"}');
+  await writeFile(path.join(stub, 'package.json'), '{"name":"@alef-runtime/api","type":"module","exports":"./index.js"}');
   await writeFile(path.join(stub, 'index.js'), 'export const fs = {}; export const http = {}; export const path = {};\n');
   await mkdir(path.join(root, 'src'));
   await copyFile(template, path.join(root, 'src', 'permissions.js'));

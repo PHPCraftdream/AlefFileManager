@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Browser-side helpers shared by the scenario pages. The runner copies this file next to each page
-// together with the transpiled @alef-tron/api (./src), and the runtime started with ALEF_E2E=1
+// together with the transpiled @alef-runtime/api (./src), and the runtime started with ALEF_E2E=1
 // prints what a page reports through `e2e.report` as `ALEF_E2E <line>` on stderr.
 import * as api from './src/index.js';
 

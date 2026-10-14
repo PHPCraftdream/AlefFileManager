@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Public surface of @alef-tron/api. Every function is asynchronous: it returns a Promise or an
+// Public surface of @alef-runtime/api. Every function is asynchronous: it returns a Promise or an
 // AsyncIterable (checked by packages/api/test/async-surface.test.mjs).
 export { AlefError, type AlefErrorCode } from './core/errors.ts';
 export { connect, type RuntimeInfo, type RuntimeLimits } from './core/handshake.ts';

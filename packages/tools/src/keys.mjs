@@ -7,7 +7,7 @@ import path from 'node:path';
 import { validateName } from './zip.mjs';
 
 export function keyHome(options = {}) {
-  return path.resolve(options.home ?? process.env.ALEF_TRON_HOME ?? path.join(homedir(), '.alef-tron'));
+  return path.resolve(options.home ?? process.env.ALEF_RUNTIME_HOME ?? path.join(homedir(), '.alef-runtime'));
 }
 function keyName(name) {
   validateName(name);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Helpers of the end-to-end runner: a scenario site (application files + the transpiled
-// @alef-tron/api), the runtime process with its stderr log, and small local HTTP servers.
+// @alef-runtime/api), the runtime process with its stderr log, and small local HTTP servers.
 import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -33,7 +33,7 @@ export const quiet = process.env.ALEF_E2E_VISIBLE !== '1'
 
 let transpiled;
 
-/** Emits @alef-tron/api as plain ES modules (`src/`, `types/`); done once per run. */
+/** Emits @alef-runtime/api as plain ES modules (`src/`, `types/`); done once per run. */
 export function transpileApi() {
   if (transpiled) return transpiled;
   const out = join(scratch, 'api');
@@ -44,7 +44,7 @@ export function transpileApi() {
     '--moduleResolution', 'bundler', '--rewriteRelativeImportExtensions',
     '--rootDir', api, '--outDir', out, join(api, 'src', 'index.ts'),
   ], { cwd: root, stdio: 'inherit', timeout: 120000 });
-  if (result.status !== 0) throw new Error('could not transpile @alef-tron/api for the scenarios');
+  if (result.status !== 0) throw new Error('could not transpile @alef-runtime/api for the scenarios');
   transpiled = out;
   return out;
 }
@@ -62,7 +62,7 @@ export function transpileMcp() {
     '--moduleResolution', 'bundler', '--rewriteRelativeImportExtensions',
     '--rootDir', packages, '--outDir', out, join(packages, 'mcp', 'src', 'index.ts'),
   ], { cwd: root, stdio: 'inherit', timeout: 30000 });
-  if (result.status !== 0) throw new Error('could not transpile @alef-tron/mcp for the scenarios');
+  if (result.status !== 0) throw new Error('could not transpile @alef-runtime/mcp for the scenarios');
   const adapter = join(out, 'mcp', 'src', 'transports', 'runtime.js');
   writeFileSync(adapter, readFileSync(adapter, 'utf8').replaceAll('../../../api/src/', '../../../src/'));
   transpiledMcp = join(out, 'mcp');

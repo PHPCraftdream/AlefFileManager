@@ -1,4 +1,4 @@
-import { fs, http, path } from '@alef-tron/api';
+import { fs, http, path } from '@alef-runtime/api';
 
 function describe(error) {
   if (error?.code === 'PERMISSION_DENIED') return 'Permission denied (intentional with the closed starter manifest).';

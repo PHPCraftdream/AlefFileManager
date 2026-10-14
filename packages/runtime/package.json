@@ -1,5 +1,5 @@
 {
-  "name": "@alef-tron/runtime",
+  "name": "@alef-runtime/runtime",
   "version": "0.1.0",
   "private": true,
   "description": "Platform binary resolver for Alef",
@@ -11,9 +11,9 @@
   "bin": { "alef": "./bin/alef.mjs" },
   "files": ["src", "bin", "README.md", "LICENSE-MIT", "LICENSE-APACHE"],
   "optionalDependencies": {
-    "@alef-tron/runtime-win32-x64": "workspace-version-placeholder",
-    "@alef-tron/runtime-darwin-arm64": "workspace-version-placeholder",
-    "@alef-tron/runtime-darwin-x64": "workspace-version-placeholder",
-    "@alef-tron/runtime-linux-x64": "workspace-version-placeholder"
+    "@alef-runtime/runtime-win32-x64": "workspace-version-placeholder",
+    "@alef-runtime/runtime-darwin-arm64": "workspace-version-placeholder",
+    "@alef-runtime/runtime-darwin-x64": "workspace-version-placeholder",
+    "@alef-runtime/runtime-linux-x64": "workspace-version-placeholder"
   }
 }

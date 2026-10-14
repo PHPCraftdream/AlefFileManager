@@ -1,7 +1,7 @@
-# @alef-tron/mcp
+# @alef-runtime/mcp
 
 Private, dependency-free TypeScript MCP package over Alef's existing HTTP and
-process wrappers. Import `mcp` from `@alef-tron/mcp`. No Node globals are used by
+process wrappers. Import `mcp` from `@alef-runtime/mcp`. No Node globals are used by
 the implementation; unit tests run with Node's built-in type stripping.
 
 ```ts

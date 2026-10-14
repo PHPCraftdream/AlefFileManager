@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Acceptance: every export of @alef-tron/api is asynchronous (returns a Promise or an AsyncIterable).
+// Acceptance: every export of @alef-runtime/api is asynchronous (returns a Promise or an AsyncIterable).
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as api from '../src/index.ts';
@@ -193,7 +193,7 @@ installRuntime({
 
 const NEVER_SETTLES = new Set(['app.exit']);
 
-test('every function exported by @alef-tron/api is asynchronous', async () => {
+test('every function exported by @alef-runtime/api is asynchronous', async () => {
   const functions = functionsOf(api);
   assert.ok(functions.length >= 60, `the walk must see the whole surface, saw ${functions.length}`);
   const unlisted = functions.map(([name]) => name).filter(name => !(name in ARGS));

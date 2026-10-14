@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // A manifest without `files` packs everything npm's defaults allow; mirror that by staging the
-// whole directory (node_modules and .git excluded), so create-alef-tron ships bin, src and templates.
+// whole directory (node_modules and .git excluded), so create-alef-runtime ships bin, src and templates.
 export function filesToCopy(manifest) {
   return Array.isArray(manifest.files) && manifest.files.length > 0 ? manifest.files : null;
 }

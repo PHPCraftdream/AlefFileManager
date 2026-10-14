@@ -1,5 +1,5 @@
 // Core transport scenario (docs/stages/m1-core.md acceptance): the raw protocol and the real
-// @alef-tron/api inside Servo, then a navigation and a reload that must end the session.
+// @alef-runtime/api inside Servo, then a navigation and a reload that must end the session.
 import { MIB, api, guard, pattern, report, same, sleep, suite, until, verdict } from './harness.js';
 
 const bootstrap = new URLSearchParams(location.hash.slice(1)).get('capability') ?? '';

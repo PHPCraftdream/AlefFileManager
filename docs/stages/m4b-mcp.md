@@ -6,12 +6,12 @@
 
 Приложение Alef — в том числе без окна — поднимает серверы (HTTP, WebSocket) и говорит по MCP (Model Context Protocol): публикует свои инструменты агентам и сам подключается к чужим MCP-серверам. Серверы — штатный способ делать «службы» на Alef.
 
-## `@alef-tron/mcp`
+## `@alef-runtime/mcp`
 
 JS-пакет поверх модулей, а не модуль runtime: протокол MCP меняется быстро, JSON-RPC тонок, обновлять его проще отдельно от runtime. Runtime даёт транспорт: `http.serve`, `websocket.serve`, `socket`, `cli.spawn`, консольный режим (stdio).
 
 ```ts
-import { mcp } from '@alef-tron/mcp';
+import { mcp } from '@alef-runtime/mcp';
 
 const server = mcp.server({ name: 'notes', version: '1.0.0' })
   .tool('search', { description, inputSchema }, async args => ({ content: [...] }))
@@ -52,7 +52,7 @@ await client.listTools(); await client.callTool('search', { q: 'x' });
 
 **Как сделано (M4b)**
 
-- `packages/mcp` — отдельный приватный пакет `@alef-tron/mcp` версии 0.1.0, без новых зависимостей и без Node в реализации. Слои: JSON-RPC core, подмножество JSON Schema, fluent-сервер, клиент и адаптеры stdio/HTTP поверх существующих JS-обёрток API; backend и API не менялись. Корневая проверка TypeScript включает пакет; README и CHANGELOG описывают поверхность и границы.
+- `packages/mcp` — отдельный приватный пакет `@alef-runtime/mcp` версии 0.1.0, без новых зависимостей и без Node в реализации. Слои: JSON-RPC core, подмножество JSON Schema, fluent-сервер, клиент и адаптеры stdio/HTTP поверх существующих JS-обёрток API; backend и API не менялись. Корневая проверка TypeScript включает пакет; README и CHANGELOG описывают поверхность и границы.
 - Рукопожатие `initialize` → `notifications/initialized`; поддерживаются **2025-11-25** и **2025-06-18**, неизвестное предложение получает новейшую ревизию. Обе отвергают batches. Мартовский режим batches оставлен только в общем JSON-RPC core для явно выбранной совместимости и отдельного unit-теста, MCP его не согласует. Core принимает также `id: null` и позиционные параметры-массивы JSON-RPC; MCP требует объект и отвечает `Invalid params`. Уведомления, включая уведомления с неверными параметрами, ответа не получают; методы уведомлений с `id` отвергаются как неверные запросы, без побочного действия. `initialize` не отменяется уведомлением MCP cancellation; локальный таймаут/закрытие транспорта остаются возможны.
 - Сервер цепочкой объявляет `tool`, `resource`, `prompt`, затем `listen`/`close`; клиент даёт все шесть операций list/call/read/get и `close`. Ошибки JSON-RPC стандартные; неожиданная ошибка обработчика скрыта за `Internal error`. Контекст обработчика содержит `signal` и `progress`; duplex-транспорт передаёт cancellation/progress. Ожидания ограничены временем; таймаут HTTP dispatch действительно abort-ит контекст и снимает активный запрос, а не только прерывает ожидание ответа. Обработчик должен соблюдать `signal`: JS не может принудительно остановить произвольный пользовательский код. Прогресс после отмены не отправляется; исключение пользовательского callback не ломает соединение. Cleanup чтения тела освобождает lock и не ждёт бесконечно зависшей отмены потока.
 - Валидация инструментов: boolean schemas, `type`/union, `properties`, `required`, структурные `enum`/`const`, `items`, `additionalProperties`, числовые границы, длина строк в Unicode code points, `pattern`, `allOf`/`anyOf`/`oneOf`/`not`, локальные `#/$defs` refs с JSON Pointer escapes; глубина ограничена. Это не полный JSON Schema: неизвестные keywords игнорируются, удалённые refs, formats, tuples и прочие расширения не реализованы; схемы и регулярные выражения — доверенная конфигурация приложения.

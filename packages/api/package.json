@@ -1,5 +1,5 @@
 {
-  "name": "@alef-tron/api",
+  "name": "@alef-runtime/api",
   "version": "0.1.0",
   "private": true,
   "description": "Alef JavaScript API: async calls, streams and events of the native runtime",

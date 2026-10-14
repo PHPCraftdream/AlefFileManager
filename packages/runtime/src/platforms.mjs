@@ -9,5 +9,5 @@ export const PLATFORMS = Object.freeze([
 ]);
 
 export function packageName(entry) {
-  return `@alef-tron/runtime-${entry.suffix}`;
+  return `@alef-runtime/runtime-${entry.suffix}`;
 }

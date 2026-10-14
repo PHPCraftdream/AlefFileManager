@@ -18,13 +18,13 @@ const PLATFORMS = [
 const PLATFORM_NAMES = platformPackageNames(PLATFORMS);
 const PACKAGES = [
   {
-    name: '@alef-tron/runtime', version: '0.1.0',
+    name: '@alef-runtime/runtime', version: '0.1.0',
     optionalDependencies: Object.fromEntries(PLATFORM_NAMES.map(name => [name, 'workspace-version-placeholder'])),
   },
-  { name: '@alef-tron/api', version: '0.1.0' },
-  { name: '@alef-tron/mcp', version: '0.1.0' },
-  { name: '@alef-tron/tools', version: '0.1.0' },
-  { name: 'create-alef-tron', version: '0.1.0' },
+  { name: '@alef-runtime/api', version: '0.1.0' },
+  { name: '@alef-runtime/mcp', version: '0.1.0' },
+  { name: '@alef-runtime/tools', version: '0.1.0' },
+  { name: 'create-alef-runtime', version: '0.1.0' },
 ];
 
 const data = JSON.parse(readFileSync(new URL('../ci/affected.json', import.meta.url), 'utf8'));
@@ -35,11 +35,11 @@ test('the_versions_of_all_publishable_packages_are_one_consistent_version', () =
 });
 
 test('a_drifted_package_fails_with_its_name_in_the_message', () => {
-  // @alef-tron/tools sorts after the other @alef-tron packages, so it is the one reported as drifted
-  const drifted = PACKAGES.map(pkg => pkg.name === '@alef-tron/tools' ? { ...pkg, version: '0.2.0' } : pkg);
+  // @alef-runtime/tools sorts after the other @alef-runtime packages, so it is the one reported as drifted
+  const drifted = PACKAGES.map(pkg => pkg.name === '@alef-runtime/tools' ? { ...pkg, version: '0.2.0' } : pkg);
   assert.throws(
     () => planRelease({ platforms: PLATFORMS, packages: drifted, tag: 'v0.1.0', real: true }),
-    error => /@alef-tron\/tools has 0\.2\.0, expected 0\.1\.0/.test(error.message),
+    error => /@alef-runtime\/tools has 0\.2\.0, expected 0\.1\.0/.test(error.message),
   );
 });
 
@@ -59,14 +59,14 @@ test('the_publish_order_puts_platform_packages_first_then_the_meta_and_tooling_p
   const result = planRelease({ platforms: PLATFORMS, packages: PACKAGES, tag: 'v0.1.0', real: true });
   assert.deepEqual(result.order, [
     ...PLATFORM_NAMES,
-    '@alef-tron/runtime', '@alef-tron/api', '@alef-tron/mcp', '@alef-tron/tools', 'create-alef-tron',
+    '@alef-runtime/runtime', '@alef-runtime/api', '@alef-runtime/mcp', '@alef-runtime/tools', 'create-alef-runtime',
   ]);
 });
 
 test('platform_package_names_derive_from_the_platforms_table', () => {
   assert.deepEqual(platformPackageNames(data.platforms), [
-    '@alef-tron/runtime-win32-x64', '@alef-tron/runtime-darwin-arm64',
-    '@alef-tron/runtime-darwin-x64', '@alef-tron/runtime-linux-x64',
+    '@alef-runtime/runtime-win32-x64', '@alef-runtime/runtime-darwin-arm64',
+    '@alef-runtime/runtime-darwin-x64', '@alef-runtime/runtime-linux-x64',
   ]);
   assert.throws(
     () => platformPackageNames([{ os: 'plan9', name: 'plan9-ict', target: 'x', bin: 'alef' }]),
@@ -80,10 +80,10 @@ test('every_platform_of_the_matrix_has_a_suffix_and_the_real_table_plans_clean',
 });
 
 test('a_tail_package_missing_from_packages_fails_with_its_name', () => {
-  const missing = PACKAGES.filter(pkg => pkg.name !== '@alef-tron/api');
+  const missing = PACKAGES.filter(pkg => pkg.name !== '@alef-runtime/api');
   assert.throws(
     () => planRelease({ platforms: PLATFORMS, packages: missing, tag: 'v0.1.0', real: true }),
-    /@alef-tron\/api is not in packages/,
+    /@alef-runtime\/api is not in packages/,
   );
 });
 
@@ -183,7 +183,7 @@ test('the_binaries_are_extracted_from_the_archives_before_the_generator_runs', (
 
 test('a_manifest_with_files_stages_exactly_those_entries', () => {
   assert.deepEqual(filesToCopy({ files: ['src', 'bin'] }), ['src', 'bin']);
-  assert.equal(filesToCopy({ name: 'create-alef-tron' }), null);
+  assert.equal(filesToCopy({ name: 'create-alef-runtime' }), null);
 });
 
 test('staging_a_manifest_without_files_copies_bin_src_and_templates_but_not_node_modules', async () => {

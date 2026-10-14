@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readZip, writeZip, verify, check, createKey, pack, validateName } from '../src/index.mjs';
 
-const cliPath = fileURLToPath(new URL('../bin/alef-tron.mjs', import.meta.url));
+const cliPath = fileURLToPath(new URL('../bin/alef-runtime.mjs', import.meta.url));
 const bounded = { timeout: 300000 };
 async function scratch(run) {
   const root = await mkdtemp(path.join(tmpdir(), 'alef-cli-'));
@@ -38,7 +38,7 @@ async function scratch(run) {
 function invoke(args, cwd, home) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
-      cwd, env: { ...process.env, ALEF_TRON_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd, env: { ...process.env, ALEF_RUNTIME_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = ''; let stderr = ''; let childFailure;
     // Kill the driver's whole tree by its PID (never by image name) so descendants holding the pipes cannot hang the test.
@@ -68,7 +68,7 @@ function failure(result, pattern) {
 }
 
 test('unknown_command_returns_exit_one', bounded, () => scratch(async ({ cli }) => {
-  failure(await cli(['bogus']), /alef-tron: Unknown command/);
+  failure(await cli(['bogus']), /alef-runtime: Unknown command/);
 }));
 
 test('the_public_index_exports_the_package_and_zip_operations', bounded, () => {
@@ -111,12 +111,12 @@ test('the_pack_and_verify_commands_roundtrip_default_named_and_unsigned_packages
   failure(await cli(['pack', dir, '--key', 'missing']), /missing.pem/);
 }));
 test('the_include_option_supports_repetition_and_commas_but_never_includes_key_storage', bounded, () => scratch(async ({ cli, dir }) => {
-  for (const name of ['.git', 'node_modules', '.alef-tron']) {
+  for (const name of ['.git', 'node_modules', '.alef-runtime']) {
     await mkdir(path.join(dir, name)); await writeFile(path.join(dir, name, 'asset'), 'hidden');
   }
   success(await cli(['pack', dir, '--unsigned']));
   assert.equal((await verify(`${dir}.alef`)).entries.length, 2);
-  for (const args of [['--include', '.git', '--include', 'node_modules', '--include', '.alef-tron'], ['--include', '.git,node_modules,.alef-tron']]) {
+  for (const args of [['--include', '.git', '--include', 'node_modules', '--include', '.alef-runtime'], ['--include', '.git,node_modules,.alef-runtime']]) {
     success(await cli(['pack', dir, '--unsigned', ...args]));
     assert.deepEqual((await verify(`${dir}.alef`)).entries.map(entry => entry.name), ['.git/asset', 'META-INF/hashes', 'alef.ktav', 'node_modules/asset']);
   }
@@ -124,7 +124,7 @@ test('the_include_option_supports_repetition_and_commas_but_never_includes_key_s
 }));
 test('the_cli_rejects_unknown_repeated_missing_and_conflicting_arguments_with_exit_one', bounded, () => scratch(async ({ cli, dir }) => {
   const invalid = [[], ['bogus'], ['--help', 'extra'], ['keys', '--unknown'], ['keys', '--list', '--list'], ['keys', 'name', '--list'], ['keys', 'one', 'two'], ['pack'], ['pack', dir, '--key'], ['pack', dir, '--out'], ['pack', dir, '--include'], ['pack', dir, '--key', '--unsigned'], ['pack', dir, '--unsigned', '--unsigned'], ['pack', dir, '--key', 'a', '--key', 'b'], ['pack', dir, '--out', 'a', '--out', 'b'], ['pack', dir, '--key', 'a', '--unsigned'], ['pack', dir, '--include', 'wrong'], ['pack', dir, '--include', '.git,'], ['pack', dir, '--include', '.git,.git'], ['pack', dir, '--include', '.git', '--include', '.git'], ['pack', dir, 'extra'], ['verify'], ['verify', 'a', 'b'], ['verify', '--unsigned'], ['check', 'a', 'b'], ['check', '--bad']];
-  for (const args of invalid) failure(await cli(args), /alef-tron:/);
+  for (const args of invalid) failure(await cli(args), /alef-runtime:/);
   for (const command of ['keys', 'pack', 'verify', 'check']) {
     failure(await cli([command, '']), /Empty positional argument/);
     for (const option of ['-unknown', '-']) failure(await cli([command, option]), /Unknown option:/);
@@ -178,7 +178,7 @@ test('the_pack_command_names_the_entry_when_private_material_or_a_manifest_is_in
 async function fakeProject(dir, config = {}, source = "await mkdir('dist',{recursive:true}); await writeFile('dist/index.html','web');") {
   await writeFile(path.join(dir, 'fake-build.mjs'), `import {mkdir,writeFile} from 'node:fs/promises';\n${source}\n`);
   const command = `"${process.execPath}" fake-build.mjs`;
-  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': { build: command, ...config } }));
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-runtime': { build: command, ...config } }));
   return command;
 }
 async function workflow() {
@@ -269,7 +269,7 @@ test('project config hygiene and timeout validation precede command side effects
   await assert.rejects(readFile(path.join(dir, 'ran')), /ENOENT/);
   await writeFile(path.join(dir, 'alef.ktav'), 'app: example\n');
   for (const config of [null, [], { build: 1 }, { build: '' }, { dev: [] }, { outDir: '' }, { devUrl: 'file:///tmp' }]) {
-    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': config }));
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-runtime': config }));
     await assert.rejects(readProject(dir), /package.json/);
   }
   await writeFile(path.join(dir, 'package.json'), '{'); await assert.rejects(readProject(dir), /package.json/);
@@ -318,7 +318,7 @@ async function devProject(dir, port, { devUrlPort, dieAfterMs } = {}) {
     `await writeFile(${JSON.stringify(path.join(dir, 'dev-pid.txt'))},String(process.pid));\n` +
     `http.createServer((q,s)=>{appendFile(${JSON.stringify(path.join(dir, 'dev-log.txt'))},'hit\\n').catch(()=>{});s.end('ok');})` +
     `.listen(${port},'127.0.0.1');\n${exit}`);
-  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': {
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-runtime': {
     dev: `"${process.execPath}" fake-dev.mjs`, devUrl: `http://127.0.0.1:${devUrlPort ?? port}`,
   } }));
 }
@@ -440,10 +440,10 @@ test('dev times out kills the dev server and rejects when the url never answers'
 }));
 
 test('dev rejects a missing dev command or missing devUrl and invalid timeouts before spawning anything', bounded, () => scratch(async ({ dir }) => {
-  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': { devUrl: 'http://127.0.0.1:9' } }));
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-runtime': { devUrl: 'http://127.0.0.1:9' } }));
   await assert.rejects(dev(dir, { devStdio: 'ignore' }), /no dev command or scripts\.dev/);
-  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-tron': { dev: 'node nothing.mjs' } }));
-  await assert.rejects(dev(dir, { devStdio: 'ignore' }), /dev command without alef-tron\.devUrl/);
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ 'alef-runtime': { dev: 'node nothing.mjs' } }));
+  await assert.rejects(dev(dir, { devStdio: 'ignore' }), /dev command without alef-runtime\.devUrl/);
   await devProject(dir, 1);
   for (const readyTimeoutMs of [0, -1, 1.5, '100', Infinity]) await assert.rejects(dev(dir, { readyTimeoutMs, devStdio: 'ignore' }), /timeoutMs/);
   assert.deepEqual(ownedPids(), []);
@@ -500,8 +500,8 @@ test('dev kills both owned children and exits nonzero when interrupted on posix'
 test('the build command prints the directory and the dev command validates its usage', bounded, () => scratch(async ({ cli, dir }) => {
   await fakeProject(dir);
   assert.equal(success(await cli(['build', dir])).trim(), path.join(await realpath(dir), 'app-build'));
-  assert.match(success(await cli(['--help'])), /alef-tron build/);
-  assert.match(success(await cli(['--help'])), /alef-tron dev/);
+  assert.match(success(await cli(['--help'])), /alef-runtime build/);
+  assert.match(success(await cli(['--help'])), /alef-runtime dev/);
   failure(await cli(['build', dir, 'extra']), /Usage: build/);
   failure(await cli(['dev', dir, 'extra']), /Usage: dev/);
   failure(await cli(['dev', dir, '--ready-timeout', 'x']), /--ready-timeout must be a positive integer/);

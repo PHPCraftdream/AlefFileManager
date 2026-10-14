@@ -2,11 +2,11 @@
 
 ## 0.1.0 — M7b.2 (private)
 
-- Workflow commands: `alef-tron build [dir] [--out <dir>]` runs the configured
+- Workflow commands: `alef-runtime build [dir] [--out <dir>]` runs the configured
   build command and assembles a packageable app directory (manifest, optional
-  icon, assets); `alef-tron dev [dir] [--ready-timeout <ms>] [-- <args>]` starts
-  the configured dev command, polls `alef-tron.devUrl` for readiness and
-  launches the runtime (`ALEF_BIN`, `@alef-tron/runtime` `getRuntimePath()` or
+  icon, assets); `alef-runtime dev [dir] [--ready-timeout <ms>] [-- <args>]` starts
+  the configured dev command, polls `alef-runtime.devUrl` for readiness and
+  launches the runtime (`ALEF_BIN`, `@alef-runtime/runtime` `getRuntimePath()` or
   PATH `alef`) with `--app`/`--dev-url`, owning and cleaning up both children,
   propagating the runtime exit code and killing the server on runtime exit,
   dev death, readiness timeout or SIGINT/SIGTERM (interrupts kill the runtime's
@@ -16,7 +16,7 @@
   app arguments containing cmd.exe metacharacters are refused. Full manifest
   schema validation and bundle remain deferred.
 
-- Dependency-free Node >=22.12.0 ESM API and `alef-tron` CLI: keys, pack,
+- Dependency-free Node >=22.12.0 ESM API and `alef-runtime` CLI: keys, pack,
   verify, basic check; MIT OR Apache-2.0. Keys print name/fingerprint and raw32
   public `key <base64>`; listing omits private material; no overwrite.
 - Strict JS ZIP profile: ASCII file names, no directory entries; exact flags
@@ -35,7 +35,7 @@
   package verification hashes every file before returning and on every read.
   `node:crypto` verification is developer convenience; Rust `verify_strict`
   is normative, and JS success does not guarantee runtime acceptance.
-- Folder-basename output; key home and `.alef-tron` always excluded;
+- Folder-basename output; key home and `.alef-runtime` always excluded;
   `.git`/`node_modules` explicitly includable. Symlinks, special files and copied
   private PEMs fail. Missing signing keys never silently downgrade to unsigned.
 - Basic check: <=1 MiB nonempty UTF-8 without BOM/tabs, not Ktav syntax/schema

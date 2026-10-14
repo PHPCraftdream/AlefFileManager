@@ -36,7 +36,7 @@ function generate(args) {
     files: ['bin', 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE'],
   };
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
-  writeFileSync(join(destination, 'README.md'), `# ${manifest.name}\n\nAlef runtime ${version} for ${entry.platform}/${entry.arch}.\n\nInstalled as an optional dependency of @alef-tron/runtime. Use that meta-package to select the binary, or set ALEF_BIN to an existing runtime file. Install with optional dependencies enabled (npm install --include=optional); do not use --omit=optional.\n\nLicense: MIT OR Apache-2.0; see LICENSE-MIT and LICENSE-APACHE.\n`, { flag: 'wx' });
+  writeFileSync(join(destination, 'README.md'), `# ${manifest.name}\n\nAlef runtime ${version} for ${entry.platform}/${entry.arch}.\n\nInstalled as an optional dependency of @alef-runtime/runtime. Use that meta-package to select the binary, or set ALEF_BIN to an existing runtime file. Install with optional dependencies enabled (npm install --include=optional); do not use --omit=optional.\n\nLicense: MIT OR Apache-2.0; see LICENSE-MIT and LICENSE-APACHE.\n`, { flag: 'wx' });
   for (const [name, bytes] of licenses) writeFileSync(join(destination, name), bytes, { flag: 'wx' });
 }
 

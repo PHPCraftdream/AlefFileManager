@@ -40,7 +40,7 @@ npm start -- --root ~/Documents
 - `backend/crates/alef-runtime`: независимый crate `alef-runtime`; Servo window host, приватный bridge, typed async command registry, события backend → browser, window API и универсальный async Fjall facade.
 - `frontend/app-source`: манифест `alef.ktav` и иконка File Manager (сборка кладёт их в корень приложения `frontend/app`, страницы — в его `dist/`); Rust-кода у приложения нет.
 - `frontend/src/native/runtime.ts`: универсальные `invoke`, `listen`/`Unlisten`, `nativeWindow` без зависимости от React или команд Alef.
-- `frontend/src/native/api.ts`: язык в `store`, каталог через `fs`, `app.info` — поверх `@alef-tron/api`; тест — `frontend/test/native-api.test.mjs`.
+- `frontend/src/native/api.ts`: язык в `store`, каталог через `fs`, `app.info` — поверх `@alef-runtime/api`; тест — `frontend/test/native-api.test.mjs`.
 - `backend/patches/servo-paint-api`: локальный Servo 0.6 fix активации GL context до загрузки GL функций; версия не изменена.
 - `backend/patches/surfman`: surfman 0.13.0 без `WS_VISIBLE` у служебного окна `SurfmanFalseWindow` (на Windows оно создаётся при первом GL-контексте для загрузки расширений WGL и мигало на экране ~30 мс при каждом запуске); версия не изменена, лицензии сохранены.
 - `backend/patches/winit`: winit 0.30.13 с Windows fixes для packed signed coordinates в `WM_NCLBUTTONDOWN`, чтения maximized state из HWND и drag lifecycle по `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE`. Это устраняет зависший drag guard после maximize/restore; версия не изменена, Apache-2.0 license сохранена. [Win32 LPARAM контракт](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nclbuttondown).

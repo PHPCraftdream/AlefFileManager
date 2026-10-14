@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { nativeApi, type AppInfo } from './native/api';
 import i18n, { languages, type Language } from './i18n';
-import { nativeWindow, type Unlisten, type WindowState } from '@alef-tron/api';
+import { nativeWindow, type Unlisten, type WindowState } from '@alef-runtime/api';
 import TitleBar from './TitleBar';
 
 export default function App() {

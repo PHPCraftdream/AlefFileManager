@@ -61,11 +61,11 @@ test('a_key_home_below_a_linked_parent_folder_works', bounded, () => scratch(asy
   assert.equal(info.name, 'default');
 }));
 test('the_key_home_follows_the_environment_and_rejects_symlinks_without_touching_their_targets', bounded, () => scratch(async home => {
-  const previous = process.env.ALEF_TRON_HOME;
+  const previous = process.env.ALEF_RUNTIME_HOME;
   try {
-    process.env.ALEF_TRON_HOME = home;
+    process.env.ALEF_RUNTIME_HOME = home;
     assert.equal(keyHome(), home); await createKey(); assert.equal((await listKeys()).length, 1);
-  } finally { if (previous === undefined) delete process.env.ALEF_TRON_HOME; else process.env.ALEF_TRON_HOME = previous; }
+  } finally { if (previous === undefined) delete process.env.ALEF_RUNTIME_HOME; else process.env.ALEF_RUNTIME_HOME = previous; }
   const target = path.join(home, 'default-copy.pem');
   await writeFile(target, 'untouched');
   try { await symlink(target, path.join(home, 'keys', 'alias.pem')); } catch (error) { if (error.code === 'EPERM') return; throw error; }

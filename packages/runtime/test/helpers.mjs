@@ -12,15 +12,15 @@ export function temporary(t) {
 }
 export async function installed(t, entry) {
   const directory = temporary(t);
-  const meta = join(directory, 'node_modules', '@alef-tron', 'runtime');
+  const meta = join(directory, 'node_modules', '@alef-runtime', 'runtime');
   mkdirSync(meta, { recursive: true });
   cpSync(join(root, 'src'), join(meta, 'src'), { recursive: true });
   cpSync(join(root, 'package.json'), join(meta, 'package.json'));
   let binary;
   if (entry) {
-    const dependency = join(directory, 'node_modules', '@alef-tron', `runtime-${entry.suffix}`);
+    const dependency = join(directory, 'node_modules', '@alef-runtime', `runtime-${entry.suffix}`);
     mkdirSync(join(dependency, 'bin'), { recursive: true });
-    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: `@alef-tron/runtime-${entry.suffix}` }));
+    writeFileSync(join(dependency, 'package.json'), JSON.stringify({ name: `@alef-runtime/runtime-${entry.suffix}` }));
     binary = join(dependency, 'bin', entry.binary);
     writeFileSync(binary, 'fake runtime');
   }

@@ -1,10 +1,10 @@
-# @alef-tron/runtime
+# @alef-runtime/runtime
 
 Private 0.1.0 ESM meta-package, MIT OR Apache-2.0. Node >=22.12.0;
 no dependencies, no Rust toolchain, no network access, no build step.
 CLI bin: `alef`; checkout: `node packages/runtime/bin/alef.mjs`.
 Platform binaries ship as optional dependencies
-`@alef-tron/runtime-{win32-x64,darwin-arm64,darwin-x64,linux-x64}`.
+`@alef-runtime/runtime-{win32-x64,darwin-arm64,darwin-x64,linux-x64}`.
 
 ## Resolution
 
@@ -12,7 +12,7 @@ Platform binaries ship as optional dependencies
 
 1. `ALEF_BIN` — if set, it must be an existing regular file (symlinked parents
    are followed); anything else is an immediate error, no fallback.
-2. Platform package — `require.resolve('@alef-tron/runtime-<platform>-<arch>/package.json')`,
+2. Platform package — `require.resolve('@alef-runtime/runtime-<platform>-<arch>/package.json')`,
    then `bin/<binary>` beside it (see table).
 3. Otherwise a single error naming the platform, the expected package, the
    cause and the fix (install with `npm install --include=optional`, do not use
@@ -20,10 +20,10 @@ Platform binaries ship as optional dependencies
 
 | Platform | Package | Binary |
 |---|---|---|
-| windows-x64 | `@alef-tron/runtime-win32-x64` | `alef.exe` |
-| macos-arm64 | `@alef-tron/runtime-darwin-arm64` | `alef` |
-| macos-x64 | `@alef-tron/runtime-darwin-x64` | `alef` |
-| linux-x64 | `@alef-tron/runtime-linux-x64` | `alef` |
+| windows-x64 | `@alef-runtime/runtime-win32-x64` | `alef.exe` |
+| macos-arm64 | `@alef-runtime/runtime-darwin-arm64` | `alef` |
+| macos-x64 | `@alef-runtime/runtime-darwin-x64` | `alef` |
+| linux-x64 | `@alef-runtime/runtime-linux-x64` | `alef` |
 
 This table is pinned to the CI build matrix by test (`packages/runtime/test/platforms.test.mjs`).
 

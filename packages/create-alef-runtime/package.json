@@ -1,9 +1,9 @@
 {
-  "name": "create-alef-tron",
+  "name": "create-alef-runtime",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "engines": { "node": ">=22.12.0" },
-  "bin": { "create-alef-tron": "./bin/create-alef-tron.mjs" },
+  "bin": { "create-alef-runtime": "./bin/create-alef-runtime.mjs" },
   "license": "MIT OR Apache-2.0"
 }
