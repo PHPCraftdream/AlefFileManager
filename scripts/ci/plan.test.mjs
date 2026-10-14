@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven } from './plan.mjs';
+import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));
@@ -246,4 +246,24 @@ test('overrides_count_only_when_a_non_blank_string_is_given', () => {
   assert.equal(dispatchOverridesGiven({ crates: true, e2e: '  ' }), false);
   assert.equal(dispatchOverridesGiven({ crates: 'alef', e2e: '' }), true);
   assert.equal(dispatchOverridesGiven({ crates: '', e2e: 'none' }), true);
+});
+
+test('the_matrix_of_a_linux_plan_has_only_the_linux_platform', () => {
+  const matrix = matrixFor(data.runners_linux, data.platforms);
+  assert.deepEqual(matrix.include.map(row => row.name), ['linux-x64']);
+});
+
+test('the_matrix_of_a_full_plan_has_the_four_platforms_in_the_table_order', () => {
+  const matrix = matrixFor(data.runners_all, data.platforms);
+  assert.deepEqual(matrix.include.map(row => row.name), ['windows-x64', 'macos-arm64', 'macos-x64', 'linux-x64']);
+});
+
+test('every_platform_runner_is_a_runner_of_the_full_plan_and_the_other_way_round', () => {
+  assert.deepEqual(data.platforms.map(row => row.os).sort(), [...data.runners_all].sort());
+});
+
+test('the_workflow_takes_its_matrix_from_the_plan_and_has_no_include_of_its_own', () => {
+  const yaml = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  assert.ok(yaml.includes('matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}'));
+  assert.doesNotMatch(yaml, /^\s+include:\s*$/m);
 });

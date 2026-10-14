@@ -228,6 +228,29 @@ export function dispatchOnlyPlan(data) {
   };
 }
 
+// The build matrix of a plan: only the platforms whose runner the plan names (an `include`
+// list written in the workflow would add every platform again, whatever `os` says).
+export function matrixFor(os, platforms) {
+  return { include: platforms.filter(platform => os.includes(platform.os)) };
+}
+
+function writeOutputs(plan, data) {
+  if (!process.env.GITHUB_OUTPUT) return;
+  const lines = [
+    `full=${plan.full}`,
+    `os=${JSON.stringify(plan.os)}`,
+    `matrix=${JSON.stringify(matrixFor(plan.os, data.platforms ?? []))}`,
+    `crates=${Array.isArray(plan.crates) ? plan.crates.join(',') : plan.crates}`,
+    `js=${Array.isArray(plan.js) ? plan.js.join(',') : plan.js}`,
+    `e2e=${plan.e2e}`,
+    `crates_all=${plan.crates_all}`,
+    `js_all=${plan.js_all}`,
+    `reason=${plan.reason}`,
+    `docs_only=${plan.docs_only}`,
+  ];
+  appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');
+}
+
 // Fallback: a CI run must not die because the planner hiccuped.
 function fullFallback(reason, data) {
   return {
@@ -387,20 +410,7 @@ function main() {
   console.log(`reason: ${plan.reason}`);
   console.log(JSON.stringify(plan, null, 2));
 
-  if (process.env.GITHUB_OUTPUT) {
-    const lines = [
-      `full=${plan.full}`,
-      `os=${JSON.stringify(plan.os)}`,
-      `crates=${Array.isArray(plan.crates) ? plan.crates.join(',') : plan.crates}`,
-      `js=${Array.isArray(plan.js) ? plan.js.join(',') : plan.js}`,
-      `e2e=${plan.e2e}`,
-      `crates_all=${plan.crates_all}`,
-      `js_all=${plan.js_all}`,
-      `reason=${plan.reason}`,
-      `docs_only=${plan.docs_only}`,
-    ];
-    appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');
-  }
+  writeOutputs(plan, data);
 }
 
 const isMain = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
@@ -412,6 +422,8 @@ if (isMain) {
     const root = fileURLToPath(new URL('../../', import.meta.url));
     let data = { runners_all: ['ubuntu-24.04'] };
     try { data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8')); } catch { /* defaults */ }
-    console.log(JSON.stringify(fullFallback(`planner error: ${error?.message ?? String(error)}`, data), null, 2));
+    const fallback = fullFallback(`planner error: ${error?.message ?? String(error)}`, data);
+    console.log(JSON.stringify(fallback, null, 2));
+    writeOutputs(fallback, data);
   }
 }

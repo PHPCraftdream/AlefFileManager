@@ -44,6 +44,7 @@ jobs:
     outputs:
       full: ${{ steps.plan.outputs.full }}
       os: ${{ steps.plan.outputs.os }}
+      matrix: ${{ steps.plan.outputs.matrix }}
       crates: ${{ steps.plan.outputs.crates }}
       crates_all: ${{ steps.plan.outputs.crates_all }}
       js: ${{ steps.plan.outputs.js }}
@@ -78,26 +79,8 @@ jobs:
     needs: plan
     strategy:
       fail-fast: false
-      # Матрица берётся из плана: полный прогон — 4 ОС, затронутый — ubuntu-24.04.
-      matrix:
-        os: ${{ fromJSON(needs.plan.outputs.os) }}
-        include:
-          - os: windows-latest
-            name: windows-x64
-            target: x86_64-pc-windows-msvc
-            bin: alef.exe
-          - os: macos-14
-            name: macos-arm64
-            target: aarch64-apple-darwin
-            bin: alef
-          - os: macos-15-intel
-            name: macos-x64
-            target: x86_64-apple-darwin
-            bin: alef
-          - os: ubuntu-24.04
-            name: linux-x64
-            target: x86_64-unknown-linux-gnu
-            bin: alef
+      # Матрица целиком приходит из плана (affected.json: platforms): полный прогон — 4 ОС, затронутый — ubuntu-24.04. Свой include здесь добавил бы все ОС снова.
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
