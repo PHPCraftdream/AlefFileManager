@@ -453,7 +453,10 @@ pub(crate) mod tests {
         })
         .await
         .expect("apply and relaunch never ran");
-        assert!(early.is_none(), "the command resolved before the park: {early:?}");
+        assert!(
+            early.is_none(),
+            "the command resolved before the park: {early:?}"
+        );
         // With apply and relaunch done, only the deliberate park remains.
         let pending = tokio::time::timeout(Duration::from_millis(200), call.as_mut()).await;
         assert!(
