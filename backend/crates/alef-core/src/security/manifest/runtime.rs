@@ -3,7 +3,8 @@
 
 use semver::{Version, VersionReq};
 
-pub(super) fn deserialize_runtime<'de, D: serde::Deserializer<'de>>(
+/// Also reused by the updater feed parser for the feed's `runtime` range.
+pub fn deserialize_runtime<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<String>, D::Error> {
     struct Runtime;

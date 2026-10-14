@@ -38,6 +38,7 @@ pub enum ErrorCode {
     UpdateIo,
     UpdateNotInstalled,
     UpdateNotDownloaded,
+    UpdateRuntimeRequired,
     UpdateRelaunchFailed,
     Internal,
 }
@@ -66,6 +67,7 @@ impl ErrorCode {
             Self::UpdateIo => 500,
             Self::UpdateNotInstalled => 400,
             Self::UpdateNotDownloaded => 409,
+            Self::UpdateRuntimeRequired => 400,
             Self::UpdateRelaunchFailed => 500,
             Self::UpdateHashMismatch
             | Self::UpdateSignatureInvalid
@@ -106,6 +108,7 @@ impl ErrorCode {
             Self::UpdateIo => "UPDATE_IO",
             Self::UpdateNotInstalled => "UPDATE_NOT_INSTALLED",
             Self::UpdateNotDownloaded => "UPDATE_NOT_DOWNLOADED",
+            Self::UpdateRuntimeRequired => "UPDATE_RUNTIME_REQUIRED",
             Self::UpdateRelaunchFailed => "UPDATE_RELAUNCH_FAILED",
             Self::Internal => "INTERNAL",
         }
@@ -231,6 +234,7 @@ mod tests {
             ErrorCode::UpdateIo,
             ErrorCode::UpdateNotInstalled,
             ErrorCode::UpdateNotDownloaded,
+            ErrorCode::UpdateRuntimeRequired,
             ErrorCode::UpdateRelaunchFailed,
             ErrorCode::Network,
             ErrorCode::Internal,
@@ -302,6 +306,7 @@ mod tests {
             ErrorCode::UpdateIo,
             ErrorCode::UpdateNotInstalled,
             ErrorCode::UpdateNotDownloaded,
+            ErrorCode::UpdateRuntimeRequired,
             ErrorCode::UpdateRelaunchFailed,
             ErrorCode::Network,
             ErrorCode::Internal,
@@ -322,5 +327,6 @@ mod tests {
         assert_eq!(ErrorCode::Network.http_status(), 502);
         assert_eq!(ErrorCode::UpdateNotAvailable.http_status(), 404);
         assert_eq!(ErrorCode::UpdateTooLarge.http_status(), 413);
+        assert_eq!(ErrorCode::UpdateRuntimeRequired.http_status(), 400);
     }
 }

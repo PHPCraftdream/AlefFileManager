@@ -304,6 +304,9 @@ fn key(row: &AppListing) -> &str {
 pub struct StoreApplier {
     home: PathBuf,
     executable: PathBuf,
+    /// The runtime store the install-mode compatibility check consults; the launcher fills it
+    /// from its own home, tests from a scratch home.
+    runtime_store: PathBuf,
     /// The fingerprint of the pinned signer of the running application; `apply` accepts only it.
     fingerprint: String,
     integration: Arc<tokio::sync::Mutex<Box<dyn Integration>>>,
@@ -321,6 +324,7 @@ impl StoreApplier {
         Self {
             home,
             executable,
+            runtime_store: crate::runtimes::store::root(),
             fingerprint,
             integration: Arc::new(tokio::sync::Mutex::new(Box::new(
                 integration::NativeIntegration::new(),
@@ -329,17 +333,21 @@ impl StoreApplier {
         }
     }
 
-    /// A custom integration, for tests and alternative backends.
+    /// A custom integration, for tests and alternative backends. `runtime_store` is the explicit
+    /// runtime-store root the install-mode compatibility check lists, so callers never depend on
+    /// the process environment.
     pub fn new(
         home: PathBuf,
         executable: PathBuf,
         fingerprint: String,
+        runtime_store: PathBuf,
         integration: Box<dyn Integration>,
         termination: alef_modules::Termination,
     ) -> Self {
         Self {
             home,
             executable,
+            runtime_store,
             fingerprint,
             integration: Arc::new(tokio::sync::Mutex::new(integration)),
             termination,
@@ -378,8 +386,9 @@ impl alef_modules::net::updater::UpdateApplier for StoreApplier {
         Box::pin(async move {
             // load_install hashes and verifies the archive: keep it off the async workers.
             let source = package.to_owned();
+            let runtime_store = self.runtime_store.clone();
             let (prepared, bytes) = tokio::task::spawn_blocking(move || {
-                crate::application::source::load_install(&source)
+                crate::application::source::load_install_in(&source, &runtime_store)
             })
             .await
             .map_err(|e| AlefError::new(ErrorCode::UpdateIo, e.to_string()))?
