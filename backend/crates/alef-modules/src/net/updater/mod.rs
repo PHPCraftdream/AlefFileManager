@@ -16,18 +16,32 @@ use url::Url;
 mod client;
 mod document;
 mod download;
+mod install;
+
+pub use install::UpdateApplier;
 mod storage;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct UpdaterContext {
     pub config: Updater,
     pub app_id: String,
     pub version: String,
     pub trusted_key: [u8; 32],
     pub data: PathBuf,
+    /// The running package path when it comes from the user store of `alef install`.
+    pub installed: Option<InstalledApp>,
+    /// Provided by the launcher; performs the transactional install and the relaunch.
+    pub applier: Arc<dyn install::UpdateApplier>,
+}
+
+/// Proves the running application was launched from the user store, not `alef run <file>`
+/// or a directory; the launcher computes this when it opens the package.
+#[derive(Debug, Clone)]
+pub struct InstalledApp {
+    pub package: PathBuf,
 }
 
 #[derive(Debug, Default)]
@@ -59,6 +73,7 @@ pub fn register_updater(
     let state = Arc::new(State::default());
     let gate = Arc::new(tokio::sync::Semaphore::new(1));
     download::register(registry, context, state.clone(), gate.clone())?;
+    install::register(registry, context, state.clone(), gate.clone())?;
     registry.command::<Args>("updater.check")?.waits().handler(
         move |_call: CallContext, _args| {
             let config = ctx.clone();

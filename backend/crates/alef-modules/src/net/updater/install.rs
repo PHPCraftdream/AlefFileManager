@@ -1,0 +1,441 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! Applying a downloaded, verified update to the installed application and restarting.
+use super::{storage, State, UpdaterContext};
+use alef_core::{
+    registry::{command::Reply, dispatch::Registry},
+    AlefError, ErrorCode,
+};
+use serde::Deserialize;
+use serde_json::json;
+use std::{future::Future, path::Path, path::PathBuf, pin::Pin, sync::Arc};
+use tokio::sync::Semaphore;
+
+/// The launcher-side half of `updater.install`: the transactional store install and the
+/// restart. Every failure leaves the installed old version and its artifacts untouched.
+pub trait UpdateApplier: Send + Sync {
+    /// Installs the verified package into the user store; returns the installed package path.
+    fn apply<'a>(
+        &'a self,
+        package: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<PathBuf, AlefError>> + Send + 'a>>;
+    /// Asks `before-quit`, starts the new version detached and ends this process. The caller
+    /// never resolves the JS promise afterwards; an error leaves the old process running.
+    fn relaunch<'a>(
+        &'a self,
+        package: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AlefError>> + Send + 'a>>;
+}
+
+pub(super) fn register(
+    registry: &mut Registry,
+    context: &Option<UpdaterContext>,
+    state: Arc<State>,
+    gate: Arc<Semaphore>,
+) -> Result<(), AlefError> {
+    let config = context.clone();
+    registry
+        .command::<Empty>("updater.install")?
+        .waits()
+        .handler(move |_ctx, _args| {
+            let config = config.clone();
+            let state = state.clone();
+            let gate = gate.clone();
+            async move {
+                let config = config.ok_or_else(|| {
+                    AlefError::new(ErrorCode::NotAvailable, "native updater is unavailable")
+                })?;
+                install(config, state, gate).await?;
+                // The promise never resolves: on success the process is replaced.
+                std::future::pending::<()>().await;
+                Err(AlefError::new(ErrorCode::Internal, "unreachable"))
+            }
+        })?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+
+pub(super) async fn install(
+    config: UpdaterContext,
+    state: Arc<State>,
+    gate: Arc<Semaphore>,
+) -> Result<Reply, AlefError> {
+    let _permit = gate
+        .try_acquire_owned()
+        .map_err(|_| AlefError::new(ErrorCode::UpdateBusy, "updater operation already active"))?;
+    let _installed = config.installed.as_ref().ok_or_else(|| {
+        AlefError::new(
+            ErrorCode::UpdateNotInstalled,
+            "the running application is not installed from the store",
+        )
+    })?;
+    let offered = state
+        .offered
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or_else(|| {
+            AlefError::new(
+                ErrorCode::UpdateNotDownloaded,
+                "no downloaded update is offered",
+            )
+        })?;
+    alef_core::security::manifest::validate_package_version(&offered.version)
+        .map_err(|_| AlefError::new(ErrorCode::UpdateBadDocument, "invalid offered version"))?;
+    let storage = storage::Storage::prepare(&config.data)?;
+    storage::verify_stored_package(&storage, &config, &offered).await?;
+    let path = config
+        .data
+        .join("updates")
+        .join(format!("{}.alef", offered.version));
+    let installed_path = config.applier.apply(&path).await?;
+    config.applier.relaunch(&installed_path).await?;
+    Ok(Reply::Json(json!(null)))
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::{install, UpdateApplier};
+    use crate::net::updater::{
+        document, register_updater,
+        tests::{
+            offered, permissions, session, signed_context, signed_package, verify_bytes, WAIT,
+        },
+        State, UpdaterContext,
+    };
+    use alef_core::{
+        registry::{command::Reply, context::CallContext, dispatch::Registry},
+        AlefError, ErrorCode,
+    };
+    use std::{
+        future::Future,
+        path::PathBuf,
+        pin::Pin,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    use tokio::sync::Semaphore;
+
+    pub(crate) struct FakeApplier {
+        calls: Mutex<Vec<(&'static str, PathBuf)>>,
+        apply_result: Option<AlefError>,
+        relaunch_result: Option<AlefError>,
+    }
+    impl Default for FakeApplier {
+        fn default() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                apply_result: None,
+                relaunch_result: None,
+            }
+        }
+    }
+    impl FakeApplier {
+        fn calls(&self) -> Vec<(&'static str, PathBuf)> {
+            self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        }
+    }
+    impl UpdateApplier for FakeApplier {
+        fn apply<'a>(
+            &'a self,
+            package: &'a std::path::Path,
+        ) -> Pin<Box<dyn Future<Output = Result<PathBuf, AlefError>> + Send + 'a>> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(("apply", package.to_path_buf()));
+            let result = match &self.apply_result {
+                Some(error) => Err(error.clone()),
+                None => Ok(package.with_file_name("installed-by-apply.alef")),
+            };
+            Box::pin(async move { result })
+        }
+        fn relaunch<'a>(
+            &'a self,
+            package: &'a std::path::Path,
+        ) -> Pin<Box<dyn Future<Output = Result<(), AlefError>> + Send + 'a>> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(("relaunch", package.to_path_buf()));
+            let result = match &self.relaunch_result {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            };
+            Box::pin(async move { result })
+        }
+    }
+
+    fn install_state(offered: Option<document::Document>) -> Arc<State> {
+        let state = Arc::new(State::default());
+        *state.offered.lock().unwrap_or_else(|e| e.into_inner()) = offered;
+        state
+    }
+
+    async fn run_install(
+        config: UpdaterContext,
+        state: Arc<State>,
+        gate: Arc<Semaphore>,
+    ) -> Result<Reply, AlefError> {
+        tokio::time::timeout(WAIT, install(config, state, gate))
+            .await
+            .expect("install timed out")
+    }
+
+    #[tokio::test]
+    async fn install_requires_an_application_installed_from_the_store() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut config = signed_context(scratch.path(), [7u8; 32]);
+        config.installed = None;
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        let error = run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateNotInstalled);
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_requires_a_downloaded_update_to_be_offered() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut config = signed_context(scratch.path(), [7u8; 32]);
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+
+        let error = run_install(config, install_state(None), Arc::new(Semaphore::new(1)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateNotDownloaded);
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_rejects_a_tampered_stored_package_without_touching_the_applier() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut config = signed_context(scratch.path(), [7u8; 32]);
+        let updates = scratch.path().join("updates");
+        std::fs::create_dir_all(&updates).unwrap();
+        std::fs::write(updates.join("2.0.0.alef"), b"garbage bytes").unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        // open_snapshot fails on the garbage file, which maps to UpdateSignatureInvalid.
+        let error = run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateSignatureInvalid);
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_rejects_an_offer_that_is_not_higher_than_the_running_version() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("1.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        let updates = scratch.path().join("updates");
+        std::fs::create_dir_all(&updates).unwrap();
+        std::fs::write(updates.join("1.0.0.alef"), package).unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        let error = run_install(
+            config,
+            install_state(Some(offered("1.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateBadDocument);
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn install_propagates_an_applier_error_without_relaunching() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let applier = Arc::new(FakeApplier {
+            apply_result: Some(AlefError::new(ErrorCode::UpdateIo, "apply failed")),
+            ..FakeApplier::default()
+        });
+        config.applier = applier.clone();
+        let error = run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateIo);
+        let calls = applier.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "apply");
+    }
+
+    #[tokio::test]
+    async fn install_applies_the_verified_package_and_relaunches_the_result_in_order() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap();
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            ("apply", scratch.path().join("updates").join("2.0.0.alef"))
+        );
+        // The relaunch receives the applier's output, not the verified input.
+        assert_eq!(
+            calls[1],
+            (
+                "relaunch",
+                scratch
+                    .path()
+                    .join("updates")
+                    .join("installed-by-apply.alef")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_relaunch_keeps_the_error_and_reports_no_second_apply() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier {
+            relaunch_result: Some(AlefError::new(ErrorCode::UpdateRelaunchFailed, "no")),
+            ..FakeApplier::default()
+        });
+        config.applier = fake.clone();
+        let error = run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateRelaunchFailed);
+        assert_eq!(
+            fake.calls(),
+            vec![
+                ("apply", scratch.path().join("updates").join("2.0.0.alef")),
+                (
+                    "relaunch",
+                    scratch
+                        .path()
+                        .join("updates")
+                        .join("installed-by-apply.alef")
+                )
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn install_reports_a_missing_download_file_as_not_downloaded() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut config = signed_context(scratch.path(), [7u8; 32]);
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        // The offer exists, but updates/2.0.0.alef was never written.
+        let error = run_install(
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateNotDownloaded);
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_installs_let_one_win_and_reject_the_other_as_busy() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        let config2 = config.clone();
+        let state = install_state(Some(offered("2.0.0")));
+        let gate = Arc::new(Semaphore::new(1));
+        let (first, second) = tokio::join!(
+            run_install(config, state.clone(), gate.clone()),
+            run_install(config2, state, gate),
+        );
+        assert!(
+            matches!((&first, &second), (Ok(_), Err(e)) if e.code == ErrorCode::UpdateBusy)
+                || matches!((&second, &first), (Ok(_), Err(e)) if e.code == ErrorCode::UpdateBusy)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_install_command_does_not_resolve_after_a_successful_install() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        let mut registry = Registry::default();
+        register_updater(&mut registry, &Some(config)).unwrap();
+        let call = registry.dispatch(
+            "updater.install",
+            CallContext::new(session().await, permissions()),
+            serde_json::json!({}),
+        );
+        // The fake applier never blocks, so the 300 ms window is generous.
+        let result = tokio::time::timeout(Duration::from_millis(300), call).await;
+        assert!(
+            result.is_err(),
+            "the install command must park, not resolve"
+        );
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "apply");
+        assert_eq!(calls[1].0, "relaunch");
+    }
+
+    #[tokio::test]
+    async fn a_second_install_while_one_is_active_is_rejected_as_busy() {
+        let scratch = tempfile::tempdir().unwrap();
+        let config = signed_context(scratch.path(), [7u8; 32]);
+        let gate: Arc<Semaphore> = Arc::new(Semaphore::new(1));
+        let held = gate.clone().try_acquire_owned().unwrap();
+        let error = run_install(config, install_state(Some(offered("2.0.0"))), gate)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateBusy);
+        drop(held);
+    }
+}

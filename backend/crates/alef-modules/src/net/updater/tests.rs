@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Loopback integration tests for updater feed checks.
+use super::install::tests::FakeApplier;
 use super::*;
 use alef_core::{
     protocol::call::Limits,
@@ -32,7 +33,7 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
-const WAIT: Duration = Duration::from_secs(5);
+pub(crate) const WAIT: Duration = Duration::from_secs(5);
 
 struct Server {
     url: String,
@@ -156,7 +157,7 @@ impl Server {
     }
 }
 
-fn permissions() -> Arc<PermissionSet> {
+pub(crate) fn permissions() -> Arc<PermissionSet> {
     let policy: Permissions = serde_json::from_value(serde_json::json!({"fs":{"read":[],"write":[]},"cli":{"exec":[]},"net":{"http":[],"socket":[]},"shell":{"openExternal":[]},"clipboard":{"read":false},"shortcut":{"global":false},"secrets":false,"app":{"env":[]}})).unwrap();
     let root = std::env::temp_dir();
     let vars = PathVars {
@@ -172,7 +173,7 @@ fn permissions() -> Arc<PermissionSet> {
     };
     Arc::new(PermissionSet::from_manifest(&policy, &vars).unwrap())
 }
-async fn session() -> Arc<Session> {
+pub(crate) async fn session() -> Arc<Session> {
     let tokens: TokenSource = Arc::new(|| "updater-test-token".to_owned());
     tokio::time::timeout(WAIT, async {
         SessionManager::new(tokens, Limits::default())
@@ -192,6 +193,10 @@ async fn check(endpoint: String) -> Result<Reply, AlefError> {
         version: "1.0.0".into(),
         trusted_key: [7u8; 32],
         data: std::env::temp_dir().join("alef-updater-tests"),
+        installed: Some(InstalledApp {
+            package: std::env::temp_dir().join("alef-updater-tests/app.alef"),
+        }),
+        applier: Arc::new(FakeApplier::default()),
     };
     let mut registry = Registry::default();
     register_updater(&mut registry, &Some(ctx)).unwrap();
@@ -324,6 +329,10 @@ async fn assert_transfer_error(server: &Server, sha256: String, limit: u64, expe
         version: "1.0.0".into(),
         trusted_key: [7u8; 32],
         data: scratch.path().to_path_buf(),
+        installed: Some(InstalledApp {
+            package: scratch.path().join("app.alef"),
+        }),
+        applier: Arc::new(FakeApplier::default()),
     };
     let offered = document::Document {
         version: "2.0.0".into(),
@@ -364,6 +373,10 @@ async fn download_rejects_invalid_packages_without_publishing_artifacts() {
         version: "1.0.0".into(),
         trusted_key: [7u8; 32],
         data: scratch.path().to_path_buf(),
+        installed: Some(InstalledApp {
+            package: scratch.path().join("app.alef"),
+        }),
+        applier: Arc::new(FakeApplier::default()),
     };
     let storage = storage::Storage::prepare(&config.data).unwrap();
     let mut temp = storage.temp().unwrap();
@@ -405,7 +418,7 @@ fn download_storage_lock_prevents_a_second_active_update() {
     assert!(storage::Storage::prepare(scratch.path()).is_ok());
 }
 
-fn signed_package(version: &str, app_id: &str) -> (Vec<u8>, [u8; 32]) {
+pub(crate) fn signed_package(version: &str, app_id: &str) -> (Vec<u8>, [u8; 32]) {
     let key = Ed25519KeyPair::from_seed_unchecked(&[42u8; 32]).unwrap();
     let manifest = include_bytes!("../../../../alef-core/tests/fixtures/minimal.ktav");
     let manifest = std::str::from_utf8(manifest).unwrap();
@@ -515,7 +528,7 @@ fn stored_zip(mut files: Vec<(&str, Vec<u8>)>) -> Vec<u8> {
     bytes
 }
 
-fn signed_context(data: &std::path::Path, trusted_key: [u8; 32]) -> UpdaterContext {
+pub(crate) fn signed_context(data: &std::path::Path, trusted_key: [u8; 32]) -> UpdaterContext {
     UpdaterContext {
         config: Updater {
             endpoint: "http://127.0.0.1/".into(),
@@ -525,9 +538,13 @@ fn signed_context(data: &std::path::Path, trusted_key: [u8; 32]) -> UpdaterConte
         version: "1.0.0".into(),
         trusted_key,
         data: data.to_path_buf(),
+        installed: Some(InstalledApp {
+            package: data.join("app.alef"),
+        }),
+        applier: Arc::new(FakeApplier::default()),
     }
 }
-fn offered(version: &str) -> document::Document {
+pub(crate) fn offered(version: &str) -> document::Document {
     document::Document {
         version: version.into(),
         notes: None,
@@ -535,7 +552,7 @@ fn offered(version: &str) -> document::Document {
         sha256: String::new(),
     }
 }
-async fn verify_bytes(
+pub(crate) async fn verify_bytes(
     data: &std::path::Path,
     config: &UpdaterContext,
     version: &str,

@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Foundation for the installed-application store. The tree is trusted to remain stable
 //! during operations; checks reject pre-existing links/reparse points, not hostile rename races.
-use std::{fmt, io::Read, path::PathBuf};
+use self::integration::Integration;
+use alef_core::{AlefError, ErrorCode};
+use std::{
+    fmt,
+    future::Future,
+    io::Read,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+};
 
 pub(crate) mod flow;
 pub(crate) mod integration;
@@ -287,6 +296,169 @@ fn key(row: &AppListing) -> &str {
     match row {
         AppListing::Installed(r) => &r.id,
         AppListing::Damaged { hash } => hash,
+    }
+}
+
+/// The `updater.install` callback the launcher provides: the same transactional install as
+/// `alef install`, pinned to the running package's signer, and the restart into the new version.
+pub struct StoreApplier {
+    home: PathBuf,
+    executable: PathBuf,
+    /// The fingerprint of the pinned signer of the running application; `apply` accepts only it.
+    fingerprint: String,
+    integration: Arc<tokio::sync::Mutex<Box<dyn Integration>>>,
+    termination: alef_modules::Termination,
+}
+
+impl StoreApplier {
+    /// The launcher default: the native integration pinned to the running signer.
+    pub fn native(
+        home: PathBuf,
+        executable: PathBuf,
+        fingerprint: String,
+        termination: alef_modules::Termination,
+    ) -> Self {
+        Self {
+            home,
+            executable,
+            fingerprint,
+            integration: Arc::new(tokio::sync::Mutex::new(Box::new(
+                integration::NativeIntegration::new(),
+            ))),
+            termination,
+        }
+    }
+
+    /// A custom integration, for tests and alternative backends.
+    pub fn new(
+        home: PathBuf,
+        executable: PathBuf,
+        fingerprint: String,
+        integration: Box<dyn Integration>,
+        termination: alef_modules::Termination,
+    ) -> Self {
+        Self {
+            home,
+            executable,
+            fingerprint,
+            integration: Arc::new(tokio::sync::Mutex::new(integration)),
+            termination,
+        }
+    }
+
+    fn load_error(error: crate::application::source::LoadFailure) -> AlefError {
+        let category = error.category.unwrap_or("PACKAGE_INVALID");
+        let code = if category.starts_with("PACKAGE_SIGNATURE") || category.starts_with("SIGNATURE")
+        {
+            ErrorCode::UpdateSignatureInvalid
+        } else {
+            ErrorCode::UpdateIo
+        };
+        AlefError::new(code, format!("{}: {}", category, error.detail))
+    }
+
+    fn install_error(error: InstallError) -> AlefError {
+        // Nothing was changed: the trust refusals happen before any artifact is published.
+        let code = match error.category {
+            "SIGNER_CHANGED" | "SIGNATURE_REQUIRED" | "TRUST_REFUSED" => {
+                ErrorCode::UpdateKeyMismatch
+            }
+            "BUSY" => ErrorCode::UpdateBusy,
+            _ => ErrorCode::UpdateIo,
+        };
+        AlefError::new(code, format!("{}: {}", error.category, error.detail))
+    }
+}
+
+impl alef_modules::net::updater::UpdateApplier for StoreApplier {
+    fn apply<'a>(
+        &'a self,
+        package: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<PathBuf, AlefError>> + Send + 'a>> {
+        Box::pin(async move {
+            // load_install hashes and verifies the archive: keep it off the async workers.
+            let source = package.to_owned();
+            let (prepared, bytes) = tokio::task::spawn_blocking(move || {
+                crate::application::source::load_install(&source)
+            })
+            .await
+            .map_err(|e| AlefError::new(ErrorCode::UpdateIo, e.to_string()))?
+            .map_err(Self::load_error)?;
+            if prepared.fingerprint() != Some(self.fingerprint.as_str()) {
+                return Err(AlefError::new(
+                    ErrorCode::UpdateKeyMismatch,
+                    "the update is not signed by the pinned key",
+                ));
+            }
+            // The signer was already checked against the pin above, so `decide_with_asker`
+            // accepts the existing pin and never opens the ask window; an unsigned package is
+            // refused as SIGNATURE_REQUIRED, again without a prompt.
+            let mut integration = self.integration.lock().await;
+            let outcome = flow::install_in(
+                &self.home,
+                &self.executable,
+                prepared,
+                bytes,
+                &crate::application::trust::TrustInputs {
+                    trust_key: Some(self.fingerprint.clone()),
+                    allow_unsigned: false,
+                },
+                &crate::application::trust::TrustAsker::Window,
+                &mut **integration,
+            )
+            .await
+            .map_err(Self::install_error)?;
+            Ok(match outcome {
+                flow::InstallOutcome::Installed(record)
+                | flow::InstallOutcome::AlreadyInstalled(record) => self
+                    .home
+                    .join("apps")
+                    .join(format!("{:x}", sha2::Sha256::digest(record.id.as_bytes())))
+                    .join(&record.package),
+            })
+        })
+    }
+
+    fn relaunch<'a>(
+        &'a self,
+        package: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AlefError>> + Send + 'a>> {
+        let program = std::env::current_exe().map_err(|e| {
+            AlefError::new(
+                ErrorCode::UpdateRelaunchFailed,
+                format!("resolve current executable: {e}"),
+            )
+        });
+        Box::pin(async move {
+            let program = program?;
+            // The child inherits the launcher environment; `run` reopens the installed package.
+            let arguments = [
+                std::ffi::OsString::from("run"),
+                package.as_os_str().to_owned(),
+            ];
+            let extra = [(
+                crate::relaunch::REPLACES_VARIABLE.to_owned(),
+                std::process::id().to_string(),
+            )];
+            crate::relaunch::detached_with(&program, &arguments, &extra).map_err(|e| {
+                AlefError::new(
+                    ErrorCode::UpdateRelaunchFailed,
+                    format!("start the new version: {e}"),
+                )
+            })?;
+            // The child waits for this process to exit before it boots, so the single-instance
+            // endpoint of the old version is never seen by the new one. The child handle is
+            // simply dropped without waiting: the process keeps running and outlives this one.
+            // `Termination::request` is the same `before-quit` round `app.exit`/`app.quit` gives
+            // the documents; after it the bridge quits the process and the promise never resolves.
+            if !self.termination.request(0).await {
+                return Err(AlefError::new(
+                    ErrorCode::UpdateRelaunchFailed,
+                    "the running application refused to quit for the update",
+                ));
+            }
+            Ok(())
+        })
     }
 }
 
