@@ -135,7 +135,7 @@ test('a_path_no_rule_knows_widens_the_plan_to_full', () => {
 
 test('a_frontend_change_maps_to_frontend_js_but_widens_crates_to_all', () => {
   const p = plan(['frontend/src/app.tsx']);
-  assert.equal(p.e2e, 'app,console');
+  assert.equal(p.e2e, 'app,console,fm-package');
   assert.deepEqual(p.js, ['frontend']);
   assert.equal(p.crates, 'all');
 });
@@ -275,6 +275,26 @@ test('the_matrix_of_a_full_plan_has_the_four_platforms_in_the_table_order', () =
 
 test('every_platform_runner_is_a_runner_of_the_full_plan_and_the_other_way_round', () => {
   assert.deepEqual(data.platforms.map(row => row.os).sort(), [...data.runners_all].sort());
+});
+
+test('a_frontend_change_marks_package_app_true', () => {
+  const p = plan(['frontend/src/app.tsx'], { packageAppGlobs: data.package_app });
+  assert.equal(p.full, false);
+  assert.equal(p.package_app, true);
+  assert.deepEqual(p.js, ['frontend']);
+});
+
+test('a_docs_only_change_and_a_dispatch_only_plan_leave_package_app_false', () => {
+  const p = plan(['docs/stages/m7-distribution.md'], { packageAppGlobs: data.package_app });
+  assert.equal(p.docs_only, true);
+  assert.equal(p.package_app, false);
+  const base = dispatchOnlyPlan(data);
+  assert.equal(base.package_app, false);
+});
+
+test('a_frontend_change_selects_the_fm_package_scenario_for_e2e', () => {
+  const p = plan(['frontend/src/app.tsx'], { packageAppGlobs: data.package_app });
+  assert.ok(p.e2e.split(',').includes('fm-package'), `e2e was ${p.e2e}`);
 });
 
 test('the_workflow_takes_its_matrix_from_the_plan_and_has_no_include_of_its_own', () => {

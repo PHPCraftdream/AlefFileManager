@@ -26,6 +26,7 @@
     "build:rust": "node scripts/cargo.mjs build --locked --workspace",
     "build": "npm run build:frontend && npm run build:rust",
     "start": "node scripts/app/start.mjs",
+    "pack:app": "node scripts/app/pack.mjs",
     "test:rust": "node scripts/cargo.mjs test --locked --workspace --no-fail-fast",
     "lint": "oxlint --config .oxlintrc.json frontend/src frontend/test packages scripts tests rsbuild.config.ts --max-warnings 0",
     "lint:structure": "node scripts/quality/check-structure.mjs",
