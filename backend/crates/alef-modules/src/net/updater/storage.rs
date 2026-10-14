@@ -46,11 +46,7 @@ impl Storage {
                 std::io::Error::other("unsafe updater lock"),
             ));
         }
-        lock_file.try_lock().map_err(|error| {
-            #[cfg(any(test, feature = "e2e"))]
-            eprintln!("updater storage operation=lock path={lock:?} error={error:?}");
-            AlefError::new(ErrorCode::UpdateBusy, "another process is updating")
-        })?;
+        lock_exclusive(&lock_file, &lock)?;
         Ok(Self {
             updates,
             _lock_file: lock_file,
@@ -70,6 +66,28 @@ impl Storage {
             ));
         }
         Ok(temp)
+    }
+}
+
+/// A thread that forks shares the descriptor, and so the lock, until its exec: a short wait tells
+/// that from another updater, which still holds the lock when the wait is over.
+fn lock_exclusive(file: &File, path: &Path) -> Result<(), AlefError> {
+    use std::fs::TryLockError;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error) => {
+                #[cfg(any(test, feature = "e2e"))]
+                eprintln!("updater storage operation=lock path={path:?} error={error:?}");
+                #[cfg(not(any(test, feature = "e2e")))]
+                let _ = (path, error);
+                return Err(AlefError::new(ErrorCode::UpdateBusy, "another process is updating"));
+            }
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as api from '../src/index.ts';
-import { endFrame, installRuntime, liveStream } from './fake-runtime.mjs';
+import { endFrame, installRuntime, jsonFrame, liveStream } from './fake-runtime.mjs';
 
 const isClass = value => typeof value === 'function' && /^class\s/.test(Function.prototype.toString.call(value));
 const isThenable = value => typeof value?.then === 'function';
@@ -148,6 +148,8 @@ const ARGS = {
   'socket.udp': [{}],
   'websocket.connect': ['ws://127.0.0.1/'],
   'websocket.serve': [{}],
+  'updater.check': [],
+  'updater.download': [],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -168,6 +170,9 @@ installRuntime({
     if (request.url === 'native://call/http.request') return { json: { status: 200, statusText: 'OK', url: 'http://127.0.0.1/', redirected: false, headers: [], stream: null } };
     if (request.url === 'native://call/http.download') return { json: { stream: 9 } };
     if (request.url === 'native://stream/9') return { chunks: [endFrame()] };
+    if (request.url === 'native://call/updater.check') return { json: { available: false } };
+    if (request.url === 'native://call/updater.download') return { json: { stream: 61, resource: 62 } };
+    if (request.url === 'native://stream/61') return { chunks: [jsonFrame({ received: 1, total: 1, done: true }), endFrame()] };
     if (request.url === 'native://call/http.serve') return { json: { server: 6, requests: 51, address: { host: '127.0.0.1', port: 5 }, secure: false } };
     if (request.url === 'native://call/socket.connect') return { json: { socket: 1, read: 11, write: 12, localAddress: { host: '127.0.0.1', port: 2 }, remoteAddress: { host: '127.0.0.1', port: 1 } } };
     if (request.url === 'native://call/socket.listen') return { json: { server: 2, accept: 21, localAddress: { host: '127.0.0.1', port: 3 } } };
@@ -215,5 +220,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'updater', 'websocket', 'window']);
 });
