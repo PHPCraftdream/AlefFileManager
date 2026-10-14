@@ -414,7 +414,8 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
             Some(text)
                 if !text.starts_with('-')
                     && !text.chars().any(char::is_control)
-                    && Url::parse(text).is_ok() =>
+                    // A one-letter scheme is a Windows drive (`C:\app.alef`), not a link.
+                    && Url::parse(text).is_ok_and(|url| url.scheme().len() > 1) =>
             {
                 app_args.push(argument)
             }
@@ -457,6 +458,18 @@ mod tests {
 
     fn parse(arguments: &[&str]) -> Result<Command, String> {
         parse_args(arguments.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn an_absolute_windows_package_path_is_the_target_and_not_a_link() {
+        let Command::Run(launch) =
+            parse(&["run", r"C:\Temp\app.alef", "--trust-key", &"a".repeat(64)]).unwrap()
+        else {
+            panic!("run")
+        };
+        assert_eq!(launch.target, PathBuf::from(r"C:\Temp\app.alef"));
+        assert!(launch.app_args.is_empty());
+        assert!(launch.trust_key.is_some());
     }
 
     #[test]
