@@ -13,6 +13,7 @@ const GROUPS = [
   ['shell', 'Opening addresses'],
   ['app', 'Environment'],
   ['clipboard', 'Clipboard'],
+  ['webcrypto', 'WebCrypto'],
   ['window', 'Windows'],
   ['tray', 'Tray icon'],
 ];

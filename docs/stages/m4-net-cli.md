@@ -229,7 +229,7 @@ app.exit(code): Promise<never>
 | consent | `consent,narrowing,ask,cancel,decisions` |
 | lifecycle/integration | `app,quit,relaunch,instance,restore,autostart,deeplink` |
 | desktop/system/processes | `system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands` |
-| data | `fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied` |
+| data | `fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,webcrypto-substitute,webcrypto-undeclared,secrets,secrets-substitute,secrets-denied` |
 | network/MCP | `http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp` |
 
 Все сценарии из help-строки раннера включены ровно один раз в Windows `--only`; дополнительных исключений из-за Linux/WM/D-Bus нет. `xvfb`/`openbox` — инфраструктура только Linux, не условие Windows e2e; `secrets` при e2e использует backend в памяти, не GNOME/keyring. `service-signal` намеренно пропускается на Windows; `startup` пропускается в quiet-режиме, видимый запуск — opt-in `ALEF_E2E_VISIBLE=1`. Настоящие клики tray/menu, автозапуск после перезагрузки и активация URL системной оболочкой остаются ручными проверками. В `fs` файловый symlink может быть пропущен без привилегии Windows; directory junction обязателен, не optional.

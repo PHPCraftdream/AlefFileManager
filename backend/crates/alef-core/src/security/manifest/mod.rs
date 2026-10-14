@@ -177,6 +177,10 @@ pub struct Permissions {
     pub tray: bool,
     /// Secret access.
     pub secrets: bool,
+    /// Whether the page gets the real WebCrypto (`crypto.subtle`); substituted when omitted.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub webcrypto: bool,
     /// Application environment access.
     pub app: AppPermissions,
     /// Runtime window creation; denied when the section is absent.

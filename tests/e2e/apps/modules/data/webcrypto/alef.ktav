@@ -42,6 +42,7 @@ permissions: {
         global: false
     }
     secrets: false
+    webcrypto: {{WEBCRYPTO}}
     app: {
         env: []
     }

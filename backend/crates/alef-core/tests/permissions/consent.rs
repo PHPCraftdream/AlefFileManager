@@ -673,3 +673,24 @@ async fn the_command_learns_what_the_user_gave_and_a_denial_never_reaches_it() {
         "a command without a right is always given"
     );
 }
+
+#[test]
+fn the_user_can_substitute_the_webcrypto_of_the_engine_or_refuse_it() {
+    let root = tempfile::tempdir().unwrap();
+    let substitute = set(root.path(), json!({"webcrypto": true})).with_consent(consent(&[(
+        Right::plain("webcrypto"),
+        Decision::Substitute,
+    )]));
+    assert_eq!(
+        check(&substitute, Permission::WebCrypto, None).unwrap(),
+        Decision::Substitute,
+        "the page gets a stand-in instead of the engine's WebCrypto"
+    );
+    let undecided = set(root.path(), json!({"webcrypto": true})).with_consent(Consent::undecided());
+    let err = check(&undecided, Permission::WebCrypto, None).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    let denied = set(root.path(), json!({"webcrypto": true}))
+        .with_consent(consent(&[(Right::plain("webcrypto"), Decision::Deny)]));
+    let err = check(&denied, Permission::WebCrypto, None).unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+}

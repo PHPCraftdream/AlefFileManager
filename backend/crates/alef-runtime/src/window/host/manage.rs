@@ -12,7 +12,7 @@ use alef_core::{
 };
 use euclid::Scale;
 use serde_json::Value;
-use servo::{DevicePoint, Modifiers, ServoBuilder, WebViewBuilder};
+use servo::{DevicePoint, Modifiers, ServoBuilder, UserContentManager, WebViewBuilder};
 use url::Url;
 use winit::dpi::LogicalSize;
 use winit::event_loop::ActiveEventLoop;
@@ -209,11 +209,23 @@ impl App {
             frame_ready: frame_ready.clone(),
             content_frame: content_frame.clone(),
         });
+        // Substituted WebCrypto: a user script per document realm when the right was not granted.
+        let webcrypto = self.webcrypto_substitute.then(|| {
+            let manager = UserContentManager::new(&servo);
+            manager.add_script(Rc::new(
+                crate::bridge::assets::origin::SUBTITUTE_SCRIPT.into(),
+            ));
+            Rc::new(manager)
+        });
         let webview = WebViewBuilder::new(&servo, rendering.clone())
             .url(url)
             .hidpi_scale_factor(Scale::new(window.scale_factor() as f32))
-            .delegate(delegate)
-            .build();
+            .delegate(delegate);
+        let webview = match &webcrypto {
+            Some(manager) => webview.user_content_manager(manager.clone()),
+            None => webview,
+        }
+        .build();
         self.ids.bind(webview.id(), window_id);
         webview.show();
         webview.focus();
