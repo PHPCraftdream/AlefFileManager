@@ -6,6 +6,12 @@ resolver = "2"
 [profile.dev]
 debug = 0
 
+# Release-only profile for the release workflow (docs/stages/m7-distribution.md).
+[profile.dist]
+inherits = "release"
+strip = "symbols"
+lto = "thin"
+
 [patch.crates-io]
 servo-paint = { path = "patches/servo-paint" }
 servo-paint-api = { path = "patches/servo-paint-api" }
