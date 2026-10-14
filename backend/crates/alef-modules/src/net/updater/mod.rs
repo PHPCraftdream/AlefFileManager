@@ -39,7 +39,7 @@ pub struct UpdaterContext {
 
 /// Proves the running application was launched from the user store, not `alef run <file>`
 /// or a directory; the launcher computes this when it opens the package.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledApp {
     pub package: PathBuf,
 }

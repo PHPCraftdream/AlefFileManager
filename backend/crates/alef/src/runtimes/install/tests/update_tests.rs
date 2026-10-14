@@ -87,21 +87,14 @@ impl Shared {
             ..Default::default()
         })))
     }
-    /// The package file names of the artifacts the integration currently points at.
-    fn artifacts(&self) -> Vec<String> {
+    /// The artifacts the integration currently points at, cloned in full for assertions.
+    fn artifacts(&self) -> Vec<Artifact> {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .artifacts
             .values()
-            .map(|artifact| {
-                artifact
-                    .package
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            })
+            .cloned()
             .collect()
     }
 }
@@ -177,7 +170,17 @@ async fn applying_a_higher_signed_version_installs_and_removes_the_old_package()
         assert_eq!(record(home.path()).version, "2.0.0");
         assert!(installed.exists());
         // The integration was re-pointed: only the new artifact remains.
-        assert_eq!(fake.artifacts(), ["2.0.0.alef"]);
+        let installed_artifacts = fake.artifacts();
+        assert_eq!(installed_artifacts.len(), 1);
+        assert_eq!(
+            installed_artifacts[0].package,
+            appdir(home.path()).join("2.0.0.alef")
+        );
+        assert_eq!(
+            installed_artifacts[0].executable,
+            home.path().join("current alef")
+        );
+        assert_eq!(installed_artifacts[0].id, "org.example.app");
         assert_eq!(
             installed,
             home.path()
@@ -238,7 +241,31 @@ async fn a_failure_after_publishing_rolls_back_to_the_previous_version() {
         assert!(appdir(home.path()).join("1.0.0.alef").exists());
         assert!(!appdir(home.path()).join("2.0.0.alef").exists());
         // The integration was restored to the previous artifact.
-        assert_eq!(fake.artifacts(), ["1.0.0.alef"]);
+        let artifacts = fake.artifacts();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].package, appdir(home.path()).join("1.0.0.alef"));
+    })
+    .await
+    .expect("bounded");
+}
+
+// The post-commit cleanup is best effort: a stale entry that cannot be removed never fails the
+// committed update.
+#[tokio::test]
+async fn a_stale_entry_that_cannot_be_removed_does_not_fail_the_update() {
+    tokio::time::timeout(WAIT, async {
+        let home = tempfile::tempdir().unwrap();
+        let (old, fingerprint) = fixture("1.0.0");
+        let applier = Arc::new(applier(home.path(), &fingerprint, Shared::default()));
+        apply(&applier, &old).await.unwrap();
+        // A directory with a stale package name cannot be removed by the prune loop; the
+        // update must still succeed and leave the stubborn entry alone.
+        let stubborn = appdir(home.path()).join("0.9.0.alef");
+        std::fs::create_dir(&stubborn).unwrap();
+        let (new, _) = fixture("2.0.0");
+        let installed = apply(&applier, &new).await.unwrap();
+        assert!(installed.exists());
+        assert!(stubborn.is_dir());
     })
     .await
     .expect("bounded");

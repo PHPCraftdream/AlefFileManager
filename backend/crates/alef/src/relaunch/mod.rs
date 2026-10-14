@@ -96,7 +96,9 @@ fn process_alive(pid: u32) -> bool {
     // SAFETY: OpenProcess with a read-only right; a null handle means gone or never existed.
     let raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if raw.is_null() {
-        return false;
+        // Access denied: the process exists but is not observable.
+        return unsafe { windows_sys::Win32::Foundation::GetLastError() }
+            == windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
     }
     // SAFETY: a successful OpenProcess transfers unique handle ownership; the drop closes it.
     let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
@@ -107,8 +109,21 @@ fn process_alive(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn process_alive(pid: u32) -> bool {
+    // A value wider than pid_t cannot name a process.
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        if stat
+            .rsplit_once(") ")
+            .is_some_and(|(_, tail)| tail.starts_with('Z'))
+        {
+            return false;
+        }
+    }
     // SAFETY: signal zero probes existence only, nothing is delivered.
-    match unsafe { libc::kill(pid as i32, 0) } {
+    match unsafe { libc::kill(pid, 0) } {
         0 => true,
         -1 if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) => false,
         // The process exists but is not ours.
@@ -175,10 +190,31 @@ mod tests {
 
     #[test]
     fn wait_for_process_exit_returns_true_for_a_dead_pid() {
+        // A valid positive pid_t that is never a real process.
         assert!(wait_for_process_exit(
-            u32::MAX - 1,
+            i32::MAX as u32,
             Duration::from_millis(200)
         ));
+    }
+
+    #[test]
+    fn wait_for_process_exit_times_out_while_the_process_lives() {
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("sleep")
+            .arg("2")
+            .spawn()
+            .unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping", "-n", "2", "127.0.0.1"])
+            .spawn()
+            .unwrap();
+        assert!(!wait_for_process_exit(
+            child.id(),
+            Duration::from_millis(300)
+        ));
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

@@ -35,8 +35,8 @@ use tokio::{
 
 pub(crate) const WAIT: Duration = Duration::from_secs(5);
 
-struct Server {
-    url: String,
+pub(crate) struct Server {
+    pub(crate) url: String,
     task: JoinHandle<()>,
     connections: Arc<AtomicUsize>,
     requests: Arc<AtomicUsize>,
@@ -47,7 +47,7 @@ impl Drop for Server {
     }
 }
 impl Server {
-    async fn start(body: Vec<u8>, status: hyper::StatusCode, redirect: bool) -> Self {
+    pub(crate) async fn start(body: Vec<u8>, status: hyper::StatusCode, redirect: bool) -> Self {
         Self::start_with_length(body, status, redirect, None).await
     }
     async fn start_with_length(

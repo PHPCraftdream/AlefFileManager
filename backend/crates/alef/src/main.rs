@@ -500,9 +500,19 @@ fn store_installed(
     id: &str,
     version: &str,
 ) -> Option<alef_modules::net::updater::InstalledApp> {
+    store_installed_in(&runtime_home(), package, id, version)
+}
+
+/// [`store_installed`] against an explicit home, so tests can exercise the rule in isolation.
+fn store_installed_in(
+    home: &std::path::Path,
+    package: &std::path::Path,
+    id: &str,
+    version: &str,
+) -> Option<alef_modules::net::updater::InstalledApp> {
     use sha2::Digest as _;
     let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
-    let app_dir = runtime_home().join("apps").join(&hash);
+    let app_dir = home.join("apps").join(&hash);
     // read_record fails unless app.json exists, is plain, bounded, and passes its semantic
     // validation (id hash, `package` = `<version>.alef`, absolute executable).
     let record = alef_launch::install::read_record(&app_dir, &hash).ok()?;
@@ -914,5 +924,65 @@ mod tests {
         let Failure::Runtime(_) = Failure::from(SettleFailure::Enforcement("e".to_owned())) else {
             panic!("an enforcement failure is operational");
         };
+    }
+
+    fn store_fixture(home: &std::path::Path, id: &str, version: &str) -> std::path::PathBuf {
+        use sha2::Digest as _;
+        let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
+        let app_dir = home.join("apps").join(&hash);
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let record = alef_launch::install::AppRecord {
+            id: id.to_owned(),
+            name: "Fixture".to_owned(),
+            version: version.to_owned(),
+            icon: None,
+            package: format!("{version}.alef"),
+            executable: home.join("alef"),
+            installed_time: 0,
+        };
+        std::fs::write(
+            app_dir.join("app.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let package = app_dir.join(format!("{version}.alef"));
+        std::fs::write(&package, b"package bytes").unwrap();
+        package
+    }
+
+    #[test]
+    fn an_application_without_a_store_record_is_not_installed() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            store_installed_in(
+                home.path(),
+                home.path().join("elsewhere.alef").as_path(),
+                "org.example.app",
+                "1.0.0"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_store_record_of_another_version_does_not_install_an_update() {
+        let home = tempfile::tempdir().unwrap();
+        let package = store_fixture(home.path(), "org.example.app", "2.0.0");
+        assert_eq!(
+            store_installed_in(home.path(), &package, "org.example.app", "1.0.0"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_running_store_package_of_a_valid_record_is_installed() {
+        let home = tempfile::tempdir().unwrap();
+        let package = store_fixture(home.path(), "org.example.app", "1.0.0");
+        let installed = store_installed_in(home.path(), &package, "org.example.app", "1.0.0")
+            .expect("installed");
+        assert_eq!(
+            std::fs::canonicalize(&installed.package).unwrap(),
+            std::fs::canonicalize(&package).unwrap()
+        );
     }
 }

@@ -42,7 +42,10 @@ pub(super) fn register(
             let gate = gate.clone();
             async move {
                 let config = config.ok_or_else(|| {
-                    AlefError::new(ErrorCode::NotAvailable, "native updater is unavailable")
+                    AlefError::new(
+                        ErrorCode::UpdateNotInstalled,
+                        "the running application is not installed from the store",
+                    )
                 })?;
                 install(config, state, gate).await?;
                 // The promise never resolves: on success the process is replaced.
@@ -101,7 +104,8 @@ pub(crate) mod tests {
     use crate::net::updater::{
         document, register_updater,
         tests::{
-            offered, permissions, session, signed_context, signed_package, verify_bytes, WAIT,
+            offered, permissions, session, signed_context, signed_package, verify_bytes, Server,
+            WAIT,
         },
         State, UpdaterContext,
     };
@@ -405,25 +409,75 @@ pub(crate) mod tests {
         verify_bytes(scratch.path(), &config, "2.0.0", &package)
             .await
             .unwrap();
+        // A feed that offers exactly the already published 2.0.0.
+        let document = serde_json::json!({
+            "version": "2.0.0",
+            "package": "/good.alef",
+            "sha256": "a".repeat(64),
+        })
+        .to_string()
+        .into_bytes();
+        let server = Server::start(document, hyper::StatusCode::OK, false).await;
+        config.config.endpoint = server.url.clone();
         let fake = Arc::new(FakeApplier::default());
         config.applier = fake.clone();
         let mut registry = Registry::default();
         register_updater(&mut registry, &Some(config)).unwrap();
+        let checked = tokio::time::timeout(
+            WAIT,
+            registry.dispatch(
+                "updater.check",
+                CallContext::new(session().await, permissions()),
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(checked.is_ok(), "the feed check must succeed: {checked:?}");
         let call = registry.dispatch(
             "updater.install",
             CallContext::new(session().await, permissions()),
             serde_json::json!({}),
         );
-        // The fake applier never blocks, so the 300 ms window is generous.
-        let result = tokio::time::timeout(Duration::from_millis(300), call).await;
+        tokio::pin!(call);
+        // Poll the command while waiting for the applier's calls: it must never resolve first.
+        let early = tokio::time::timeout(WAIT, async {
+            tokio::select! {
+                result = call.as_mut() => Some(result),
+                () = async {
+                    while fake.calls().len() < 2 {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => None,
+            }
+        })
+        .await
+        .expect("apply and relaunch never ran");
+        assert!(early.is_none(), "the command resolved before the park: {early:?}");
+        // With apply and relaunch done, only the deliberate park remains.
+        let pending = tokio::time::timeout(Duration::from_millis(200), call.as_mut()).await;
         assert!(
-            result.is_err(),
+            pending.is_err(),
             "the install command must park, not resolve"
         );
-        let calls = fake.calls();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].0, "apply");
-        assert_eq!(calls[1].0, "relaunch");
+    }
+
+    #[tokio::test]
+    async fn install_answers_not_installed_without_an_updater_context() {
+        let mut registry = Registry::default();
+        register_updater(&mut registry, &None).unwrap();
+        let error = tokio::time::timeout(
+            WAIT,
+            registry.dispatch(
+                "updater.install",
+                CallContext::new(session().await, permissions()),
+                serde_json::json!({}),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::UpdateNotInstalled);
     }
 
     #[tokio::test]
