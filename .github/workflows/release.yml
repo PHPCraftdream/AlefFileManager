@@ -147,7 +147,7 @@ jobs:
 
       - name: Smoke check
         shell: bash
-        run: backend/target/release/${{ matrix.bin }} --version
+        run: backend/target/release/${{ matrix.bin }} --help
 
       # bsdtar под Git Bash — GNU tar, `-a` не умеет zip; Compress-Archive + формат sha256sum.
       - name: Pack (zip)
