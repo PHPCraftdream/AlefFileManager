@@ -89,15 +89,44 @@ impl Console {
             .unwrap_or_else(|e| e.into_inner())
             .drain(..)
             .collect();
+        #[cfg(feature = "e2e")]
+        let task_count = tasks.len();
+        #[cfg(feature = "e2e")]
+        let started = std::time::Instant::now();
+        #[cfg(feature = "e2e")]
+        let timed_out = tokio::time::timeout(DRAIN, async {
+            for task in tasks {
+                let _ = task.await;
+            }
+        })
+        .await
+        .is_err();
+        #[cfg(not(feature = "e2e"))]
         let _ = tokio::time::timeout(DRAIN, async {
             for task in tasks {
                 let _ = task.await;
             }
         })
         .await;
+        #[cfg(feature = "e2e")]
+        let mut flush_ok = true;
         for stream in [&self.0.stdout, &self.0.stderr] {
-            let _ = stream.lock().await.flush().await;
+            let flushed = stream.lock().await.flush().await;
+            #[cfg(feature = "e2e")]
+            if flushed.is_err() {
+                flush_ok = false;
+            }
+            #[cfg(not(feature = "e2e"))]
+            let _ = flushed;
         }
+        #[cfg(feature = "e2e")]
+        eprintln!(
+            "ALEF_E2E console-drain tasks={} timed_out={} elapsed_ms={} flush={}",
+            task_count,
+            timed_out,
+            started.elapsed().as_millis(),
+            if flush_ok { "ok" } else { "err" },
+        );
     }
 }
 
@@ -130,10 +159,69 @@ async fn read_pump(mut input: Input, writer: alef_core::session::streams::Stream
 /// Writes what the page sends to one of the output streams, flushing each piece. When the output is gone
 /// (a pipe the reader closed) the stream of the page is closed, and its next write fails.
 async fn write_pump(mut reader: IncomingReader, output: Arc<AsyncMutex<Output>>) {
-    while let Some(Ok(bytes)) = reader.recv().await {
-        let mut output = output.lock().await;
-        if output.write_all(&bytes).await.is_err() || output.flush().await.is_err() {
-            return;
+    #[cfg(feature = "e2e")]
+    let mut received = 0_u64;
+    #[cfg(feature = "e2e")]
+    let mut written = 0_u64;
+    loop {
+        match reader.recv().await {
+            Some(Ok(bytes)) => {
+                #[cfg(feature = "e2e")]
+                {
+                    received += bytes.len() as u64;
+                }
+                let mut output = output.lock().await;
+                let wrote = output.write_all(&bytes).await;
+                if wrote.is_err() {
+                    #[cfg(feature = "e2e")]
+                    eprintln!(
+                        "ALEF_E2E console-write-pump id={} received={} written={} end=None \
+                         error={}",
+                        reader.id().0,
+                        received,
+                        written,
+                        wrote.unwrap_err(),
+                    );
+                    return;
+                }
+                let flushed = output.flush().await;
+                if flushed.is_err() {
+                    #[cfg(feature = "e2e")]
+                    eprintln!(
+                        "ALEF_E2E console-write-pump id={} received={} written={} end=None \
+                         error={}",
+                        reader.id().0,
+                        received,
+                        written,
+                        flushed.unwrap_err(),
+                    );
+                    return;
+                }
+                #[cfg(feature = "e2e")]
+                {
+                    written += bytes.len() as u64;
+                }
+            }
+            Some(Err(_)) => {
+                #[cfg(feature = "e2e")]
+                eprintln!(
+                    "ALEF_E2E console-write-pump id={} received={} written={} end=Error error=-",
+                    reader.id().0,
+                    received,
+                    written,
+                );
+                return;
+            }
+            None => {
+                #[cfg(feature = "e2e")]
+                eprintln!(
+                    "ALEF_E2E console-write-pump id={} received={} written={} end=End error=-",
+                    reader.id().0,
+                    received,
+                    written,
+                );
+                return;
+            }
         }
     }
 }

@@ -511,7 +511,11 @@ export function moduleScenarios({ drive, exe, verbose }) {
         if (!(await running.stdoutDrained(10000))) problems.push('the stdout pipe did not close within 10000ms');
         const out = running.stdout();
         const expected = Buffer.from(input.map(byte => byte ^ 0x5a));
-        if (out.length !== expected.length || Buffer.compare(out, expected) !== 0) problems.push(`stdout is ${out.length} bytes and not the changed input (${expected.length})`);
+        if (out.length !== expected.length || Buffer.compare(out, expected) !== 0) {
+          await running.waitForClosed(5000);
+          const diagnostics = running.lines.filter(line => line.startsWith('ALEF_E2E console-'));
+          problems.push(`stdout is ${out.length} bytes and not the changed input (${expected.length})${diagnostics.length ? ` [${diagnostics.join(' | ')}]` : ''}`);
+        }
         if (!running.lines.some(line => line.includes('ALEF_CONSOLE a line for stderr'))) problems.push('the line for stderr did not arrive');
         if (!running.lines.some(line => line === 'ALEF_MODE windowless console=true')) problems.push('the runtime did not say it runs without a window');
       } catch (error) {
