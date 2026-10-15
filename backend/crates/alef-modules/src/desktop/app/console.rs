@@ -89,15 +89,53 @@ impl Console {
             .unwrap_or_else(|e| e.into_inner())
             .drain(..)
             .collect();
-        let _ = tokio::time::timeout(DRAIN, async {
+        #[cfg(feature = "e2e")]
+        let task_count = tasks.len();
+        #[cfg(feature = "e2e")]
+        let ids: Vec<String> = tasks.iter().map(|task| task.id().to_string()).collect();
+        #[cfg(feature = "e2e")]
+        let started = std::time::Instant::now();
+        #[cfg_attr(not(feature = "e2e"), allow(unused_mut))]
+        let mut done: Vec<&'static str> = Vec::new();
+        #[cfg_attr(not(feature = "e2e"), allow(unused_variables))]
+        let timed_out = tokio::time::timeout(DRAIN, async {
             for task in tasks {
-                let _ = task.await;
+                let result = task.await;
+                #[cfg(feature = "e2e")]
+                done.push(match result {
+                    Ok(()) => "ok",
+                    Err(error) if error.is_cancelled() => "cancelled",
+                    Err(_) => "panicked",
+                });
+                #[cfg(not(feature = "e2e"))]
+                let _ = result;
             }
         })
-        .await;
+        .await
+        .is_err();
+        #[cfg(not(feature = "e2e"))]
+        let _ = done;
+        #[cfg(feature = "e2e")]
+        let mut flush_ok = true;
         for stream in [&self.0.stdout, &self.0.stderr] {
-            let _ = stream.lock().await.flush().await;
+            let flushed = stream.lock().await.flush().await;
+            #[cfg(feature = "e2e")]
+            if flushed.is_err() {
+                flush_ok = false;
+            }
+            #[cfg(not(feature = "e2e"))]
+            let _ = flushed;
         }
+        #[cfg(feature = "e2e")]
+        eprintln!(
+            "ALEF_E2E console-drain tasks={} ids={:?} done={:?} timed_out={} elapsed_ms={} flush={}",
+            task_count,
+            ids,
+            done,
+            timed_out,
+            started.elapsed().as_millis(),
+            if flush_ok { "ok" } else { "err" },
+        );
     }
 }
 
@@ -130,10 +168,71 @@ async fn read_pump(mut input: Input, writer: alef_core::session::streams::Stream
 /// Writes what the page sends to one of the output streams, flushing each piece. When the output is gone
 /// (a pipe the reader closed) the stream of the page is closed, and its next write fails.
 async fn write_pump(mut reader: IncomingReader, output: Arc<AsyncMutex<Output>>) {
-    while let Some(Ok(bytes)) = reader.recv().await {
-        let mut output = output.lock().await;
-        if output.write_all(&bytes).await.is_err() || output.flush().await.is_err() {
-            return;
+    #[cfg(feature = "e2e")]
+    eprintln!("ALEF_E2E console-write-pump-start id={}", reader.id().0);
+    #[cfg(feature = "e2e")]
+    let mut received = 0_u64;
+    #[cfg(feature = "e2e")]
+    let mut written = 0_u64;
+    loop {
+        match reader.recv().await {
+            Some(Ok(bytes)) => {
+                #[cfg(feature = "e2e")]
+                {
+                    received += bytes.len() as u64;
+                }
+                let mut output = output.lock().await;
+                let wrote = output.write_all(&bytes).await;
+                if wrote.is_err() {
+                    #[cfg(feature = "e2e")]
+                    eprintln!(
+                        "ALEF_E2E console-write-pump id={} received={} written={} end=None \
+                         error={}",
+                        reader.id().0,
+                        received,
+                        written,
+                        wrote.unwrap_err(),
+                    );
+                    return;
+                }
+                #[cfg(feature = "e2e")]
+                {
+                    written += bytes.len() as u64;
+                }
+                let flushed = output.flush().await;
+                if flushed.is_err() {
+                    #[cfg(feature = "e2e")]
+                    eprintln!(
+                        "ALEF_E2E console-write-pump id={} received={} written={} end=None \
+                         error={}",
+                        reader.id().0,
+                        received,
+                        written,
+                        flushed.unwrap_err(),
+                    );
+                    return;
+                }
+            }
+            Some(Err(_)) => {
+                #[cfg(feature = "e2e")]
+                eprintln!(
+                    "ALEF_E2E console-write-pump id={} received={} written={} end=Error error=-",
+                    reader.id().0,
+                    received,
+                    written,
+                );
+                return;
+            }
+            None => {
+                #[cfg(feature = "e2e")]
+                eprintln!(
+                    "ALEF_E2E console-write-pump id={} received={} written={} end=End error=-",
+                    reader.id().0,
+                    received,
+                    written,
+                );
+                return;
+            }
         }
     }
 }
@@ -191,7 +290,14 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                 let (reader, stream) = ctx.streams().open_incoming_reader();
                 let mut writing = console.0.writing.lock().unwrap_or_else(|e| e.into_inner());
                 writing.retain(|task| !task.is_finished());
-                writing.push(tokio::spawn(write_pump(reader, output)));
+                let task = tokio::spawn(write_pump(reader, output));
+                #[cfg(feature = "e2e")]
+                eprintln!(
+                    "ALEF_E2E console-write-pump-spawn stream={} task={}",
+                    stream.0,
+                    task.id()
+                );
+                writing.push(task);
                 json(&json!({ "stream": stream.0 }))
             }
         })?;

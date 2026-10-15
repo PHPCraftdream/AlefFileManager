@@ -415,6 +415,13 @@ export function dataScenarios({ drive, exe, verbose }) {
           targets: { mode: 'real', root, outside, many: 100000 },
           env: { ALEF_HOME: join(base, 'home') },
           expectedChecks: SQLITE_CHECKS,
+          // Named, bounded at-most allowances for the CURRENT §3.2/§5 violation: the route poll
+          // parses the JSON body synchronously (sqlite mod.rs exec final-poll JSON conversion;
+          // unary_args in alef-core protocol/transport/call.rs) // audit #160
+          expectedBusStalls: [
+            { kind: 'route/call/sqlite.exec', minMs: 150, maxMs: 600, count: 1 },
+            { kind: 'bridge.request', minMs: 200, maxMs: 700, count: 1 },
+          ],
           judge: async () => {
             const problems = [];
             const file = join(root, 'app.db');

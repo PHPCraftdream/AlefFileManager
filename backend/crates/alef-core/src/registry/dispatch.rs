@@ -112,6 +112,22 @@ impl Registry {
         ctx: CallContext,
         args: serde_json::Value,
     ) -> Result<Reply, AlefError> {
+        #[cfg(any(test, feature = "e2e"))]
+        return crate::session::watchdog::watch(
+            &format!("call/{}", safe_kind(name)),
+            self.dispatch_inner(name, ctx, args),
+        )
+        .await;
+        #[cfg(not(any(test, feature = "e2e")))]
+        self.dispatch_inner(name, ctx, args).await
+    }
+
+    async fn dispatch_inner(
+        &self,
+        name: &str,
+        ctx: CallContext,
+        args: serde_json::Value,
+    ) -> Result<Reply, AlefError> {
         let command = self
             .commands
             .read()
@@ -121,6 +137,19 @@ impl Registry {
             .ok_or_else(|| AlefError::new(ErrorCode::NotFound, "command not found"))?;
         (command.invoke)(ctx, args).await
     }
+}
+#[cfg(any(test, feature = "e2e"))]
+fn safe_kind(name: &str) -> String {
+    name.chars()
+        .take(64)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 /// Command-name rule shared with transport route validation.
 pub fn valid_name(name: &str) -> bool {

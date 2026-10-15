@@ -11,14 +11,15 @@ const journalRoot = join(dirname(scratch), 'e2e-app-integration-owned');
 const runKey = 'Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const bound = 30000;
 const expect = (ok, message) => { if (!ok) throw new Error(message); };
-function command(exe, args) {
-  const result = spawnSync(exe, args, { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 128 * 1024, windowsHide: true });
+function command(exe, args, timeout = 10000) {
+  const result = spawnSync(exe, args, { encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 128 * 1024, windowsHide: true });
   if (result.error || result.status !== 0) throw new Error(`${exe}: ${result.error?.message ?? result.stderr ?? result.status}`);
   return result.stdout.trim();
 }
 const psString = value => `'${value.replaceAll("'", "''")}'`;
+// A cold powershell.exe on a busy Windows runner takes more than 10 s to start (.NET JIT).
 function powershell(body) {
-  return command('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${body}`, 'utf16le').toString('base64')]);
+  return command('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${body}`, 'utf16le').toString('base64')], 60000);
 }
 const quote = value => `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1')}"`;
 const desktopArg = value => `"${value.replaceAll('%', '%%').replace(/[\\"`$]/g, '\\$&')}"`.replaceAll('\\', '\\\\');

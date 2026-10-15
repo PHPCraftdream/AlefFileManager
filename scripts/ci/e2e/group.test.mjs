@@ -22,6 +22,12 @@ function spawn_cli(args, env = {}) {
   return result;
 }
 
+test('legacy_core_group_expands_to_core_and_bus_but_other_groups_are_unchanged', () => {
+  assert.deepEqual(selectGroup('core,bus', 'core'), ['core', 'bus']);
+  assert.deepEqual(selectGroup('bus', 'core'), ['bus']);
+  assert.deepEqual(selectGroup('all', 'core'), ['core', 'bus']);
+  assert.deepEqual(selectGroup('all', 'window'), ['window']);
+});
 test('an_empty_intersection_of_the_plan_and_the_group_selects_nothing', () => {
   assert.deepEqual(selectGroup('fs', 'core,window'), []);
 });

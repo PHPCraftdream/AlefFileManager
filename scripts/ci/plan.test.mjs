@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { busStallProblems } from '../../tests/e2e/lib.mjs';
 import { affectedJs, applyOverrides, computePlan, e2eFor, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -25,6 +26,73 @@ const pkgs = [
   { folder: 'packages/mcp', name: '@alef-runtime/mcp', dependencies: {} },
 ];
 
+test('harness_process_stall_enforcement_uses_stderr_only_and_final_fragment', () => {
+  const runHarness = (code, expected = []) => {
+    const source = `import { runScenario, startApp } from './tests/e2e/lib.mjs';\nconst result = await runScenario(async () => {\n  const running = startApp({ exe: process.execPath, args: ['-e', ${JSON.stringify(code)}], expectedBusStalls: ${JSON.stringify(expected)} });\n  if (!await running.waitForClosed(2000)) throw new Error('child did not close');\n  return { problems: [], lines: [] };\n});\nconsole.log(JSON.stringify(result.problems));`;
+    return spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: root, env: { ...process.env, ALEF_E2E_VISIBLE: '1', ALEF_E2E_SOFTWARE: '' }, encoding: 'utf8', timeout: 10000,
+    });
+  };
+  const stderrOnly = runHarness("process.stdout.write('ALEF_BUS_STALL fake 10\\n'); process.stderr.write('ALEF_BUS_STALL executor '); setTimeout(() => process.stderr.write('12'), 10)");
+  assert.equal(stderrOnly.error, undefined, stderrOnly.error?.message);
+  assert.equal(stderrOnly.status, 0, stderrOnly.stderr);
+  assert.deepEqual(JSON.parse(stderrOnly.stdout), ['unexpected bus stall: executor 12ms']);
+
+  const stdoutOnly = runHarness("process.stdout.write('ALEF_BUS_STALL fake 10\\n')");
+  assert.equal(stdoutOnly.error, undefined, stdoutOnly.error?.message);
+  assert.equal(stdoutOnly.status, 0, stdoutOnly.stderr);
+  assert.deepEqual(JSON.parse(stdoutOnly.stdout), []);
+
+  const expected = [{ kind: 'executor', minMs: 10, maxMs: 20, count: 1, required: true, after: 'START', before: 'END' }];
+  const success = runHarness("process.stderr.write('START\\nALEF_BUS_STALL executor 12\\nEND\\n')", expected);
+  assert.equal(success.error, undefined, success.error?.message);
+  assert.equal(success.status, 0, success.stderr);
+  assert.deepEqual(JSON.parse(success.stdout), []);
+
+  const duplicate = runHarness("process.stderr.write('START\\nALEF_BUS_STALL executor 12\\nALEF_BUS_STALL executor 12\\nEND\\n')", expected);
+  assert.equal(duplicate.error, undefined, duplicate.error?.message);
+  assert.equal(duplicate.status, 0, duplicate.stderr);
+  assert.deepEqual(JSON.parse(duplicate.stdout), ['unexpected bus stall: executor 12ms']);
+
+  // A `required` allowance has the exact semantics: fewer matches than `count` is a problem;
+  // a plain (at-most) allowance tolerates fewer, but still consumes up to `count` matches.
+  const missing = runHarness("process.stderr.write('START\\nEND\\n')", expected);
+  assert.equal(missing.error, undefined, missing.error?.message);
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.deepEqual(JSON.parse(missing.stdout), ['expected 1 bus stall(s) of executor in 10-20ms; found 0']);
+  const atMostMissing = runHarness("process.stderr.write('START\\nEND\\n')", [{ kind: 'executor', minMs: 10, maxMs: 20, count: 1, after: 'START', before: 'END' }]);
+  assert.equal(atMostMissing.error, undefined, atMostMissing.error?.message);
+  assert.equal(atMostMissing.status, 0, atMostMissing.stderr);
+  assert.deepEqual(JSON.parse(atMostMissing.stdout), []);
+});
+
+test('harness_undecided_consent_drops_the_inherited_script_and_stdout_drains', () => {
+  const runHarness = (body, extraEnv = {}) => {
+    const source = `import { runScenario, startApp } from './tests/e2e/lib.mjs';\nconst result = await runScenario(async () => {\n  ${body}\n});\nconsole.log(JSON.stringify(result.problems));`;
+    return spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: root, env: { ...process.env, ALEF_E2E_VISIBLE: '1', ALEF_E2E_SOFTWARE: '', ...extraEnv }, encoding: 'utf8', timeout: 10000,
+    });
+  };
+  const assertOk = (outcome, what) => {
+    assert.equal(outcome.error, undefined, outcome.error?.message);
+    assert.equal(outcome.status, 0, `${what}: ${outcome.stderr}`);
+    assert.deepEqual(JSON.parse(outcome.stdout), [], what);
+  };
+  // `undecidedConsent` removes the inherited scripted answer of the parent environment, so the
+  // real consent window opens; an explicit `ALEF_E2E_CONSENT` of the scenario still wins.
+  const child = `const running = startApp({ exe: process.execPath, args: ['-e', 'process.stdout.write(JSON.stringify({ c: process.env.ALEF_E2E_CONSENT }));'], undecidedConsent: true });\n  await running.waitForExit(5000);\n  await running.stdoutDrained(2000);\n  const seen = JSON.parse(running.stdout().toString());\n  return { problems: seen.c === undefined ? [] : ['child saw ALEF_E2E_CONSENT=' + seen.c], lines: [] };`;
+  assertOk(runHarness(child, { ALEF_E2E_CONSENT: '*=allow' }), 'inherited answer removed');
+  const explicit = child.replace("undecidedConsent: true", "undecidedConsent: true, env: { ALEF_E2E_CONSENT: 'fs.read=allow' }")
+    .replace("seen.c === undefined ? [] :", "seen.c === 'fs.read=allow' ? [] :");
+  assertOk(runHarness(explicit, { ALEF_E2E_CONSENT: '*=allow' }), 'explicit scenario answer kept');
+  // `stdoutDrained` resolves `true` once the stream ends and `false` on timeout while a child
+  // keeps stdout open (the drain race); the scenario finally closes it.
+  const drained = `const running = startApp({ exe: process.execPath, args: ['-e', 'process.stdout.write("x")'] });\n  await running.waitForExit(5000);\n  return { problems: await running.stdoutDrained(2000) ? [] : ['stdout not drained'], lines: [] };`;
+  assertOk(runHarness(drained), 'stdout drains after exit');
+  const held = `const running = startApp({ exe: process.execPath, args: ['-e', 'setTimeout(() => {}, 5000)'] });\n  if (await running.stdoutDrained(500) !== false) return { problems: ['stdoutDrained resolved true while the child holds stdout'], lines: [] };\n  return { problems: [], lines: [] };`;
+  assertOk(runHarness(held), 'stdoutDrained times out while stdout is held');
+});
+
 function plan(files, overrides = {}) {
   return computePlan({
     event: 'push', ref: 'refs/heads/ci-plan', files, filesKnown: true, message: '', manualFull: false,
@@ -35,6 +103,49 @@ function plan(files, overrides = {}) {
   });
 }
 
+test('bus_changes_select_bus_across_core_layers_and_scenario_app_harness_paths', () => {
+  const paths = [
+    'backend/crates/alef-core/src/registry/dispatch.rs',
+    'backend/crates/alef-core/src/protocol/transport/mod.rs',
+    'backend/crates/alef-core/src/session/mod.rs',
+    'backend/crates/alef-runtime/src/bridge/e2e.rs',
+    'tests/e2e/scenarios/startup.mjs',
+    'tests/e2e/apps/modules/system/bus/alef.ktav',
+    'tests/e2e/lib.mjs',
+    'tests/e2e/run.mjs',
+    'tests/e2e/harness.js',
+  ];
+  for (const file of paths) assert.ok(e2eFor([file], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('bus'), file);
+  for (const file of ['backend/crates/alef-core/src/registry/dispatch.rs', 'tests/e2e/lib.mjs']) {
+    assert.ok(e2eFor([file], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('core'), file);
+  }
+  assert.ok(!e2eFor(['tests/e2e/scenarios/data.mjs'], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('bus'));
+  assert.ok(!e2eFor(['tests/e2e/apps/modules/data/alef.ktav'], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('bus'));
+});
+
+test('bus_stall_diagnostics_accept_only_expected_well_formed_entries_in_phase', () => {
+  // `required: true` keeps the exact old semantics here; a plain allowance is at-most.
+  const allowance = { kind: 'executor', minMs: 10, maxMs: 20, required: true, after: 'START', before: 'END' };
+  assert.deepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [allowance]), []);
+  for (const bad of [
+    ['START', 'ALEF_BUS_STALL other 15', 'END'],
+    ['START', 'ALEF_BUS_STALL executor nope', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 15 extra', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 15', 'ALEF_BUS_STALL executor 15', 'END'],
+    ['START', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 9', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 21', 'END'],
+    ['ALEF_BUS_STALL executor 15', 'START', 'END'],
+    ['START', 'END', 'ALEF_BUS_STALL executor 15'],
+  ]) assert.notDeepEqual(busStallProblems(bad, [allowance]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL rogue 15', 'END'], [allowance]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END']), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [{ ...allowance, count: 2 }]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [{ ...allowance, after: 'MISSING' }]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [{ ...allowance, before: 'MISSING' }]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'END', 'END', 'ALEF_BUS_STALL executor 15'], [{ ...allowance, before: 'END' }]), []);
+  assert.deepEqual(busStallProblems(['quiet line']), []);
+});
 test('a_docs_only_change_runs_only_structure_and_fmt_on_linux_with_no_crates_js_or_e2e', () => {
   const p = plan(['docs/stages/m0-results/ci.md']);
   assert.equal(p.full, false);

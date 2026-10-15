@@ -156,11 +156,25 @@ export function consentScenarios({ drive, exe, verbose }) {
           targets: { home, decisions: join(home, 'consent'), note },
           env: {
             ALEF_HOME: home, ALEF_E2E_CONSENT: undefined, ALEF_E2E_CONSENT_UI: JSON.stringify(steps),
-            ALEF_E2E_SHELL_LOG: log, ...VARIABLES,
+            ALEF_E2E_CONSENT_HOLD_MS: '3000', ALEF_E2E_SHELL_LOG: log, ...VARIABLES,
           },
           expectedChecks: CONSENT_CHECKS,
           judge: lines => {
             const problems = shellJudge(log, note)();
+            const pending = lines.map((line, index) => line.includes('ALEF_E2E consent-pending') ? index : -1).filter(index => index >= 0);
+            const released = lines.map((line, index) => line.includes('ALEF_E2E consent-released') ? index : -1).filter(index => index >= 0);
+            const releaseMatch = lines.map(line => /^ALEF_E2E consent-released elapsed_ms=(\d+)$/.exec(line)).find(Boolean);
+            if (pending.length !== 1) problems.push(`consent-pending occurred ${pending.length} times, expected 1`);
+            if (released.length !== 1) problems.push(`consent-released occurred ${released.length} times, expected 1`);
+            if (!releaseMatch) problems.push('consent-released did not include an exact elapsed_ms duration');
+            else {
+              const elapsed = Number(releaseMatch[1]);
+              if (elapsed < 3000 || elapsed > 10000) problems.push(`consent hold elapsed ${elapsed}ms, expected 3000–10000ms`);
+            }
+            const firstUi = lines.findIndex(line => line.startsWith('ALEF_E2E consent-ui '));
+            if (pending.length === 1 && released.length === 1 && !(pending[0] < released[0] && released[0] < firstUi)) {
+              problems.push('consent-pending and consent-released were not ordered before the first consent-ui report');
+            }
             const reports = lines
               .map(line => /^ALEF_E2E consent-ui rows=(\d+) risky=(\[.*?\]) start=(\w+) picked=(\[.*\])$/.exec(line))
               .filter(Boolean)

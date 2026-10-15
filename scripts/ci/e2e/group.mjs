@@ -8,10 +8,12 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+import { expandGroup } from './groups.mjs';
+
 // Group scenarios present in the plan; 'all' selects the whole group; ''/'none' select nothing.
 // Order and dedup follow the group, not the plan; unknown plan names are ignored.
 export function selectGroup(plan, group) {
-  const list = group.split(',').map(s => s.trim()).filter(Boolean);
+  const list = expandGroup(group).split(',').map(s => s.trim()).filter(Boolean);
   const wanted = plan.trim().split(',').map(s => s.trim()).filter(Boolean);
   if (plan.trim() === 'all') return [...new Set(list)];
   if (plan.trim() === '' || plan.trim() === 'none') return [];
