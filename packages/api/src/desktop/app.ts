@@ -4,11 +4,9 @@ import { AlefError } from '../core/errors.ts';
 import { on } from '../core/events.ts';
 import { call } from '../core/transport.ts';
 import { bytesOf, sinkOf } from '../core/web-stream.ts';
-import type { Unlisten } from './window.ts';
+import type { Cancelable, Unlisten } from '../core/events.ts';
 
-export interface Cancelable {
-  signal?: AbortSignal;
-}
+export type { Cancelable };
 
 /** What the first instance hears when another one starts: its command line and working directory. */
 export interface SecondInstance {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 import { call } from '../core/transport.ts';
 
 const directory = (command: string) => (options: Cancelable = {}): Promise<string> => call<string>(command, null, options);

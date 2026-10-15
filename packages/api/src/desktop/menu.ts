@@ -3,8 +3,8 @@ import type { MenuItem } from '../../types/index.ts';
 import { AlefError } from '../core/errors.ts';
 import { on } from '../core/events.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from './app.ts';
-import type { AppWindow, Unlisten } from './window.ts';
+import type { Cancelable, Unlisten } from '../core/events.ts';
+import type { AppWindow } from './window.ts';
 
 export type { MenuItem, MenuKind, MenuRole } from '../../types/index.ts';
 

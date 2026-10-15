@@ -2,7 +2,7 @@
 import type { DirEntry, FileStat, Volume, VolumeEvent, WatchEvent } from '../../types/index.ts';
 import { openReadable, openWritable, type Readable, type Writable } from '../core/stream.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 const encoder = new TextEncoder();
 

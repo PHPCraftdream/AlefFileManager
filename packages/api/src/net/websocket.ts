@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { AlefError } from '../core/errors.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 import { http } from './http.ts';
 import type { HttpServer, ServeOptions, ServerRequest } from './http-server.ts';
 import { type Opened, WebSocketConnection } from './websocket-connection.ts';

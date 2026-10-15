@@ -3,7 +3,7 @@ import { decodeBase64, encodeBase64 } from '../core/base64.ts';
 import { AlefError } from '../core/errors.ts';
 import { openReadable } from '../core/stream.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 /** What SQLite keeps and a program can name: NULL, INTEGER (`number`, or `bigint` above 2^53), REAL, TEXT, BLOB. */
 export type SqlValue = null | number | bigint | string | boolean | Uint8Array;
