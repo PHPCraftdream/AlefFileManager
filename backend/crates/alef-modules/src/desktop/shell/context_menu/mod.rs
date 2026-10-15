@@ -258,13 +258,26 @@ fn validate_item(items: &[ContextMenuItem], id: &str) -> Result<(), AlefError> {
     }
     Ok(())
 }
+fn invocation_closed() -> AlefError {
+    AlefError::new(
+        ErrorCode::Closed,
+        "session closed during context menu invocation",
+    )
+}
 fn invoke_state(
     state: Arc<Mutex<State>>,
     id: String,
     permissions: Arc<alef_core::security::permissions::PermissionSet>,
     grants: Arc<alef_core::security::permissions::Grants>,
+    is_active: impl Fn() -> bool,
 ) -> Result<(), AlefError> {
+    if !is_active() {
+        return Err(invocation_closed());
+    }
     let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    if !is_active() {
+        return Err(invocation_closed());
+    }
     if s.closed {
         return Err(AlefError::new(ErrorCode::NotFound, "context menu closed"));
     }
@@ -285,6 +298,9 @@ fn invoke_state(
         .cloned()
         .chain(originals.iter().map(PathBuf::from))
         .collect::<Vec<_>>();
+    if !is_active() {
+        return Err(invocation_closed());
+    }
     match s
         .backend
         .as_ref()
@@ -478,8 +494,14 @@ fn register_with(
                     .with_as::<MenuResource, _>(ResourceId(args.handle), Clone::clone)?;
                 let p = ctx.permissions.clone();
                 let g = ctx.grants();
+                let session = ctx.session.clone();
+                let cancel = ctx.cancel().clone();
                 work_executor
-                    .submit(move || invoke_state(menu.0, args.id, p, g))?
+                    .submit(move || {
+                        invoke_state(menu.0, args.id, p, g, move || {
+                            session.is_open() && !cancel.is_cancelled()
+                        })
+                    })?
                     .result()
                     .await??;
                 Ok(Reply::Json(Value::Null))

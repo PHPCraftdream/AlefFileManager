@@ -91,6 +91,7 @@ fn run(
         id.into(),
         perms,
         Arc::new(alef_core::security::permissions::Grants::new()),
+        || true,
     )
 }
 fn item_set() -> Vec<ContextMenuItem> {
@@ -293,4 +294,21 @@ async fn table_reserves_capacity_and_close_disables_menu_state() {
         .code,
         ErrorCode::NotFound
     );
+}
+
+#[test]
+fn inactive_invocation_is_closed_before_permission_checks() {
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let state = state(vec![], vec![], item_set(), fake.clone());
+    let error = invoke_state(
+        state,
+        "open".into(),
+        permissions(root.path(), false, false, false),
+        Arc::new(alef_core::security::permissions::Grants::new()),
+        || false,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Closed);
+    assert!(fake.calls.lock().unwrap().is_empty());
 }
