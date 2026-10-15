@@ -64,7 +64,7 @@ pub(super) fn list() -> Result<Vec<Volume>, AlefError> {
                 .ok()
                 .and_then(|n| n.checked_mul(b))
         });
-        let kind = if stat.f_flags & libc::MNT_LOCAL == 0 {
+        let kind = if stat.f_flags & libc::MNT_LOCAL as u32 == 0 {
             VolumeKind::Network
         } else if matches!(fs.as_str(), "udf" | "cd9660") {
             VolumeKind::Optical
@@ -82,7 +82,7 @@ pub(super) fn list() -> Result<Vec<Volume>, AlefError> {
             file_system: Some(fs),
             total,
             free,
-            read_only: stat.f_flags & libc::MNT_RDONLY != 0,
+            read_only: stat.f_flags & libc::MNT_RDONLY as u32 != 0,
         };
         if mount == "/System/Volumes/Data" {
             data_root = Some(volume);
