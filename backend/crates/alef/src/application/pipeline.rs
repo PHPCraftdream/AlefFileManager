@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use alef_core::security::{
-    consent::{Consent, ConsentStore, FileConsentStore, Identity},
+    consent::{Consent, FileConsentStore, Identity},
     permissions::PermissionSet,
 };
 use alef_runtime::{prepare_assets, PreparedAssets};
@@ -16,7 +16,10 @@ use super::{
     source::LoadFailure,
     trust::{decide_with_asker, trust_folder, TrustAsker, TrustFailure, TrustInputs},
 };
-use crate::consent::{ask::AppSummary, enforce, runtime_home, settle_with, Unanswered};
+use crate::consent::{
+    ask::AppSummary, enforce, runtime_home, settle_with_async, store_decisions, stored_decisions,
+    Unanswered,
+};
 
 /// Why the launch did not reach the runtime, before any window exists.
 #[derive(Debug)]
@@ -101,19 +104,23 @@ pub async fn settle_launch(
         )
         .map_err(SettleFailure::Trust)?;
     }
-    // The user decides what the application gets of what its manifest asks for.
-    let stored = decisions.load(identity).map_err(SettleFailure::Store)?;
-    let settled = settle_with(
+    // The user decides what the application gets of what its manifest asks for; the store and
+    // the window of the user are blocking work on the consent budget of the launcher.
+    let stored = stored_decisions(decisions, identity)
+        .await
+        .map_err(SettleFailure::Store)?;
+    let settled = settle_with_async(
         &summary,
         &plan.permissions.rights(),
         &|right| plan.permissions.describe(right),
         stored,
         consent_asker,
     )
+    .await
     .map_err(SettleFailure::Unanswered)?;
     if settled.changed {
-        decisions
-            .save(identity, &settled.consent)
+        store_decisions(decisions, identity, &settled.consent)
+            .await
             .map_err(SettleFailure::Store)?;
     }
     let granted = Arc::new(
@@ -143,7 +150,7 @@ mod tests {
         consent::Asker,
     };
     use alef_core::security::{
-        consent::{Decision, Right},
+        consent::{ConsentStore, Decision, Right},
         manifest::Manifest,
     };
     use std::{path::Path, time::Duration};
@@ -451,5 +458,34 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(Right::scoped("fs.read", "$APPDATA/data/*"), Decision::Allow)]
         );
+    }
+
+    #[tokio::test]
+    async fn a_launch_settles_from_the_stored_decisions_without_asking_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let text = support::manifest_text("").replace("read: []", "read: [ $APPDATA/data/* ]");
+        let files: Vec<(&str, String)> = vec![("dist/index.html", "<html></html>".to_owned())];
+        let (plan, identity, _digest) = package_plan_with(dir.path(), &text, &files);
+        let decisions = FileConsentStore::new(dir.path().join("consent"));
+        let right = Right::scoped("fs.read", "$APPDATA/data/*");
+        let mut stored = Consent::undecided();
+        stored.set(right.clone(), Decision::Allow);
+        decisions.save(&identity, &stored).expect("seed the store");
+        let settled = timeout(
+            Duration::from_secs(10),
+            settle_launch(
+                plan,
+                &identity,
+                None,
+                None,
+                &Asker::Nobody,
+                &decisions,
+                None,
+            ),
+        )
+        .await
+        .expect("settlement must complete within ten seconds")
+        .expect("the stored decision answers the question");
+        assert_eq!(settled.consent.decision(&right), Decision::Allow);
     }
 }

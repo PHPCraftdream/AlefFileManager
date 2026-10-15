@@ -9,7 +9,10 @@ use std::{
     process::Command,
 };
 
-use alef_core::security::consent::{Consent, Decision, Right};
+use alef_core::{
+    security::consent::{Consent, Decision, Right},
+    session::BlockingExecutor,
+};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "e2e")]
 use serde_json::Value;
@@ -178,6 +181,34 @@ pub fn write_answer(path: &Path, answer: &Answer) -> io::Result<()> {
         serde_json::to_vec(answer).map_err(io::Error::other)?,
     )?;
     fs::rename(&partial, path)
+}
+
+/// [`ask_in_window`] on `executor`: the files of the exchange are written and the window process
+/// is waited for off the async context. A lost turn of the executor (full, cancelled) is a
+/// failure of the window.
+pub async fn ask_in_window_on(
+    executor: &BlockingExecutor,
+    request: &Request,
+) -> Result<Option<(BTreeMap<Right, Decision>, Option<bool>)>, String> {
+    let request = request.clone();
+    executor
+        .submit(move || ask_in_window(&request))
+        .map_err(|error| format!("the window cannot be started: {error}"))?
+        .result()
+        .await
+        .map_err(|error| format!("the window cannot be waited for: {error}"))?
+}
+
+/// [`write_answer`] on the consent budget of the launcher: the file of the exchange is blocking
+/// work, and the handler of the window must not hold a runtime worker while it writes.
+pub async fn write_answer_async(path: &Path, answer: &Answer) -> io::Result<()> {
+    let (path, answer) = (path.to_owned(), answer.clone());
+    super::executor()
+        .submit(move || write_answer(&path, &answer))
+        .map_err(|error| io::Error::other(format!("the answer cannot be written: {error}")))?
+        .result()
+        .await
+        .map_err(|error| io::Error::other(format!("the answer cannot be written: {error}")))?
 }
 
 /// Shows the window in a process of its own and waits for it. `Ok(None)`: the user closed it
@@ -417,6 +448,41 @@ mod tests {
             validate(&request, &incomplete).unwrap_err(),
             "clipboard.read is not answered"
         );
+    }
+
+    #[tokio::test]
+    async fn the_answer_is_written_on_the_consent_budget_and_is_never_half_written() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("a.answer.json");
+        let wanted = rights();
+        let given = answer(&[(&wanted[0], Decision::Deny, false)]);
+        write_answer_async(&path, &given).await.unwrap();
+        let back: Answer = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(back, given);
+        assert!(!path.with_extension("part").exists());
+    }
+
+    #[tokio::test]
+    async fn a_full_budget_refuses_the_window_without_starting_it() {
+        let executor = BlockingExecutor::new(std::num::NonZeroUsize::new(1).unwrap());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let blocker = executor
+            .submit(move || {
+                let _ = started_tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("blocker started")
+            .expect("signal");
+        let request = request_for(&app(), &rights(), &|_| None, &Consent::undecided());
+        let error = ask_in_window_on(&executor, &request).await.unwrap_err();
+        assert!(error.contains("full"), "{error}");
+        tokio::time::timeout(std::time::Duration::from_secs(5), blocker.result())
+            .await
+            .expect("blocker finishes")
+            .expect("blocker job");
     }
 
     #[test]

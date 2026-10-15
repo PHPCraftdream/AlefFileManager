@@ -14,7 +14,7 @@ use alef_core::{
     registry::{command::Reply, dispatch::Registry, host::Host},
     security::window::WindowDef,
 };
-use alef_launch::consent::ask::{exchange_folder, validate, write_answer, Answer, Request};
+use alef_launch::consent::ask::{exchange_folder, validate, write_answer_async, Answer, Request};
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 use serde_json::{json, Value};
 
@@ -92,7 +92,7 @@ fn install(
             async move {
                 validate(&request, &answer)
                     .map_err(|message| AlefError::new(ErrorCode::InvalidArgument, message))?;
-                write_answer(&path, &answer)?;
+                write_answer_async(&path, &answer).await?;
                 host.quit(0);
                 Ok(Reply::Json(Value::Null))
             }
