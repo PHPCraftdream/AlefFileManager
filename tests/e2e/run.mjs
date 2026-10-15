@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,consent,origin,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package,devflow,updater]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,consent,origin,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package,devflow,fm-package,updater]
 //                          [--timeout-s 150] [--verbose]
 // Build beforehand: node scripts/cargo.mjs build -p alef --features e2e
 // This runner does not build the runtime.
@@ -21,6 +21,7 @@ import { appIntegrationScenarios } from './scenarios/app/app-integration.mjs';
 import { launchModesScenarios } from './scenarios/app/launch-modes.mjs';
 import { packageScenarios } from './scenarios/app/package.mjs';
 import { devflowScenarios } from './scenarios/app/devflow.mjs';
+import { fmPackageScenarios } from './scenarios/app/fm-package.mjs';
 import { updaterScenarios } from './scenarios/app/updater.mjs';
 import { startupScenarios } from './scenarios/startup.mjs';
 
@@ -85,6 +86,7 @@ const scenarios = {
   ...appIntegrationScenarios({ exe, verbose, timeoutMs }),
   ...packageScenarios({ exe, verbose, timeoutMs }),
   ...devflowScenarios({ exe, verbose, timeoutMs }),
+  ...fmPackageScenarios({ exe, verbose, timeoutMs }),
   ...updaterScenarios({ exe, verbose, timeoutMs }),
   ...consentScenarios({ drive, exe, verbose }),
   ...dataScenarios({ drive, exe, verbose }),
