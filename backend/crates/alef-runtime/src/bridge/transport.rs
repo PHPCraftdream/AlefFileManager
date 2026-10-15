@@ -226,7 +226,16 @@ impl MemoryProtocol {
                             window,
                             document: request.pipeline_id.map(document_of),
                         };
-                        let reply = self.transport.handle(request).await;
+                        // Servo polls this future on its own runtime, which dies with the bridge: the
+                        // command runs on ours, so the tasks it spawns outlive the documents.
+                        let transport = self.transport.clone();
+                        let mut task = OwnedTask(
+                            self.handle
+                                .spawn(async move { transport.handle(request).await }),
+                        );
+                        let reply = (&mut task.0)
+                            .await
+                            .unwrap_or_else(|_| failure(500, "INTERNAL", "internal error"));
                         if let Some((route, origin)) = route {
                             eprintln!("ALEF_CALL {route} {} origin={origin}", reply.status);
                         }
