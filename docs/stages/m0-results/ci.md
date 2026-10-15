@@ -286,14 +286,14 @@ gh api "repos/PHPCraftdream/AlefFileManager/actions/runs/<id>/jobs?per_page=100"
 
 - Джоб `plan` (ubuntu-24.04): `scripts/ci/plan.mjs` + данные `scripts/ci/affected.json`; тесты — `scripts/ci/plan.test.mjs` (`node --test`).
 - Джоб `build`: матрица раннеров берётся из выходов плана; шаги включаются по `crates`/`js`/`e2e`.
-- e2e-шаги Windows (11 шагов) вызывают один хелпер `scripts/ci/e2e-group.mjs`: он пересекает список сценария плана с фиксированной группой шага и запускает `tests/e2e/run.mjs`; пустое пересечение — строка-пропуск и выход 0. Тесты — `scripts/ci/e2e-group.test.mjs`; хук-заглушка раннера задаётся только env `ALEF_E2E_GROUP_RUNNER`, CI его не ставит.
+- e2e-шаги Windows (12 шагов) вызывают один хелпер `scripts/ci/e2e/group.mjs`: он пересекает список сценария плана с фиксированной группой шага и запускает `tests/e2e/run.mjs`; пустое пересечение — строка-пропуск и выход 0. Тесты — `scripts/ci/e2e/group.test.mjs`; хук-заглушка раннера задаётся только env `ALEF_E2E_GROUP_RUNNER`, CI его не ставит. Рядом — `scripts/ci/e2e/groups.mjs` (канонический список групп) и `scripts/ci/e2e/os.mjs` (группированный прогон одной ОС) с тестами `scripts/ci/e2e/os.test.mjs`.
 - Linux e2e передаёт список плана напрямую (`--only` при неполном плане, без него при `all`).
 - `supply.yml` и `mutation.yml` самостоятельны: от плана `ci.yml` не зависят.
 - Поведение (шаги, условия, таймауты, имена шагов) не менялось — рефакторинг: дублированный shell-цикл заменён хелпером.
 
 ## Итог оптимизации и сегментации (2026-10-14)
 
-Что сделано (CI-1..CI-6): замер; планировщик `scripts/ci/plan.mjs` с правилами `scripts/ci/affected.json`; проводка в `ci.yml` (джоб `plan`, матрица из плана, входы `full`/`crates`/`e2e`, ночной schedule); общий скрипт групп e2e `scripts/ci/e2e-group.mjs` и цикла крейтов `scripts/ci/test-crates.mjs`; протокол запусков (`.rush/ci-watch.sh`, `.rush/ci-run.sh`).
+Что сделано (CI-1..CI-6): замер; планировщик `scripts/ci/plan.mjs` с правилами `scripts/ci/affected.json`; проводка в `ci.yml` (джоб `plan`, матрица из плана, входы `full`/`crates`/`e2e`, ночной schedule); общий скрипт групп e2e `scripts/ci/e2e/group.mjs` и цикла крейтов `scripts/ci/test-crates.mjs`; протокол запусков (`.rush/ci-watch.sh`, `.rush/ci-run.sh`).
 
 Дефекты, найденные при реальных прогонах и исправленные (каждый скрывал экономию или ломал частичный план):
 
@@ -317,3 +317,20 @@ gh api "repos/PHPCraftdream/AlefFileManager/actions/runs/<id>/jobs?per_page=100"
 Итог: прогон ветки задачи — один Linux-джоб за 6–10 минут вместо четырёх по 20–30; очередь раннеров (24–45 минут на Windows/macOS) в таком прогоне не участвует. Полный прогон на четырёх ОС остаётся перед слиянием в `main` (`.rush/ci-run.sh <ветка> full`), в `main` и ночью.
 
 Остаточный риск прежний: ОС-специфичный сбой, не пойманный Linux-планом, проявится на полном прогоне; затронутый путь тогда добавляют в `platform_sensitive` или в правила сценариев `affected.json`.
+
+## e2e на macOS и Linux (задача #105)
+
+Что запускается:
+- macOS (оба раннера таблицы платформ, `macos-14` arm64 и `macos-15-intel`): новый шаг `e2e (alef on Servo, macOS, canonical groups)` — `node scripts/ci/e2e/os.mjs --plan "<план>" --exe backend/target/debug/alef --timeout-s 150`. Условие — `runner.os == 'macOS' && needs.plan.outputs.e2e != 'none'`, выбор сценариев — тот же выход планировщика, что у Windows/Linux; quiet-режим — дефолт вне Linux (`tests/e2e/lib.mjs`). Оба раннера включены: джоб arm64 — самый быстрый (11–13 мин работы), x64 — 25–41 мин; e2e добавляет минуты (Linux-полный e2e — 1.3–1.5 мин), а покрытие должно быть на обеих архитектурах таблицы.
+- Группы: те же 12 канонических групп, что у Windows-шагов, включая итоговую `origin,webcrypto-undeclared,webcrypto-substitute,package,fm-package,updater`; список вынесен в `scripts/ci/e2e/groups.mjs`, шаги Windows и macOS-шаг потребляют его один и тот же список (тест закрепляет равенство), и группы теперь покрывают каждый сценарий `run.mjs` (тест закрепляет полноту и отсутствие дублей). Хелпер `scripts/ci/e2e/os.mjs` запускает каждую группу отдельным процессом раннера: провал группы не скрывает остальные (#117), сводка `group <группа>: PASS/FAIL`, код выхода 1 при любом провале.
+- Linux: шаг `headless X11` уже запускал ВСЕ сценарии плана одним раннером — покрытие ⊇ Windows-групп, ничего добавлять не потребовалось; при полном плане Linux дополнительно к группам исполняет `origin`, `webcrypto-undeclared`, `webcrypto-substitute`, `package`, `updater`. Сценария, который Windows запускает, а Linux нет, нет; `package`, `fm-package` и `updater` входят в итоговую группу и идут на всех ОС, при этом `fm-package` сам пропускается с ясной причиной там, где `frontend/app` не собран (сборка фронта в CI — только Linux). Шагу добавлен `timeout-minutes: 30` — та же граница, что у одной Windows-группы.
+
+Таймауты: сценарные — те же 150 с, что у Windows; групповой дедлайн = (число выбранных сценариев × 150 с) + 2 мин запаса; просроченная группа получает FAIL и не останавливает остальные; шаг macOS — 180 мин (сумма дедлайнов).
+
+Пропуски по ОС (заявлены в коде самих сценариев, никогда удалением проверок):
+- `startup`: на macOS и Linux пропускается всегда с причиной «the probe watches Win32 windows» (проба смотрит окна Win32); на Windows пропускается только в тихом режиме с причиной «it watches real windows...», запускается с `ALEF_E2E_VISIBLE=1`.
+- `service-signal`: пропускается только на Windows («a process of Windows ends on a signal without being asked»).
+- `menu`/`tray` на Linux не пропускаются: сценарий выполняется и проверяет коды `NOT_AVAILABLE` (`menu-linux-native-operations-are-not-available`, `tray-linux-native-operations-are-not-available`) — это проверка поведения продукта, а не пропуск.
+- macOS: отдельных пропусков не добавлено (autostart — LaunchAgents-plist, deeplink — NOT_AVAILABLE-ветка, shortcut — RegisterEventHotKey, tray — статус-бар); если CI покажет недоступность, сценарий обязан пропуститься с явной причиной по образцу startup.mjs.
+
+Закрепляющие тесты (`scripts/ci/e2e/os.test.mjs`): все сценарии групп известны раннеру; объединение групп равно списку сценариев раннера без дублей внутри группы и между группами; Windows-шаги в ci.yml в точности равны каноническим группам; проводка macOS-шага закреплена построчно (условие, timeout 180, shell, командная строка); раннер получает точные `--only`/`--exe`/`--timeout-s` каждой выбранной группы; провалившаяся группа не останавливает следующие и приводит к коду 1; зависшая группа получает FAIL по дедлайну, прогон продолжается; группы вне плана пропускаются; план `none` не запускает ни одной группы.
