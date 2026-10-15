@@ -64,6 +64,9 @@ pub fn runtime_home() -> PathBuf {
 /// root behind a system symlink (macOS `/var` -> `/private/var`) passes the store checks. Only
 /// roots the user configures go through here; links below a root stay refused.
 pub(crate) fn resolve_root(path: &Path) -> PathBuf {
+    if cfg!(not(unix)) {
+        return path.to_owned();
+    }
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let mut candidate = path.to_owned();
     loop {
