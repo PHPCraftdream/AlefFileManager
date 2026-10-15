@@ -28,7 +28,7 @@ const run = (command, args, { cwd, env = {}, timeoutMs, shell = false }) => {
 const npm = (args, options) => run('npm', args, { ...options, shell: process.platform === 'win32' });
 
 /** Collects the lines of a long-running Node child; bounded waits, kill on deadline. */
-const collect = (args, { cwd, env = {} }) => {
+const collect = (args, { cwd, env = {}, verbose = false }) => {
   const child = spawn(process.execPath, args, { cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   const lines = [];
   for (const stream of [child.stdout, child.stderr]) {
@@ -37,7 +37,12 @@ const collect = (args, { cwd, env = {} }) => {
       buffer += chunk;
       const parts = buffer.split('\n');
       buffer = parts.pop();
-      for (const raw of parts) { const line = raw.trim(); if (line) lines.push(line); }
+      for (const raw of parts) {
+        const line = raw.trim();
+        if (!line) continue;
+        lines.push(line);
+        if (verbose) console.log(`    | ${line}`);
+      }
     });
   }
   let exit = null;
@@ -205,7 +210,7 @@ export function devflowScenarios({ exe, verbose, timeoutMs }) {
         // (e) alef-runtime dev: dev server + runtime, both bounded; the page tail exits the runtime,
         // the CLI stops the dev server and resolves with the runtime exit code.
         dev = collect([toolsBin, 'dev', '--ready-timeout', '60000'],
-          { cwd: project, env: { ALEF_BIN: exeAbs, ALEF_HOME: join(dir, 'home-dev'), ALEF_RUNTIME_HOME: keyHome, ALEF_E2E: '1', ALEF_E2E_CONSENT: '*=allow', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...isolation() } });
+          { cwd: project, verbose, env: { ALEF_BIN: exeAbs, ALEF_HOME: join(dir, 'home-dev'), ALEF_RUNTIME_HOME: keyHome, ALEF_E2E: '1', ALEF_E2E_CONSENT: '*=allow', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...isolation() } });
         try {
           await dev.waitFor(line => line.includes('ALEF_READY'), timeoutMs, 'the dev runtime to be ready');
           await dev.waitFor(line => line.includes('ALEF_E2E RESULT'), timeoutMs, 'the verdict of the dev page');
@@ -217,7 +222,9 @@ export function devflowScenarios({ exe, verbose, timeoutMs }) {
           expect('the dev document came from the dev server', devOrigin !== undefined
             && devOrigin.includes('http://127.0.0.1:3000'), devOrigin ?? 'no origin line');
         } catch (error) {
-          expect('alef-runtime dev serves the page through the runtime and shuts both down', false, error.message);
+          devLines = dev.lines;
+          const tail = verbose ? '' : `; last output: ${devLines.slice(-40).join(' | ')}`;
+          expect('alef-runtime dev serves the page through the runtime and shuts both down', false, `${error.message}${tail}`);
         } finally {
           await dev.stop();
         }
