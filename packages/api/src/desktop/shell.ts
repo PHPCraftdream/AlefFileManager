@@ -68,6 +68,7 @@ export const shell = {
     const normalized = validateIconTarget(target);
     const size = options.size ?? 32;
     if (!FILE_ICON_SIZES.has(size)) throw invalidIcon('unsupported size');
+    options.signal?.throwIfAborted();
     const reply = await call<{ png: string; width: number; height: number }>(
       'shell.fileIcon',
       { target: normalized, size },
