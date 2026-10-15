@@ -109,10 +109,13 @@ fn an_unmet_requirement_relaunches_into_the_stored_binary_and_forwards_its_exit_
     assert_eq!(stderr_text.matches("RUNTIME_INCOMPATIBLE").count(), 1);
     assert!(stderr_text.contains("requires ^999"));
     assert!(stderr_text.contains("999.0.0"));
-    let expected_selection = format!(
-        "selected installed runtime: 999.0.0 at {}",
-        installed.display()
-    );
+    // The home root is resolved once on Unix (macOS serves temp folders through /var -> /private/var).
+    let shown = if cfg!(unix) {
+        std::fs::canonicalize(&installed).unwrap()
+    } else {
+        installed.clone()
+    };
+    let expected_selection = format!("selected installed runtime: 999.0.0 at {}", shown.display());
     assert!(stderr_text.contains(&expected_selection));
     assert!(stdout_text.is_empty());
 }
