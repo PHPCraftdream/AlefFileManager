@@ -53,7 +53,7 @@ jobs:
           fi
       # Чистые unit-тесты планировщика: npm ci не нужен.
       - name: Planner and release unit tests
-        run: node --test scripts/ci/plan.test.mjs scripts/release/plan.test.mjs scripts/release/size.test.mjs
+        run: node --test scripts/ci/plan.test.mjs scripts/release/plan.test.mjs scripts/release/size.test.mjs scripts/release/installer.test.mjs
 
   build:
     name: ${{ matrix.name }}
@@ -197,6 +197,24 @@ jobs:
             writeFileSync('size-' + platform + '.json', json);
           " "$binary" "$archive" "${{ matrix.name }}"
 
+      # Установщик runtime (docs/stages/m7-distribution.md, M7d.6): генератор детерминирован,
+      # makensis не запускается; на macOS сборка настоящего .pkg утилитами pkgbuild/productbuild.
+      - name: Generate the runtime installer
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          case "${{ matrix.name }}" in
+            windows-x64) platform=win32-x64 ;;
+            macos-arm64) platform=darwin-arm64 ;;
+            macos-x64) platform=darwin-x64 ;;
+            *) platform=linux-x64 ;;
+          esac
+          node scripts/release/installer.mjs "$platform" "$VERSION" "backend/target/dist/${{ matrix.bin }}" installer
+          if [ "${platform%%-*}" = darwin ]; then
+            sh "installer/build-pkg.sh"
+          fi
+
       - name: Upload runtime artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -206,6 +224,12 @@ jobs:
             alef-*.tar.gz
             alef-*.sha256
             size-*.json
+            installer/alef-runtime-*-setup.nsi
+            installer/build-installer.cmd
+            installer/bin/alef.exe
+            installer/bin/alef.cmd
+            installer/alef-runtime-*_amd64.deb
+            installer/alef-runtime-*.pkg
           if-no-files-found: error
 
   npm-publish:
