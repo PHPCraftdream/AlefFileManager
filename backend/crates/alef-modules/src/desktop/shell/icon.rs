@@ -9,6 +9,7 @@ use std::{
 use alef_core::{
     registry::{command::Reply, context::CallContext, dispatch::Registry},
     security::{consent::Decision, permissions::Permission},
+    session::executor::BlockingExecutor,
     AlefError, ErrorCode,
 };
 use serde::Deserialize;
@@ -306,6 +307,7 @@ pub(crate) fn generic_fallback() -> IconImage {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct IconJob {
     pub target: IconTarget,
     pub size: u32,
@@ -315,24 +317,33 @@ pub(crate) type JobReceiver = tokio::sync::mpsc::Receiver<IconJob>;
 pub(crate) type JobReply = tokio::sync::oneshot::Sender<Result<IconImage, AlefError>>;
 type JobAnswer = tokio::sync::oneshot::Receiver<Result<IconImage, AlefError>>;
 
-#[derive(Debug, Default)]
 pub(crate) struct IconService {
     sender: tokio::sync::OnceCell<tokio::sync::mpsc::Sender<IconJob>>,
+    starter: BlockingExecutor,
+}
+impl Default for IconService {
+    fn default() -> Self {
+        Self {
+            sender: tokio::sync::OnceCell::new(),
+            starter: BlockingExecutor::new(
+                std::num::NonZeroUsize::new(1).expect("non-zero startup limit"),
+            ),
+        }
+    }
 }
 impl IconService {
     async fn sender(&self) -> Result<tokio::sync::mpsc::Sender<IconJob>, AlefError> {
         self.sender
             .get_or_try_init(|| async {
                 let (tx, rx) = tokio::sync::mpsc::channel(32);
-                let task = tokio::task::spawn_blocking(move || {
+                let startup = self.starter.submit(move || {
                     std::thread::Builder::new()
                         .name("shell-icons".into())
                         .spawn(move || worker_loop(rx))
-                });
-                task.await
-                    .map_err(|e| png_error(format!("worker spawn: {e}")))?
-                    .map_err(|e| png_error(format!("worker spawn: {e}")))?;
-                Ok(tx)
+                        .map(|_| tx)
+                        .map_err(|error| png_error(format!("worker spawn: {error}")))
+                })?;
+                startup.result().await?
             })
             .await
             .cloned()
@@ -341,13 +352,19 @@ impl IconService {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.sender()
             .await?
-            .send(IconJob {
+            .try_send(IconJob {
                 target,
                 size,
                 reply,
             })
-            .await
-            .map_err(|_| png_error("icon worker queue closed"))?;
+            .map_err(|error| match error {
+                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    AlefError::new(ErrorCode::Busy, "icon worker queue is full")
+                }
+                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                    png_error("icon worker queue closed")
+                }
+            })?;
         Ok(answer)
     }
 }
@@ -370,6 +387,19 @@ async fn await_icon(
     }
 }
 
+pub(crate) trait IconBackend {
+    fn render(&mut self, target: &IconTarget, size: u32) -> Result<IconImage, AlefError>;
+}
+
+pub(crate) fn run_worker_loop<B: IconBackend>(mut receiver: JobReceiver, mut backend: B) {
+    while let Some(job) = receiver.blocking_recv() {
+        if job.reply.is_closed() {
+            continue;
+        }
+        let result = backend.render(&job.target, job.size);
+        let _ = job.reply.send(result);
+    }
+}
 pub(crate) fn worker_loop(receiver: JobReceiver) {
     platform::worker_loop(receiver)
 }
@@ -382,10 +412,18 @@ mod platform {
     pub(crate) use crate::desktop::shell::icon_windows::worker_loop;
     #[cfg(not(any(windows, target_os = "macos", all(unix, not(target_os = "macos")))))]
     pub(crate) fn worker_loop(mut receiver: super::JobReceiver) {
-        while let Some(job) = receiver.blocking_recv() {
-            if !job.reply.is_closed() {
-                let _ = job.reply.send(Ok(super::generic_fallback()));
-            }
+        super::run_worker_loop(receiver, FallbackBackend);
+    }
+    #[cfg(not(any(windows, target_os = "macos", all(unix, not(target_os = "macos")))))]
+    struct FallbackBackend;
+    #[cfg(not(any(windows, target_os = "macos", all(unix, not(target_os = "macos")))))]
+    impl super::IconBackend for FallbackBackend {
+        fn render(
+            &mut self,
+            _: &super::IconTarget,
+            _: u32,
+        ) -> Result<super::IconImage, alef_core::AlefError> {
+            Ok(super::generic_fallback())
         }
     }
 }
@@ -426,6 +464,8 @@ fn icon_reply(image: IconImage) -> Result<Reply, AlefError> {
 }
 
 pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
+    let worker =
+        BlockingExecutor::new(std::num::NonZeroUsize::new(32).expect("non-zero worker limit"));
     let service = Arc::new(IconService::default());
     let cache = Arc::new(IconCache::new(256));
     // Permission::None allows dispatch; FsRead for path targets is authorized inside prepare.
@@ -436,14 +476,12 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
         .handler(move |ctx, args| {
             let service = service.clone();
             let cache = cache.clone();
+            let worker = worker.clone();
             async move {
                 let (ctx, args, cache_for_prepare) = (ctx, args, cache.clone());
-                let prepared = tokio::task::spawn_blocking(move || {
-                    let owned_cache = cache_for_prepare;
-                    prepare(ctx, args, owned_cache.as_ref())
-                })
-                .await
-                .map_err(|e| png_error(format!("prepare: {e}")))??;
+                let prepare_job =
+                    worker.submit(move || prepare(ctx, args, cache_for_prepare.as_ref()))?;
+                let prepared = prepare_job.result().await??;
                 match prepared {
                     Prepared::Cached(reply) => Ok(reply),
                     Prepared::Work(target, size, key) => {
@@ -451,15 +489,12 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
                         if let Some(key) = key {
                             let cache_for_finish = cache.clone();
                             let image_for_cache = image.clone();
-                            tokio::task::spawn_blocking(move || {
-                                cache_for_finish.put(key, image_for_cache)
-                            })
-                            .await
-                            .map_err(|error| png_error(format!("cache: {error}")))?;
+                            worker
+                                .submit(move || cache_for_finish.put(key, image_for_cache))?
+                                .result()
+                                .await?;
                         }
-                        tokio::task::spawn_blocking(move || icon_reply(image))
-                            .await
-                            .map_err(|error| png_error(format!("reply: {error}")))?
+                        worker.submit(move || icon_reply(image))?.result().await?
                     }
                 }
             }
@@ -619,74 +654,98 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_queue_skips_cancelled_jobs_and_replies_to_live_ones() {
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let count = Arc::new(AtomicUsize::new(0));
-        let first_count = count.clone();
+        use std::collections::VecDeque;
+        use std::sync::{mpsc as std_mpsc, Arc};
+        struct Fake {
+            starts: VecDeque<tokio::sync::oneshot::Sender<()>>,
+            releases: std_mpsc::Receiver<()>,
+            calls: Arc<AtomicUsize>,
+        }
+        impl IconBackend for Fake {
+            fn render(&mut self, _: &IconTarget, _: u32) -> Result<IconImage, AlefError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                if let Some(start) = self.starts.pop_front() {
+                    let _ = start.send(());
+                }
+                self.releases
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("explicit release");
+                Ok(generic_fallback())
+            }
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let (first_start_tx, first_start_rx) = tokio::sync::oneshot::channel();
+        let (live_start_tx, live_start_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std_mpsc::sync_channel(2);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let fake = Fake {
+            starts: VecDeque::from([first_start_tx, live_start_tx]),
+            releases: release_rx,
+            calls: calls.clone(),
+        };
+        let worker = std::thread::spawn(move || run_worker_loop(rx, fake));
+        let target = IconTarget::Kind(KindTarget {
+            kind: IconKind::File,
+        });
         let (first_reply, first_answer) = tokio::sync::oneshot::channel();
         tx.try_send(IconJob {
-            target: IconTarget::Kind(KindTarget {
-                kind: IconKind::File,
-            }),
+            target: target.clone(),
             size: 32,
             reply: first_reply,
         })
-        .expect("first bounded queue slot is available");
-        let (blocked_reply, blocked_answer) = tokio::sync::oneshot::channel();
+        .expect("first admitted");
+        tokio::time::timeout(Duration::from_secs(2), first_start_rx)
+            .await
+            .expect("first starts")
+            .expect("first signal");
+        let (cancel_reply, cancel_answer) = tokio::sync::oneshot::channel();
+        tx.try_send(IconJob {
+            target: target.clone(),
+            size: 32,
+            reply: cancel_reply,
+        })
+        .expect("cancel candidate queued");
+        drop(cancel_answer);
+        let (live_reply, live_answer) = tokio::sync::oneshot::channel();
+        tx.try_send(IconJob {
+            target: target.clone(),
+            size: 32,
+            reply: live_reply,
+        })
+        .expect("live queued");
+        let (extra_reply, _extra_answer) = tokio::sync::oneshot::channel();
         assert!(matches!(
             tx.try_send(IconJob {
-                target: IconTarget::Kind(KindTarget {
-                    kind: IconKind::File
-                }),
+                target,
                 size: 32,
-                reply: blocked_reply,
+                reply: extra_reply
             }),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_))
         ));
-        drop(blocked_answer);
-        drop(first_answer);
-        let worker = tokio::task::spawn_blocking(move || {
-            let mut receiver = rx;
-            while let Some(job) = receiver.blocking_recv() {
-                if job.reply.is_closed() {
-                    continue;
-                }
-                first_count.fetch_add(1, Ordering::SeqCst);
-                assert!(job.reply.send(Ok(generic_fallback())).is_ok());
-            }
-        });
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while tx.capacity() != 1 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("worker dequeues canceled job");
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        tx.try_send(IconJob {
-            target: IconTarget::Kind(KindTarget {
-                kind: IconKind::File,
-            }),
-            size: 32,
-            reply,
-        })
-        .expect("live job fits in freed slot");
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while tx.capacity() != 0 {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("worker dequeues live job");
-        let result = tokio::time::timeout(Duration::from_secs(2), answer)
+        release_tx.send(()).expect("release first render");
+        tokio::time::timeout(Duration::from_secs(2), live_start_rx)
             .await
-            .expect("worker answers live job")
-            .expect("reply channel remains open");
-        assert!(result.is_ok());
+            .expect("live starts after canceled queue item")
+            .expect("live signal");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        release_tx.send(()).expect("release live render");
+        assert!(tokio::time::timeout(Duration::from_secs(2), first_answer)
+            .await
+            .expect("first reply")
+            .expect("first sender")
+            .is_ok());
+        assert!(tokio::time::timeout(Duration::from_secs(2), live_answer)
+            .await
+            .expect("live reply")
+            .expect("live sender")
+            .is_ok());
         drop(tx);
-        tokio::time::timeout(Duration::from_secs(2), worker)
-            .await
-            .expect("worker closes after sender drops")
-            .expect("worker task joins");
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || worker.join().expect("worker exits")),
+        )
+        .await
+        .expect("worker joined")
+        .expect("join task");
     }
 }

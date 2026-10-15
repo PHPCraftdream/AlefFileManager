@@ -6,12 +6,33 @@ use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSDeviceRGBColorSpace,
     NSGraphicsContext, NSImage, NSWorkspace,
 };
-use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSCopying, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 use objc2_uniform_type_identifiers::UTType;
 
 use super::icon::{
-    generic_fallback, mime_to_extension, IconImage, IconKind, IconTarget, JobReceiver,
+    generic_fallback, mime_to_extension, run_worker_loop, IconBackend, IconImage, IconKind,
+    IconTarget, JobReceiver,
 };
+
+struct MacBackend;
+
+impl IconBackend for MacBackend {
+    fn render(
+        &mut self,
+        target: &IconTarget,
+        size: u32,
+    ) -> Result<IconImage, alef_core::AlefError> {
+        autoreleasepool(|_| match (target, icon_for(target, size)) {
+            (IconTarget::Path(_), result) => result,
+            (_, Ok(image)) => Ok(image),
+            (_, Err(_)) => Ok(generic_fallback()),
+        })
+    }
+}
+
+pub(crate) fn worker_loop(receiver: JobReceiver) {
+    run_worker_loop(receiver, MacBackend);
+}
 
 fn dimensions(requested: u32) -> (u32, u32) {
     (requested, requested)
@@ -22,23 +43,6 @@ fn kind_type(kind: IconKind) -> &'static str {
         IconKind::Folder => "public.folder",
         IconKind::File => "public.data",
         IconKind::Drive => "public.volume",
-    }
-}
-
-pub(crate) fn worker_loop(mut receiver: JobReceiver) {
-    while let Some(job) = receiver.blocking_recv() {
-        if job.reply.is_closed() {
-            continue;
-        }
-        let result = autoreleasepool(|_| {
-            let result = icon_for(&job.target, job.size);
-            match (&job.target, result) {
-                (IconTarget::Path(_), result) => result,
-                (_, Ok(image)) => Ok(image),
-                (_, Err(_)) => Ok(generic_fallback()),
-            }
-        });
-        let _ = job.reply.send(result);
     }
 }
 
@@ -76,11 +80,13 @@ fn icon_for(target: &IconTarget, requested: u32) -> Result<IconImage, alef_core:
             workspace.iconForContentType(&content_type)
         }
     };
+    // NSWorkspace's image is shared/cached. Copy it before rendering so all mutable
+    // drawing state is owned and confined to this worker invocation.
+    let image = image.copy();
     render_png(&image, width, height)
 }
 
 struct GraphicsContextRestore(Option<Retained<NSGraphicsContext>>);
-
 impl Drop for GraphicsContextRestore {
     fn drop(&mut self) {
         NSGraphicsContext::setCurrentContext(self.0.as_deref());
@@ -90,29 +96,17 @@ impl Drop for GraphicsContextRestore {
 fn render_png(image: &NSImage, width: u32, height: u32) -> Result<IconImage, alef_core::AlefError> {
     let width = i32::try_from(width).map_err(|_| internal("icon width overflow"))?;
     let height = i32::try_from(height).map_err(|_| internal("icon height overflow"))?;
-    // SAFETY: AppKit only declares nullable planes; null asks AppKit to allocate storage. The dimensions and format are valid.
     let bitmap = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
-            NSBitmapImageRep::alloc(),
-            std::ptr::null_mut(),
-            width.into(),
-            height.into(),
-            8,
-            4,
-            true,
-            false,
-            // SAFETY: NSDeviceRGBColorSpace is a static AppKit color-space name with process lifetime.
-            &*NSDeviceRGBColorSpace,
-            0,
-            0,
+            NSBitmapImageRep::alloc(), std::ptr::null_mut(), width.into(), height.into(), 8, 4, true,
+            false, &*NSDeviceRGBColorSpace, 0, 0,
         )
-    }
-    .ok_or_else(|| internal("cannot allocate bitmap representation"))?;
+    }.ok_or_else(|| internal("cannot allocate bitmap representation"))?;
     let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)
         .ok_or_else(|| internal("cannot create bitmap graphics context"))?;
     let previous = NSGraphicsContext::currentContext();
     NSGraphicsContext::setCurrentContext(Some(&context));
-    let _restore = GraphicsContextRestore(previous);
+    let restore = GraphicsContextRestore(previous);
     let size = NSSize::new(width.into(), height.into());
     let rect = NSRect::new(NSPoint::new(0.0, 0.0), size);
     image.drawInRect_fromRect_operation_fraction(
@@ -122,27 +116,25 @@ fn render_png(image: &NSImage, width: u32, height: u32) -> Result<IconImage, ale
         1.0,
     );
     context.flushGraphics();
-    drop(_restore);
+    drop(restore);
+    // SAFETY: bitmap is live and owns the pixel buffer; the properties dictionary and PNG type are valid.
     let data = unsafe {
-        // SAFETY: empty properties are valid for PNG output; the selected file type fully determines encoding.
         bitmap.representationUsingType_properties(
             NSBitmapImageFileType::PNG,
             &NSDictionary::<NSBitmapImageRepPropertyKey, AnyObject>::new(),
         )
     }
     .ok_or_else(|| internal("AppKit could not encode PNG"))?;
-    let png = data.to_vec();
     Ok(IconImage {
         width: width as u32,
         height: height as u32,
-        png,
+        png: data.to_vec(),
     })
 }
 
 fn invalid(message: impl Into<String>) -> alef_core::AlefError {
     alef_core::AlefError::new(alef_core::ErrorCode::InvalidArgument, message)
 }
-
 fn internal(message: impl std::fmt::Display) -> alef_core::AlefError {
     alef_core::AlefError::new(
         alef_core::ErrorCode::Internal,
@@ -152,12 +144,47 @@ fn internal(message: impl std::fmt::Display) -> alef_core::AlefError {
 
 #[cfg(test)]
 mod tests {
+    use super::super::icon::{png_dimensions, IconKind, KindTarget};
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
     fn requested_size_is_rendered_without_resampling() {
         assert_eq!(dimensions(16), (16, 16));
         assert_eq!(dimensions(256), (256, 256));
+    }
+
+    #[test]
+    fn rendered_icon_png_dimensions_match_each_requested_size() {
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = autoreleasepool(|_| {
+                [16, 48, 256]
+                    .into_iter()
+                    .map(|size| {
+                        icon_for(
+                            &IconTarget::Kind(KindTarget {
+                                kind: IconKind::Folder,
+                            }),
+                            size,
+                        )
+                        .map(|icon| (size, icon.png, icon.width, icon.height))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            });
+            let _ = send.send(result);
+        });
+        let rendered = receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("macOS icon rendering worker exceeded five seconds")
+            .expect("macOS icon rendering failed");
+        worker.join().expect("macOS icon rendering worker panicked");
+        for (requested, png, width, height) in rendered {
+            assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+            assert_eq!(png_dimensions(&png), Some((requested, requested)));
+            assert_eq!((width, height), (requested, requested));
+        }
     }
 
     #[test]
