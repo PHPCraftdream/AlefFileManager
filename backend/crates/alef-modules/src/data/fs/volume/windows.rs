@@ -3,8 +3,10 @@ use super::super::meta::dto::Volume;
 use alef_core::AlefError;
 use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
-    FILE_READ_ONLY_VOLUME,
 };
+
+/// winnt.h; windows-sys exposes it only under Win32_System_SystemServices.
+const FILE_READ_ONLY_VOLUME: u32 = 0x0008_0000;
 
 pub(super) fn list() -> Result<Vec<Volume>, AlefError> {
     // SAFETY: GetLogicalDrives has no pointer arguments and returns a drive bitmask.
