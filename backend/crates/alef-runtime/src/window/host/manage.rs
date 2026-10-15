@@ -128,12 +128,6 @@ impl App {
             .with_visible(false)
             // In quiet mode maximizing is only what the document is told (see `state::Pretended`).
             .with_maximized(start_maximized && !self.quiet);
-        if let Some(position) = placement
-            .position
-            .and_then(|point| displays.physical_position(point, target))
-        {
-            attributes = attributes.with_position(position);
-        }
         if let Some((width, height)) = placement.min_size {
             attributes = attributes.with_min_inner_size(LogicalSize::new(width, height));
         }
@@ -150,7 +144,15 @@ impl App {
                 .create_window(attributes)
                 .map_err(io::Error::other)?,
         );
-        // The outer frame (title bar, borders) is known only now: centre by it.
+        // The outer frame (title bar, borders) is known only now: set and get must use the
+        // same frame (the outer one), while `with_position` targets the content rect on macOS.
+        if let Some(position) = placement
+            .position
+            .and_then(|point| displays.physical_position(point, target))
+        {
+            window.set_outer_position(position);
+        }
+        // Centre by the outer frame as well.
         if matches!(definition.position, WindowPosition::Center) {
             let area = target
                 .and_then(|index| infos.get(index))
