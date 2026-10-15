@@ -521,9 +521,9 @@ mod tests {
             use std::num::NonZeroUsize;
             use std::sync::atomic::{AtomicBool, Ordering};
             use std::sync::mpsc;
+            use std::sync::{Arc, Condvar, Mutex};
             use std::task::Poll;
-            // The pool is blocked, so an admitted job stays queued; the job waits on a barrier of
-            // its own, so an INLINE spawn would block the caller's poll and time out here.
+            // The pool is blocked, so an admitted job stays queued behind the blocker.
             let (block_started_tx, block_started_rx) = tokio::sync::oneshot::channel();
             let (release_pool_tx, release_pool_rx) = mpsc::sync_channel::<()>(1);
             let blocker = tokio::task::spawn_blocking(move || {
@@ -535,50 +535,62 @@ mod tests {
                 .expect("blocker started")
                 .expect("signal");
             let ran = Arc::new(AtomicBool::new(false));
-            let (job_started_tx, job_started_rx) = tokio::sync::oneshot::channel();
-            let (release_job_tx, release_job_rx) = mpsc::sync_channel::<()>(1);
             let ran_for_job = Arc::clone(&ran);
+            // The job waits on a condvar after it starts: an INLINE spawn would block the
+            // caller's poll for the whole (bounded) wait and the Pending assert would fail.
+            let gate = Arc::new((Mutex::new(false), Condvar::new()));
+            let gate_for_job = Arc::clone(&gate);
             let spawn: SpawnOverride = Some(Arc::new(move || {
                 ran_for_job.store(true, Ordering::SeqCst);
-                let _ = job_started_tx.send(());
-                let _ = release_job_rx.recv_timeout(std::time::Duration::from_secs(5));
+                let (released, signal) = &*gate_for_job;
+                let mut open = released.lock().expect("job gate");
+                while !*open {
+                    // Bounded so a reverted inline spawn fails the Pending assert instead of
+                    // blocking the test forever.
+                    let (waited, _result) = signal
+                        .wait_timeout(open, std::time::Duration::from_secs(5))
+                        .expect("job gate");
+                    open = waited;
+                    if !*open {
+                        return Err(AlefError::new(ErrorCode::NotFound, "not spawned"));
+                    }
+                }
                 Err(AlefError::new(ErrorCode::NotFound, "not spawned"))
             }));
             let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
             let mut spec = spec(command("cmd"), &["/c", "echo", "queued"]);
             spec.spawn = spawn;
-            // Poll on a blocking thread: an inline spawn would block THIS poll on the job barrier.
+            // One direct poll: an inline spawn would block THIS poll on the job's bounded gate
+            // wait and come back Ready(Err) instead of Pending.
             let mut fut = Box::pin(run(&executor, spec));
-            let poller = tokio::task::spawn_blocking(move || {
-                let poll = fut
-                    .as_mut()
-                    .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
-                (fut, poll)
-            });
-            let timed_out = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-                let (fut, poll) = poller.await.expect("poller joins");
-                assert!(matches!(poll, Poll::Pending), "the admitted spawn queues");
-                fut
-            })
-            .await;
-            let mut fut = match timed_out {
-                Ok(fut) => fut,
-                Err(_) => {
-                    panic!("the first poll ran the spawn inline and blocked on the job barrier")
-                }
-            };
+            let poll = fut
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+            assert!(matches!(poll, Poll::Pending), "the admitted spawn queues");
             assert!(
                 !ran.load(Ordering::SeqCst),
                 "the queued spawn closure ran before the pool freed"
             );
             release_pool_tx.send(()).expect("pool blocker waiting");
-            tokio::time::timeout(std::time::Duration::from_secs(2), job_started_rx)
+            // The queued closure runs once the pool frees: the flag is set at its start.
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while !ran.load(Ordering::SeqCst) {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the queued spawn closure never ran");
+            // Let the job finish; the run answers with its error.
+            {
+                let (released, signal) = &*gate;
+                *released.lock().expect("job gate") = true;
+                signal.notify_all();
+            }
+            let error = tokio::time::timeout(std::time::Duration::from_secs(2), fut)
                 .await
-                .expect("the queued spawn closure never ran")
-                .expect("signal");
-            assert!(ran.load(Ordering::SeqCst));
-            release_job_tx.send(()).expect("job barrier waiting");
-            drop(fut);
+                .expect("the run completes")
+                .expect_err("the overridden spawn refuses");
+            assert_eq!(error.code, ErrorCode::NotFound);
             drop(blocker);
         });
     }
@@ -596,6 +608,7 @@ mod tests {
             use std::num::NonZeroUsize;
             use std::sync::atomic::{AtomicBool, Ordering};
             use std::sync::mpsc;
+            use std::sync::Arc;
             use std::task::Poll;
             // Saturate the blocking pool itself: an admitted job of the executor queues behind it.
             let (block_started_tx, block_started_rx) = tokio::sync::oneshot::channel();

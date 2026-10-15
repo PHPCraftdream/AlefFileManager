@@ -195,9 +195,10 @@ mod tests {
                 ran_for_job.store(true, std::sync::atomic::Ordering::SeqCst);
                 job()
             };
+            let queued = executor.clone();
             let mut fut = Box::pin(async move {
-                executor.submit(job)?.result().await??;
-                Ok(Value::Null)
+                queued.submit(job)?.result().await??;
+                Ok::<Value, AlefError>(Value::Null)
             });
             let poll = fut
                 .as_mut()
