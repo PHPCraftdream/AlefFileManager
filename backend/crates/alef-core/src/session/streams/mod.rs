@@ -13,7 +13,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 fn closed() -> AlefError {
     AlefError::new(ErrorCode::Closed, "stream closed")
@@ -26,6 +26,7 @@ struct Outgoing {
     gate: CreditGate,
     /// `None` once terminal; the lock makes "check terminal + enqueue" atomic against termination.
     tx: Mutex<Option<mpsc::UnboundedSender<Frame>>>,
+    closed: Notify,
     rx: Mutex<Option<mpsc::UnboundedReceiver<Frame>>>,
     chunk: usize,
 }
@@ -45,6 +46,7 @@ impl Outgoing {
         if let Some(tx) = self.tx.lock().expect("outgoing mutex poisoned").take() {
             self.gate.close();
             let _ = tx.send(frame);
+            self.closed.notify_waiters();
         }
     }
 }
@@ -142,6 +144,7 @@ impl StreamHub {
             id,
             gate: CreditGate::with_window(self.window),
             tx: Mutex::new(Some(tx)),
+            closed: Notify::new(),
             rx: Mutex::new(Some(rx)),
             chunk: self.chunk,
         });
@@ -325,6 +328,20 @@ impl StreamWriter {
     /// Returns stream id.
     pub fn id(&self) -> StreamId {
         self.o.id
+    }
+    /// Waits until the outgoing stream is terminal.
+    /// cancel-safe: yes
+    pub async fn closed(&self) {
+        let notified = self.o.closed.notified();
+        tokio::pin!(notified);
+        loop {
+            notified.as_mut().enable();
+            if self.o.is_terminal() {
+                return;
+            }
+            notified.as_mut().await;
+            notified.set(self.o.closed.notified());
+        }
     }
     /// Serializes JSON, acquires payload credit, then queues it.
     pub async fn send_json(&self, v: serde_json::Value) -> Result<(), AlefError> {

@@ -16,14 +16,14 @@ use serde::Deserialize;
 
 use crate::{json, ModuleContext};
 
-mod dto;
-mod fault;
 mod handle;
+mod meta;
 mod ops;
 pub(in crate::data) mod space;
+mod volume;
 mod watch;
 
-pub use dto::{DirEntry, FileKind, FileStat};
+pub use meta::dto::{DirEntry, FileKind, FileStat};
 
 /// A file another module fills (`http.download`): the path as `permissions.fs.write` lets it be written,
 /// or its place in the stand-in when the user chose one.
@@ -51,7 +51,7 @@ pub(crate) fn write_target(
         .place(ctx, Permission::FsWrite, path, Reach::Through)
         .map(Target)
 }
-use fault::invalid;
+use meta::fault::invalid;
 use space::Space;
 
 /// The most `fs.readFile` returns and `fs.writeFile` takes: more goes through `fs.open`.
@@ -216,11 +216,16 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                let (ctx, place) = blocking(move || {
+                    let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                    Ok((ctx, place))
+                })
+                .await?;
                 watch::start(&ctx, place, args.recursive).await
             }
         })?;
 
+    volume::register(registry)?;
     handle::register(registry, &space)?;
 
     let at = space.clone();

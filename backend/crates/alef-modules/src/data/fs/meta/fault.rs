@@ -6,7 +6,7 @@ use std::io;
 
 use alef_core::{AlefError, ErrorCode};
 
-pub(super) fn said(code: ErrorCode) -> &'static str {
+pub(in crate::data) fn said(code: ErrorCode) -> &'static str {
     match code {
         ErrorCode::NotFound => "no such file or folder",
         ErrorCode::AlreadyExists => "it already exists",
@@ -21,11 +21,11 @@ pub(super) fn said(code: ErrorCode) -> &'static str {
     }
 }
 
-pub(super) fn coded(code: ErrorCode) -> AlefError {
+pub(in crate::data) fn coded(code: ErrorCode) -> AlefError {
     AlefError::new(code, said(code))
 }
 
-pub(super) fn fault(error: io::Error) -> AlefError {
+pub(in crate::data) fn fault(error: io::Error) -> AlefError {
     // Sharing and lock violations of Windows are plain `Uncategorized` to the standard library.
     #[cfg(windows)]
     if matches!(error.raw_os_error(), Some(32 | 33)) {
@@ -38,6 +38,6 @@ pub(super) fn fault(error: io::Error) -> AlefError {
     coded(code)
 }
 
-pub(super) fn invalid(message: &str) -> AlefError {
+pub(in crate::data) fn invalid(message: &str) -> AlefError {
     AlefError::new(ErrorCode::InvalidArgument, message)
 }

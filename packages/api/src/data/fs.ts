@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-import type { DirEntry, FileStat, WatchEvent } from '../../types/index.ts';
+import type { DirEntry, FileStat, Volume, VolumeEvent, WatchEvent } from '../../types/index.ts';
 import { openReadable, openWritable, type Readable, type Writable } from '../core/stream.ts';
 import { call } from '../core/transport.ts';
 import type { Cancelable } from '../desktop/app.ts';
@@ -252,15 +252,32 @@ export const fs = {
   },
 
   /**
-   * What happens to a file or a folder, as events: `create`, `modify`, `remove`, `rename` (and
-   * `overflow` when events were lost: look again). Events of a short moment are put together. Leaving
-   * the loop ends the watch.
+   * What happens to a file or a folder, as events: `create`, `modify`, `attrib`, `remove`, `rename` (and
+   * `overflow` when events were lost: look again). `attrib` reports metadata changes, not content;
+   * Events of a short moment are put together.
+   * Leaving the loop ends the watch.
    */
   watch: async function* (path: string, options: WatchOptions = {}): AsyncGenerator<WatchEvent> {
     const { recursive, ...rest } = options;
     const { stream } = await call<{ stream: number }>('fs.watch', { path, recursive }, rest);
     for await (const frame of await openReadable(stream, rest)) {
       if (frame.kind === 'json') yield frame.value as WatchEvent;
+    }
+  },
+
+  /** Mounted volumes visible when at least one manifest `fs.read` scope is allowed; otherwise returns an empty list. */
+  volumes: (options: Cancelable = {}): Promise<Volume[]> => call<Volume[]>('fs.volumes', null, options),
+
+  /**
+   * Mounted volume events (`mount`, `unmount`, `change`). Changes report attributes, not file contents;
+   * free-space-only fluctuations do not emit `change`. Leaving the loop or aborting its signal stops
+   * the watch. Requires at least one allowed manifest `fs.read` scope; when undeclared, denied or
+   * substituted, there are no events.
+   */
+  watchVolumes: async function* (options: Cancelable = {}): AsyncGenerator<VolumeEvent> {
+    const { stream } = await call<{ stream: number }>('fs.watchVolumes', null, options);
+    for await (const frame of await openReadable(stream, options)) {
+      if (frame.kind === 'json') yield frame.value as VolumeEvent;
     }
   },
 

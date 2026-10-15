@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Scenarios of the data modules (docs/stages/m3-data.md, "Приёмка"): `fs` against the real disk, with
 // the scope allowed and with a stand-in the user chose; `store` across two runs of one application.
+import { spawnSync } from 'node:child_process';
 import * as nodeCrypto from 'node:crypto';
 import { createCipheriv, createDecipheriv, createHash, createHmac, createPrivateKey, createPublicKey, hkdfSync, pbkdf2Sync, randomBytes, scryptSync } from 'node:crypto';
-import { closeSync, createReadStream, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +17,13 @@ const FS_CHECKS = [
   'fs-a-handle-reads-and-writes-pieces', 'fs-settle-leaves-a-backpressured-read-busy-and-byte-exact',
   'fs-a-big-file-is-copied-through-streams-and-arrives-whole',
   'fs-a-big-folder-comes-in-batches', 'fs-watch-tells-create-modify-and-remove',
+  'fs-volumes-list-mounted-roots-and-watch-stream-opens-and-closes', 'fs-watch-reports-real-metadata-change',
+  'fs-volume-watch-reports-linux-mount-and-unmount',
+];
+
+const FS_SUBSTITUTE_CHECKS = [
+  'fs-a-stand-in-starts-as-an-empty-folder', 'fs-a-stand-in-keeps-what-is-written-and-answers-like-a-disk',
+  'fs-a-stand-in-refuses-what-the-scope-refuses', 'fs-volumes-stand-in-is-empty-and-watch-has-no-events',
 ];
 
 const SQLITE_CHECKS = [
@@ -64,6 +72,17 @@ const STORE_CHECKS = {
 const COPY_SIZE = 96 * 1024 * 1024 + 4321;
 const MANY = 2500;
 
+function linuxMountpoints() {
+  return readFileSync('/proc/self/mountinfo', 'utf8').split('\n').map(line => {
+    const field = line.split(' ')[4];
+    return field?.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)));
+  });
+}
+
+function isMounted(path) {
+  return linuxMountpoints().includes(path);
+}
+
 /** The sha-256 of a file, read as a stream. */
 function sha256(path) {
   return new Promise((resolvePromise, reject) => {
@@ -71,11 +90,6 @@ function sha256(path) {
     createReadStream(path).on('data', chunk => hash.update(chunk)).on('error', reject).on('end', () => resolvePromise(hash.digest('hex')));
   });
 }
-
-const SUBSTITUTE_CHECKS = [
-  'fs-a-stand-in-starts-as-an-empty-folder', 'fs-a-stand-in-keeps-what-is-written-and-answers-like-a-disk',
-  'fs-a-stand-in-refuses-what-the-scope-refuses',
-];
 
 /** Every file below `directory`, as paths relative to it. */
 function filesBelow(directory) {
@@ -96,6 +110,7 @@ function prepare() {
   writeFileSync(join(base, 'picked.txt'), 'picked');
   writeFileSync(join(base, 'neighbour.txt'), 'neighbour');
   writeFileSync(join(root, 'real.txt'), 'real');
+  writeFileSync(join(root, 'attrib-target.txt'), 'metadata target');
   mkdirSync(join(root, 'real-folder'));
   let link = null;
   try {
@@ -216,18 +231,107 @@ export function dataScenarios({ drive, exe, verbose }) {
     // The user allowed the scope: everything the page does is real and stays inside it.
     async fs() {
       const here = prepare();
+      const mountRoot = process.platform === 'linux'
+        ? `/media/alef-e2e-fs-${process.pid}-${nodeCrypto.randomUUID()}` : null;
+      let mountpointCreated = false;
+      let mounted = false;
+      let volumeError = null;
+      let interval;
+      let volumeInterval;
+      let unmountInterval;
+      let outcome;
+      const cleanup = [];
       try {
-        return await drive({
+        const target = join(here.root, 'attrib-target.txt');
+        let mountSkip = process.platform !== 'linux' ? `requires Linux (current: ${process.platform})` : null;
+        const staleCleanup = [];
+        if (!mountSkip) {
+          const probe = spawnSync('sudo', ['-n', 'true'], { encoding: 'utf8', timeout: 5000 });
+          if (probe.error || probe.status !== 0) mountSkip = `sudo -n unavailable: ${probe.error?.message ?? probe.stderr ?? probe.status}`;
+          else {
+            for (const name of readdirSync('/media')) {
+              const match = /^alef-e2e-fs-(\d+)-[0-9a-f-]{36}$/.exec(name);
+              if (!match || name === mountRoot.slice('/media/'.length)) continue;
+              let dead = false;
+              try { process.kill(Number(match[1]), 0); } catch (error) { dead = error.code === 'ESRCH'; }
+              if (!dead) continue;
+              const stale = `/media/${name}`;
+              let info;
+              try { info = lstatSync(stale); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+              if (!info.isDirectory() || info.isSymbolicLink()) continue;
+              if (isMounted(stale)) {
+                const unmount = spawnSync('sudo', ['-n', 'umount', stale], { encoding: 'utf8', timeout: 10000 });
+                if (unmount.error || unmount.status !== 0 || isMounted(stale)) { staleCleanup.push(`could not unmount stale ${stale}: ${unmount.error?.message ?? unmount.stderr ?? unmount.status}`); continue; }
+              }
+              const remove = spawnSync('sudo', ['-n', 'rmdir', stale], { encoding: 'utf8', timeout: 10000 });
+              if (remove.error || remove.status !== 0) staleCleanup.push(`could not remove stale ${stale}: ${remove.error?.message ?? remove.stderr ?? remove.status}`);
+            }
+            if (staleCleanup.length) throw new Error(staleCleanup.join('; '));
+            const mkdir = spawnSync('sudo', ['-n', 'mkdir', mountRoot], { encoding: 'utf8', timeout: 5000 });
+            if (mkdir.error || mkdir.status !== 0) {
+              try {
+                const info = lstatSync(mountRoot);
+                mountpointCreated = info.isDirectory() && !info.isSymbolicLink();
+              } catch {}
+              throw new Error(`could not create isolated mountpoint: ${mkdir.error?.message ?? mkdir.stderr ?? mkdir.status}`);
+            }
+            mountpointCreated = true;
+          }
+        }
+        if (mountSkip) console.log(`fs-volume mount check skipped: ${mountSkip}`);
+        const mountReady = join(here.root, 'volume-mount-ready');
+        const unmountReady = join(here.root, 'volume-unmount-ready');
+        const mountStatus = join(here.root, 'volume-mount-status');
+        const unmountStatus = join(here.root, 'volume-unmount-status');
+        const ready = join(here.root, 'attrib-ready.txt');
+        const ack = join(here.root, 'attrib-ack.txt');
+        let mutationError;
+        let mutations = 0;
+        let deadline = 0;
+        interval = setInterval(() => {
+          if (!existsSync(ready) || existsSync(ack)) return;
+          if (!deadline) deadline = Date.now() + 30000;
+          if (Date.now() > deadline) return;
+          try {
+            const stamp = Date.now() / 1000;
+            utimesSync(target, stamp, stamp);
+            mutations += 1;
+          } catch (error) { mutationError = error; }
+        }, 100);
+      volumeInterval = setInterval(() => {
+        try {
+          if (mountSkip || mounted || volumeError || !existsSync(mountReady) || existsSync(mountStatus)) return;
+          const result = spawnSync('sudo', ['-n', 'mount', '-t', 'tmpfs', '-o', 'size=1m', 'alef-e2e', mountRoot], { encoding: 'utf8', timeout: 10000 });
+          mounted = !result.error && result.status === 0;
+          try { writeFileSync(mountStatus, JSON.stringify({ ok: mounted, error: result.error?.message ?? result.stderr ?? `mount exited ${result.status}` })); }
+          catch (error) { volumeError = error; }
+        } catch (error) { volumeError = error; }
+      }, 100);
+      unmountInterval = setInterval(() => {
+        try {
+          if (volumeError || !mounted || !existsSync(unmountReady) || existsSync(unmountStatus)) return;
+          const result = spawnSync('sudo', ['-n', 'umount', mountRoot], { encoding: 'utf8', timeout: 10000 });
+          if (!result.error && result.status === 0) mounted = false;
+          try { writeFileSync(unmountStatus, JSON.stringify({ ok: !mounted, error: result.error?.message ?? result.stderr ?? `umount exited ${result.status}` })); }
+          catch (error) { volumeError = error; }
+        } catch (error) { volumeError = error; }
+      }, 100);
+        outcome = await drive({
           name: 'fs', app: 'modules/data/fs', replacements: { ROOT: here.scope.slice(0, -3) },
           targets: {
-            mode: 'real', root: here.root, outside: here.secret, outsideName: 'outside', outsideFolder: here.outside, link: here.link,
+            mode: 'real', platform: process.platform, root: here.root, outside: here.secret, outsideName: 'outside', outsideFolder: here.outside, link: here.link,
             directoryLink: here.directoryLink, linkedSecret: join(here.directoryLink, 'secret.txt'),
             big: here.big, many: here.many, manyCount: MANY, copySource: here.copySource, copySize: COPY_SIZE,
+            mountRoot, mountSkip, mountReady, unmountReady, mountStatus, unmountStatus,
           },
           env: { ALEF_HOME: join(here.base, 'home'), ALEF_E2E_DIALOGS: JSON.stringify([{ open: [here.picked] }]) },
           expectedChecks: FS_CHECKS,
           judge: async () => {
             const problems = [];
+            if (volumeError) problems.push(`volume watcher failed: ${volumeError.message}`);
+            if (mutationError) problems.push(`could not change target metadata: ${mutationError.message}`);
+            if (process.platform !== 'win32' && mutations === 0) problems.push('page never began watching the metadata target');
+            if (process.platform !== 'win32' && (readFileSync(target).length === 0)) problems.push('metadata target disappeared');
             const copied = join(here.root, 'work', 'copied.bin');
             if (!existsSync(copied) || await sha256(copied) !== await sha256(here.copySource)) problems.push('the copy made through streams is not the file');
             const note = join(here.root, 'work', 'note.txt');
@@ -238,12 +342,31 @@ export function dataScenarios({ drive, exe, verbose }) {
             if (here.link && existsSync(here.link)) problems.push('the link is still there');
             if (here.link && !existsSync(here.secret)) problems.push('removing the link removed what it led to');
             if (!existsSync(join(here.root, 'work', 'x2', 'y', 'copy.txt'))) problems.push('the copied folder is missing');
+            if (!mountSkip) {
+              if (!existsSync(mountStatus) || !JSON.parse(readFileSync(mountStatus, 'utf8')).ok) problems.push('tmpfs mount did not succeed');
+              if (!existsSync(unmountStatus) || !JSON.parse(readFileSync(unmountStatus, 'utf8')).ok) problems.push('tmpfs unmount did not succeed');
+            }
             return problems;
           },
         });
       } finally {
+        clearInterval(interval);
+        clearInterval(volumeInterval);
+        clearInterval(unmountInterval);
+        if (mountpointCreated) {
+          if (isMounted(mountRoot)) {
+            const result = spawnSync('sudo', ['-n', 'umount', mountRoot], { encoding: 'utf8', timeout: 10000 });
+            if (result.error || result.status !== 0 || isMounted(mountRoot)) cleanup.push(`could not unmount ${mountRoot}: ${result.error?.message ?? result.stderr ?? result.status}`);
+          }
+          if (!isMounted(mountRoot)) {
+            const result = spawnSync('sudo', ['-n', 'rmdir', mountRoot], { encoding: 'utf8', timeout: 10000 });
+            if (result.error || result.status !== 0) cleanup.push(`could not remove ${mountRoot}: ${result.error?.message ?? result.stderr ?? result.status}`);
+          } else cleanup.push(`preserving still-mounted ${mountRoot}`);
+        }
         rmSync(here.base, { recursive: true, force: true });
       }
+      if (cleanup.length) throw new Error(cleanup.join('; '));
+      return outcome;
     },
 
     // The user chose a stand-in for the scope: the page finds an empty folder and keeps its writes in it;
@@ -255,12 +378,12 @@ export function dataScenarios({ drive, exe, verbose }) {
         const before = filesBelow(here.root).sort();
         const result = await drive({
           name: 'fs-substitute', app: 'modules/data/fs', replacements: { ROOT: here.scope.slice(0, -3) },
-          targets: { mode: 'substituted', root: here.root, outside: here.secret, outsideName: 'outside' },
+          targets: { mode: 'substituted', platform: process.platform, root: here.root, outside: here.secret, outsideName: 'outside' },
           env: {
             ALEF_HOME: home,
             ALEF_E2E_CONSENT: `fs.read:${here.scope}=substitute;fs.write:${here.scope}=substitute`,
           },
-          expectedChecks: SUBSTITUTE_CHECKS,
+          expectedChecks: FS_SUBSTITUTE_CHECKS,
           judge: () => {
             const problems = [];
             const after = filesBelow(here.root).sort();

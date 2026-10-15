@@ -1,4 +1,5 @@
 use super::*;
+use std::future::Future;
 use std::time::Duration;
 use tokio::time::timeout;
 async fn bounded<T>(f: impl std::future::Future<Output = T>) -> T {
@@ -13,6 +14,103 @@ async fn frame(r: &mut StreamReader) -> Option<Frame> {
     bounded(r.next_frame()).await
 }
 
+async fn parked_waiter_is_woken(close_session: bool) {
+    let h = Arc::new(StreamHub::new(512, 256));
+    let (w, id) = h.open_outgoing();
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let mut waiter = tokio::spawn(async move {
+        let mut closed = Box::pin(w.closed());
+        let mut ready = Some(ready_tx);
+        std::future::poll_fn(|cx| {
+            let result = closed.as_mut().poll(cx);
+            if result.is_pending() {
+                if let Some(tx) = ready.take() {
+                    let _ = tx.send(());
+                }
+            }
+            result
+        })
+        .await;
+    });
+    match timeout(Duration::from_secs(10), ready_rx).await {
+        Ok(Ok(())) => {}
+        _ => {
+            waiter.abort();
+            let _ = waiter.await;
+            panic!("waiter did not register");
+        }
+    }
+    let closer = Arc::clone(&h);
+    let close_task = tokio::spawn(async move {
+        if close_session {
+            closer.close_all();
+        } else {
+            closer.close(id).expect("close");
+        }
+    });
+    bounded(close_task).await.expect("closer join");
+    match timeout(Duration::from_secs(10), &mut waiter).await {
+        Ok(result) => result.expect("waiter join"),
+        Err(_) => {
+            waiter.abort();
+            let _ = waiter.await;
+            panic!("closed waiter was not woken");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_parked_closed_waiter_is_woken_by_page_close() {
+    parked_waiter_is_woken(false).await;
+}
+
+#[tokio::test]
+async fn a_parked_closed_waiter_is_woken_by_session_end() {
+    parked_waiter_is_woken(true).await;
+}
+
+#[tokio::test]
+async fn closed_resolves_when_stream_closes_before_first_poll() {
+    let h = StreamHub::new(512, 256);
+    let (w, id) = h.open_outgoing();
+    h.close(id).expect("close");
+    bounded(w.closed()).await;
+}
+
+#[tokio::test]
+async fn closed_resolves_for_all_registered_waiters_on_session_close() {
+    let h = StreamHub::new(512, 256);
+    let (w, _) = h.open_outgoing();
+    let mut first = Box::pin(w.closed());
+    let mut second = Box::pin(w.closed());
+    let mut third = Box::pin(w.closed());
+    std::future::poll_fn(|cx| {
+        assert!(matches!(first.as_mut().poll(cx), std::task::Poll::Pending));
+        assert!(matches!(second.as_mut().poll(cx), std::task::Poll::Pending));
+        assert!(matches!(third.as_mut().poll(cx), std::task::Poll::Pending));
+        std::task::Poll::Ready(())
+    })
+    .await;
+    h.close_all();
+    bounded(async {
+        tokio::join!(first, second, third);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sending_frames_and_acknowledging_do_not_close_stream() {
+    let h = StreamHub::new(512, 256);
+    let (w, id) = h.open_outgoing();
+    bounded(w.send_json(serde_json::json!(1)))
+        .await
+        .expect("send");
+    h.ack(id, 256).expect("ack");
+    assert!(timeout(Duration::from_millis(50), w.closed())
+        .await
+        .is_err());
+    w.end();
+}
 #[tokio::test]
 async fn outgoing_orders_chunks_and_terminates() {
     let h = StreamHub::new(768, 256);

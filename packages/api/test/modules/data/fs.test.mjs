@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AlefError, FileHandle, fs } from '../../../src/index.ts';
-import { binaryFrame, endFrame, errorFrame, installRuntime, join, jsonFrame } from '../../fake-runtime.mjs';
+import { binaryFrame, endFrame, errorFrame, installRuntime, join, jsonFrame, liveStream } from '../../fake-runtime.mjs';
 
 const replies = new Map();
 const streams = new Map();
@@ -172,6 +172,58 @@ test('a failure of the settle is the failure of close', async () => {
   await assert.rejects(writer.close(), error => error instanceof AlefError && error.code === 'CLOSED');
 });
 
+test('volumes_sends_null_arguments_and_returns_the_runtime_volume_list', { timeout: 10000 }, async () => {
+  const volumes = [{ root: 'D:/', label: 'Data', kind: 'fixed', fileSystem: 'NTFS', total: 100, free: 40, readOnly: false }];
+  const result = await sent('fs.volumes', () => fs.volumes(), { json: volumes });
+  assert.equal(result.args, null);
+  assert.deepEqual(result.result, volumes);
+
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(fs.volumes({ signal: controller.signal }), { name: 'AbortError' });
+});
+
+test('watch_volumes_yields_unchanged_events_and_closes_when_iteration_stops', { timeout: 10000 }, async () => {
+  const events = [
+    { type: 'mount', volume: { root: '/mnt/a', kind: 'removable', readOnly: false } },
+    { type: 'unmount', volume: { root: '/mnt/a', kind: 'removable', readOnly: false } },
+    { type: 'change', volume: { root: '/mnt/b', kind: 'network', free: 12, readOnly: true } },
+  ];
+  replies.set('fs.watchVolumes', { json: { stream: 44 } });
+  streams.set(44, { chunks: [join(...events.map(jsonFrame), endFrame())] });
+  const seen = [];
+  for await (const event of fs.watchVolumes()) seen.push(event);
+  assert.deepEqual(seen, events);
+  assert.equal(runtime.argsOf(runtime.calls('fs.watchVolumes').at(-1)), null);
+
+  replies.set('fs.watchVolumes', { json: { stream: 45 } });
+  streams.set(45, { chunks: [join(...events.map(jsonFrame))] });
+  const before = runtime.calls('runtime.stream.close').length;
+  for await (const event of fs.watchVolumes()) {
+    void event;
+    break;
+  }
+  const close = runtime.calls('runtime.stream.close').at(-1);
+  assert.equal(runtime.calls('runtime.stream.close').length, before + 1);
+  assert.equal(close.url, 'native://call/runtime.stream.close');
+  assert.deepEqual(runtime.argsOf(close), { id: 45 });
+});
+
+test('aborting_watch_volumes_propagates_the_signal_and_closes_its_stream', { timeout: 10000 }, async () => {
+  const controller = new AbortController();
+  replies.set('fs.watchVolumes', { json: { stream: 46 } });
+  const stream = liveStream();
+  streams.set(46, stream.reply);
+  const iterator = fs.watchVolumes({ signal: controller.signal });
+  const pending = iterator.next();
+  stream.push(jsonFrame({ type: 'mount', volume: { root: '/x', kind: 'unknown', readOnly: false } }));
+  assert.equal((await pending).value.type, 'mount');
+  assert.ok(runtime.calls('fs.watchVolumes').at(-1).signal instanceof AbortSignal);
+  const next = iterator.next();
+  controller.abort();
+  await assert.rejects(next, { name: 'AbortError' });
+  assert.ok(runtime.calls('runtime.stream.close').some(request => runtime.argsOf(request).id === 46));
+});
 test('readDirStream yields the entries of every batch and watch yields the events', async () => {
   replies.set('fs.readDirStream', { json: { stream: 41 } });
   const first = [{ name: 'a', path: '/d/a', kind: 'file', size: 1 }];
@@ -183,8 +235,8 @@ test('readDirStream yields the entries of every batch and watch yields the event
   assert.deepEqual(runtime.argsOf(runtime.calls('fs.readDirStream').at(-1)), { path: '/d' });
 
   replies.set('fs.watch', { json: { stream: 42 } });
-  const events = [{ kind: 'create', path: '/d/x' }, { kind: 'rename', path: '/d/x', to: '/d/y' }];
-  streams.set(42, { chunks: [join(jsonFrame(events[0]), jsonFrame(events[1]), endFrame())] });
+  const events = [{ kind: 'create', path: '/d/x' }, { kind: 'attrib', path: '/d/x' }, { kind: 'rename', path: '/d/x', to: '/d/y' }];
+  streams.set(42, { chunks: [join(...events.map(jsonFrame), endFrame())] });
   const seen = [];
   for await (const event of fs.watch('/d', { recursive: true })) seen.push(event);
   assert.deepEqual(seen, events);
