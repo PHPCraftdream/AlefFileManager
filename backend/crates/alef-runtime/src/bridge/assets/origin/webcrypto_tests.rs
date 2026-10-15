@@ -35,6 +35,7 @@ fn policy(webcrypto: bool) -> PermissionSet {
             autostart: false,
         },
         window: None,
+        ai: None,
     };
     let root = std::env::temp_dir();
     let vars = PathVars {
