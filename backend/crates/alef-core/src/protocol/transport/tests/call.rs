@@ -306,6 +306,142 @@ async fn dropping_the_response_future_aborts_the_handler_and_frees_the_slot() {
 }
 
 #[tokio::test]
+async fn an_oversized_json_body_is_rejected_without_a_handler_call() {
+    let limits = Limits {
+        max_unary_body: 16,
+        ..Limits::default()
+    };
+    let fx = fixture(config(limits));
+    let token = session_token(&fx).await;
+    let big = json!({"p": "x".repeat(64)});
+    let response = send(&fx, call("test.slow", &token, &big)).await;
+    assert_eq!(response.status, 400);
+    assert_eq!(error_code(&response), "INVALID_ARGUMENT");
+    assert_eq!(
+        fx.probe.entered.available_permits(),
+        0,
+        "the handler must never start"
+    );
+}
+
+#[test]
+fn a_call_waits_for_the_bounded_parser_before_its_handler_runs() {
+    // One blocking thread: an admitted parse queues behind the blocker instead of running beside it.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    runtime.block_on(async {
+        // A parser slot held by a barrier: while it is held, the parse cannot have run.
+        let parse = BlockingExecutor::new(std::num::NonZeroUsize::new(2).expect("non-zero limit"));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let _blocker = parse
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            })
+            .expect("blocker admitted");
+        bounded(started_rx).await.expect("blocker started");
+        let fx = fixture_with_parse(config(Limits::default()), parse);
+        let token = session_token(&fx).await;
+        let running = {
+            let transport = fx.transport.clone();
+            let request = call("test.slow", &token, &json!({}));
+            tokio::spawn(async move { transport.handle(request).await })
+        };
+        // While the parser is blocked the handler must not start: parsing gates the dispatch.
+        // If parsing ever returned to the caller's poll it would run inline and the handler
+        // would start without the parser — this bounded loop then fails.
+        bounded(async {
+            for _ in 0..200 {
+                assert_eq!(
+                    fx.probe.entered.available_permits(),
+                    0,
+                    "the handler ran while the parser was still blocked"
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        release_tx.send(()).expect("parser barrier waiting");
+        bounded(fx.probe.entered.acquire())
+            .await
+            .expect("the handler starts once the parser is free")
+            .forget();
+        fx.probe.release.add_permits(1);
+        assert_eq!(bounded(running).await.expect("join").status, 200);
+    });
+}
+
+#[test]
+fn a_queued_parse_dropped_with_its_call_never_reaches_the_handler() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    runtime.block_on(async {
+        let parse = BlockingExecutor::new(std::num::NonZeroUsize::new(2).expect("non-zero limit"));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let _blocker = parse
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            })
+            .expect("blocker admitted");
+        bounded(started_rx).await.expect("blocker started");
+        let fx = fixture_with_parse(config(Limits::default()), parse);
+        let token = session_token(&fx).await;
+        let transport = fx.transport.clone();
+        let request = call("test.slow", &token, &json!({}));
+        let running = tokio::spawn(async move { transport.handle(request).await });
+        // While the parser is blocked the call's parse is queued; the handler must not start.
+        bounded(async {
+            for _ in 0..200 {
+                assert_eq!(
+                    fx.probe.entered.available_permits(),
+                    0,
+                    "the handler ran while the parser was still blocked"
+                );
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        // Dropping the call drops its queued parse job with it.
+        running.abort();
+        release_tx.send(()).expect("parser barrier waiting");
+        bounded(async {
+            for _ in 0..200 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert_eq!(
+            fx.probe.entered.available_permits(),
+            0,
+            "the handler ran for an aborted call"
+        );
+        // The skipped queued job releases its permit only once it runs; retry past a transient
+        // parser `BUSY` and require the budget to be usable again.
+        let follow = bounded(async {
+            loop {
+                let response = send(&fx, call("test.echo", &token, &json!({}))).await;
+                if response.status == 429 && error_code(&response) == "BUSY" {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                break response;
+            }
+        })
+        .await;
+        assert_eq!(follow.status, 200, "the parse budget was not leaked");
+    });
+}
+
+#[tokio::test]
 async fn a_stream_reply_is_announced_as_json_with_the_stream_id() {
     let fx = fixture(config(Limits::default()));
     let token = session_token(&fx).await;

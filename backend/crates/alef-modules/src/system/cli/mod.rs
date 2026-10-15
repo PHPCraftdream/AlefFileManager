@@ -21,12 +21,24 @@ use alef_core::{
     ids::ResourceId,
     registry::{command::Reply, context::CallContext, dispatch::Registry},
     security::{authority::Authority, consent::Decision, permissions::Permission},
+    session::BlockingExecutor,
     AlefError, ErrorCode,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::num::NonZeroUsize;
+use std::sync::OnceLock;
 
 use crate::json;
+
+/// Local cli-process budget: at most eight queued or running short jobs.
+/// This is not a global or per-session framework limit.
+pub(crate) fn executor() -> &'static BlockingExecutor {
+    static EXECUTOR: OnceLock<BlockingExecutor> = OnceLock::new();
+    EXECUTOR.get_or_init(|| {
+        BlockingExecutor::new(NonZeroUsize::new(8).expect("non-zero cli job budget"))
+    })
+}
 
 /// How long a call the user substituted hangs when it names no timeout.
 const HANG: Duration = Duration::from_secs(30);
@@ -135,20 +147,29 @@ struct KillArgs {
 }
 
 /// The working directory of a process: an existing folder the `fs.read` right reaches, or the one
-/// the runtime runs in.
-fn cwd_of(ctx: &CallContext, cwd: &Option<String>) -> Result<PathBuf, AlefError> {
+/// the runtime runs in. The stat and the authorization of a named folder run on the blocking
+/// executor: both touch the file system.
+pub(crate) async fn cwd_of(ctx: &CallContext, cwd: &Option<String>) -> Result<PathBuf, AlefError> {
     use alef_core::security::permissions::{Permission, Reach};
     match cwd {
         Some(cwd) => {
-            if !Path::new(cwd).is_dir() {
-                return Err(invalid("cwd is not an existing directory"));
-            }
-            let authorized = ctx.permissions.authorize_at(
-                Permission::FsRead,
-                Some(cwd),
-                &ctx.grants(),
-                Reach::Through,
-            )?;
+            let permissions = ctx.permissions.clone();
+            let grants = ctx.grants();
+            let target = cwd.clone();
+            let authorized = executor()
+                .submit(move || {
+                    if !Path::new(&target).is_dir() {
+                        return Err(invalid("cwd is not an existing directory"));
+                    }
+                    permissions.authorize_at(
+                        Permission::FsRead,
+                        Some(&target),
+                        &grants,
+                        Reach::Through,
+                    )
+                })?
+                .result()
+                .await??;
             if authorized.decision == Decision::Substitute {
                 return Err(AlefError::new(
                     ErrorCode::PermissionDenied,
@@ -160,6 +181,22 @@ fn cwd_of(ctx: &CallContext, cwd: &Option<String>) -> Result<PathBuf, AlefError>
         None => std::env::current_dir()
             .map_err(|error| AlefError::new(ErrorCode::Internal, format!("cwd: {error}"))),
     }
+}
+
+/// The program a pty names, resolved on the blocking executor: the search path stats every
+/// candidate directory.
+pub(crate) async fn resolve_program(program: String) -> Result<PathBuf, AlefError> {
+    executor()
+        .submit(move || {
+            tree::resolve(
+                &program,
+                std::env::var_os("PATH").as_deref(),
+                std::env::var_os("PATHEXT").as_deref(),
+            )
+        })?
+        .result()
+        .await?
+        .ok_or_else(|| AlefError::new(ErrorCode::NotFound, "program not found"))
 }
 
 /// Takes a tree down the way the caller asked for; on Windows only the whole tree dies at once.
@@ -230,17 +267,22 @@ pub(crate) fn register(
                         (program, words)
                     }
                 };
-                let cwd = cwd_of(&ctx, &args.cwd)?;
-                let program = sidecar::program(app.as_deref(), &program_text)?;
+                let cwd = cwd_of(&ctx, &args.cwd).await?;
+                let program = sidecar::program_on(app.clone(), program_text).await?;
                 let body = ctx.body().cloned();
-                let (out, err, code, signal) = exec::run(exec::Spec {
-                    program,
-                    args: arguments,
-                    cwd,
-                    env,
-                    body,
-                    limit,
-                })
+                let (out, err, code, signal) = exec::run(
+                    executor(),
+                    exec::Spec {
+                        program,
+                        args: arguments,
+                        cwd,
+                        env,
+                        body,
+                        limit,
+                        #[cfg(all(test, windows))]
+                        spawn: None,
+                    },
+                )
                 .await?;
                 run_reply(&out, &err, code, signal)
             }
@@ -257,8 +299,8 @@ pub(crate) fn register(
                     return Err(dead(None).await);
                 }
                 let env = spawn::check_env(args.env, wildcard(&ctx))?;
-                let cwd = cwd_of(&ctx, &args.cwd)?;
-                let program = sidecar::program(app.as_deref(), &args.program)?;
+                let cwd = cwd_of(&ctx, &args.cwd).await?;
+                let program = sidecar::program_on(app.clone(), args.program.clone()).await?;
                 let reply = spawn::spawn_command(
                     &ctx.session,
                     program,

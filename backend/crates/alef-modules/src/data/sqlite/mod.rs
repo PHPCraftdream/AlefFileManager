@@ -171,10 +171,14 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                 // for the other.
                 let mut place = None;
                 if !args.readonly {
-                    place =
-                        Some(at.place(&ctx, Permission::FsWrite, &args.path, Reach::Through)?);
+                    place = Some(
+                        at.place(&ctx, Permission::FsWrite, &args.path, Reach::Through)
+                            .await?,
+                    );
                 }
-                let seen = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                let seen = at
+                    .place(&ctx, Permission::FsRead, &args.path, Reach::Through)
+                    .await?;
                 if place
                     .as_ref()
                     .is_some_and(|written| written.real != seen.real)

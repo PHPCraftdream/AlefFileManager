@@ -35,7 +35,7 @@ export function startupScenarios({ exe }) {
   };
 }
 
-const BUS_XFAIL = 'XFAIL audit #160: pre-launch consent gate prevents application probes while consent is pending';
+const BUS_XFAIL = 'XFAIL audit #160: the pre-launch consent gate correctly holds the probes until release, but the launcher\'s consent settle path is not yet proven off the BUS';
 export function busScenarios({ drive, exe, verbose, timeoutMs }) {
   return {
     async bus() {

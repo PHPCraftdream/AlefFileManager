@@ -256,11 +256,15 @@ pub(super) fn register(registry: &mut Registry, space: &Space) -> Result<(), Ale
                 let (reads, writes) = flags(&args)?;
                 let mut place = None;
                 if writes {
-                    place =
-                        Some(at.place(&ctx, Permission::FsWrite, &args.path, Reach::Through)?);
+                    place = Some(
+                        at.place(&ctx, Permission::FsWrite, &args.path, Reach::Through)
+                            .await?,
+                    );
                 }
                 if reads {
-                    let seen = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                    let seen = at
+                        .place(&ctx, Permission::FsRead, &args.path, Reach::Through)
+                        .await?;
                     // Both rights decided differently for the same path: one file cannot be real for
                     // reading and a stand-in for writing.
                     if place

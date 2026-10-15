@@ -9,7 +9,7 @@ use std::{
 
 use alef_core::{
     registry::context::CallContext,
-    security::permissions::{Permission, Reach},
+    security::permissions::{Grants, Permission, PermissionSet, Reach},
     AlefError,
 };
 
@@ -100,17 +100,37 @@ impl Space {
         Self { shadow }
     }
 
-    /// Authorizes `path` for `permission` and says where it lies.
-    pub(in crate::data) fn place(
+    /// Authorizes `path` for `permission` and says where it lies: the platform calls run off the
+    /// poll.
+    pub(in crate::data) async fn place(
         &self,
         ctx: &CallContext,
         permission: Permission,
         path: &str,
         reach: Reach,
     ) -> Result<Place, AlefError> {
-        let authorized =
-            ctx.permissions
-                .authorize_at(permission, Some(path), &ctx.grants(), reach)?;
+        let permissions = ctx.permissions.clone();
+        let grants = ctx.grants();
+        let shadow = self.shadow.clone();
+        let path = path.to_owned();
+        super::blocking(move || {
+            Self::place_sync(&shadow, &permissions, &grants, permission, &path, reach)
+        })
+        .await
+    }
+}
+
+impl Space {
+    /// The synchronous core of [`Space::place`]: authorize, and resolve the stand-in.
+    fn place_sync(
+        shadow_root: &Path,
+        permissions: &PermissionSet,
+        grants: &Grants,
+        permission: Permission,
+        path: &str,
+        reach: Reach,
+    ) -> Result<Place, AlefError> {
+        let authorized = permissions.authorize_at(permission, Some(path), grants, reach)?;
         Ok(match authorized.shadow {
             None => Place {
                 real: authorized.path,
@@ -118,7 +138,7 @@ impl Space {
                 root: None,
             },
             Some(shadow) => {
-                let folder = self.shadow.join(scope_folder(&shadow.scope));
+                let folder = shadow_root.join(scope_folder(&shadow.scope));
                 let root = canonical_root(&folder).unwrap_or(folder);
                 Place {
                     real: root.join(&shadow.inside),

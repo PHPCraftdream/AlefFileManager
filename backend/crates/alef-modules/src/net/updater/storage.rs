@@ -389,28 +389,30 @@ pub(super) async fn verify_stored_package(
 ) -> Result<Option<String>, AlefError> {
     let dir = config.data.join("updates");
     let path = dir.join(format!("{}.alef", offered.version));
-    let meta = match fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(AlefError::new(
-                ErrorCode::UpdateNotDownloaded,
-                "no downloaded update is on disk",
-            ));
-        }
-        Err(e) => return Err(io_error("inspect stored update", &path, e)),
-    };
-    if !meta.is_file() || meta.file_type().is_symlink() || is_reparse(&meta) {
-        return Err(io_error(
-            "validate stored update",
-            &path,
-            std::io::Error::other("unsafe stored update"),
-        ));
-    }
     let config = config.clone();
     let offered = offered.clone();
-    tokio::task::spawn_blocking(move || verify_package_file(&path, &config, &offered))
-        .await
-        .map_err(|_| AlefError::new(ErrorCode::Internal, "package verifier failed"))?
+    tokio::task::spawn_blocking(move || {
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AlefError::new(
+                    ErrorCode::UpdateNotDownloaded,
+                    "no downloaded update is on disk",
+                ));
+            }
+            Err(e) => return Err(io_error("inspect stored update", &path, e)),
+        };
+        if !meta.is_file() || meta.file_type().is_symlink() || is_reparse(&meta) {
+            return Err(io_error(
+                "validate stored update",
+                &path,
+                std::io::Error::other("unsafe stored update"),
+            ));
+        }
+        verify_package_file(&path, &config, &offered)
+    })
+    .await
+    .map_err(|_| AlefError::new(ErrorCode::Internal, "package verifier failed"))?
 }
 
 fn verify_publish_blocking(

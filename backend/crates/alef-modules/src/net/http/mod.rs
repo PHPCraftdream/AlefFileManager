@@ -330,7 +330,7 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                         .err()
                         .unwrap_or_else(timeout_error));
                 }
-                let target = crate::data::fs::write_target(&shadow, &ctx, &args.path)?;
+                let target = crate::data::fs::write_target(&shadow, &ctx, &args.path).await?;
                 let answer = run(
                     spec,
                     Payload::Empty,

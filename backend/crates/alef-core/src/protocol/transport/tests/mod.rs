@@ -12,7 +12,7 @@ use crate::{
         manifest::Permissions,
         permissions::{PathVars, Permission, PermissionSet},
     },
-    session::{resources::Resource, streams::IncomingReader, Session},
+    session::{resources::Resource, streams::IncomingReader, BlockingExecutor, Session},
 };
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -288,6 +288,25 @@ pub(super) fn fixture(config: TransportConfig) -> Fixture {
     let sessions = Arc::new(SessionManager::new(source, config.limits));
     let transport = Transport::new(config, registry, sessions.clone(), closed_permissions())
         .expect("transport");
+    Fixture {
+        transport: Arc::new(transport),
+        sessions,
+        probe,
+    }
+}
+
+/// Same as [`fixture`], but the transport parses request bodies on the given executor.
+pub(super) fn fixture_with_parse(config: TransportConfig, parse: BlockingExecutor) -> Fixture {
+    let probe = Arc::new(Probe::new());
+    let mut registry = Registry::default();
+    register(&mut registry, &probe);
+    let counter = AtomicUsize::new(0);
+    let source: crate::session::TokenSource =
+        Arc::new(move || format!("tok-{}", counter.fetch_add(1, Ordering::SeqCst)));
+    let sessions = Arc::new(SessionManager::new(source, config.limits));
+    let transport = Transport::new(config, registry, sessions.clone(), closed_permissions())
+        .expect("transport")
+        .with_parse_executor(std::sync::Arc::new(parse));
     Fixture {
         transport: Arc::new(transport),
         sessions,
