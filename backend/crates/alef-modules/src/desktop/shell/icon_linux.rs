@@ -186,7 +186,7 @@ fn preferred_theme() -> Option<String> {
     if !schema.has_key("icon-theme") {
         return None;
     }
-    let settings = gio::Settings::new_full(&schema, None, None);
+    let settings = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
     let theme = settings.string("icon-theme").to_string();
     (!theme.is_empty()).then_some(theme)
 }
