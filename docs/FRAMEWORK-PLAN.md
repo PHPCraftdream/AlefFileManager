@@ -97,6 +97,8 @@ registry
 
 ## 5. Контракт `@alef-runtime/api` (JS)
 
+Обязательный дизайн BUS и исполнителей описан в [`BUS-ARCHITECTURE.md`](BUS-ARCHITECTURE.md): он дополняет §4/§6.4, различает текущее и целевое состояние и не подразумевает миграцию модулей.
+
 ```
 packages/api/src/
   index.ts
