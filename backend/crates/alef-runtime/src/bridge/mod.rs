@@ -178,6 +178,8 @@ pub struct Bridge {
     pub(crate) headless_loaded: Option<Box<dyn Fn() + Send>>,
     pub(crate) headless_tick: Option<Box<dyn Fn() -> bool + Send>>,
     pub(crate) profile_dir: Option<PathBuf>,
+    /// Every document of this bridge gets the WebCrypto stand-in (the right was not granted).
+    pub(crate) webcrypto_substitute: bool,
     /// RAII owner of the installed interception site; cleared on drop, never inherited.
     site: Option<assets::origin::SiteGuard>,
     /// Test pin that origin mode disables `native://app` assets.
@@ -243,6 +245,7 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         shortcut: ShortcutPermissions { global: false },
         tray: false,
         secrets: false,
+        webcrypto: false,
         app: AppPermissions {
             env: Vec::new(),
             autostart: false,
@@ -404,6 +407,7 @@ impl Bridge {
             Some(permissions) => permissions,
             None => closed_permissions()?,
         };
+        let webcrypto_substitute = assets::origin::substitutes(&permissions);
         let config = TransportConfig {
             bootstrap_token: token.clone(),
             allowed_origins: options.allowed_origins,
@@ -445,6 +449,7 @@ impl Bridge {
             headless_loaded: options.headless_loaded,
             headless_tick: options.headless_tick,
             profile_dir: options.profile_dir,
+            webcrypto_substitute,
             site: site_guard_slot,
             #[cfg(test)]
             native_assets,
@@ -487,6 +492,11 @@ impl Bridge {
 
     pub(crate) fn profile_dir(&self) -> Option<&Path> {
         self.profile_dir.as_deref()
+    }
+
+    /// Every document of this bridge gets the WebCrypto stand-in (the right was not granted).
+    pub(crate) fn webcrypto_substitute(&self) -> bool {
+        self.webcrypto_substitute
     }
 
     /// Call after the Servo window has closed. Fjall owners are dropped off the UI thread.

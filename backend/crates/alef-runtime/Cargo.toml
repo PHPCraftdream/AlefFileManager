@@ -10,7 +10,7 @@ publish = false
 alef-core = { path = "../alef-core" }
 alef-package = { path = "../alef-package" }
 bytes = "=1.12.1"
-servo = "=0.6.0"
+servo = { version = "=0.6.0", features = ["webcrypto"] }
 winit = "=0.30.13"
 euclid = "=0.22.14"
 url = "=2.5.8"

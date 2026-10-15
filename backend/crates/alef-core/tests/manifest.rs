@@ -49,6 +49,18 @@ fn tray_is_optional_defaults_to_false_and_round_trips_as_a_boolean() {
 }
 
 #[test]
+fn webcrypto_is_optional_defaults_to_false_and_can_be_enabled() {
+    let default = Manifest::from_ktav_str(MINIMAL).unwrap();
+    assert!(!default.permissions.webcrypto);
+    let source = MINIMAL.replace(
+        "    secrets: false",
+        "    secrets: false\n    webcrypto: true",
+    );
+    let manifest = Manifest::from_ktav_str(&source).unwrap();
+    assert!(manifest.permissions.webcrypto);
+}
+
+#[test]
 fn autostart_and_deep_links_are_optional_and_round_trip_with_camel_case_names() {
     let default = Manifest::from_ktav_str(MINIMAL).unwrap();
     assert!(!default.permissions.app.autostart);
@@ -183,6 +195,7 @@ fn minimal_fixture_asserts_closed_schema_exactly() {
     assert!(!m.permissions.clipboard.read);
     assert!(!m.permissions.shortcut.global);
     assert!(!m.permissions.secrets);
+    assert!(!m.permissions.webcrypto);
     assert_eq!(m.permissions.app.env, Vec::<String>::new());
     assert_eq!(m.windows.len(), 1);
     assert_eq!(m.windows[0].label, "main");

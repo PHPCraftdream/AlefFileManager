@@ -293,6 +293,10 @@ export type Permissions = {
    */
   secrets: boolean,
   /**
+   * Whether the page gets the real WebCrypto (`crypto.subtle`); substituted when omitted.
+   */
+  webcrypto?: boolean,
+  /**
    * Application environment access.
    */
   app: AppPermissions,
