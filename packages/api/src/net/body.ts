@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { openWritable } from '../core/stream.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 /** A body up to this size travels with the call; a bigger one, and a stream, go up as a stream. */
 export const UNARY_BODY = 192 * 1024;

@@ -3,14 +3,14 @@ import type { Length, MonitorInfo, ResizeEdge, WindowDef, WindowInfo } from '../
 import { AlefError } from '../core/errors.ts';
 import { on } from '../core/events.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from './app.ts';
+import type { Cancelable, Unlisten } from '../core/events.ts';
 
 export type { ResizeEdge };
 
 /** The state of a window: sizes and positions in logical pixels (the generated `WindowInfo`). */
 export type WindowState = WindowInfo;
 
-export type Unlisten = () => void;
+export type { Unlisten };
 
 const act = (action: string, fields: Record<string, unknown> = {}, signal?: AbortSignal): Promise<void> =>
   call<void>('window.apply', { action, ...fields }, { signal });

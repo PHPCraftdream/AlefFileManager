@@ -3,7 +3,7 @@ import { AlefError } from '../core/errors.ts';
 import { call } from '../core/transport.ts';
 import { openReadable, type Readable, type StreamFrame } from '../core/stream.ts';
 import { bytesOf, sinkOf } from '../core/web-stream.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 const encoder = new TextEncoder();
 const MAX_INPUT = 192 * 1024;

@@ -2,7 +2,7 @@
 import type { OsInfo, Theme } from '../../types/index.ts';
 import { on } from '../core/events.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 export type OsEvent = 'theme-changed';
 

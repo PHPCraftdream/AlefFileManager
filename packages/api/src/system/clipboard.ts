@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { call } from '../core/transport.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 const encoder = new TextEncoder();
 // A byte order mark at the start is part of the text on the clipboard: keep it.

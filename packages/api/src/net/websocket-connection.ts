@@ -2,7 +2,7 @@
 import { AlefError } from '../core/errors.ts';
 import { openReadable } from '../core/stream.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

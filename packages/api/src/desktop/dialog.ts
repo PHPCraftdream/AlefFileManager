@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import type { ConfirmOptions, MessageOptions, OpenOptions, SaveOptions } from '../../types/index.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from './app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 /**
  * Native dialogs on top of the window of this document. The dialogs of one application take turns.

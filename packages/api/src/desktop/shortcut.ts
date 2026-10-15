@@ -2,8 +2,7 @@
 import { AlefError } from '../core/errors.ts';
 import { on } from '../core/events.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from './app.ts';
-import type { Unlisten } from './window.ts';
+import type { Cancelable, Unlisten } from '../core/events.ts';
 
 // Manual wire DTO: native event identity is separate from the resource handle.
 interface Registration {

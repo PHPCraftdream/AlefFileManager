@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { decodeBase64, encodeBase64 } from '../core/base64.ts';
 import { call } from '../core/transport.ts';
-import type { Cancelable } from '../desktop/app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 /** The hashes of `digest`, `hmac`, `hkdf` and `pbkdf2` (`sha-1` is for what is old). */
 export type HashName = 'sha-1' | 'sha-256' | 'sha-384' | 'sha-512';

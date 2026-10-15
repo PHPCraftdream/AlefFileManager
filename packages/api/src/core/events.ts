@@ -5,6 +5,13 @@ import { AlefError } from './errors.ts';
 import { openReadable, type Readable } from './stream.ts';
 import { call } from './transport.ts';
 
+export type Unlisten = () => void;
+
+/** Options shared by the calls that may be aborted through an `AbortSignal`. */
+export interface Cancelable {
+  signal?: AbortSignal;
+}
+
 type Handler = (payload: unknown) => void;
 
 const handlers = new Map<string, Set<Handler>>();

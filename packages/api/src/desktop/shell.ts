@@ -3,7 +3,7 @@ import { decodeBase64 } from '../core/base64.ts';
 import { AlefError } from '../core/errors.ts';
 import { call } from '../core/transport.ts';
 import type { CallOptions } from '../core/transport.ts';
-import type { Cancelable } from './app.ts';
+import type { Cancelable } from '../core/events.ts';
 
 /** Exactly one target selector is accepted. */
 export type FileIconTarget =
