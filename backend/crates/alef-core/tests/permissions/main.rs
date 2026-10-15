@@ -14,7 +14,7 @@ use alef_core::{
 };
 use std::path::PathBuf;
 
-const ALL: [Permission; 16] = [
+const ALL: [Permission; 17] = [
     Permission::None,
     Permission::FsRead,
     Permission::FsWrite,
@@ -27,6 +27,7 @@ const ALL: [Permission; 16] = [
     Permission::ShortcutGlobal,
     Permission::Tray,
     Permission::Secrets,
+    Permission::WebCrypto,
     Permission::AppEnv,
     Permission::AppDeepLinks,
     Permission::AppAutostart,
@@ -79,11 +80,12 @@ fn closed_manifest_denies_everything_except_none() {
 #[test]
 fn each_boolean_permission_opens_only_itself() {
     type Open = fn(&mut Permissions);
-    let cases: [(Permission, Open); 5] = [
+    let cases: [(Permission, Open); 6] = [
         (Permission::ClipboardRead, |p| p.clipboard.read = true),
         (Permission::ShortcutGlobal, |p| p.shortcut.global = true),
         (Permission::Tray, |p| p.tray = true),
         (Permission::Secrets, |p| p.secrets = true),
+        (Permission::WebCrypto, |p| p.webcrypto = true),
         (Permission::AppAutostart, |p| p.app.autostart = true),
     ];
     for (opened, open) in cases {

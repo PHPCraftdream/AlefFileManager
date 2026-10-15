@@ -32,13 +32,21 @@ const CRYPTO_CHECKS = [
   'ed25519-signs-as-node-does-and-checks-what-node-signed', 'what-is-asked-wrongly-is-told',
 ].map(name => `crypto-${name}`);
 
-const WEBCRYPTO_CHECKS = [
-  'state-of-the-engine', 'random-values-and-uuid', 'digest-sha-1', 'digest-sha-256', 'digest-sha-384',
+const WEBCRYPTO_ALGORITHMS = [
+  'digest-sha-1', 'digest-sha-256', 'digest-sha-384',
   'digest-sha-512', 'hmac-sha-256', 'hmac-sha-512', 'pbkdf2-sha-256', 'hkdf-sha-256', 'aes-gcm-256', 'aes-cbc-256',
   'aes-ctr-256', 'aes-kw-256', 'derive-key-pbkdf2-to-aes-gcm', 'ecdsa-p-256', 'ecdsa-p-384', 'ecdsa-p-521', 'ecdh-p-256',
   'ecdh-p-384', 'ecdsa-p-256-export-import-jwk-and-spki', 'ed25519', 'x25519', 'rsassa-pkcs1-v1_5-2048', 'rsa-pss-2048',
   'rsa-oaep-2048',
 ].map(name => `webcrypto-${name}`);
+const WEBCRYPTO_COMMON = ['webcrypto-state-of-the-engine', 'webcrypto-random-values-and-uuid'];
+const WEBCRYPTO_ALLOWED_CHECKS = [...WEBCRYPTO_COMMON, ...WEBCRYPTO_ALGORITHMS];
+// In substituted modes the page still reports ok for every algorithm: it asserts the rejection of the
+// stand-in instead of a result, and checks that the stand-in is sealed.
+const WEBCRYPTO_SUBSTITUTED_CHECKS = [
+  ...WEBCRYPTO_COMMON, 'webcrypto-the-stand-in-is-sealed',
+  'webcrypto-every-method-of-the-native-object-rejects', ...WEBCRYPTO_ALGORITHMS,
+];
 
 const SECRETS_CHECKS = ['secrets-a-secret-comes-back-as-it-went', 'secrets-the-limits-and-the-names-are-told'];
 const SECRETS_SUBSTITUTE_CHECKS = ['secrets-a-stand-in-keeps-what-is-written-until-the-run-ends'];
@@ -344,10 +352,28 @@ export function dataScenarios({ drive, exe, verbose }) {
       });
     },
 
-    // The WebCrypto of the engine in the origin of an application: the detail of every check says whether the
-    // algorithm is supported (run with --verbose to read the table); only the context and the algorithms an
-    // application cannot do without fail the run.
-    webcrypto: () => drive({ name: 'webcrypto', app: 'modules/data/webcrypto', expectedChecks: WEBCRYPTO_CHECKS }),
+    // The WebCrypto of the engine in the origin of an application, with the right granted: every
+    // algorithm of the Servo feature must work (the detail of every check is worth --verbose).
+    webcrypto: () => drive({
+      name: 'webcrypto', app: 'modules/data/webcrypto', replacements: { WEBCRYPTO: 'true' },
+      targets: { mode: 'allowed' }, env: { ALEF_E2E_CONSENT: 'webcrypto=allow' }, expectedChecks: WEBCRYPTO_ALLOWED_CHECKS,
+    }),
+
+    // With a stand-in the user chose: every algorithm rejects with the error of the stand-in and the
+    // stand-in is sealed; the page still reports ok, it asserts the rejection.
+    'webcrypto-substitute': () => drive({
+      name: 'webcrypto-substitute', app: 'modules/data/webcrypto', replacements: { WEBCRYPTO: 'true' },
+      targets: { mode: 'substituted' }, env: { ALEF_E2E_CONSENT: 'webcrypto=substitute' },
+      expectedChecks: WEBCRYPTO_SUBSTITUTED_CHECKS,
+    }),
+
+    // Undeclared: the manifest never asked for the right, so it is substituted without asking (a deny
+    // also substitutes); the page behaves as in `webcrypto-substitute` but no consent was asked.
+    'webcrypto-undeclared': () => drive({
+      name: 'webcrypto-undeclared', app: 'modules/data/webcrypto', replacements: { WEBCRYPTO: 'false' },
+      targets: { mode: 'undeclared' }, env: { ALEF_E2E_CONSENT: '*=allow' },
+      expectedChecks: WEBCRYPTO_SUBSTITUTED_CHECKS,
+    }),
 
     // The secrets of an end-to-end run are in memory: the credential store of the machine is never touched.
     // The page works with the right allowed; with a stand-in the user chose; with the right denied.

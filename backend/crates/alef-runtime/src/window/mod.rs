@@ -114,6 +114,8 @@ struct App {
     restore: Option<state::restore::Restore>,
     /// Per-application Servo profile root (`Opts.config_dir`).
     profile_dir: Option<PathBuf>,
+    /// Every document gets the WebCrypto stand-in (the right was not granted).
+    webcrypto_substitute: bool,
 }
 
 #[cfg(feature = "e2e")]
@@ -373,6 +375,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         menus,
         restore: options.state_file.map(state::restore::Restore::load),
         profile_dir: options.profile_dir,
+        webcrypto_substitute: bridge.webcrypto_substitute(),
     };
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {

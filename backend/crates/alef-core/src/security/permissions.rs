@@ -50,6 +50,8 @@ pub enum Permission {
     Tray,
     /// Use the secret store (`secrets`).
     Secrets,
+    /// Use the WebCrypto of the engine (`webcrypto`).
+    WebCrypto,
     /// Read an environment variable listed in `app.env`.
     AppEnv,
     /// Manage application autostart (`app.autostart`).
@@ -76,6 +78,7 @@ impl Permission {
             Self::ShortcutGlobal => "shortcut.global",
             Self::Tray => "tray",
             Self::Secrets => "secrets",
+            Self::WebCrypto => "webcrypto",
             Self::AppEnv => "app.env",
             Self::AppDeepLinks => "app.deepLinks",
             Self::AppAutostart => "app.autostart",
@@ -175,6 +178,7 @@ pub struct PermissionSet {
     shortcut: bool,
     tray: bool,
     secrets: bool,
+    webcrypto: bool,
     deep_links: Vec<String>,
     autostart: bool,
     window: bool,
@@ -299,6 +303,7 @@ impl PermissionSet {
             shortcut: policy.shortcut.global,
             tray: policy.tray,
             secrets: policy.secrets,
+            webcrypto: policy.webcrypto,
             deep_links: Vec::new(),
             autostart: policy.app.autostart,
             window: policy.window.as_ref().is_some_and(|window| window.create),
@@ -393,6 +398,7 @@ impl PermissionSet {
             (self.shortcut, "shortcut.global"),
             (self.tray, "tray"),
             (self.secrets, "secrets"),
+            (self.webcrypto, "webcrypto"),
             (self.autostart, "app.autostart"),
             (self.window, "window.create"),
         ] {
@@ -453,6 +459,7 @@ impl PermissionSet {
             Permission::ShortcutGlobal => flag(self.shortcut, "shortcut.global"),
             Permission::Tray => flag(self.tray, "tray"),
             Permission::Secrets => flag(self.secrets, "secrets"),
+            Permission::WebCrypto => flag(self.webcrypto, "webcrypto"),
             Permission::AppDeepLinks => target
                 .filter(|scheme| self.deep_links.iter().any(|declared| declared == *scheme))
                 .map(|scheme| {
