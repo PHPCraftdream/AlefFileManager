@@ -91,11 +91,6 @@ function sha256(path) {
   });
 }
 
-const SUBSTITUTE_CHECKS = [
-  'fs-a-stand-in-starts-as-an-empty-folder', 'fs-a-stand-in-keeps-what-is-written-and-answers-like-a-disk',
-  'fs-a-stand-in-refuses-what-the-scope-refuses',
-];
-
 /** Every file below `directory`, as paths relative to it. */
 function filesBelow(directory) {
   if (!existsSync(directory)) return [];
@@ -244,6 +239,8 @@ export function dataScenarios({ drive, exe, verbose }) {
       let interval;
       let volumeInterval;
       let unmountInterval;
+      let outcome;
+      const cleanup = [];
       try {
         const target = join(here.root, 'attrib-target.txt');
         let mountSkip = process.platform !== 'linux' ? `requires Linux (current: ${process.platform})` : null;
@@ -319,7 +316,7 @@ export function dataScenarios({ drive, exe, verbose }) {
           catch (error) { volumeError = error; }
         } catch (error) { volumeError = error; }
       }, 100);
-        return await drive({
+        outcome = await drive({
           name: 'fs', app: 'modules/data/fs', replacements: { ROOT: here.scope.slice(0, -3) },
           targets: {
             mode: 'real', platform: process.platform, root: here.root, outside: here.secret, outsideName: 'outside', outsideFolder: here.outside, link: here.link,
@@ -356,7 +353,6 @@ export function dataScenarios({ drive, exe, verbose }) {
         clearInterval(interval);
         clearInterval(volumeInterval);
         clearInterval(unmountInterval);
-        const cleanup = [];
         if (mountpointCreated) {
           if (isMounted(mountRoot)) {
             const result = spawnSync('sudo', ['-n', 'umount', mountRoot], { encoding: 'utf8', timeout: 10000 });
@@ -368,8 +364,9 @@ export function dataScenarios({ drive, exe, verbose }) {
           } else cleanup.push(`preserving still-mounted ${mountRoot}`);
         }
         rmSync(here.base, { recursive: true, force: true });
-        if (cleanup.length) throw new Error(cleanup.join('; '));
       }
+      if (cleanup.length) throw new Error(cleanup.join('; '));
+      return outcome;
     },
 
     // The user chose a stand-in for the scope: the page finds an empty folder and keeps its writes in it;

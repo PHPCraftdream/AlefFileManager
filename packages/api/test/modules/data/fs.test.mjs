@@ -199,7 +199,10 @@ test('watch_volumes_yields_unchanged_events_and_closes_when_iteration_stops', { 
   replies.set('fs.watchVolumes', { json: { stream: 45 } });
   streams.set(45, { chunks: [join(...events.map(jsonFrame))] });
   const before = runtime.calls('runtime.stream.close').length;
-  for await (const event of fs.watchVolumes()) break;
+  for await (const event of fs.watchVolumes()) {
+    void event;
+    break;
+  }
   const close = runtime.calls('runtime.stream.close').at(-1);
   assert.equal(runtime.calls('runtime.stream.close').length, before + 1);
   assert.equal(close.url, 'native://call/runtime.stream.close');
