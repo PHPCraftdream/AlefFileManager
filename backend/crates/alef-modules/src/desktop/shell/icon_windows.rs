@@ -306,7 +306,7 @@ fn bitmap_to_image(source: windows::Win32::Graphics::Gdi::HBITMAP) -> Result<Ico
         windows_sys::Win32::Graphics::Gdi::GetObjectW(
             bitmap.0 as HGDIOBJ,
             mem::size_of_val(&dimensions) as i32,
-            (&mut dimensions as *mut _).cast(),
+            std::ptr::addr_of_mut!(dimensions).cast(),
         )
     };
     if got != mem::size_of_val(&dimensions) as i32 {

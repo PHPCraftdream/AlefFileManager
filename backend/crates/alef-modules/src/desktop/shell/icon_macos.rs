@@ -102,7 +102,7 @@ fn render_png(image: &NSImage, width: u32, height: u32) -> Result<IconImage, ale
     // SAFETY: positive dimensions are validated and bounded above; null planes ask AppKit to allocate its own bitmap buffer. The bitmap is 8-bit, 4-sample, alpha, nonplanar RGB, with AppKit's default row/bit sizing. NSDeviceRGBColorSpace is a static color-space name whose lifetime is sufficient for this call.
     let bitmap = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
-            NSBitmapImageRep::alloc(), std::ptr::null_mut(), width.into(), height.into(), 8, 4, true,
+            NSBitmapImageRep::alloc(), std::ptr::null_mut(), width as isize, height as isize, 8, 4, true,
             false, &*NSDeviceRGBColorSpace, 0, 0,
         )
     }.ok_or_else(|| internal("cannot allocate bitmap representation"))?;
