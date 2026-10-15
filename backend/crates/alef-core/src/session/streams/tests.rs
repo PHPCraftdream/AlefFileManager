@@ -1,4 +1,5 @@
 use super::*;
+use std::future::Future;
 use std::time::Duration;
 use tokio::time::timeout;
 async fn bounded<T>(f: impl std::future::Future<Output = T>) -> T {
@@ -13,6 +14,58 @@ async fn frame(r: &mut StreamReader) -> Option<Frame> {
     bounded(r.next_frame()).await
 }
 
+#[tokio::test]
+async fn closed_waits_until_stream_terminates_and_is_cancel_safe() {
+    let h = StreamHub::new(512, 256);
+    let (w, id) = h.open_outgoing();
+    let wait = timeout(Duration::from_millis(50), w.closed());
+    assert!(wait.await.is_err());
+    h.close(id).expect("close");
+    bounded(w.closed()).await;
+}
+
+#[tokio::test]
+async fn closed_resolves_when_stream_closes_before_first_poll() {
+    let h = StreamHub::new(512, 256);
+    let (w, id) = h.open_outgoing();
+    h.close(id).expect("close");
+    bounded(w.closed()).await;
+}
+
+#[tokio::test]
+async fn closed_resolves_for_all_registered_waiters_on_session_close() {
+    let h = StreamHub::new(512, 256);
+    let (w, _) = h.open_outgoing();
+    let mut first = Box::pin(w.closed());
+    let mut second = Box::pin(w.closed());
+    let mut third = Box::pin(w.closed());
+    std::future::poll_fn(|cx| {
+        assert!(matches!(first.as_mut().poll(cx), std::task::Poll::Pending));
+        assert!(matches!(second.as_mut().poll(cx), std::task::Poll::Pending));
+        assert!(matches!(third.as_mut().poll(cx), std::task::Poll::Pending));
+        std::task::Poll::Ready(())
+    })
+    .await;
+    h.close_all();
+    bounded(async {
+        tokio::join!(first, second, third);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn sending_frames_and_acknowledging_do_not_close_stream() {
+    let h = StreamHub::new(512, 256);
+    let (w, id) = h.open_outgoing();
+    bounded(w.send_json(serde_json::json!(1)))
+        .await
+        .expect("send");
+    h.ack(id, 256).expect("ack");
+    assert!(timeout(Duration::from_millis(50), w.closed())
+        .await
+        .is_err());
+    w.end();
+}
 #[tokio::test]
 async fn outgoing_orders_chunks_and_terminates() {
     let h = StreamHub::new(768, 256);

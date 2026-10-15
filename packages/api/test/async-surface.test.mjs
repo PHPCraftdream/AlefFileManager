@@ -122,6 +122,8 @@ const ARGS = {
   'fs.open': ['/probe'],
   'fs.readDirStream': ['/probe'],
   'fs.watch': ['/probe'],
+  'fs.volumes': [],
+  'fs.watchVolumes': [],
   'sqlite.open': ['/probe'],
   'crypto.random': [4],
   'crypto.digest': ['sha-256', 'x'],
@@ -163,6 +165,9 @@ const ARGS = {
 
 installRuntime({
   handler(request) {
+    if (request.url === 'native://call/fs.watchVolumes') return { json: { stream: 99 } };
+    if (request.url === 'native://stream/99') return { chunks: [endFrame()] };
+    if (request.url === 'native://call/fs.volumes') return { json: [] };
     if (request.url === 'native://call/runtime.events.subscribe') return { json: { stream: 5 } };
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/shortcut.register') return { json: { id: 's1:r1', owner: 1, token: 17 } };

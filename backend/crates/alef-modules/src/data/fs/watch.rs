@@ -23,8 +23,10 @@ use notify::{
 use tokio::sync::mpsc;
 
 use super::{
-    dto::{WatchEvent, WatchKind},
-    fault::coded,
+    meta::{
+        dto::{WatchEvent, WatchKind},
+        fault::coded,
+    },
     space::Place,
 };
 use crate::json;
@@ -90,6 +92,11 @@ fn told(place: &Place, event: &Event) -> Vec<WatchEvent> {
             .iter()
             .filter_map(|p| one(WatchKind::Create, p))
             .collect(),
+        EventKind::Modify(ModifyKind::Metadata(_)) => event
+            .paths
+            .iter()
+            .filter_map(|p| one(WatchKind::Attrib, p))
+            .collect(),
         EventKind::Modify(_) | EventKind::Any | EventKind::Other => event
             .paths
             .iter()
@@ -108,15 +115,6 @@ pub(super) async fn start(
     let (events, mut arrived) = mpsc::channel::<notify::Result<Event>>(QUEUE);
     let lost = Arc::new(AtomicBool::new(false));
     let marker = lost.clone();
-    let mut watcher = RecommendedWatcher::new(
-        move |event| {
-            if events.try_send(event).is_err() {
-                marker.store(true, Ordering::SeqCst);
-            }
-        },
-        Config::default(),
-    )
-    .map_err(|_| coded(ErrorCode::NotAvailable))?;
     let target = place.clone();
     let mode = if recursive {
         RecursiveMode::Recursive
@@ -124,9 +122,18 @@ pub(super) async fn start(
         RecursiveMode::NonRecursive
     };
     let watched = super::blocking(move || {
-        target.prepare().map_err(super::fault::fault)?;
+        let mut watcher = RecommendedWatcher::new(
+            move |event| {
+                if events.try_send(event).is_err() {
+                    marker.store(true, Ordering::SeqCst);
+                }
+            },
+            Config::default(),
+        )
+        .map_err(|_| coded(ErrorCode::NotAvailable))?;
+        target.prepare().map_err(super::meta::fault::fault)?;
         // What is not there is told as such, whatever the watcher of the platform says.
-        std::fs::metadata(&target.real).map_err(super::fault::fault)?;
+        std::fs::metadata(&target.real).map_err(super::meta::fault::fault)?;
         watcher
             .watch(&target.real, mode)
             .map_err(|error| match error.kind {
@@ -140,30 +147,41 @@ pub(super) async fn start(
     let (writer, id) = ctx.streams().open_outgoing();
     let shown = place.shown.to_string_lossy().into_owned();
     tokio::spawn(async move {
-        // The watcher stays here: dropping it ends the watch.
-        let _watcher = watched;
-        loop {
-            let Some(first) = arrived.recv().await else {
-                return;
-            };
-            let mut batch = told_all(&place, [first]);
-            let moment = tokio::time::sleep(DEBOUNCE);
-            tokio::pin!(moment);
+        // The watcher is created and destroyed on blocking pool threads.
+        let mut watcher = Some(watched);
+        let run = async {
             loop {
-                tokio::select! {
-                    () = &mut moment => break,
-                    more = arrived.recv() => match more {
-                        Some(event) => batch.extend(told_all(&place, [event])),
-                        None => break,
-                    },
+                let first = tokio::select! {
+                    _ = writer.closed() => break,
+                    event = arrived.recv() => match event { Some(event) => event, None => break },
+                };
+                let mut batch = told_all(&place, [first]);
+                let moment = tokio::time::sleep(DEBOUNCE);
+                tokio::pin!(moment);
+                loop {
+                    tokio::select! {
+                        _ = writer.closed() => break,
+                        () = &mut moment => break,
+                        more = arrived.recv() => match more {
+                            Some(event) => batch.extend(told_all(&place, [event])),
+                            None => break,
+                        },
+                    }
+                }
+                for event in tidy(batch, lost.swap(false, Ordering::SeqCst), &shown) {
+                    if writer
+                        .send_json(serde_json::to_value(&event).unwrap_or_default())
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
             }
-            for event in tidy(batch, lost.swap(false, Ordering::SeqCst), &shown) {
-                let frame = serde_json::to_value(&event).unwrap_or_default();
-                if writer.send_json(frame).await.is_err() {
-                    return;
-                }
-            }
+        };
+        run.await;
+        if let Some(watcher) = watcher.take() {
+            let _ = tokio::task::spawn_blocking(move || drop(watcher)).await;
         }
     });
     json(&serde_json::json!({ "stream": id.0 }))
@@ -200,7 +218,7 @@ fn told_all(
 
 #[cfg(test)]
 mod tests {
-    use notify::event::{AccessKind, CreateKind, DataChange, RemoveKind};
+    use notify::event::{AccessKind, CreateKind, DataChange, MetadataKind, RemoveKind};
 
     use super::*;
 
@@ -241,6 +259,13 @@ mod tests {
                     &[&a],
                 ),
                 vec![happened(WatchKind::Modify, &name_a, None)],
+            ),
+            (
+                event(
+                    EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+                    &[&a],
+                ),
+                vec![happened(WatchKind::Attrib, &name_a, None)],
             ),
             (
                 event(EventKind::Any, &[&a]),

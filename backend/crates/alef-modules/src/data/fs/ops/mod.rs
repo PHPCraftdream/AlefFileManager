@@ -13,8 +13,10 @@ use std::{
 use alef_core::{AlefError, ErrorCode};
 
 use super::{
-    dto::{DirEntry, FileKind, FileStat},
-    fault::{coded, fault, invalid},
+    meta::{
+        dto::{DirEntry, FileKind, FileStat},
+        fault::{coded, fault, invalid},
+    },
     space::Place,
 };
 

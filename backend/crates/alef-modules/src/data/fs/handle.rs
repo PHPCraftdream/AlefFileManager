@@ -23,8 +23,10 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 
 use super::{
-    dto::FileStat,
-    fault::{coded, fault, invalid},
+    meta::{
+        dto::FileStat,
+        fault::{coded, fault, invalid},
+    },
     ops::{file_stat, open_for_handle},
     space::Space,
 };

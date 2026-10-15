@@ -12,7 +12,7 @@ use std::{
 
 use alef_core::{session::Resource, AlefError};
 
-use super::super::fault::fault;
+use super::super::meta::fault::fault;
 
 pub(in crate::data::fs) struct Scratch {
     target: Option<Target>,

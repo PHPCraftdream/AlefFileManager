@@ -3,7 +3,7 @@
 // the scope allowed and with a stand-in the user chose; `store` across two runs of one application.
 import * as nodeCrypto from 'node:crypto';
 import { createCipheriv, createDecipheriv, createHash, createHmac, createPrivateKey, createPublicKey, hkdfSync, pbkdf2Sync, randomBytes, scryptSync } from 'node:crypto';
-import { closeSync, createReadStream, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -16,6 +16,12 @@ const FS_CHECKS = [
   'fs-a-handle-reads-and-writes-pieces', 'fs-settle-leaves-a-backpressured-read-busy-and-byte-exact',
   'fs-a-big-file-is-copied-through-streams-and-arrives-whole',
   'fs-a-big-folder-comes-in-batches', 'fs-watch-tells-create-modify-and-remove',
+  'fs-volumes-list-mounted-roots-and-watch-stream-opens-and-closes', 'fs-watch-reports-real-metadata-change',
+];
+
+const FS_SUBSTITUTE_CHECKS = [
+  'fs-a-stand-in-starts-as-an-empty-folder', 'fs-a-stand-in-keeps-what-is-written-and-answers-like-a-disk',
+  'fs-a-stand-in-refuses-what-the-scope-refuses', 'fs-volumes-stand-in-is-empty-and-watch-has-no-events',
 ];
 
 const SQLITE_CHECKS = [
@@ -96,6 +102,7 @@ function prepare() {
   writeFileSync(join(base, 'picked.txt'), 'picked');
   writeFileSync(join(base, 'neighbour.txt'), 'neighbour');
   writeFileSync(join(root, 'real.txt'), 'real');
+  writeFileSync(join(root, 'attrib-target.txt'), 'metadata target');
   mkdirSync(join(root, 'real-folder'));
   let link = null;
   try {
@@ -216,11 +223,27 @@ export function dataScenarios({ drive, exe, verbose }) {
     // The user allowed the scope: everything the page does is real and stays inside it.
     async fs() {
       const here = prepare();
+      const target = join(here.root, 'attrib-target.txt');
+      const ready = join(here.root, 'attrib-ready.txt');
+      const ack = join(here.root, 'attrib-ack.txt');
+      let mutationError;
+      let mutations = 0;
+      let deadline = 0;
+      const interval = setInterval(() => {
+        if (!existsSync(ready) || existsSync(ack)) return;
+        if (!deadline) deadline = Date.now() + 30000;
+        if (Date.now() > deadline) return;
+        try {
+          const stamp = Date.now() / 1000;
+          utimesSync(target, stamp, stamp);
+          mutations += 1;
+        } catch (error) { mutationError = error; }
+      }, 100);
       try {
         return await drive({
           name: 'fs', app: 'modules/data/fs', replacements: { ROOT: here.scope.slice(0, -3) },
           targets: {
-            mode: 'real', root: here.root, outside: here.secret, outsideName: 'outside', outsideFolder: here.outside, link: here.link,
+            mode: 'real', platform: process.platform, root: here.root, outside: here.secret, outsideName: 'outside', outsideFolder: here.outside, link: here.link,
             directoryLink: here.directoryLink, linkedSecret: join(here.directoryLink, 'secret.txt'),
             big: here.big, many: here.many, manyCount: MANY, copySource: here.copySource, copySize: COPY_SIZE,
           },
@@ -228,6 +251,9 @@ export function dataScenarios({ drive, exe, verbose }) {
           expectedChecks: FS_CHECKS,
           judge: async () => {
             const problems = [];
+            if (mutationError) problems.push(`could not change target metadata: ${mutationError.message}`);
+            if (process.platform !== 'win32' && mutations === 0) problems.push('page never began watching the metadata target');
+            if (process.platform !== 'win32' && (readFileSync(target).length === 0)) problems.push('metadata target disappeared');
             const copied = join(here.root, 'work', 'copied.bin');
             if (!existsSync(copied) || await sha256(copied) !== await sha256(here.copySource)) problems.push('the copy made through streams is not the file');
             const note = join(here.root, 'work', 'note.txt');
@@ -242,6 +268,7 @@ export function dataScenarios({ drive, exe, verbose }) {
           },
         });
       } finally {
+        clearInterval(interval);
         rmSync(here.base, { recursive: true, force: true });
       }
     },
@@ -255,12 +282,12 @@ export function dataScenarios({ drive, exe, verbose }) {
         const before = filesBelow(here.root).sort();
         const result = await drive({
           name: 'fs-substitute', app: 'modules/data/fs', replacements: { ROOT: here.scope.slice(0, -3) },
-          targets: { mode: 'substituted', root: here.root, outside: here.secret, outsideName: 'outside' },
+          targets: { mode: 'substituted', platform: process.platform, root: here.root, outside: here.secret, outsideName: 'outside' },
           env: {
             ALEF_HOME: home,
             ALEF_E2E_CONSENT: `fs.read:${here.scope}=substitute;fs.write:${here.scope}=substitute`,
           },
-          expectedChecks: SUBSTITUTE_CHECKS,
+          expectedChecks: FS_SUBSTITUTE_CHECKS,
           judge: () => {
             const problems = [];
             const after = filesBelow(here.root).sort();

@@ -80,6 +80,38 @@ export type UpdaterCheckReply = { available: boolean, version?: string, notes?: 
 export type UpdaterRuntimeRequirement = { range: string, satisfied: boolean, };
 
 /**
+ * One mounted volume, as far as the system tells about it.
+ */
+export type Volume = {
+  /**
+   * The mount point, as the platform spells it.
+   */
+  root: string, label?: string, kind: VolumeKind, fileSystem?: string,
+  /**
+   * Bytes of the whole volume.
+   */
+  total?: number,
+  /**
+   * Bytes still free for the user of this process.
+   */
+  free?: number, readOnly: boolean, };
+
+/**
+ * One frame of the stream of `fs.watchVolumes`.
+ */
+export type VolumeEvent = { type: VolumeEventKind, volume: Volume, };
+
+/**
+ * What happened to the volumes of the machine.
+ */
+export type VolumeEventKind = "mount" | "unmount" | "change";
+
+/**
+ * What kind of volume a mount is, as far as the system tells.
+ */
+export type VolumeKind = "fixed" | "removable" | "network" | "optical" | "ram" | "unknown";
+
+/**
  * One frame of the stream of `fs.watch`.
  */
 export type WatchEvent = { kind: WatchKind,
@@ -91,4 +123,4 @@ export type WatchEvent = { kind: WatchKind,
 /**
  * What happened to a path `fs.watch` watches.
  */
-export type WatchKind = "create" | "modify" | "remove" | "rename" | "overflow";
+export type WatchKind = "create" | "modify" | "remove" | "rename" | "overflow" | "attrib";

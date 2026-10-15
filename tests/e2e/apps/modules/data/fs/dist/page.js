@@ -208,6 +208,64 @@ async function real(t, check) {
     await expectCode('a folder that is not there', (async () => { for await (const entry of fs.readDirStream(join(t.root, 'nothing'))) void entry; })(), 'NOT_FOUND');
   });
 
+  await check('fs-volumes-list-mounted-roots-and-watch-stream-opens-and-closes', async () => {
+    const volumes = await bounded(fs.volumes(), 'list volumes');
+    if (!Array.isArray(volumes)) throw new Error('fs.volumes did not return an array');
+    const normalizeRoot = value => {
+      let result = value.replaceAll('\\', '/');
+      while (result.length > 1 && result.endsWith('/')) result = result.slice(0, -1);
+      if (t.platform === 'win32') result = result.toLowerCase();
+      return result;
+    };
+    for (const volume of volumes) {
+      if (!volume || typeof volume.root !== 'string' || !volume.root || typeof volume.readOnly !== 'boolean'
+          || !['fixed', 'removable', 'network', 'optical', 'ram', 'unknown'].includes(volume.kind)) {
+        throw new Error(`invalid volume: ${JSON.stringify(volume)}`);
+      }
+    }
+    const scope = normalizeRoot(t.root);
+    const covered = volumes.some(volume => {
+      const root = normalizeRoot(volume.root);
+      return scope === root || (root === '/' ? scope.startsWith('/') : scope.startsWith(`${root}/`));
+    });
+    if (!covered) throw new Error(`no volume root covers scope ${t.root}: ${JSON.stringify(volumes)}`);
+    const { stream } = await bounded(api.call('fs.watchVolumes', null), 'start raw volume watch');
+    let readable;
+    try {
+      readable = await bounded(api.openReadable(stream), 'open volume watch reader');
+    } finally {
+      if (readable) await bounded(readable.close(), 'close volume watch reader');
+      else await bounded(api.call('runtime.stream.close', { id: stream }), 'close raw volume stream');
+    }
+    return `${volumes.length} volume(s); stream ${stream} opened and closed`;
+  });
+
+  await check('fs-watch-reports-real-metadata-change', async () => {
+    if (t.platform === 'win32') return 'skipped: Windows backend reports content/metadata as one Modify class, not attributable metadata-only events';
+    const target = join(t.root, 'attrib-target.txt');
+    const ready = join(t.root, 'attrib-ready.txt');
+    await fs.writeText(target, 'metadata target');
+    const controller = new AbortController();
+    const events = [];
+    const pump = (async () => {
+      try {
+        for await (const event of fs.watch(t.root, { signal: controller.signal })) events.push(event);
+      } catch (error) { if (!controller.signal.aborted) throw error; }
+    })();
+    try {
+      await fs.writeText(ready, 'watch-started');
+      const deadline = performance.now() + 15000;
+      while (!events.some(event => event.kind === 'attrib' && event.path.split(/[\\/]/).pop() === 'attrib-target.txt')) {
+        if (performance.now() >= deadline) throw new Error(`no attrib event: ${JSON.stringify(events)}`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return 'observed attrib after runner changed target metadata';
+    } finally {
+      controller.abort();
+      await bounded(pump, 'stop metadata watch');
+      await fs.writeText(join(t.root, 'attrib-ack.txt'), 'done');
+    }
+  });
   await check('fs-watch-tells-create-modify-and-remove', async () => {
     const folder = join(dir, 'watched');
     await fs.mkdir(folder);
@@ -275,6 +333,24 @@ async function substituted(t, check) {
   await check('fs-a-stand-in-refuses-what-the-scope-refuses', async () => {
     await expectCode('outside', fs.readText(t.outside), 'PERMISSION_DENIED');
     await expectCode('writing outside', fs.writeText(t.outside, 'x'), 'PERMISSION_DENIED');
+  });
+  await check('fs-volumes-stand-in-is-empty-and-watch-has-no-events', async () => {
+    const volumes = await bounded(fs.volumes(), 'list substituted volumes');
+    if (!Array.isArray(volumes) || volumes.length !== 0) throw new Error(`expected no volumes, got ${JSON.stringify(volumes)}`);
+    const controller = new AbortController();
+    const iterator = fs.watchVolumes({ signal: controller.signal })[Symbol.asyncIterator]();
+    try {
+      const pending = iterator.next();
+      const outcome = pending.then(value => ({ value }), error => ({ error }));
+      await new Promise(resolve => setTimeout(resolve, 100));
+      controller.abort();
+      const result = await bounded(outcome, 'abort substituted volume watch');
+      if (result.error) {
+        if (result.error.name !== 'AbortError') throw result.error;
+      } else if (!result.value.done) throw new Error(`unexpected substituted volume event: ${JSON.stringify(result.value.value)}`);
+    } finally {
+      controller.abort();
+    }
   });
 }
 
