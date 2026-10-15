@@ -365,7 +365,10 @@ function buildPkgScript(version) {
 set -e
 cd "$(dirname "$0")"
 # An AppleScript applet receives Finder document-open events; a shell script does not.
-osacompile -o "payload/Applications/Alef.app" "applet/applet.applescript"
+# osacompile needs an existing parent directory (it fails with -4960 otherwise) and a fresh target.
+mkdir -p payload/Applications
+rm -rf payload/Applications/Alef.app
+osacompile -o "$PWD/payload/Applications/Alef.app" "$PWD/applet/applet.applescript"
 plist="payload/Applications/Alef.app/Contents/Info.plist"
 pb() { /usr/libexec/PlistBuddy -c "$1" "$plist"; }
 # osacompile already writes some keys: replace them instead of failing on Add.

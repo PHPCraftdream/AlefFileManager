@@ -233,7 +233,8 @@ test('darwin_tree_ships_runtime_applescript_and_pkg_build_tooling', () => {
   assert.ok(applet.includes('/usr/local/bin/alef run '));
   assert.ok(applet.includes('on run'));
   const buildSh = files.get('build-pkg.sh').data.toString('utf8');
-  assert.ok(buildSh.includes('osacompile -o "payload/Applications/Alef.app" "applet/applet.applescript"'));
+  assert.ok(buildSh.includes('mkdir -p payload/Applications\nrm -rf payload/Applications/Alef.app\n'));
+  assert.ok(buildSh.includes('osacompile -o "$PWD/payload/Applications/Alef.app" "$PWD/applet/applet.applescript"'));
   // UTExportedTypeDeclarations is an array of declaration dictionaries; keys osacompile may write are replaced, not re-added.
   assert.ok(buildSh.includes('pb "Add :UTExportedTypeDeclarations array"'));
   assert.ok(buildSh.includes('pb "Add :UTExportedTypeDeclarations:0 dict"'));
