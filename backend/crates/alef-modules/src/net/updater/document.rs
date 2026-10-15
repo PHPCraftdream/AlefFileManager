@@ -14,6 +14,11 @@ pub(super) struct Document {
     pub notes: Option<String>,
     pub package: String,
     pub sha256: String,
+    #[serde(
+        default,
+        deserialize_with = "alef_core::security::manifest::deserialize_runtime"
+    )]
+    pub runtime: Option<String>,
 }
 
 fn non_null_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -187,5 +192,42 @@ mod tests {
                 .code,
             ErrorCode::UpdateTooLarge
         );
+    }
+    fn doc_with_runtime(version: &str, runtime: &str) -> Vec<u8> {
+        format!(
+            r#"{{"version":"{version}","package":"pkg","notes":"notes","sha256":"{HASH}","runtime":"{runtime}"}}"#
+        )
+        .into_bytes()
+    }
+    #[test]
+    fn propagates_the_feed_runtime_range() {
+        let parsed = parse(&doc_with_runtime("2.0.0", "^2.0.0"), &endpoint(), "1.0.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.runtime, Some("^2.0.0".to_owned()));
+    }
+    fn doc_with_runtime_json(runtime: serde_json::Value) -> Vec<u8> {
+        serde_json::json!({
+            "version": "2.0.0",
+            "package": "pkg",
+            "notes": "notes",
+            "sha256": HASH,
+            "runtime": runtime,
+        })
+        .to_string()
+        .into_bytes()
+    }
+    #[test]
+    fn rejects_bad_and_null_runtime_ranges_with_exact_code() {
+        for bytes in [
+            doc_with_runtime_json("bad".into()),
+            doc_with_runtime_json("1.0.0.0".into()),
+            doc_with_runtime_json(serde_json::Value::Null),
+        ] {
+            assert_eq!(
+                parse(&bytes, &endpoint(), "1.0.0").unwrap_err().code,
+                ErrorCode::UpdateBadDocument
+            );
+        }
     }
 }

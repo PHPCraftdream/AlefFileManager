@@ -51,6 +51,7 @@ jobs:
       js_all: ${{ steps.plan.outputs.js_all }}
       e2e: ${{ steps.plan.outputs.e2e }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
+      package_app: ${{ steps.plan.outputs.package_app }}
       reason: ${{ steps.plan.outputs.reason }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -265,6 +266,28 @@ jobs:
           npm run build:frontend
           node scripts/cargo.mjs build --locked --workspace --features alef/e2e
 
+      # M7d.5: the File Manager is packed like any Alef application; verify prints the signer
+      # fingerprint the user passes to `alef install --trust-key`. The gate repeats the frontend
+      # build condition: the step must not run when frontend/app was not produced.
+      - name: Package the File Manager (.alef)
+        if: runner.os == 'Linux' && needs.plan.outputs.package_app == 'true' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
+        env:
+          ALEF_RUNTIME_HOME: ${{ runner.temp }}/alef-runtime-home
+          ALEF_RUNTIME_KEY: fm-package-ci
+        run: |
+          node packages/tools/bin/alef-runtime.mjs keys fm-package-ci
+          npm run pack:app
+          node packages/tools/bin/alef-runtime.mjs verify dist/file-manager.alef
+
+      - name: Upload File Manager package
+        if: runner.os == 'Linux' && needs.plan.outputs.package_app == 'true' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: file-manager-alef
+          path: dist/file-manager.alef
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Release build without test hooks (Linux)
         # Only the crates that carry test hooks (alef, alef-runtime, alef-modules) can leak them into a
         # release build; the full run before every merge covers the rest.
@@ -336,7 +359,7 @@ jobs:
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "app,quit,relaunch,instance,restore,autostart,deeplink" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "app,quit,relaunch,instance,restore,autostart,deeplink,devflow" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, desktop/system/processes: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'

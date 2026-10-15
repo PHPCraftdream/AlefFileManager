@@ -5,5 +5,7 @@ use super::*;
 mod flow;
 #[path = "purge.rs"]
 mod purge;
+#[path = "run_id.rs"]
+mod run_id;
 #[path = "update_tests.rs"]
 mod update_tests;

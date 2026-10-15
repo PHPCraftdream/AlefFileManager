@@ -168,6 +168,192 @@ pub fn valid_id(id: &str) -> bool {
         && !id.split('.').any(str::is_empty)
 }
 
+/// End-to-end runs only (`ALEF_E2E=1` in a build with the cargo feature `e2e`): print the
+/// resolved `alef run` target and exit, without starting the application.
+pub const RUN_TARGET_VARIABLE: &str = "ALEF_E2E_RUN_TARGET";
+
+/// What `alef run <ARG>` launches: an existing entry as the given path (it wins), the id of
+/// an installed application, or nothing usable (`Path` with the original target, so the
+/// source loader reports today's missing-source error).
+#[derive(Debug)]
+pub enum RunTarget {
+    /// Keep the given path: an existing entry, or `--app`, or not a valid id.
+    Path(PathBuf),
+    /// The positional `run <ARG>` form named a valid manifest id of the installed store.
+    Id(String),
+}
+
+/// The front door of `alef run <ARG>`: an existing filesystem entry is a path and wins;
+/// otherwise — in the positional `run` form only — a valid manifest id resolves through the
+/// installed store. `--app` never resolves: `positional == false` is always `Path`.
+pub fn run_target(target: &std::path::Path, positional: bool) -> RunTarget {
+    if !positional {
+        return RunTarget::Path(target.to_owned());
+    }
+    match std::fs::symlink_metadata(target) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            match target.to_str().filter(|text| valid_id(text)) {
+                Some(id) => RunTarget::Id(id.to_owned()),
+                None => RunTarget::Path(target.to_owned()),
+            }
+        }
+        _ => RunTarget::Path(target.to_owned()),
+    }
+}
+
+/// [`run_target`] against an explicit home, so tests exercise the decision in isolation.
+pub fn run_target_in(
+    home: &std::path::Path,
+    target: &std::path::Path,
+    positional: bool,
+) -> RunTarget {
+    let _ = home; // the decision itself is home-independent
+    run_target(target, positional)
+}
+
+/// Resolves `alef run <ID>`: the package file of the installed record of `id`, through the
+/// same strict record reader `alef apps` lists with. Read-only and lock-free: publication in
+/// the store is atomic (a no-clobber temp file plus rename/link), so a concurrent `alef
+/// install` upgrade yields either the old or the new record, never a half-written one.
+fn resolve_installed_in(home: &std::path::Path, id: &str) -> Result<PathBuf, InstallError> {
+    if !valid_id(id) {
+        return Err(InstallError::new("NOT_INSTALLED", id.to_owned(), 1));
+    }
+    let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
+    let apps = home.join("apps");
+    // The same store-root safety check `alef apps` applies before it lists anything.
+    match std::fs::symlink_metadata(&apps) {
+        Ok(_) if crate::runtimes::store::is_plain_directory(&apps) => {}
+        Ok(_) => {
+            return Err(InstallError::new(
+                "APP_STORE",
+                "application store root is not plain",
+                1,
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(InstallError::new("NOT_INSTALLED", id.to_owned(), 1))
+        }
+        Err(e) => return Err(InstallError::new("APP_STORE", e.to_string(), 1)),
+    }
+    let app_dir = apps.join(&hash);
+    match std::fs::symlink_metadata(&app_dir) {
+        Ok(_) if crate::runtimes::store::is_plain_directory(&app_dir) => {}
+        Ok(_) => {
+            return Err(InstallError::new(
+                "APP_STORE",
+                "application directory is linked or not a directory",
+                1,
+            ))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(InstallError::new("NOT_INSTALLED", id.to_owned(), 1))
+        }
+        Err(e) => return Err(InstallError::new("APP_STORE", e.to_string(), 1)),
+    }
+    // A damaged record keeps its own clear diagnosis and never modifies the store.
+    let record = read_record(&app_dir, &hash)?;
+    Ok(app_dir.join(&record.package))
+}
+
+/// Why `alef run <ID>` did not open a package.
+#[derive(Debug)]
+pub enum RunLaunchFailure {
+    /// The record could not be resolved to a package.
+    Resolve(InstallError),
+    /// The package was opened but refused.
+    Load(crate::application::source::LoadFailure),
+}
+
+/// The bounded number of resolve/open attempts of `alef run <ID>`.
+const RUN_ATTEMPTS: usize = 3;
+
+/// `alef run <ID>`: resolve the installed record and hand its package to `load`. One
+/// attempt is a snapshot of the record, the resolution through it, and the load; if the
+/// record changed (or vanished) during the attempt, the attempt is repeated with the
+/// fresh record, at most [`RUN_ATTEMPTS`] times; an unchanged record returns the
+/// attempt's error. Publication is atomic, a half-written package never appears.
+/// Read-only and lock-free.
+pub fn run_id<T>(
+    id: &str,
+    load: &mut dyn FnMut(&std::path::Path) -> Result<T, crate::application::source::LoadFailure>,
+) -> Result<T, RunLaunchFailure> {
+    run_id_in(&crate::consent::runtime_home(), id, load)
+}
+
+/// The bytes of the `app.json` record of `id`, `None` when there is no record file.
+fn record_bytes(home: &std::path::Path, id: &str) -> Option<Vec<u8>> {
+    let path = home
+        .join("apps")
+        .join(format!("{:x}", sha2::Sha256::digest(id.as_bytes())))
+        .join("app.json");
+    // No FIFO, link or reparse point is opened; the strict reader reports those.
+    if !crate::runtimes::store::is_regular_file(&path) {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(RECORD_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
+}
+
+/// True when the record of `id` is no longer the snapshot taken at the start of an
+/// attempt: it was replaced by a concurrent `alef install` or vanished.
+fn record_changed(home: &std::path::Path, id: &str, stamp: &Option<Vec<u8>>) -> bool {
+    record_bytes(home, id) != *stamp
+}
+
+/// [`run_id`] against an explicit home, so tests exercise the retry in isolation.
+pub fn run_id_in<T>(
+    home: &std::path::Path,
+    id: &str,
+    load: &mut dyn FnMut(&std::path::Path) -> Result<T, crate::application::source::LoadFailure>,
+) -> Result<T, RunLaunchFailure> {
+    for attempt in 1..=RUN_ATTEMPTS {
+        // One attempt: snapshot the record, resolve through it, open the package.
+        let stamp = record_bytes(home, id);
+        let resolved = match resolve_installed_in(home, id) {
+            Ok(path) => path,
+            Err(error) => {
+                if attempt < RUN_ATTEMPTS && record_changed(home, id, &stamp) {
+                    continue;
+                }
+                return Err(RunLaunchFailure::Resolve(error));
+            }
+        };
+        match load(&resolved) {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if attempt < RUN_ATTEMPTS && record_changed(home, id, &stamp) {
+                    continue;
+                }
+                return Err(RunLaunchFailure::Load(error));
+            }
+        }
+    }
+    Err(RunLaunchFailure::Resolve(InstallError::new(
+        "APP_STORE",
+        "the application record kept changing under concurrent updates",
+        1,
+    )))
+}
+
+/// End-to-end hook (builds with the cargo feature `e2e` only): with `ALEF_E2E=1` and
+/// [`RUN_TARGET_VARIABLE`]`=1`, print the resolved target and report that the launcher
+/// must exit without starting the application.
+#[cfg(feature = "e2e")]
+pub fn print_run_target_hook(target: &std::path::Path) -> bool {
+    std::env::var_os("ALEF_E2E").is_some_and(|value| value == "1")
+        && std::env::var_os(RUN_TARGET_VARIABLE).is_some_and(|value| value == "1")
+        && {
+            println!("{}", target.display());
+            true
+        }
+}
+
 pub fn read_record(path: &std::path::Path, hash: &str) -> Result<AppRecord, InstallError> {
     if !crate::runtimes::store::is_plain_directory(path) {
         return Err(InstallError::new(
@@ -251,6 +437,32 @@ impl AppRecord {
 }
 use sha2::Digest;
 
+/// The updater's installed context: only a package the store of `alef install` runs may
+/// apply an update — the running file must be the package a valid `app.json` record of
+/// exactly this id and version references. Canonical comparison: a relative or linked
+/// command-line path still matches, and nothing else in the store is mistaken for the
+/// running package.
+pub fn installed_app(
+    home: &std::path::Path,
+    package: &std::path::Path,
+    id: &str,
+    version: &str,
+) -> Option<alef_modules::net::updater::InstalledApp> {
+    let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
+    let app_dir = home.join("apps").join(&hash);
+    // read_record fails unless app.json exists, is plain, bounded, and passes its semantic
+    // validation (id hash, `package` = `<version>.alef`, absolute executable).
+    let record = read_record(&app_dir, &hash).ok()?;
+    if record.id != id || record.version != version {
+        return None;
+    }
+    // Canonical comparison: a relative or linked path on the command line still matches, and
+    // nothing else in the store is mistaken for the running package.
+    let running = std::fs::canonicalize(package).ok()?;
+    let stored = std::fs::canonicalize(app_dir.join(&record.package)).ok()?;
+    (running == stored).then(|| alef_modules::net::updater::InstalledApp { package: stored })
+}
+
 pub fn list_records(root: &std::path::Path) -> Result<Vec<AppListing>, InstallError> {
     let root_metadata = match std::fs::symlink_metadata(root) {
         Ok(metadata) if crate::runtimes::store::is_plain_directory(root) => Some(metadata),
@@ -304,6 +516,9 @@ fn key(row: &AppListing) -> &str {
 pub struct StoreApplier {
     home: PathBuf,
     executable: PathBuf,
+    /// The runtime store the install-mode compatibility check consults; the launcher fills it
+    /// from its own home, tests from a scratch home.
+    runtime_store: PathBuf,
     /// The fingerprint of the pinned signer of the running application; `apply` accepts only it.
     fingerprint: String,
     integration: Arc<tokio::sync::Mutex<Box<dyn Integration>>>,
@@ -321,6 +536,7 @@ impl StoreApplier {
         Self {
             home,
             executable,
+            runtime_store: crate::runtimes::store::root(),
             fingerprint,
             integration: Arc::new(tokio::sync::Mutex::new(Box::new(
                 integration::NativeIntegration::new(),
@@ -329,17 +545,21 @@ impl StoreApplier {
         }
     }
 
-    /// A custom integration, for tests and alternative backends.
+    /// A custom integration, for tests and alternative backends. `runtime_store` is the explicit
+    /// runtime-store root the install-mode compatibility check lists, so callers never depend on
+    /// the process environment.
     pub fn new(
         home: PathBuf,
         executable: PathBuf,
         fingerprint: String,
+        runtime_store: PathBuf,
         integration: Box<dyn Integration>,
         termination: alef_modules::Termination,
     ) -> Self {
         Self {
             home,
             executable,
+            runtime_store,
             fingerprint,
             integration: Arc::new(tokio::sync::Mutex::new(integration)),
             termination,
@@ -378,8 +598,9 @@ impl alef_modules::net::updater::UpdateApplier for StoreApplier {
         Box::pin(async move {
             // load_install hashes and verifies the archive: keep it off the async workers.
             let source = package.to_owned();
+            let runtime_store = self.runtime_store.clone();
             let (prepared, bytes) = tokio::task::spawn_blocking(move || {
-                crate::application::source::load_install(&source)
+                crate::application::source::load_install_in(&source, &runtime_store)
             })
             .await
             .map_err(|e| AlefError::new(ErrorCode::UpdateIo, e.to_string()))?

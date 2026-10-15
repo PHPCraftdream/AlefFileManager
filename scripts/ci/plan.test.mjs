@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { affectedJs, applyOverrides, computePlan, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
+import { affectedJs, applyOverrides, computePlan, e2eFor, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const data = JSON.parse(readFileSync(path.join(root, 'scripts', 'ci', 'affected.json'), 'utf8'));
@@ -135,7 +135,7 @@ test('a_path_no_rule_knows_widens_the_plan_to_full', () => {
 
 test('a_frontend_change_maps_to_frontend_js_but_widens_crates_to_all', () => {
   const p = plan(['frontend/src/app.tsx']);
-  assert.equal(p.e2e, 'app,console');
+  assert.equal(p.e2e, 'app,console,fm-package');
   assert.deepEqual(p.js, ['frontend']);
   assert.equal(p.crates, 'all');
 });
@@ -154,7 +154,9 @@ test('a_changed_root_readme_md_is_docs_only_not_an_unknown_path', () => {
 
 test('the_cli_parses_full_false_as_an_affected_plan_not_full', () => {
   const planPath = fileURLToPath(new URL('./plan.mjs', import.meta.url));
-  const out = spawnSync(process.execPath, [planPath, '--full', 'false', '--files', 'backend/crates/alef-core/src/lib.rs'], { encoding: 'utf8' });
+  // The CI environment of a push to main (GITHUB_EVENT_NAME, GITHUB_REF) would make the plan full on its own.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(GITHUB_|INPUT_|COMMIT_MESSAGE$)/.test(name)));
+  const out = spawnSync(process.execPath, [planPath, '--full', 'false', '--files', 'backend/crates/alef-core/src/lib.rs'], { encoding: 'utf8', env });
   assert.equal(JSON.parse(out.stdout.slice(out.stdout.indexOf('{'))).full, false);
 });
 
@@ -247,6 +249,17 @@ test('a_changed_scenario_file_selects_the_scenarios_it_holds_not_its_file_name',
   assert.equal(p.e2e, 'core,csp,manifest,permissions');
 });
 
+test('a_change_in_the_workspace_packages_selects_the_devflow_scenario', () => {
+  for (const file of ['packages/create-alef-runtime/src/generate.mjs', 'packages/tools/src/pack.mjs', 'packages/runtime/src/resolve.mjs']) {
+    assert.equal(e2eFor([file], data.e2e_rules, data.e2e_smoke, false, false), 'devflow');
+  }
+});
+
+test('a_change_to_the_devflow_scenario_file_selects_devflow', () => {
+  const selected = e2eFor(['tests/e2e/scenarios/app/devflow.mjs'], data.e2e_rules, data.e2e_smoke, false, false).split(',');
+  assert.ok(selected.includes('devflow'), selected.join(','));
+});
+
 test('a_dispatch_with_overrides_and_no_diff_base_is_a_targeted_plan_not_a_full_one', () => {
   const base = dispatchOnlyPlan(data);
   const out = applyOverrides(base, { crates: 'alef-core', e2e: 'core' }, data.runners_all);
@@ -275,6 +288,26 @@ test('the_matrix_of_a_full_plan_has_the_four_platforms_in_the_table_order', () =
 
 test('every_platform_runner_is_a_runner_of_the_full_plan_and_the_other_way_round', () => {
   assert.deepEqual(data.platforms.map(row => row.os).sort(), [...data.runners_all].sort());
+});
+
+test('a_frontend_change_marks_package_app_true', () => {
+  const p = plan(['frontend/src/app.tsx'], { packageAppGlobs: data.package_app });
+  assert.equal(p.full, false);
+  assert.equal(p.package_app, true);
+  assert.deepEqual(p.js, ['frontend']);
+});
+
+test('a_docs_only_change_and_a_dispatch_only_plan_leave_package_app_false', () => {
+  const p = plan(['docs/stages/m7-distribution.md'], { packageAppGlobs: data.package_app });
+  assert.equal(p.docs_only, true);
+  assert.equal(p.package_app, false);
+  const base = dispatchOnlyPlan(data);
+  assert.equal(base.package_app, false);
+});
+
+test('a_frontend_change_selects_the_fm_package_scenario_for_e2e', () => {
+  const p = plan(['frontend/src/app.tsx'], { packageAppGlobs: data.package_app });
+  assert.ok(p.e2e.split(',').includes('fm-package'), `e2e was ${p.e2e}`);
 });
 
 test('the_workflow_takes_its_matrix_from_the_plan_and_has_no_include_of_its_own', () => {

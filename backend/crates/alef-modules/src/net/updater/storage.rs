@@ -297,7 +297,8 @@ pub(super) async fn verify_and_publish(
     .await
     .map_err(|_| AlefError::new(ErrorCode::Internal, "package verifier failed"))?;
     drop(guard.disarm());
-    result
+    // The public signature stays `()`; the package's runtime range is only consumed by install.
+    result.map(|_| ())
 }
 
 struct CancellationGuard {
@@ -327,7 +328,7 @@ pub(super) fn verify_package_file(
     path: &Path,
     config: &UpdaterContext,
     offered: &document::Document,
-) -> Result<(), AlefError> {
+) -> Result<Option<String>, AlefError> {
     let mut pkg = Package::open_snapshot(path, MAX_PACKAGE_BYTES).map_err(|_| {
         AlefError::new(
             ErrorCode::UpdateSignatureInvalid,
@@ -371,7 +372,13 @@ pub(super) fn verify_package_file(
             "package version does not match offer",
         ));
     }
-    Ok(())
+    if offered.runtime.is_some() && offered.runtime != manifest.runtime {
+        return Err(AlefError::new(
+            ErrorCode::UpdateBadDocument,
+            "package runtime requirement does not match the feed",
+        ));
+    }
+    Ok(manifest.runtime.clone())
 }
 
 /// Verifies the published `updates/<version>.alef` before the applier installs it.
@@ -379,7 +386,7 @@ pub(super) async fn verify_stored_package(
     _storage: &Storage,
     config: &UpdaterContext,
     offered: &document::Document,
-) -> Result<(), AlefError> {
+) -> Result<Option<String>, AlefError> {
     let dir = config.data.join("updates");
     let path = dir.join(format!("{}.alef", offered.version));
     let meta = match fs::symlink_metadata(&path) {
@@ -413,7 +420,7 @@ fn verify_publish_blocking(
     offered: document::Document,
     cancelled: Arc<AtomicBool>,
 ) -> Result<(), AlefError> {
-    verify_package_file(temp.path(), &config, &offered)?;
+    verify_package_file(temp.path(), &config, &offered).map(|_| ())?;
     let dir = config.data.join("updates");
     let offered_version = alef_core::security::manifest::validate_package_version(&offered.version)
         .map_err(|_| AlefError::new(ErrorCode::UpdateBadDocument, "invalid version"))?;

@@ -21,6 +21,7 @@
     "**/*macos*",
     "tests/e2e/**"
   ],
+  "package_app": ["frontend/**", "packages/tools/**"],
   "e2e_smoke": ["core", "manifest", "permissions", "csp"],
   "e2e_rules": [
     { "glob": "tests/e2e/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
@@ -30,7 +31,8 @@
     { "glob": "tests/e2e/scenarios/mcp.mjs", "scenarios": ["mcp","mcp-stdio"] },
     { "glob": "tests/e2e/scenarios/net.mjs", "scenarios": ["http","socket","websocket","serve"] },
     { "glob": "tests/e2e/scenarios/startup.mjs", "scenarios": ["startup"] },
-    { "glob": "tests/e2e/scenarios/app/**", "scenarios": ["app", "console", "arguments", "startup", "autostart", "deeplink", "service", "launch-modes", "package", "updater"] },
+    { "glob": "tests/e2e/scenarios/app/**", "scenarios": ["app", "console", "arguments", "startup", "autostart", "deeplink", "service", "launch-modes", "package", "fm-package", "updater"] },
+    { "glob": "tests/e2e/scenarios/app/devflow.mjs", "scenarios": ["devflow"] },
     { "glob": "backend/crates/alef-core/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
     { "glob": "backend/crates/alef-runtime/src/bridge/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
     { "glob": "backend/crates/alef/src/consent/**", "scenarios": ["consent", "narrowing", "ask", "cancel", "decisions", "permissions"] },
@@ -41,7 +43,10 @@
     { "glob": "backend/crates/alef-modules/src/net/**", "scenarios": ["http", "socket", "websocket", "serve", "updater"] },
     { "glob": "backend/crates/alef-modules/src/data/**", "scenarios": ["fs", "sqlite", "store", "crypto", "webcrypto", "secrets"] },
     { "glob": "packages/mcp/**", "scenarios": ["mcp", "mcp-stdio"] },
+    { "glob": "packages/create-alef-runtime/**", "scenarios": ["devflow"] },
+    { "glob": "packages/tools/**", "scenarios": ["devflow"] },
+    { "glob": "packages/runtime/**", "scenarios": ["devflow"] },
     { "glob": "backend/crates/alef/src/args.rs", "scenarios": ["cli", "cli-commands", "arguments"] },
-    { "glob": "frontend/**", "scenarios": ["app", "console"] }
+    { "glob": "frontend/**", "scenarios": ["app", "console", "fm-package"] }
   ]
 }

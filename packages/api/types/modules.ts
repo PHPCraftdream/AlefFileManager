@@ -75,7 +75,9 @@ export type ParsedArgs = {
    */
   positional: Array<string>, };
 
-export type UpdaterCheckReply = { available: boolean, version?: string, notes?: string, };
+export type UpdaterCheckReply = { available: boolean, version?: string, notes?: string, runtime?: UpdaterRuntimeRequirement, };
+
+export type UpdaterRuntimeRequirement = { range: string, satisfied: boolean, };
 
 /**
  * One frame of the stream of `fs.watch`.
