@@ -2,12 +2,13 @@
 //! The shared tail of the launch pipeline: the entry and window documents are checked through
 //! the same lookup that serves requests, then trust and consent are settled. The check runs
 //! before any question is asked or answer written.
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use alef_core::security::{
     consent::{Consent, FileConsentStore, Identity},
     permissions::PermissionSet,
 };
+use alef_core::session::BlockingExecutor;
 use alef_runtime::{prepare_assets, PreparedAssets};
 use url::Url;
 
@@ -105,11 +106,14 @@ pub async fn settle_launch(
         .map_err(SettleFailure::Trust)?;
     }
     // The user decides what the application gets of what its manifest asks for; the store and
-    // the window of the user are blocking work on the consent budget of the launcher.
-    let stored = stored_decisions(decisions, identity)
+    // the window of the user are blocking work on a budget owned by this launch.
+    let settle_executor =
+        BlockingExecutor::new(NonZeroUsize::new(2).expect("non-zero consent settle budget"));
+    let stored = stored_decisions(&settle_executor, decisions, identity)
         .await
         .map_err(SettleFailure::Store)?;
     let settled = settle_with_async(
+        &settle_executor,
         &summary,
         &plan.permissions.rights(),
         &|right| plan.permissions.describe(right),
@@ -119,7 +123,7 @@ pub async fn settle_launch(
     .await
     .map_err(SettleFailure::Unanswered)?;
     if settled.changed {
-        store_decisions(decisions, identity, &settled.consent)
+        store_decisions(&settle_executor, decisions, identity, &settled.consent)
             .await
             .map_err(SettleFailure::Store)?;
     }
