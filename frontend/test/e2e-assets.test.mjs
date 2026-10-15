@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { here, prepareSite, scratch, staticServer } from '../../tests/e2e/lib.mjs';
 
-test('all 35 fixture manifests keep browser files exclusively in dist', () => {
+test('every fixture manifest keeps browser files exclusively in dist', () => {
   let count = 0;
   function walk(directory) {
     const entries = readdirSync(directory, { withFileTypes: true });
@@ -22,7 +22,8 @@ test('all 35 fixture manifests keep browser files exclusively in dist', () => {
     for (const entry of entries) if (entry.isDirectory() && entry.name !== 'dist') walk(join(directory, entry.name));
   }
   walk(join(here, 'apps'));
-  assert.equal(count, 35);
+  // Floor, not an exact count: new fixtures must not conflict here; the walk must still find them all.
+  assert.ok(count >= 36, String(count));
   for (const name of ['data/note.txt', 'secret.txt']) assert.ok(existsSync(join(here, 'apps', 'permissions', name)));
   assert.ok(existsSync(join(here, 'apps', 'startup', 'startup-probe.ps1')));
 });
