@@ -78,7 +78,8 @@ export function launchModesScenarios({ exe, verbose, timeoutMs }) {
       }
       const expected = mode === 'cli' ? 7 : mode === 'window' ? 9 : mode === 'undecided' ? 2 : deliverSignal ? 143 : 5;
       if (exit?.code !== expected) problems.push(`parent exit ${exit?.code}, expected ${expected}`);
-      if (mode === 'cli' && running.stdout().toString() !== 'ALEF_LAUNCH_CLI selected cli\n') problems.push('CLI stdout did not match exactly');
+      // Drain the stdout pipe first: the exact match loses the tail of a stream still in flight.
+      if (mode === 'cli' && (!(await running.stdoutDrained(10000)) || running.stdout().toString() !== 'ALEF_LAUNCH_CLI selected cli\n')) problems.push('CLI stdout did not match exactly');
       if (mode === 'foreground' && !running.lines.includes('ALEF_E2E launch-before-quit')) problems.push('foreground did not hear before-quit');
       if (mode === 'window') {
         const ready = running.lines.filter(line => line.startsWith('ALEF_READY '));

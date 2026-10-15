@@ -13,9 +13,9 @@ const assertBusState = async initial => {
 const consentProbe = async () => {
   await bounded(api.connect(), 8000);
   const path = await bounded(api.path.join('a', 'b'), 300);
-  const platform = await call('os.platform');
-  const info = await call('app.info');
-  if (!path || typeof platform !== 'string' || !platform || !info || typeof info !== 'object') throw new Error('unexpected API values');
+  const info = await call('os.info');
+  const appInfo = await call('app.info');
+  if (!path || !info || typeof info !== 'object' || typeof info.platform !== 'string' || !info.platform || !appInfo || typeof appInfo !== 'object') throw new Error('unexpected API values');
   const eventStart = performance.now();
   const remaining = () => Math.max(1, 300 - (performance.now() - eventStart));
   let received;
@@ -27,7 +27,7 @@ const consentProbe = async () => {
     const payload = await bounded(observed, remaining());
     if (!emitted || payload?.id !== emitted.id || performance.now() - eventStart > 300) throw new Error('event roundtrip failed');
   } finally { if (off) off(); }
-  await report(`bus-consent-probe-complete path=${path} platform=${platform} info=ok event=ok`);
+  await report(`bus-consent-probe-complete path=${path} info=ok appInfo=ok event=ok`);
   await report('RESULT PASS bus-consent-probe');
 };
 const main = async () => {
@@ -37,9 +37,8 @@ const main = async () => {
   if (connectError) throw connectError;
   await checks.check('bus-warm-api-calls', async () => {
     await bounded(api.path.join('a', 'b'), 300);
-    const platform = await call('os.platform');
-    const info = await call('app.info');
-    if (typeof platform !== 'string' || !platform || !info || typeof info !== 'object') throw new Error('unexpected API values');
+    const info = await call('os.info');
+    if (!info || typeof info !== 'object' || typeof info.platform !== 'string' || !info.platform) throw new Error('unexpected API values');
   });
   const initial = await call('e2e.busState');
   let warmOff;
@@ -59,10 +58,10 @@ const main = async () => {
   await checks.check('bus-executor-entered', async () => { if (!entered) throw new Error('executor did not enter blocking command'); });
   await checks.check('bus-unrelated-calls-while-blocked', async () => {
     await assertBusState(initial);
-    const platform = await call('os.platform');
-    const info = await call('app.info');
+    const info = await call('os.info');
+    const appInfo = await call('app.info');
     const path = await bounded(api.path.join('a', 'b'), 300);
-    if (typeof platform !== 'string' || !platform || !info || typeof path !== 'string' || !path) throw new Error('unexpected API result');
+    if (!info || typeof info !== 'object' || typeof info.platform !== 'string' || !info.platform || !appInfo || typeof appInfo !== 'object' || typeof path !== 'string' || !path) throw new Error('unexpected API result');
     await assertBusState(initial);
   });
   await checks.check('bus-event-roundtrip-while-blocked', async () => {

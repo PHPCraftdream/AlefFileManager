@@ -507,6 +507,8 @@ export function moduleScenarios({ drive, exe, verbose }) {
         if (absent.length > 0) problems.push(`checks without an ok line: ${absent}`);
         const exit = await running.waitForExit(30000);
         if (exit?.code !== 7) problems.push(`the exit code is ${exit ? exit.code : 'none'}, expected 7`);
+        // The tail of the 3 MB echo can still be in flight after exit: await the drain before comparing.
+        if (!(await running.stdoutDrained(10000))) problems.push('the stdout pipe did not close within 10000ms');
         const out = running.stdout();
         const expected = Buffer.from(input.map(byte => byte ^ 0x5a));
         if (out.length !== expected.length || Buffer.compare(out, expected) !== 0) problems.push(`stdout is ${out.length} bytes and not the changed input (${expected.length})`);
@@ -570,6 +572,9 @@ export function moduleScenarios({ drive, exe, verbose }) {
           replacements: { WORK: work.replaceAll('\\', '/') },
           targets: { mode: 'allowed', work, outside: base },
           expectedChecks: CLI_CHECKS,
+          // Named, bounded allowance for the CURRENT §3.2/§5 violation: cli.pty opens the pty
+          // synchronously on the BUS poll (audit #160); no other stall is permitted.
+          expectedBusStalls: [{ kind: 'call/cli.pty', minMs: 150, maxMs: 500, count: 2 }],
         });
       } finally {
         rmSync(base, { recursive: true, force: true });
@@ -587,7 +592,10 @@ export function moduleScenarios({ drive, exe, verbose }) {
         copyFileSync(process.execPath, node);
         if (process.platform !== 'win32') chmodSync(node, 0o755);
         running = startApp({ exe, args: ['--app', site], verbose,
-          env: { ALEF_E2E_CONSENT: 'cli.command:substituted=substitute;*=allow' } });
+          env: { ALEF_E2E_CONSENT: 'cli.command:substituted=substitute;*=allow' },
+          // Named, bounded allowance for the CURRENT §3.2/§5 violation: cli.run spawns the child
+          // synchronously on Windows (audit #160).
+          expectedBusStalls: [{ kind: 'call/cli.run', minMs: 50, maxMs: 300, count: 1 }] });
         await running.waitFor(line => line.includes('ALEF_E2E RESULT'), 120000, 'the declared command verdict');
         const result = verdictOf(running.lines);
         if (result?.[1] !== 'PASS') problems.push(`verdict ${result?.[1]}: ${result?.[2]}`);

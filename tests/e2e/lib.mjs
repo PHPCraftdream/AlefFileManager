@@ -192,10 +192,12 @@ const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '
  * Starts the runtime; its stderr and stdout are kept line by line and can be awaited. `input` (text or bytes)
  * is written to its stdin, which is then closed; without it stdin is closed from the start.
  */
-export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false, expectedBusStalls = [] }) {
+export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false, expectedBusStalls = [], undecidedConsent = false }) {
   assertQuiet(exe);
+  // `undecidedConsent`: no scripted answer at all, so the real consent window opens (an empty
+  // `ALEF_E2E_CONSENT` script would answer nothing and refuse every right without a window).
   const child = spawn(exe, args, {
-    env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env,
+    env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...(undecidedConsent ? {} : defaultDecisions), ...env,
       ...(process.env.ALEF_E2E_VISIBLE === '1' ? { ALEF_E2E_QUIET: '', ALEF_E2E_SOFTWARE: '' } : {}) },
     stdio: [input === undefined && !interactive ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
@@ -210,36 +212,40 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   const watchers = new Set();
   let exit = null;
   const wake = () => [...watchers].forEach(watcher => watcher());
-  const record = (raw, target = lines) => {
+  const record = (raw, targets) => {
     const line = raw.trim();
     if (!line) return;
-    target.push(line);
-    if (target === lines) {
+    // One split state per stream: a stderr line is recorded once and lands in every
+    // collector (the ordered log and the stall diagnostics) in the same handler.
+    for (const target of targets) target.push(line);
+    if (targets.includes(lines)) {
       if (verbose) console.log(`    | ${line}`);
       wake();
     }
   };
-  const collect = (stream, target = lines) => {
+  const collect = (stream, targets) => {
     let buffer = '';
     stream.on('data', chunk => {
       buffer += chunk;
       const parts = buffer.split('\n');
       buffer = parts.pop();
-      for (const raw of parts) record(raw, target);
+      for (const raw of parts) record(raw, targets);
     });
     stream.on('end', () => {
-      if (buffer) record(buffer, target);
+      if (buffer) record(buffer, targets);
     });
   };
-  collect(child.stderr);
-  collect(child.stderr, stderrLines);
-  collect(child.stdout);
+  collect(child.stderr, [lines, stderrLines]);
+  collect(child.stdout, [lines]);
   child.on('exit', code => {
     exit = { code };
     wake();
   });
   // Every holder of the pipe is gone: a program the runtime started again has finished as well.
   const closed = new Promise(resolvePromise => child.stderr.on('close', resolvePromise));
+  // The stdout pipe is closed only when the runtime and everything holding it are done: reading
+  // `stdout()` before that loses the tail of a large stream (the drain race).
+  const stdoutClosed = new Promise(resolvePromise => child.stdout.on('close', resolvePromise));
   const processRecord = {
     stderrLines, expectedBusStalls, stop: () => child.kill(),
     waitForClosed: ms => new Promise(resolvePromise => {
@@ -285,6 +291,17 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
     waitForClosed: processRecord.waitForClosed,
+    /** Resolves `true` once the stdout pipe is closed, `false` after `ms`: await before `stdout()`. */
+    stdoutDrained: ms => new Promise(resolvePromise => {
+      let done = false;
+      const timer = setTimeout(() => { done = true; resolvePromise(false); }, ms);
+      stdoutClosed.then(() => {
+        if (done) return;
+        clearTimeout(timer);
+        done = true;
+        resolvePromise(true);
+      });
+    }),
     /** Stall diagnostics from stderr only, for direct startApp users outside runScenario. */
     busProblems: () => busStallProblems(stderrLines, expectedBusStalls),
     /** Writes to the stdin of an `interactive` run; `endInput` closes it. */

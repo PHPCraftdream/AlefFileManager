@@ -54,8 +54,8 @@ export function busScenarios({ drive, exe, verbose, timeoutMs }) {
       const lines = [...outcome.lines];
       const problems = [...outcome.problems];
       try {
-        running = startApp({ exe, args: ['--app', site], verbose, env: {
-          ALEF_HOME: home, ALEF_E2E_CONSENT: '', ALEF_E2E_CONSENT_HOLD_MS: '3000',
+        running = startApp({ exe, args: ['--app', site], verbose, undecidedConsent: true, env: {
+          ALEF_HOME: home, ALEF_E2E_CONSENT_HOLD_MS: '3000',
           ALEF_E2E_CONSENT_UI: JSON.stringify([{ all: 'allow' }, { submit: true }]),
         } });
         const pending = await running.waitFor(line => line === 'ALEF_E2E consent-pending', timeoutMs, 'real consent-pending marker');
@@ -78,7 +78,7 @@ export function busScenarios({ drive, exe, verbose, timeoutMs }) {
         const probeAt = running.lines.indexOf(complete);
         const releaseAt = running.lines.findIndex(line => line.startsWith('ALEF_E2E consent-released'));
         if (!(pendingAt < releaseAt && releaseAt < probeAt)) problems.push('consent markers were not ordered pending < release < probe');
-        if (!/path=\S+ platform=\S+ info=ok event=ok$/.test(complete)) problems.push(`probe did not verify path/os/app.info/event: ${complete}`);
+        if (!/path=\S+ info=ok appInfo=ok event=ok$/.test(complete)) problems.push(`probe did not verify path/os.info/app.info/event: ${complete}`);
         const verdictLine = await running.waitFor(line => line === 'ALEF_E2E RESULT PASS bus-consent-probe', timeoutMs, 'PASS probe verdict');
         if (!verdictLine || running.lines.indexOf(verdictLine) <= probeAt) problems.push('probe PASS verdict did not follow successful probe');
         if (problems.length === 0) {
