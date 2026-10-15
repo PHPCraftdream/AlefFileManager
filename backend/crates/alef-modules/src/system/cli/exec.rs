@@ -142,7 +142,16 @@ pub(crate) struct Spec {
     pub env: Vec<(String, String)>,
     pub body: Option<Bytes>,
     pub limit: Option<Duration>,
+    /// A test hook replacing the process-creation job, so a test can observe queueing and skipping.
+    #[cfg(all(test, windows))]
+    pub(crate) spawn: SpawnOverride,
 }
+
+/// A test hook replacing the process-creation job, so a test can observe queueing and skipping.
+#[cfg(all(test, windows))]
+pub(crate) type SpawnOverride = Option<
+    std::sync::Arc<dyn Fn() -> Result<(super::native::Child, Killer), AlefError> + Send + Sync>,
+>;
 
 /// Reads a pipe under the output limit; a tree that writes more than it may is killed.
 async fn read_capped<R: AsyncRead + Unpin>(
@@ -191,7 +200,7 @@ pub(crate) fn signal_name(signal: i32) -> String {
 /// cancel-safe: yes — dropping the run kills its tree and kill_on_drop reaps the direct child.
 /// Normal error/timeout paths additionally await reaping before returning.
 pub(crate) async fn run(
-    #[cfg_attr(unix, allow(unused_variables))] executor: &BlockingExecutor,
+    executor: &BlockingExecutor,
     Spec {
         program,
         args,
@@ -199,6 +208,8 @@ pub(crate) async fn run(
         env,
         body,
         limit,
+        #[cfg(all(test, windows))]
+        spawn,
     }: Spec,
 ) -> Result<(Vec<u8>, Vec<u8>, Option<i32>, Option<String>), AlefError> {
     let mut command = Command::new(&program);
@@ -219,10 +230,36 @@ pub(crate) async fn run(
     // The body is written after the spawn; a clone rides along only to size the stdin pipe.
     let stdin_body = body.clone();
     #[cfg(unix)]
-    let (mut child, killer) = super::tree::spawn(&mut command).await?;
-    #[cfg(windows)]
     let (mut child, killer) = executor
         .submit(move || {
+            let mut command = command;
+            super::tree::spawn_sync(&mut command)
+        })?
+        .result()
+        .await??;
+    #[cfg(windows)]
+    let (mut child, killer) = {
+        #[cfg(all(test, windows))]
+        let job: Box<
+            dyn FnOnce() -> Result<(super::native::Child, Killer), AlefError> + Send,
+        > = match spawn {
+            Some(spawn) => Box::new(move || spawn()),
+            None => Box::new(move || {
+                super::native::spawn(
+                    &program,
+                    &args,
+                    &cwd,
+                    &env,
+                    super::spawn::Pipes {
+                        stdin: stdin_body.is_some(),
+                        stdout: true,
+                        stderr: true,
+                    },
+                )
+            }),
+        };
+        #[cfg(not(all(test, windows)))]
+        let job = move || {
             super::native::spawn(
                 &program,
                 &args,
@@ -234,9 +271,9 @@ pub(crate) async fn run(
                     stderr: true,
                 },
             )
-        })?
-        .result()
-        .await??;
+        };
+        executor.submit(job)?.result().await??
+    };
     // A dropped run drops every clone of the killer with it: the last one kills the tree.
     let stdin = child.stdin.take();
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -436,6 +473,8 @@ mod tests {
             env: Vec::new(),
             body: None,
             limit: None,
+            #[cfg(all(test, windows))]
+            spawn: None,
         }
     }
 
@@ -470,29 +509,8 @@ mod tests {
     }
 
     #[cfg(windows)]
-    #[tokio::test]
-    async fn the_run_yields_to_the_poll_before_its_spawn_is_admitted() {
-        use std::future::Future;
-        use std::num::NonZeroUsize;
-        use std::task::Poll;
-        let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
-        let mut fut = Box::pin(run(
-            &executor,
-            spec(command("cmd"), &["/c", "echo", "pending"]),
-        ));
-        let poll = fut
-            .as_mut()
-            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
-        assert!(
-            matches!(poll, Poll::Pending),
-            "the first poll must not spawn"
-        );
-        drop(fut); // kill_on_drop reaps the tree, if one had been started
-    }
-
-    #[cfg(windows)]
     #[test]
-    fn a_queued_spawn_dropped_with_its_call_never_starts_the_child() {
+    fn the_run_queues_its_spawn_and_the_first_poll_does_not_run_it_inline() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .max_blocking_threads(1)
             .enable_all()
@@ -501,6 +519,82 @@ mod tests {
         runtime.block_on(async {
             use std::future::Future;
             use std::num::NonZeroUsize;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::mpsc;
+            use std::task::Poll;
+            // The pool is blocked, so an admitted job stays queued; the job waits on a barrier of
+            // its own, so an INLINE spawn would block the caller's poll and time out here.
+            let (block_started_tx, block_started_rx) = tokio::sync::oneshot::channel();
+            let (release_pool_tx, release_pool_rx) = mpsc::sync_channel::<()>(1);
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = block_started_tx.send(());
+                let _ = release_pool_rx.recv_timeout(std::time::Duration::from_secs(5));
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), block_started_rx)
+                .await
+                .expect("blocker started")
+                .expect("signal");
+            let ran = Arc::new(AtomicBool::new(false));
+            let (job_started_tx, job_started_rx) = tokio::sync::oneshot::channel();
+            let (release_job_tx, release_job_rx) = mpsc::sync_channel::<()>(1);
+            let ran_for_job = Arc::clone(&ran);
+            let spawn: SpawnOverride = Some(Arc::new(move || {
+                ran_for_job.store(true, Ordering::SeqCst);
+                let _ = job_started_tx.send(());
+                let _ = release_job_rx.recv_timeout(std::time::Duration::from_secs(5));
+                Err(AlefError::new(ErrorCode::NotFound, "not spawned"))
+            }));
+            let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+            let mut spec = spec(command("cmd"), &["/c", "echo", "queued"]);
+            spec.spawn = spawn;
+            // Poll on a blocking thread: an inline spawn would block THIS poll on the job barrier.
+            let mut fut = Box::pin(run(&executor, spec));
+            let poller = tokio::task::spawn_blocking(move || {
+                let poll = fut
+                    .as_mut()
+                    .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+                (fut, poll)
+            });
+            let timed_out = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                let (fut, poll) = poller.await.expect("poller joins");
+                assert!(matches!(poll, Poll::Pending), "the admitted spawn queues");
+                fut
+            })
+            .await;
+            let mut fut = match timed_out {
+                Ok(fut) => fut,
+                Err(_) => {
+                    panic!("the first poll ran the spawn inline and blocked on the job barrier")
+                }
+            };
+            assert!(
+                !ran.load(Ordering::SeqCst),
+                "the queued spawn closure ran before the pool freed"
+            );
+            release_pool_tx.send(()).expect("pool blocker waiting");
+            tokio::time::timeout(std::time::Duration::from_secs(2), job_started_rx)
+                .await
+                .expect("the queued spawn closure never ran")
+                .expect("signal");
+            assert!(ran.load(Ordering::SeqCst));
+            release_job_tx.send(()).expect("job barrier waiting");
+            drop(fut);
+            drop(blocker);
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_queued_spawn_dropped_with_its_call_never_runs_its_closure() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            use std::future::Future;
+            use std::num::NonZeroUsize;
+            use std::sync::atomic::{AtomicBool, Ordering};
             use std::sync::mpsc;
             use std::task::Poll;
             // Saturate the blocking pool itself: an admitted job of the executor queues behind it.
@@ -515,26 +609,20 @@ mod tests {
                 .expect("blocker started")
                 .expect("signal");
             let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
-            let target =
-                std::env::temp_dir().join(format!("alef-exec-queued-{}", std::process::id()));
-            let _ = std::fs::remove_file(&target);
-            let spec = Spec {
-                program: command("cmd"),
-                args: vec![
-                    "/c".to_owned(),
-                    format!("type nul > \"{}\"", target.display()),
-                ],
-                cwd: std::env::temp_dir(),
-                env: Vec::new(),
-                body: None,
-                limit: None,
-            };
+            let ran = Arc::new(AtomicBool::new(false));
+            let ran_for_job = Arc::clone(&ran);
+            let spawn: SpawnOverride = Some(Arc::new(move || {
+                ran_for_job.store(true, Ordering::SeqCst);
+                Err(AlefError::new(ErrorCode::NotFound, "not spawned"))
+            }));
+            let mut spec = spec(command("cmd"), &["/c", "echo", "dropped"]);
+            spec.spawn = spawn;
             let mut fut = Box::pin(run(&executor, spec));
             let poll = fut
                 .as_mut()
                 .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
             assert!(matches!(poll, Poll::Pending), "the admitted run queues");
-            drop(fut); // the queued spawn must be skipped, never started
+            drop(fut); // the queued closure must be skipped, never run
             release_tx.send(()).expect("blocker waiting");
             // Draining the queue proves the queued closure was skipped before anything could run.
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -552,10 +640,9 @@ mod tests {
             .expect("queue drained")
             .expect("sentinel completes");
             assert!(
-                !target.exists(),
-                "the queued child ran after its call was dropped"
+                !ran.load(Ordering::SeqCst),
+                "the queued spawn closure ran after its call was dropped"
             );
-            let _ = std::fs::remove_file(&target);
             drop(blocker);
         });
     }
@@ -598,6 +685,8 @@ mod tests {
                 env: Vec::new(),
                 body: None,
                 limit: None,
+                #[cfg(all(test, windows))]
+                spawn: None,
             };
             let mut fut = Box::pin(run(&executor, spec));
             let poll = fut

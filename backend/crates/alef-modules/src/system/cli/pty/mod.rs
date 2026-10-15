@@ -158,8 +158,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_queued_pty_open_dropped_with_its_call_never_starts_the_program() {
-        use super::super::tree;
+    fn a_queued_pty_open_dropped_with_its_call_never_runs_its_closure() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .max_blocking_threads(1)
             .enable_all()
@@ -182,35 +181,29 @@ mod tests {
                 .expect("blocker started")
                 .expect("signal");
             let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
-            let program = tree::resolve(
-                "powershell",
-                std::env::var_os("PATH").as_deref(),
-                std::env::var_os("PATHEXT").as_deref(),
-            )
-            .expect("powershell resolves on the search path");
-            let file =
-                std::env::temp_dir().join(format!("alef-pty-queued-{}.txt", std::process::id()));
-            let _ = std::fs::remove_file(&file);
-            let session = session().await;
-            let mut fut = Box::pin(open(
-                &executor,
-                &session,
-                program,
-                vec![
-                    "-NoProfile".to_owned(),
-                    "-Command".to_owned(),
-                    format!("Set-Content -Path '{}' -Value x", file.display()),
-                ],
+            let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let ran_for_job = Arc::clone(&ran);
+            let job = open_job(
+                PathBuf::from("unused"),
+                Vec::new(),
                 std::env::temp_dir(),
                 Vec::new(),
                 80,
                 25,
-            ));
+            );
+            let job = move || {
+                ran_for_job.store(true, std::sync::atomic::Ordering::SeqCst);
+                job()
+            };
+            let mut fut = Box::pin(async move {
+                executor.submit(job)?.result().await??;
+                Ok(Value::Null)
+            });
             let poll = fut
                 .as_mut()
                 .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
             assert!(matches!(poll, Poll::Pending), "the admitted open queues");
-            drop(fut); // the queued open must be skipped, never started
+            drop(fut); // the queued closure must be skipped, never run
             release_tx.send(()).expect("blocker waiting");
             // Draining the queue proves the queued closure was skipped before anything could run.
             tokio::time::timeout(std::time::Duration::from_secs(8), async {
@@ -228,10 +221,9 @@ mod tests {
             .expect("queue drained")
             .expect("sentinel completes");
             assert!(
-                !file.exists(),
-                "the queued pty program ran after its call was dropped"
+                !ran.load(std::sync::atomic::Ordering::SeqCst),
+                "the queued pty open ran after its call was dropped"
             );
-            let _ = std::fs::remove_file(&file);
             drop(blocker);
         });
     }
@@ -460,6 +452,27 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
         })
 }
 
+/// The pty-creation job of [`open`]; tests wrap it to observe queueing and skipping.
+fn open_job(
+    program: PathBuf,
+    args: Vec<String>,
+    cwd: PathBuf,
+    env: Vec<(String, String)>,
+    cols: u16,
+    rows: u16,
+) -> impl FnOnce() -> Result<
+    (
+        platform::Terminal,
+        platform::Child,
+        super::tree::Killer,
+        u32,
+    ),
+    AlefError,
+> + Send
+       + 'static {
+    move || platform::open(program, args, cwd, env, cols, rows)
+}
+
 /// cancel-safe: yes — the pty creation runs on the blocking executor: dropping the job before it
 /// starts skips the open, a started open cannot be stopped and its result is dropped by the job;
 /// installation transfers all ownership before yielding.
@@ -474,7 +487,7 @@ async fn open(
     rows: u16,
 ) -> Result<Value, AlefError> {
     let (terminal, child, killer, pid) = executor
-        .submit(move || platform::open(program, args, cwd, env, cols, rows))?
+        .submit(open_job(program, args, cwd, env, cols, rows))?
         .result()
         .await??;
     let terminal = Arc::new(Terminal(terminal));

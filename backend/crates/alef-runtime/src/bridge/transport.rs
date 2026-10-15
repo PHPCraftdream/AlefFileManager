@@ -198,7 +198,15 @@ impl MemoryProtocol {
                 let body = match (method, request.body.take()) {
                     (Method::Post, Some(body)) => {
                         let limit = self.limits.max_bulk_body;
-                        read_body(body, limit).await.map(Bytes::from)
+                        // The body session's synchronous IPC setup and per-chunk sends must not
+                        // run on the watched poll: drive them on a task; OwnedTask aborts the
+                        // read when this future is dropped.
+                        let mut task = OwnedTask(tokio::spawn(async move {
+                            read_body(body, limit).await.map(Bytes::from)
+                        }));
+                        (&mut task.0)
+                            .await
+                            .unwrap_or_else(|error| Err(std::io::Error::other(error)))
                     }
                     _ => Ok(Bytes::new()),
                 };

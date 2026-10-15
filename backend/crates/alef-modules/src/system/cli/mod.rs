@@ -279,6 +279,8 @@ pub(crate) fn register(
                         env,
                         body,
                         limit,
+                        #[cfg(all(test, windows))]
+                        spawn: None,
                     },
                 )
                 .await?;

@@ -320,11 +320,12 @@ fn executable(path: &std::path::Path) -> bool {
     }
 }
 
-/// Spawn suspended on Windows: the primary thread cannot execute any user code until the job
-/// assignment succeeds. Tokio/std expose creation_flags but not the primary thread handle, so
-/// ToolHelp locates that sole suspended thread. Adoption/resume failures always kill and reap.
+/// The synchronous core of [`spawn`]: spawn suspended on Windows — the primary thread cannot
+/// execute any user code until the job assignment succeeds. Tokio/std expose creation_flags but
+/// not the primary thread handle, so ToolHelp locates that sole suspended thread.
+/// Adoption/resume failures always kill and reap.
 #[cfg(any(unix, test))]
-pub(crate) async fn spawn(
+pub(crate) fn spawn_sync(
     command: &mut tokio::process::Command,
 ) -> Result<(Child, Killer), AlefError> {
     command.kill_on_drop(true);
@@ -337,17 +338,25 @@ pub(crate) async fn spawn(
     let killer = match adopted {
         Ok(killer) => killer,
         Err(error) => {
-            let _ = child.kill().await;
+            // kill_on_drop reaps through the runtime's reaper; start_kill is the sync form.
+            let _ = child.start_kill();
             return Err(error);
         }
     };
     #[cfg(windows)]
     if let Err(error) = resume(&child) {
         killer.kill();
-        let _ = child.kill().await;
+        let _ = child.start_kill();
         return Err(error);
     }
     Ok((child, killer))
+}
+
+#[cfg(any(unix, test))]
+pub(crate) async fn spawn(
+    command: &mut tokio::process::Command,
+) -> Result<(Child, Killer), AlefError> {
+    spawn_sync(command)
 }
 
 #[cfg(all(windows, test))]

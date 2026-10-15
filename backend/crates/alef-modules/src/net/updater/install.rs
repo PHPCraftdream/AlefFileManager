@@ -715,6 +715,10 @@ pub(crate) mod tests {
             matches!(poll, std::task::Poll::Pending),
             "the first poll must not prepare the storage"
         );
+        assert!(
+            !data.path().join("updates").exists(),
+            "the first poll prepared the storage inline"
+        );
     }
 
     #[test]

@@ -112,6 +112,8 @@ pub(in crate::system::cli) fn register(
                         env: Vec::new(),
                         body: ctx.body().cloned(),
                         limit,
+                        #[cfg(all(test, windows))]
+                        spawn: None,
                     },
                 )
                 .await?;

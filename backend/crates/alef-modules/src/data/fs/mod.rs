@@ -42,13 +42,14 @@ impl Target {
 }
 
 /// Authorizes `path` for writing; `shadow` is the folder of the stand-ins (`ModuleContext::shadow`).
-pub(crate) fn write_target(
+pub(crate) async fn write_target(
     shadow: &std::path::Path,
     ctx: &alef_core::registry::context::CallContext,
     path: &str,
 ) -> Result<Target, AlefError> {
     Space::new(shadow.to_path_buf())
         .place(ctx, Permission::FsWrite, path, Reach::Through)
+        .await
         .map(Target)
 }
 use meta::fault::invalid;
@@ -101,7 +102,7 @@ struct TwoPaths {
 }
 
 /// Runs a blocking operation of the disk off the async threads.
-async fn blocking<T: Send + 'static>(
+pub(in crate::data) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, AlefError> + Send + 'static,
 ) -> Result<T, AlefError> {
     tokio::task::spawn_blocking(work)
@@ -123,7 +124,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                let place = at
+                    .place(&ctx, Permission::FsRead, &args.path, Reach::Through)
+                    .await?;
                 let data = blocking(move || ops::read_file(&place, MAX_WHOLE_FILE)).await?;
                 Ok(Reply::Bytes(Bytes::from(data)))
             }
@@ -135,7 +138,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let place = at.place(&ctx, Permission::FsWrite, &args.path, Reach::Through)?;
+                let place = at
+                    .place(&ctx, Permission::FsWrite, &args.path, Reach::Through)
+                    .await?;
                 let data = ctx.body().cloned().unwrap_or_default();
                 if data.len() as u64 > MAX_WHOLE_FILE {
                     return Err(invalid(
@@ -155,7 +160,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                 let at = at.clone();
                 async move {
                     let reach = if follow { Reach::Through } else { Reach::Entry };
-                    let place = at.place(&ctx, Permission::FsRead, &args.path, reach)?;
+                    let place = at
+                        .place(&ctx, Permission::FsRead, &args.path, reach)
+                        .await?;
                     json(&blocking(move || ops::stat(&place, follow)).await?)
                 }
             })?;
@@ -167,7 +174,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                let place = at
+                    .place(&ctx, Permission::FsRead, &args.path, Reach::Through)
+                    .await?;
                 json(&blocking(move || ops::read_dir(&place)).await?)
             }
         })?;
@@ -178,7 +187,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                let place = at
+                    .place(&ctx, Permission::FsRead, &args.path, Reach::Through)
+                    .await?;
                 let (place, entries) = blocking(move || {
                     let entries = ops::open_dir(&place)?;
                     Ok((place, entries))
@@ -216,11 +227,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let (ctx, place) = blocking(move || {
-                    let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
-                    Ok((ctx, place))
-                })
-                .await?;
+                let place = at
+                    .place(&ctx, Permission::FsRead, &args.path, Reach::Through)
+                    .await?;
                 watch::start(&ctx, place, args.recursive).await
             }
         })?;
@@ -234,7 +243,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let place = at.place(&ctx, Permission::FsRead, &args.path, Reach::Through)?;
+                let place = at
+                    .place(&ctx, Permission::FsRead, &args.path, Reach::Through)
+                    .await?;
                 json(&blocking(move || ops::exists(&place)).await?)
             }
         })?;
@@ -245,7 +256,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let place = at.place(&ctx, Permission::FsWrite, &args.path, Reach::Through)?;
+                let place = at
+                    .place(&ctx, Permission::FsWrite, &args.path, Reach::Through)
+                    .await?;
                 blocking(move || ops::mkdir(&place, args.recursive)).await?;
                 null()
             }
@@ -258,7 +271,9 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
             let at = at.clone();
             async move {
                 // A link is removed, not what it leads to.
-                let place = at.place(&ctx, Permission::FsWrite, &args.path, Reach::Entry)?;
+                let place = at
+                    .place(&ctx, Permission::FsWrite, &args.path, Reach::Entry)
+                    .await?;
                 blocking(move || ops::remove(&place, args.recursive)).await?;
                 null()
             }
@@ -270,8 +285,12 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let from = at.place(&ctx, Permission::FsWrite, &args.from, Reach::Entry)?;
-                let to = at.place(&ctx, Permission::FsWrite, &args.to, Reach::Entry)?;
+                let from = at
+                    .place(&ctx, Permission::FsWrite, &args.from, Reach::Entry)
+                    .await?;
+                let to = at
+                    .place(&ctx, Permission::FsWrite, &args.to, Reach::Entry)
+                    .await?;
                 blocking(move || ops::rename(&from, &to)).await?;
                 null()
             }
@@ -283,8 +302,12 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let at = at.clone();
             async move {
-                let from = at.place(&ctx, Permission::FsRead, &args.from, Reach::Through)?;
-                let to = at.place(&ctx, Permission::FsWrite, &args.to, Reach::Through)?;
+                let from = at
+                    .place(&ctx, Permission::FsRead, &args.from, Reach::Through)
+                    .await?;
+                let to = at
+                    .place(&ctx, Permission::FsWrite, &args.to, Reach::Through)
+                    .await?;
                 blocking(move || ops::copy(&from, &to)).await?;
                 null()
             }

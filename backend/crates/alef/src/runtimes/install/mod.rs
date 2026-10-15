@@ -644,14 +644,20 @@ impl alef_modules::net::updater::UpdateApplier for StoreApplier {
         &'a self,
         package: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<(), AlefError>> + Send + 'a>> {
-        let program = std::env::current_exe().map_err(|e| {
-            AlefError::new(
-                ErrorCode::UpdateRelaunchFailed,
-                format!("resolve current executable: {e}"),
-            )
-        });
+        let package = package.to_owned();
         Box::pin(async move {
-            let program = program?;
+            // Resolving the executable and spawning the replacement are platform calls: keep
+            // them off the poll.
+            let program = tokio::task::spawn_blocking(move || {
+                std::env::current_exe().map_err(|e| {
+                    AlefError::new(
+                        ErrorCode::UpdateRelaunchFailed,
+                        format!("resolve current executable: {e}"),
+                    )
+                })
+            })
+            .await
+            .map_err(|e| AlefError::new(ErrorCode::UpdateRelaunchFailed, e.to_string()))??;
             // The child inherits the launcher environment; `run` reopens the installed package.
             let arguments = [
                 std::ffi::OsString::from("run"),
@@ -661,12 +667,16 @@ impl alef_modules::net::updater::UpdateApplier for StoreApplier {
                 crate::relaunch::REPLACES_VARIABLE.to_owned(),
                 std::process::id().to_string(),
             )];
-            crate::relaunch::detached_with(&program, &arguments, &extra).map_err(|e| {
-                AlefError::new(
-                    ErrorCode::UpdateRelaunchFailed,
-                    format!("start the new version: {e}"),
-                )
-            })?;
+            tokio::task::spawn_blocking(move || {
+                crate::relaunch::detached_with(&program, &arguments, &extra).map_err(|e| {
+                    AlefError::new(
+                        ErrorCode::UpdateRelaunchFailed,
+                        format!("start the new version: {e}"),
+                    )
+                })
+            })
+            .await
+            .map_err(|e| AlefError::new(ErrorCode::UpdateRelaunchFailed, e.to_string()))??;
             // The child waits for this process to exit before it boots, so the single-instance
             // endpoint of the old version is never seen by the new one. The child handle is
             // simply dropped without waiting: the process keeps running and outlives this one.
