@@ -190,8 +190,11 @@ async fn invocation_refuses_dangerous_open_before_any_backend_call_and_allows_re
     let bat = root.path().join("script.bat");
     std::fs::write(&txt, b"").unwrap();
     std::fs::write(&bat, b"").unwrap();
+    // Menu state holds authorized (resolved) paths; macOS temp lives behind /var -> /private/var.
+    #[cfg(unix)]
+    let (txt, bat) = (txt.canonicalize().unwrap(), bat.canonicalize().unwrap());
     let fake = Arc::new(Fake::default());
-    let p = permissions(root.path(), true, true, true);
+    let p = permissions(txt.parent().unwrap(), true, true, true);
     let menu = state(
         vec![bat.clone()],
         vec![bat.to_string_lossy().into_owned()],
