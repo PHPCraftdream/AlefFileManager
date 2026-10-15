@@ -252,6 +252,7 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
             autostart: false,
         },
         window: None,
+        ai: None,
     };
     let root = std::env::temp_dir();
     let vars = PathVars {
