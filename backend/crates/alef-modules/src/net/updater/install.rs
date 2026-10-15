@@ -60,7 +60,28 @@ pub(super) fn register(
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
+/// Local updater-storage budget: at most two queued or running jobs.
+/// This is not a global or per-session framework limit.
+fn executor() -> &'static alef_core::session::BlockingExecutor {
+    static EXECUTOR: std::sync::OnceLock<alef_core::session::BlockingExecutor> =
+        std::sync::OnceLock::new();
+    EXECUTOR.get_or_init(|| {
+        alef_core::session::BlockingExecutor::new(
+            std::num::NonZeroUsize::new(2).expect("non-zero updater job budget"),
+        )
+    })
+}
+
 pub(super) async fn install(
+    config: UpdaterContext,
+    state: Arc<State>,
+    gate: Arc<Semaphore>,
+) -> Result<Reply, AlefError> {
+    install_on(executor(), config, state, gate).await
+}
+
+pub(super) async fn install_on(
+    executor: &alef_core::session::BlockingExecutor,
     config: UpdaterContext,
     state: Arc<State>,
     gate: Arc<Semaphore>,
@@ -87,7 +108,12 @@ pub(super) async fn install(
         })?;
     alef_core::security::manifest::validate_package_version(&offered.version)
         .map_err(|_| AlefError::new(ErrorCode::UpdateBadDocument, "invalid offered version"))?;
-    let storage = storage::Storage::prepare(&config.data)?;
+    // File/dir locking must not stall the BUS poll: prepare on the blocking pool.
+    let data = config.data.clone();
+    let storage = executor
+        .submit(move || storage::Storage::prepare(&data))?
+        .result()
+        .await??;
     let required_runtime = storage::verify_stored_package(&storage, &config, &offered).await?;
     if let Some(range) = required_runtime {
         if !super::runtime_satisfied(&config, &range) {
@@ -110,7 +136,7 @@ pub(super) async fn install(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{install, UpdateApplier};
+    use super::{install, install_on, UpdateApplier};
     use crate::net::updater::{
         document, register_updater,
         tests::{
@@ -614,5 +640,185 @@ pub(crate) mod tests {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::UpdateBusy);
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn a_saturated_executor_refuses_the_install_with_busy() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        // A capacity-1 executor already occupied by a blocked job.
+        let executor = alef_core::session::BlockingExecutor::new(
+            std::num::NonZeroUsize::new(1).expect("non-zero test limit"),
+        );
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let _blocker = executor
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            })
+            .expect("blocker admitted");
+        tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .expect("blocker started")
+            .expect("signal");
+        // The admission line `executor.submit(...)?` must refuse with Busy.
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            install_on(
+                &executor,
+                config,
+                install_state(Some(offered("2.0.0"))),
+                Arc::new(Semaphore::new(1)),
+            ),
+        )
+        .await
+        .expect("install timed out")
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Busy);
+        assert!(fake.calls().is_empty());
+        release_tx.send(()).expect("blocker waiting");
+    }
+
+    #[tokio::test]
+    async fn the_install_yields_to_the_poll_before_its_storage_prepare_is_admitted() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        // A fresh data dir: the sentinel must come from the tested call itself.
+        let data = tempfile::tempdir().unwrap();
+        config.data = data.path().to_path_buf();
+        let executor = alef_core::session::BlockingExecutor::new(
+            std::num::NonZeroUsize::new(1).expect("non-zero test limit"),
+        );
+        let mut fut = Box::pin(install_on(
+            &executor,
+            config,
+            install_state(Some(offered("2.0.0"))),
+            Arc::new(Semaphore::new(1)),
+        ));
+        let poll = fut
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        assert!(
+            matches!(poll, std::task::Poll::Pending),
+            "the first poll must not prepare the storage"
+        );
+    }
+
+    #[test]
+    fn a_queued_storage_prepare_dropped_with_its_call_never_prepares() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            // Saturate the blocking pool itself: an admitted job of the executor queues behind it.
+            let (block_started_tx, block_started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = block_started_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            });
+            tokio::time::timeout(Duration::from_secs(5), block_started_rx)
+                .await
+                .expect("blocker started")
+                .expect("signal");
+            let scratch = tempfile::tempdir().unwrap();
+            let (package, key) = signed_package("2.0.0", "org.example.app");
+            let mut config = signed_context(scratch.path(), key);
+            verify_bytes(scratch.path(), &config, "2.0.0", &package)
+                .await
+                .unwrap();
+            let fake = Arc::new(FakeApplier::default());
+            config.applier = fake.clone();
+            // A fresh data dir: the sentinel must come from the tested call itself.
+            let data = tempfile::tempdir().unwrap();
+            config.data = data.path().to_path_buf();
+            let executor = alef_core::session::BlockingExecutor::new(
+                std::num::NonZeroUsize::new(1).expect("non-zero test limit"),
+            );
+            let mut fut = Box::pin(install_on(
+                &executor,
+                config,
+                install_state(Some(offered("2.0.0"))),
+                Arc::new(Semaphore::new(1)),
+            ));
+            let poll = fut
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+            assert!(
+                matches!(poll, std::task::Poll::Pending),
+                "the install queues"
+            );
+            drop(fut); // the queued prepare must be skipped, never run
+            release_tx.send(()).expect("blocker waiting");
+            // Draining the queue proves the queued closure was skipped before anything could run.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match executor.submit(|| ()) {
+                        Ok(job) => break job.result().await,
+                        Err(error) if error.code == ErrorCode::Busy => {
+                            tokio::task::yield_now().await
+                        }
+                        Err(error) => panic!("unexpected submit error: {error}"),
+                    }
+                }
+            })
+            .await
+            .expect("queue drained")
+            .expect("sentinel completes");
+            assert!(
+                !data.path().join("updates").exists(),
+                "the queued storage prepare ran after its call was dropped"
+            );
+            drop(blocker);
+        });
+    }
+
+    #[tokio::test]
+    async fn the_install_prepares_its_storage_before_it_verifies_the_package() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (package, key) = signed_package("2.0.0", "org.example.app");
+        let mut config = signed_context(scratch.path(), key);
+        verify_bytes(scratch.path(), &config, "2.0.0", &package)
+            .await
+            .unwrap();
+        let fake = Arc::new(FakeApplier::default());
+        config.applier = fake.clone();
+        // A fresh data dir: the sentinel must come from this call's own prepare.
+        let data = tempfile::tempdir().unwrap();
+        config.data = data.path().to_path_buf();
+        let executor = alef_core::session::BlockingExecutor::new(
+            std::num::NonZeroUsize::new(1).expect("non-zero test limit"),
+        );
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            install_on(
+                &executor,
+                config,
+                install_state(Some(offered("2.0.0"))),
+                Arc::new(Semaphore::new(1)),
+            ),
+        )
+        .await
+        .expect("install timed out")
+        .expect_err("the verified package is not in the fresh data dir");
+        assert_eq!(error.code, ErrorCode::UpdateNotDownloaded);
+        // prepare's side effect: the updates directory exists under the fresh config.data.
+        assert!(data.path().join("updates").is_dir());
+        assert!(fake.calls().is_empty());
     }
 }

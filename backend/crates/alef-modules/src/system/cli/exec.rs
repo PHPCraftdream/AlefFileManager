@@ -11,7 +11,7 @@ use tokio::{
     process::Command,
 };
 
-use super::tree::Killer;
+use super::{tree::Killer, BlockingExecutor};
 
 /// The most a run collects of one pipe: more than this kills the tree.
 const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
@@ -191,6 +191,7 @@ pub(crate) fn signal_name(signal: i32) -> String {
 /// cancel-safe: yes — dropping the run kills its tree and kill_on_drop reaps the direct child.
 /// Normal error/timeout paths additionally await reaping before returning.
 pub(crate) async fn run(
+    #[cfg_attr(unix, allow(unused_variables))] executor: &BlockingExecutor,
     Spec {
         program,
         args,
@@ -214,20 +215,28 @@ pub(crate) async fn run(
     } else {
         Stdio::null()
     });
+    #[cfg(windows)]
+    // The body is written after the spawn; a clone rides along only to size the stdin pipe.
+    let stdin_body = body.clone();
     #[cfg(unix)]
     let (mut child, killer) = super::tree::spawn(&mut command).await?;
     #[cfg(windows)]
-    let (mut child, killer) = super::native::spawn(
-        &program,
-        &args,
-        &cwd,
-        &env,
-        super::spawn::Pipes {
-            stdin: body.is_some(),
-            stdout: true,
-            stderr: true,
-        },
-    )?;
+    let (mut child, killer) = executor
+        .submit(move || {
+            super::native::spawn(
+                &program,
+                &args,
+                &cwd,
+                &env,
+                super::spawn::Pipes {
+                    stdin: stdin_body.is_some(),
+                    stdout: true,
+                    stderr: true,
+                },
+            )
+        })?
+        .result()
+        .await??;
     // A dropped run drops every clone of the killer with it: the last one kills the tree.
     let stdin = child.stdin.take();
     let stdout = child.stdout.take().expect("stdout was piped");
@@ -406,6 +415,165 @@ mod tests {
         let (program, args) = Shell::PowerShell.command("echo hi");
         assert_eq!(program, "powershell.exe");
         assert_eq!(args, ["-NoProfile", "-Command", "echo hi"]);
+    }
+
+    #[cfg(windows)]
+    fn command(name: &str) -> std::path::PathBuf {
+        super::super::tree::resolve(
+            name,
+            std::env::var_os("PATH").as_deref(),
+            std::env::var_os("PATHEXT").as_deref(),
+        )
+        .expect("command resolves on the search path")
+    }
+
+    #[cfg(windows)]
+    fn spec(program: std::path::PathBuf, args: &[&str]) -> Spec {
+        Spec {
+            program,
+            args: args.iter().map(|a| (*a).to_owned()).collect(),
+            cwd: std::env::temp_dir(),
+            env: Vec::new(),
+            body: None,
+            limit: None,
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_saturated_executor_refuses_the_run_with_busy_before_spawning() {
+        use std::num::NonZeroUsize;
+        use std::sync::mpsc;
+        let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+        let blocker = executor
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+            })
+            .expect("blocker admitted");
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("blocker started")
+            .expect("signal");
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run(&executor, spec(command("cmd"), &["/c", "echo", "hi"])),
+        )
+        .await
+        .expect("busy arrives without spawning")
+        .expect_err("saturated executor refuses");
+        assert_eq!(error.code, ErrorCode::Busy);
+        release_tx.send(()).expect("blocker waiting");
+        drop(blocker);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_run_yields_to_the_poll_before_its_spawn_is_admitted() {
+        use std::num::NonZeroUsize;
+        use std::task::Poll;
+        let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+        let mut fut = Box::pin(run(
+            &executor,
+            spec(command("cmd"), &["/c", "echo", "pending"]),
+        ));
+        let poll = fut
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        assert!(
+            matches!(poll, Poll::Pending),
+            "the first poll must not spawn"
+        );
+        drop(fut); // kill_on_drop reaps the tree, if one had been started
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_queued_spawn_dropped_with_its_call_never_starts_the_child() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            use std::num::NonZeroUsize;
+            use std::sync::mpsc;
+            use std::task::Poll;
+            // Saturate the blocking pool itself: an admitted job of the executor queues behind it.
+            let (block_started_tx, block_started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = block_started_tx.send(());
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), block_started_rx)
+                .await
+                .expect("blocker started")
+                .expect("signal");
+            let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+            let target =
+                std::env::temp_dir().join(format!("alef-exec-queued-{}", std::process::id()));
+            let _ = std::fs::remove_file(&target);
+            let spec = Spec {
+                program: command("cmd"),
+                args: vec![
+                    "/c".to_owned(),
+                    format!("type nul > \"{}\"", target.display()),
+                ],
+                cwd: std::env::temp_dir(),
+                env: Vec::new(),
+                body: None,
+                limit: None,
+            };
+            let mut fut = Box::pin(run(&executor, spec));
+            let poll = fut
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+            assert!(matches!(poll, Poll::Pending), "the admitted run queues");
+            drop(fut); // the queued spawn must be skipped, never started
+            release_tx.send(()).expect("blocker waiting");
+            // Draining the queue proves the queued closure was skipped before anything could run.
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    match executor.submit(|| ()) {
+                        Ok(job) => break job.result().await,
+                        Err(error) if error.code == ErrorCode::Busy => {
+                            tokio::task::yield_now().await
+                        }
+                        Err(error) => panic!("unexpected submit error: {error}"),
+                    }
+                }
+            })
+            .await
+            .expect("queue drained")
+            .expect("sentinel completes");
+            assert!(
+                !target.exists(),
+                "the queued child ran after its call was dropped"
+            );
+            let _ = std::fs::remove_file(&target);
+            drop(blocker);
+        });
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_run_spawns_on_the_blocking_executor_and_reports_the_child() {
+        use std::num::NonZeroUsize;
+        let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+        let (out, err, code, signal) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            run(&executor, spec(command("cmd"), &["/c", "echo", "ok"])),
+        )
+        .await
+        .expect("run completes")
+        .expect("run succeeds");
+        assert!(String::from_utf8_lossy(&out).contains("ok"));
+        assert!(err.is_empty());
+        assert_eq!(code, Some(0));
+        assert_eq!(signal, None);
     }
 
     #[test]

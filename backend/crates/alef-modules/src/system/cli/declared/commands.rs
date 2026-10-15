@@ -16,7 +16,7 @@ use alef_core::{
 use serde::Deserialize;
 
 use super::{
-    super::{cwd_of, dead, exec, json, run_reply, spawn},
+    super::{cwd_of, dead, exec, executor, json, run_reply, spawn},
     sidecar,
 };
 
@@ -56,22 +56,31 @@ struct Plan {
     cwd: PathBuf,
 }
 
-fn plan(
+async fn plan(
     ctx: &CallContext,
     app: Option<&std::path::Path>,
     name: &str,
     params: Option<BTreeMap<String, String>>,
     cwd: &Option<String>,
 ) -> Result<Plan, AlefError> {
-    let command: &DeclaredCommand = ctx
+    let command: DeclaredCommand = ctx
         .permissions
         .command(name)
-        .ok_or_else(|| refusal(Permission::CliCommand))?;
+        .ok_or_else(|| refusal(Permission::CliCommand))?
+        .clone();
     let args = command.expand(&params.unwrap_or_default())?;
-    let cwd = cwd_of(ctx, cwd)?;
-    let program = match &command.program {
-        Program::Sidecar(name) => sidecar::sidecar(app, name)?,
-        Program::Plain(text) => sidecar::program(app, text)?,
+    let cwd = cwd_of(ctx, cwd).await?;
+    // The program resolution stats the file system: sidecars and the search path alike.
+    let program = {
+        let program = command.program.clone();
+        let app = app.map(PathBuf::from);
+        super::super::executor()
+            .submit(move || match &program {
+                Program::Sidecar(name) => sidecar::sidecar(app.as_deref(), name),
+                Program::Plain(text) => sidecar::program(app.as_deref(), text),
+            })?
+            .result()
+            .await??
     };
     Ok(Plan { program, args, cwd })
 }
@@ -93,15 +102,18 @@ pub(in crate::system::cli) fn register(
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(limit).await);
                 }
-                let plan = plan(&ctx, app.as_deref(), &args.name, args.params, &args.cwd)?;
-                let (out, err, code, signal) = exec::run(exec::Spec {
-                    program: plan.program,
-                    args: plan.args,
-                    cwd: plan.cwd,
-                    env: Vec::new(),
-                    body: ctx.body().cloned(),
-                    limit,
-                })
+                let plan = plan(&ctx, app.as_deref(), &args.name, args.params, &args.cwd).await?;
+                let (out, err, code, signal) = exec::run(
+                    executor(),
+                    exec::Spec {
+                        program: plan.program,
+                        args: plan.args,
+                        cwd: plan.cwd,
+                        env: Vec::new(),
+                        body: ctx.body().cloned(),
+                        limit,
+                    },
+                )
                 .await?;
                 run_reply(&out, &err, code, signal)
             }
@@ -117,7 +129,7 @@ pub(in crate::system::cli) fn register(
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(None).await);
                 }
-                let plan = plan(&ctx, app.as_deref(), &args.name, args.params, &args.cwd)?;
+                let plan = plan(&ctx, app.as_deref(), &args.name, args.params, &args.cwd).await?;
                 let reply = spawn::spawn_command(
                     &ctx.session,
                     plan.program,

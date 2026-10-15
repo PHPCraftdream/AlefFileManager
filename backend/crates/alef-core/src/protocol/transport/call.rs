@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Unary calls (`POST call/<command>`) and the `runtime.hello` handshake.
+//!
+//! The poll only does cheap checks (hello, session, name, call slot); body parsing runs on the
+//! bounded parse executor (still under the route watchdog kind) and the handler runs in its own
+//! task guarded by `CallGuard`.
 use super::{
     auth,
     http::{self, TransportRequest, TransportResponse},
@@ -38,34 +42,35 @@ fn invalid(message: &str) -> AlefError {
 
 /// Arguments and optional binary body of a unary request.
 fn unary_args(
-    request: &TransportRequest,
+    content_type: &str,
+    args_header: Option<&str>,
+    body: Bytes,
     limits: &Limits,
 ) -> Result<(Value, Option<Bytes>), AlefError> {
-    let content_type = request.header("content-type").unwrap_or("");
     let media = content_type.split(';').next().unwrap_or("").trim();
-    let json_body = media == "application/json" || (media.is_empty() && request.body.is_empty());
+    let json_body = media == "application/json" || (media.is_empty() && body.is_empty());
     if json_body {
-        if request.body.len() > limits.max_unary_body {
+        if body.len() > limits.max_unary_body {
             return Err(invalid("request body too large"));
         }
-        if request.body.is_empty() {
+        if body.is_empty() {
             return Ok((json!({}), None));
         }
-        let args = serde_json::from_slice(&request.body)
-            .map_err(|_| invalid("request body is not valid JSON"))?;
+        let args =
+            serde_json::from_slice(&body).map_err(|_| invalid("request body is not valid JSON"))?;
         return Ok((args, None));
     }
     if media != "application/octet-stream" {
         return Err(invalid("unsupported content type"));
     }
-    if request.body.len() > limits.max_bulk_body {
+    if body.len() > limits.max_bulk_body {
         return Err(invalid("request body too large"));
     }
-    let args = match request.header("x-alef-args") {
+    let args = match args_header {
         Some(header) => parse_args_header(header)?,
         None => json!({}),
     };
-    Ok((args, Some(request.body.clone())))
+    Ok((args, Some(body)))
 }
 
 /// A running handler task: dropping it (client abort) cancels the call cooperatively and aborts the task.
@@ -92,18 +97,30 @@ impl Transport {
         if !valid_name(name) {
             return http::error(&AlefError::new(ErrorCode::NotFound, "command not found"));
         }
-        let (args, body) = match unary_args(request, &self.config.limits) {
-            Ok(parts) => parts,
+        let uncounted = UNCOUNTED.contains(&name);
+        let media = request.header("content-type").unwrap_or("").to_owned();
+        let args_header = request.header("x-alef-args").map(str::to_owned);
+        let body = request.body.clone();
+        let limits = self.config.limits;
+        // Parsing runs on a bounded executor, off the poll and off the runtime workers, still under
+        // the route watchdog: the await is inside the watched future. A full parser refuses with
+        // `Busy`; dropping the call skips a queued parse and abandons a running one (BlockingJob).
+        let (args, body) = match self
+            .parse
+            .submit(move || unary_args(&media, args_header.as_deref(), body, &limits))
+        {
+            Ok(job) => match job.result().await {
+                Ok(parsed) => parsed,
+                Err(error) => return http::error(&error),
+            },
             Err(error) => return http::error(&error),
         };
         if name == "runtime.stream.write"
-            && body
-                .as_ref()
-                .is_some_and(|b| b.len() > self.config.limits.chunk_size)
+            && body.as_ref().is_some_and(|b| b.len() > limits.chunk_size)
         {
             return http::error(&invalid("stream chunk too large"));
         }
-        let permit = if UNCOUNTED.contains(&name) {
+        let permit = if uncounted {
             None
         } else {
             match session.try_begin_call() {

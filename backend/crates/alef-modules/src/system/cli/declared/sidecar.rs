@@ -57,6 +57,14 @@ pub(crate) fn program(app: Option<&Path>, text: &str) -> Result<PathBuf, AlefErr
     })
 }
 
+/// [`program`] on the blocking executor: resolution stats the search path.
+pub(crate) async fn program_on(app: Option<PathBuf>, text: String) -> Result<PathBuf, AlefError> {
+    super::super::executor()
+        .submit(move || program(app.as_deref(), &text))?
+        .result()
+        .await?
+}
+
 /// The first word of a line a shell would run must not be a sidecar reference: a shell cannot
 /// resolve it.
 pub(crate) fn refuse_in_shell(first: Option<&str>) -> Result<(), AlefError> {

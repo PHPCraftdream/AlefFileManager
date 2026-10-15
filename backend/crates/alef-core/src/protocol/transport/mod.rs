@@ -17,7 +17,7 @@ use crate::{
     protocol::call::Limits,
     registry::dispatch::Registry,
     security::permissions::PermissionSet,
-    session::session::SessionManager,
+    session::{session::SessionManager, BlockingExecutor},
 };
 use std::{fmt, sync::Arc};
 
@@ -50,6 +50,16 @@ pub struct Transport {
     registry: Registry,
     sessions: Arc<SessionManager>,
     permissions: Arc<PermissionSet>,
+    parse: BlockingExecutor,
+}
+
+/// Local request-parse budget: at most four queued or running parses. This is not a global
+/// or per-session framework limit.
+fn parse_executor() -> &'static BlockingExecutor {
+    static PARSE: std::sync::OnceLock<BlockingExecutor> = std::sync::OnceLock::new();
+    PARSE.get_or_init(|| {
+        BlockingExecutor::new(std::num::NonZeroUsize::new(4).expect("non-zero parse budget"))
+    })
 }
 
 enum Route<'a> {
@@ -88,7 +98,14 @@ impl Transport {
             registry,
             sessions,
             permissions,
+            parse: parse_executor(),
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_parse_executor(mut self, parse: BlockingExecutor) -> Self {
+        self.parse = parse;
+        self
     }
 
     /// Handles one request. Never panics and never fails: every problem is a response.

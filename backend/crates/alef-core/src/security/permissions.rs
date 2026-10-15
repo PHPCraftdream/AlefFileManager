@@ -608,4 +608,269 @@ impl PermissionSet {
             }),
         }
     }
+
+    /// [`Self::check`] with filesystem resolution on `executor`: the `symlink_metadata` and
+    /// `canonicalize` work behind `fs.read`/`fs.write` never runs on the calling thread. Every
+    /// other permission decides in place. Same decisions and errors as [`Self::check`]; a full
+    /// executor refuses with `Busy`.
+    pub async fn check_on(
+        self: Arc<Self>,
+        executor: &crate::session::BlockingExecutor,
+        permission: Permission,
+        target: Option<&str>,
+        grants: &Arc<Grants>,
+    ) -> Result<Decision, AlefError> {
+        match permission {
+            Permission::FsRead | Permission::FsWrite => {
+                let target = target.map(str::to_owned);
+                let grants = Arc::clone(grants);
+                executor
+                    .submit(move || self.check(permission, target.as_deref(), &grants))?
+                    .result()
+                    .await?
+            }
+            _ => self.check(permission, target, grants),
+        }
+    }
+
+    /// [`Self::check_on`] on the shared filesystem-resolution budget.
+    pub async fn check_async(
+        self: Arc<Self>,
+        permission: Permission,
+        target: Option<&str>,
+        grants: &Arc<Grants>,
+    ) -> Result<Decision, AlefError> {
+        self.check_on(fs_executor(), permission, target, grants)
+            .await
+    }
+
+    /// [`Self::authorize_at`] with filesystem resolution on `executor`; same semantics.
+    pub async fn authorize_at_on(
+        self: Arc<Self>,
+        executor: &crate::session::BlockingExecutor,
+        permission: Permission,
+        target: Option<&str>,
+        grants: &Arc<Grants>,
+        reach: Reach,
+    ) -> Result<Authorized, AlefError> {
+        let target = target.map(str::to_owned);
+        let grants = Arc::clone(grants);
+        executor
+            .submit(move || self.authorize_at(permission, target.as_deref(), &grants, reach))?
+            .result()
+            .await?
+    }
+
+    /// [`Self::authorize_at_on`] on the shared budget.
+    pub async fn authorize_at_async(
+        self: Arc<Self>,
+        permission: Permission,
+        target: Option<&str>,
+        grants: &Arc<Grants>,
+        reach: Reach,
+    ) -> Result<Authorized, AlefError> {
+        self.authorize_at_on(fs_executor(), permission, target, grants, reach)
+            .await
+    }
+}
+
+/// Local filesystem-resolution budget for permission decisions: at most eight queued or
+/// running checks. This is not a global or per-session framework limit.
+fn fs_executor() -> &'static crate::session::BlockingExecutor {
+    static FS: std::sync::OnceLock<crate::session::BlockingExecutor> = std::sync::OnceLock::new();
+    FS.get_or_init(|| {
+        crate::session::BlockingExecutor::new(
+            std::num::NonZeroUsize::new(8).expect("non-zero filesystem budget"),
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::num::NonZeroUsize;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const LIMIT: Duration = Duration::from_secs(5);
+
+    fn executor(capacity: usize) -> crate::session::BlockingExecutor {
+        crate::session::BlockingExecutor::new(
+            NonZeroUsize::new(capacity).expect("non-zero test limit"),
+        )
+    }
+
+    fn set() -> Arc<PermissionSet> {
+        // Minimal manifest: the empty fs scopes make the grants the only source of access.
+        let policy: Permissions = serde_json::from_value(json!({
+            "fs": {"read": [], "write": []},
+            "cli": {"exec": []},
+            "net": {"http": [], "socket": []},
+            "shell": {"openExternal": []},
+            "clipboard": {"read": false},
+            "shortcut": {"global": false},
+            "secrets": false,
+            "app": {"env": []},
+        }))
+        .expect("policy");
+        let root = std::env::temp_dir();
+        let vars = PathVars {
+            app_data: root.clone(),
+            app_config: root.clone(),
+            app_cache: root.clone(),
+            home: root.clone(),
+            documents: root.clone(),
+            downloads: root.clone(),
+            desktop: root.clone(),
+            temp: root.clone(),
+            app: Some(root),
+        };
+        Arc::new(PermissionSet::from_manifest(&policy, &vars).expect("permission set"))
+    }
+
+    /// A read grant for `dir` and a file inside it; the grant is shared as one `Arc`.
+    fn granted(dir: &Path) -> (Arc<Grants>, PathBuf) {
+        let file = dir.join("file.txt");
+        std::fs::write(&file, b"").expect("file created");
+        let grants = Arc::new(Grants::new());
+        grants.grant_read(dir).expect("grant read");
+        (grants, file)
+    }
+
+    #[tokio::test]
+    async fn a_permission_decision_is_the_same_on_and_off_the_executor() {
+        let set = set();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (grants, file) = granted(dir.path());
+        let executor = executor(2);
+
+        // (a) a granted path is allowed on both routes
+        let target = file.to_str().expect("utf-8 path");
+        let inline = set
+            .check(Permission::FsRead, Some(target), &grants)
+            .expect("inline check");
+        let on_executor = tokio::time::timeout(
+            LIMIT,
+            set.clone()
+                .check_on(&executor, Permission::FsRead, Some(target), &grants),
+        )
+        .await
+        .expect("check_on completes")
+        .expect("on-executor check");
+        assert_eq!(inline, Decision::Allow);
+        assert_eq!(on_executor, Decision::Allow);
+
+        // (b) a path outside the grant is refused the same way
+        let outside = std::env::temp_dir().join("alef-permissions-outside.txt");
+        let outside = outside.to_str().expect("utf-8 path").to_owned();
+        assert_eq!(
+            set.check(Permission::FsRead, Some(&outside), &grants)
+                .err()
+                .expect("inline refusal")
+                .code,
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            tokio::time::timeout(
+                LIMIT,
+                set.clone()
+                    .check_on(&executor, Permission::FsRead, Some(&outside), &grants,),
+            )
+            .await
+            .expect("check_on completes")
+            .err()
+            .expect("on-executor refusal")
+            .code,
+            ErrorCode::PermissionDenied
+        );
+
+        // (c) no capability is allowed without touching the executor
+        assert_eq!(
+            set.check(Permission::None, None, &grants)
+                .expect("no capability"),
+            Decision::Allow
+        );
+        assert_eq!(
+            tokio::time::timeout(
+                LIMIT,
+                set.check_on(&executor, Permission::None, None, &grants)
+            )
+            .await
+            .expect("check_on completes")
+            .expect("no capability"),
+            Decision::Allow
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_authorization_is_the_same_on_and_off_the_executor() {
+        let set = set();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (grants, file) = granted(dir.path());
+        let executor = executor(2);
+        let target = file.to_str().expect("utf-8 path");
+
+        let inline = set
+            .authorize_at(Permission::FsRead, Some(target), &grants, Reach::Through)
+            .expect("inline authorization");
+        let on_executor = tokio::time::timeout(
+            LIMIT,
+            set.clone().authorize_at_on(
+                &executor,
+                Permission::FsRead,
+                Some(target),
+                &grants,
+                Reach::Through,
+            ),
+        )
+        .await
+        .expect("authorize_at_on completes")
+        .expect("on-executor authorization");
+        assert_eq!(inline, on_executor);
+        assert_eq!(
+            Some(&inline.path),
+            canonical(Path::new(target)).as_ref(),
+            "the authorized path is the canonical one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_saturated_permission_executor_refuses_the_check_with_busy() {
+        let set = set();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (grants, file) = granted(dir.path());
+        let executor = executor(1);
+        let target = file.to_str().expect("utf-8 path").to_owned();
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+        let blocker = executor
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(LIMIT);
+            })
+            .expect("blocker admitted");
+        tokio::time::timeout(LIMIT, started_rx)
+            .await
+            .expect("blocker started")
+            .expect("signal");
+
+        assert_eq!(
+            tokio::time::timeout(
+                LIMIT,
+                set.check_on(&executor, Permission::FsRead, Some(&target), &grants)
+            )
+            .await
+            .expect("check_on completes")
+            .err()
+            .expect("saturated executor refuses")
+            .code,
+            ErrorCode::Busy
+        );
+        release_tx.send(()).expect("blocker waiting");
+        tokio::time::timeout(LIMIT, blocker)
+            .await
+            .expect("blocker exits")
+            .expect("blocker joins");
+    }
 }

@@ -67,28 +67,37 @@ impl<'r, A: DeserializeOwned + Send + 'static> CommandBuilder<'r, A> {
         let target = self.target;
         let substitutes = self.substitutes;
         let waits = self.waits;
-        let invoke = Arc::new(move |ctx: CallContext, value: serde_json::Value| {
-            let args: A = serde_json::from_value(value).map_err(|_| {
-                AlefError::new(ErrorCode::InvalidArgument, "invalid command arguments")
-            })?;
-            let scope = target(&args);
-            let decision = ctx
-                .permissions
-                .check(permission, scope.as_deref(), &ctx.grants())?;
-            if decision == Decision::Substitute && !substitutes {
-                return Err(refusal(permission));
-            }
-            if waits || decision == Decision::Substitute {
-                ctx.waiting()?;
-            }
-            Ok::<Fut, AlefError>(handler(ctx.with_decision(decision), args))
-        });
+        let handler = Arc::new(handler);
+        let invoke = Arc::new(
+            move |ctx: CallContext, value: serde_json::Value| -> super::dispatch::Invocation {
+                let handler = Arc::clone(&handler);
+                // The permission check is awaited: filesystem scopes resolve off the poll.
+                Box::pin(async move {
+                    let args: A = serde_json::from_value(value).map_err(|_| {
+                        AlefError::new(ErrorCode::InvalidArgument, "invalid command arguments")
+                    })?;
+                    let scope = target(&args);
+                    let decision = ctx
+                        .permissions
+                        .clone()
+                        .check_async(permission, scope.as_deref(), &ctx.grants())
+                        .await?;
+                    if decision == Decision::Substitute && !substitutes {
+                        return Err(refusal(permission));
+                    }
+                    if waits || decision == Decision::Substitute {
+                        ctx.waiting()?;
+                    }
+                    handler(ctx.with_decision(decision), args).await
+                })
+            },
+        );
         self.registry.insert(
             self.name,
             Arc::new(Command {
-                invoke: Box::new(move |ctx, value| {
+                invoke: Box::new(move |ctx: CallContext, value: serde_json::Value| {
                     let invoke = invoke.clone();
-                    Box::pin(async move { invoke(ctx, value)?.await })
+                    invoke(ctx, value)
                 }),
             }),
         )

@@ -9,7 +9,10 @@ use unix as platform;
 #[cfg(windows)]
 use windows as platform;
 
-use super::spawn::{Process, Shared};
+use super::{
+    spawn::{Process, Shared},
+    BlockingExecutor,
+};
 use alef_core::{
     ids::ResourceId,
     registry::{command::Reply, dispatch::Registry},
@@ -27,6 +30,208 @@ use std::{
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    use super::super::executor;
+
+    #[cfg(windows)]
+    async fn session() -> std::sync::Arc<alef_core::session::session::Session> {
+        use alef_core::{protocol::call::Limits, session::SessionManager};
+        SessionManager::new(
+            std::sync::Arc::new(|| "test-token".into()),
+            Limits::default(),
+        )
+        .begin_document(1)
+        .await
+    }
+
+    #[cfg(windows)]
+    fn blocked_executor() -> (
+        BlockingExecutor,
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+        alef_core::session::BlockingJob<()>,
+    ) {
+        use std::num::NonZeroUsize;
+        use std::sync::mpsc;
+        let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+        let job = executor
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+            })
+            .expect("blocker admitted");
+        (executor, started_rx, release_tx, job)
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_saturated_cli_executor_refuses_the_pty_open_with_busy() {
+        let (executor, started_rx, release_tx, blocker) = blocked_executor();
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("blocker started")
+            .expect("signal");
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open(
+                &executor,
+                &session().await,
+                PathBuf::from("unused"),
+                Vec::new(),
+                std::env::temp_dir(),
+                Vec::new(),
+                80,
+                25,
+            ),
+        )
+        .await
+        .expect("busy arrives without opening")
+        .expect_err("saturated executor refuses the open");
+        assert_eq!(error.code, ErrorCode::Busy);
+        release_tx.send(()).expect("blocker waiting");
+        drop(blocker);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_pty_open_runs_on_the_blocking_executor() {
+        use super::super::tree;
+        let program = tree::resolve(
+            "hostname",
+            std::env::var_os("PATH").as_deref(),
+            std::env::var_os("PATHEXT").as_deref(),
+        )
+        .expect("hostname resolves on the search path");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            open(
+                executor(),
+                &session().await,
+                program,
+                Vec::new(),
+                std::env::temp_dir(),
+                Vec::new(),
+                80,
+                25,
+            ),
+        )
+        .await
+        .expect("open completes")
+        .expect("pty open succeeds");
+        let pid = result["pid"].as_u64().expect("pid is a number");
+        assert!(pid > 0);
+        // The process is registered in the session; the kill tears the tree and its pumps down.
+        drop(result);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_pty_open_yields_to_the_poll_before_its_open_is_admitted() {
+        use std::num::NonZeroUsize;
+        use std::task::Poll;
+        let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+        let mut fut = Box::pin(open(
+            &executor,
+            &session().await,
+            PathBuf::from("unused"),
+            Vec::new(),
+            std::env::temp_dir(),
+            Vec::new(),
+            80,
+            25,
+        ));
+        let poll = fut
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        assert!(
+            matches!(poll, Poll::Pending),
+            "the first poll must not open a pty"
+        );
+        drop(fut);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_queued_pty_open_dropped_with_its_call_never_starts_the_program() {
+        use super::super::tree;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            use std::num::NonZeroUsize;
+            use std::sync::mpsc;
+            use std::task::Poll;
+            // Saturate the blocking pool itself: an admitted job of the executor queues behind it.
+            let (block_started_tx, block_started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = block_started_tx.send(());
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), block_started_rx)
+                .await
+                .expect("blocker started")
+                .expect("signal");
+            let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+            let program = tree::resolve(
+                "powershell",
+                std::env::var_os("PATH").as_deref(),
+                std::env::var_os("PATHEXT").as_deref(),
+            )
+            .expect("powershell resolves on the search path");
+            let file =
+                std::env::temp_dir().join(format!("alef-pty-queued-{}.txt", std::process::id()));
+            let _ = std::fs::remove_file(&file);
+            let mut fut = Box::pin(open(
+                &executor,
+                &session().await,
+                program,
+                vec![
+                    "-NoProfile".to_owned(),
+                    "-Command".to_owned(),
+                    format!("Set-Content -Path '{}' -Value x", file.display()),
+                ],
+                std::env::temp_dir(),
+                Vec::new(),
+                80,
+                25,
+            ));
+            let poll = fut
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+            assert!(matches!(poll, Poll::Pending), "the admitted open queues");
+            drop(fut); // the queued open must be skipped, never started
+            release_tx.send(()).expect("blocker waiting");
+            // Draining the queue proves the queued closure was skipped before anything could run.
+            tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                loop {
+                    match executor.submit(|| ()) {
+                        Ok(job) => break job.result().await,
+                        Err(error) if error.code == ErrorCode::Busy => {
+                            tokio::task::yield_now().await
+                        }
+                        Err(error) => panic!("unexpected submit error: {error}"),
+                    }
+                }
+            })
+            .await
+            .expect("queue drained")
+            .expect("sentinel completes");
+            assert!(
+                !file.exists(),
+                "the queued pty program ran after its call was dropped"
+            );
+            let _ = std::fs::remove_file(&file);
+            drop(blocker);
+        });
+    }
+
     #[test]
     fn a_running_child_is_held_back_by_a_full_buffer_and_nothing_else_is() {
         use super::{read_room, OUTPUT_LIMIT, READ_CHUNK};
@@ -208,15 +413,11 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
             }
             size(args.cols, args.rows)?;
             let env = super::spawn::check_env(args.env, super::wildcard(&ctx))?;
-            let cwd = super::cwd_of(&ctx, &args.cwd)?;
-            let program = super::tree::resolve(
-                &args.program,
-                std::env::var_os("PATH").as_deref(),
-                std::env::var_os("PATHEXT").as_deref(),
-            )
-            .ok_or_else(|| AlefError::new(ErrorCode::NotFound, "program not found"))?;
+            let cwd = super::cwd_of(&ctx, &args.cwd).await?;
+            let program = super::resolve_program(args.program.clone()).await?;
             crate::json(
                 &open(
+                    super::executor(),
                     &ctx.session,
                     program,
                     args.args,
@@ -255,8 +456,11 @@ pub(crate) fn register(registry: &mut Registry) -> Result<(), AlefError> {
         })
 }
 
-/// cancel-safe: yes — setup has no await; installation transfers all ownership before yielding.
+/// cancel-safe: yes — the pty creation runs on the blocking executor: dropping the job before it
+/// starts skips the open, a started open cannot be stopped and its result is dropped by the job;
+/// installation transfers all ownership before yielding.
 async fn open(
+    executor: &BlockingExecutor,
     session: &Arc<Session>,
     program: PathBuf,
     args: Vec<String>,
@@ -265,7 +469,10 @@ async fn open(
     cols: u16,
     rows: u16,
 ) -> Result<Value, AlefError> {
-    let (terminal, child, killer, pid) = platform::open(program, args, cwd, env, cols, rows)?;
+    let (terminal, child, killer, pid) = executor
+        .submit(move || platform::open(program, args, cwd, env, cols, rows))?
+        .result()
+        .await??;
     let terminal = Arc::new(Terminal(terminal));
     let (result_tx, result) = tokio::sync::watch::channel(None);
     let shared = Arc::new(Shared {
