@@ -2,7 +2,7 @@
 import type { Cancelable } from '../core/events.ts';
 import { call } from '../core/transport.ts';
 
-const directory = (command: string) => (options: Cancelable = {}): Promise<string> => call<string>(command, null, options);
+const directory = (command: string, options: Cancelable = {}): Promise<string> => call<string>(command, null, options);
 
 /**
  * Well-known directories (not created for you) and lexical path arithmetic in the separator style
@@ -10,16 +10,16 @@ const directory = (command: string) => (options: Cancelable = {}): Promise<strin
  */
 export const path = {
   /** `<system data directory>/<app id>`. */
-  appData: directory('path.appData'),
-  appConfig: directory('path.appConfig'),
-  appCache: directory('path.appCache'),
-  temp: directory('path.temp'),
-  home: directory('path.home'),
-  documents: directory('path.documents'),
-  downloads: directory('path.downloads'),
-  desktop: directory('path.desktop'),
+  appData: (options: Cancelable = {}): Promise<string> => directory('path.appData', options),
+  appConfig: (options: Cancelable = {}): Promise<string> => directory('path.appConfig', options),
+  appCache: (options: Cancelable = {}): Promise<string> => directory('path.appCache', options),
+  temp: (options: Cancelable = {}): Promise<string> => directory('path.temp', options),
+  home: (options: Cancelable = {}): Promise<string> => directory('path.home', options),
+  documents: (options: Cancelable = {}): Promise<string> => directory('path.documents', options),
+  downloads: (options: Cancelable = {}): Promise<string> => directory('path.downloads', options),
+  desktop: (options: Cancelable = {}): Promise<string> => directory('path.desktop', options),
   /** The program being run. */
-  executable: directory('path.executable'),
+  executable: (options: Cancelable = {}): Promise<string> => directory('path.executable', options),
 
   /** Joins the parts and normalizes; an absolute part does not reset the path. */
   join: (...parts: string[]): Promise<string> => call<string>('path.join', { parts }),

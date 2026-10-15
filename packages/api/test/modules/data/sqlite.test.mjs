@@ -49,7 +49,6 @@ test('open sends the flags and not the signal, and gives a database that sends i
   await db.close();
   assert.deepEqual(argsOf('sqlite.close'), { db: 7 });
   assert.equal(typeof SqliteDatabase.prototype[Symbol.asyncDispose], 'function');
-  assert.equal(typeof SqliteStatement.prototype[Symbol.asyncDispose], 'function');
 });
 
 test('parameters go as JSON with tags for what JSON cannot hold; nothing else is let through', async () => {
@@ -135,6 +134,12 @@ test('a statement is prepared once and run by its id', async () => {
   const statement = await db.prepare('INSERT INTO t VALUES (?)');
   assert.ok(statement instanceof SqliteStatement);
   assert.deepEqual(argsOf('sqlite.prepare'), { db: 7, sql: 'INSERT INTO t VALUES (?)' });
+  // preparing a statement registers its disposal, which finalizes through the runtime by id
+  assert.equal(typeof SqliteStatement.prototype[Symbol.asyncDispose], 'function');
+  replies.set('sqlite.finalize', { json: null });
+  const disposable = await db.prepare('DISPOSE ME');
+  await disposable[Symbol.asyncDispose]();
+  assert.deepEqual(argsOf('sqlite.finalize'), { statement: 11 });
   assert.deepEqual(await statement.run([5n]), { changes: 1, lastInsertId: 5 });
   assert.deepEqual(argsOf('sqlite.exec'), { statement: 11, params: [{ $int: '5' }] });
   replies.set('sqlite.query', { json: [{ a: 1 }] });

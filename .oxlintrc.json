@@ -7,6 +7,12 @@
   },
   "env": { "browser": true, "node": true },
   "ignorePatterns": ["node_modules", "frontend/dist", "backend/target", "backend/patches"],
+  "overrides": [
+    {
+      "files": ["packages/api/**"],
+      "rules": { "typescript/consistent-type-imports": "error" }
+    }
+  ],
   "rules": {
     "eslint/no-undef": "error",
     "eslint/no-unused-vars": "error",
