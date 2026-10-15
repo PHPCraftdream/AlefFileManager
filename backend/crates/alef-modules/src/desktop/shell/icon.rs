@@ -19,7 +19,7 @@ use serde::Deserialize;
 #[cfg(test)]
 use std::io::Cursor;
 
-const GENERIC: &[u8] = include_bytes!("icons/generic.png");
+const GENERIC: &[u8] = include_bytes!("icon/generic.png");
 const SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256];
 
 fn default_size() -> u32 {
