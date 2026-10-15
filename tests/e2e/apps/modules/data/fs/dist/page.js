@@ -240,6 +240,55 @@ async function real(t, check) {
     return `${volumes.length} volume(s); stream ${stream} opened and closed`;
   });
 
+  await check('fs-volume-watch-reports-linux-mount-and-unmount', async () => {
+    if (t.mountSkip) return `SKIP: ${t.mountSkip}`;
+    let readable;
+    let pump;
+    let stopped = false;
+    let pumpError;
+    const events = [];
+    const unmountStatus = t.unmountStatus;
+    try {
+      const raw = await bounded(api.call('fs.watchVolumes', null), 'start mount event watch');
+      try {
+        readable = await bounded(api.openReadable(raw.stream), 'open mount event reader');
+      } catch (error) {
+        await bounded(api.call('runtime.stream.close', { id: raw.stream }), 'close raw volume watch');
+        throw error;
+      }
+      pump = (async () => {
+        try { for await (const frame of readable) if (frame.kind === 'json') events.push(frame.value); }
+        catch (error) { if (!stopped) pumpError = error; }
+      })();
+      const wait = async (predicate, what, statusPath) => {
+        const deadline = performance.now() + 20000;
+        while (!(await predicate())) {
+          if (pumpError) throw pumpError;
+          if (performance.now() >= deadline) throw new Error(`timed out waiting for ${what}: ${JSON.stringify(events)}`);
+          const status = await fs.readText(statusPath).catch(error => {
+            if (error?.code === 'NOT_FOUND') return null;
+            throw error;
+          });
+          if (status) { const result = JSON.parse(status); if (!result.ok) throw new Error(`${what}: ${result.error}`); }
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      };
+      await fs.writeText(t.mountReady, 'ready');
+      await wait(() => events.some(event => event.type === 'mount' && event.volume?.root === t.mountRoot), 'mount event', t.mountStatus);
+      await fs.writeText(t.unmountReady, 'ready');
+      await wait(() => events.some(event => event.type === 'unmount' && event.volume?.root === t.mountRoot), 'unmount event', unmountStatus);
+      const status = await fs.readText(unmountStatus);
+      if (!JSON.parse(status).ok) throw new Error(`unmount failed: ${JSON.parse(status).error}`);
+      return `observed mount and unmount for ${t.mountRoot}`;
+    } finally {
+      if (readable) {
+        stopped = true;
+        await bounded(readable.close(), 'close volume watch reader');
+        await bounded(pump, 'stop volume watch pump');
+      }
+    }
+  });
+
   await check('fs-watch-reports-real-metadata-change', async () => {
     if (t.platform === 'win32') return 'skipped: Windows backend reports content/metadata as one Modify class, not attributable metadata-only events';
     const target = join(t.root, 'attrib-target.txt');

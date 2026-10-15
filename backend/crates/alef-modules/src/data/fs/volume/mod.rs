@@ -1,9 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Native volume enumeration and deterministic snapshot comparison.
 use super::meta::dto::{Volume, VolumeEvent, VolumeEventKind};
-use alef_core::AlefError;
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-use alef_core::ErrorCode;
+use alef_core::{AlefError, ErrorCode};
+use std::num::NonZeroUsize;
+use std::sync::OnceLock;
+
+/// Local volume-operation budget: at most eight queued or running short jobs.
+/// This is not a global or per-session framework limit.
+fn executor() -> &'static alef_core::session::executor::BlockingExecutor {
+    static EXECUTOR: OnceLock<alef_core::session::executor::BlockingExecutor> = OnceLock::new();
+    EXECUTOR.get_or_init(|| {
+        alef_core::session::executor::BlockingExecutor::new(
+            NonZeroUsize::new(8).expect("non-zero volume job budget"),
+        )
+    })
+}
 
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
@@ -56,8 +67,11 @@ pub(super) fn register(
     registry
         .command::<()>("fs.volumes")?
         .handler(|ctx, ()| async move {
+            if ctx.cancel().is_cancelled() || !ctx.session.is_open() {
+                return Err(AlefError::new(ErrorCode::Closed, "call cancelled"));
+            }
             let permissions = ctx.permissions.clone();
-            let volumes = super::blocking(move || {
+            let job = executor().submit(move || {
                 let rights = permissions.rights();
                 let consent = permissions.consent();
                 if gate(&rights, &consent) {
@@ -65,24 +79,33 @@ pub(super) fn register(
                 } else {
                     Ok(Vec::new())
                 }
-            })
-            .await?;
+            })?;
+            let volumes = job.result().await??;
+            if ctx.cancel().is_cancelled() || !ctx.session.is_open() {
+                return Err(AlefError::new(ErrorCode::Closed, "call cancelled"));
+            }
             crate::json(&volumes)
         })?;
     registry
         .command::<()>("fs.watchVolumes")?
         .handler(|ctx, ()| async move {
+            if ctx.cancel().is_cancelled() || !ctx.session.is_open() {
+                return Err(AlefError::new(ErrorCode::Closed, "call cancelled"));
+            }
             let permissions = ctx.permissions.clone();
-            let allowed =
-                super::blocking(move || Ok(gate(&permissions.rights(), &permissions.consent())))
-                    .await?;
+            let job =
+                executor().submit(move || gate(&permissions.rights(), &permissions.consent()))?;
+            let allowed = job.result().await?;
+            if ctx.cancel().is_cancelled() || !ctx.session.is_open() {
+                return Err(AlefError::new(ErrorCode::Closed, "call cancelled"));
+            }
             if allowed {
                 watch::start(&ctx).await
             } else {
+                // An empty substitute stream ends immediately; it cannot hang waiting for a task
+                // or lease that is intentionally not created for a denied/substituted watch.
                 let (writer, id) = ctx.streams().open_outgoing();
-                tokio::spawn(async move {
-                    writer.closed().await;
-                });
+                writer.end();
                 crate::json(&serde_json::json!({ "stream": id.0 }))
             }
         })?;
@@ -91,7 +114,7 @@ pub(super) fn register(
 
 mod watch;
 
-/// Free-space-only fluctuations are intentionally ignored; other metadata changes are reported.
+/// Other metadata changes are reported; free-space fluctuations alone are ignored.
 pub(super) fn diff(before: &[Volume], after: &[Volume]) -> Vec<VolumeEvent> {
     use std::collections::BTreeMap;
     let before: BTreeMap<_, _> = before.iter().map(|v| (v.root.as_str(), v)).collect();

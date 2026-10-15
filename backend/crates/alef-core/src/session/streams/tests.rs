@@ -14,14 +14,59 @@ async fn frame(r: &mut StreamReader) -> Option<Frame> {
     bounded(r.next_frame()).await
 }
 
-#[tokio::test]
-async fn closed_waits_until_stream_terminates_and_is_cancel_safe() {
-    let h = StreamHub::new(512, 256);
+async fn parked_waiter_is_woken(close_session: bool) {
+    let h = Arc::new(StreamHub::new(512, 256));
     let (w, id) = h.open_outgoing();
-    let wait = timeout(Duration::from_millis(50), w.closed());
-    assert!(wait.await.is_err());
-    h.close(id).expect("close");
-    bounded(w.closed()).await;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let mut waiter = tokio::spawn(async move {
+        let mut closed = Box::pin(w.closed());
+        let mut ready = Some(ready_tx);
+        std::future::poll_fn(|cx| {
+            let result = closed.as_mut().poll(cx);
+            if result.is_pending() {
+                if let Some(tx) = ready.take() {
+                    let _ = tx.send(());
+                }
+            }
+            result
+        })
+        .await;
+    });
+    match timeout(Duration::from_secs(10), ready_rx).await {
+        Ok(Ok(())) => {}
+        _ => {
+            waiter.abort();
+            let _ = waiter.await;
+            panic!("waiter did not register");
+        }
+    }
+    let closer = Arc::clone(&h);
+    let close_task = tokio::spawn(async move {
+        if close_session {
+            closer.close_all();
+        } else {
+            closer.close(id).expect("close");
+        }
+    });
+    bounded(close_task).await.expect("closer join");
+    match timeout(Duration::from_secs(10), &mut waiter).await {
+        Ok(result) => result.expect("waiter join"),
+        Err(_) => {
+            waiter.abort();
+            let _ = waiter.await;
+            panic!("closed waiter was not woken");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_parked_closed_waiter_is_woken_by_page_close() {
+    parked_waiter_is_woken(false).await;
+}
+
+#[tokio::test]
+async fn a_parked_closed_waiter_is_woken_by_session_end() {
+    parked_waiter_is_woken(true).await;
 }
 
 #[tokio::test]

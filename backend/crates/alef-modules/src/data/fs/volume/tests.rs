@@ -142,6 +142,167 @@ fn volume_event_serialization_uses_type_file_system_and_read_only_wire_names() {
     assert!(value["volume"].get("free").is_none());
 }
 
+#[tokio::test]
+async fn disallowed_watch_ends_immediately_without_resources_even_at_zero_limit() {
+    use alef_core::{
+        ids::StreamId,
+        protocol::{call::Limits, frame::Frame},
+        registry::{command::Reply, context::CallContext, dispatch::Registry},
+        security::{
+            manifest::Permissions,
+            permissions::{PathVars, PermissionSet},
+        },
+        session::SessionManager,
+    };
+    use std::{sync::Arc, time::Duration};
+
+    let root = std::env::temp_dir().join(format!("alef-volume-watch-{}", std::process::id()));
+    let mut limits = Limits::default();
+    limits.max_resources_per_session = 0;
+    let manager = SessionManager::new(Arc::new(|| "test-token".into()), limits);
+    let session = tokio::time::timeout(Duration::from_secs(10), manager.begin_document(1))
+        .await
+        .expect("session starts");
+    let policy: Permissions = serde_json::from_value(serde_json::json!({
+        "fs":{"read":[],"write":[]},"cli":{"exec":[]},
+        "net":{"http":[],"socket":[]},"shell":{"openExternal":[]},
+        "clipboard":{"read":false},"shortcut":{"global":false},
+        "secrets":false,"app":{"env":[]}
+    }))
+    .unwrap();
+    let vars = PathVars {
+        app_data: root.join("data"),
+        app_config: root.join("config"),
+        app_cache: root.join("cache"),
+        home: root.join("home"),
+        documents: root.join("documents"),
+        downloads: root.join("downloads"),
+        desktop: root.join("desktop"),
+        temp: root.join("temp"),
+        app: Some(root.clone()),
+    };
+    let permissions = Arc::new(PermissionSet::from_manifest(&policy, &vars).unwrap());
+    let mut registry = Registry::default();
+    super::register(&mut registry).unwrap();
+
+    for _ in 0..3 {
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            registry.dispatch(
+                "fs.watchVolumes",
+                CallContext::new(session.clone(), permissions.clone()),
+                serde_json::Value::Null,
+            ),
+        )
+        .await
+        .expect("handler promptly returns")
+        .unwrap();
+        let Reply::Json(value) = reply else {
+            panic!("expected stream id");
+        };
+        let id = StreamId(value["stream"].as_u64().unwrap());
+        let mut reader = session.streams().reader(id).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), reader.next_frame())
+                .await
+                .expect("end frame promptly arrives"),
+            Some(Frame::End)
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), reader.next_frame())
+                .await
+                .expect("stream closure promptly arrives"),
+            None
+        );
+        assert!(session.resources().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn substitute_watch_ends_immediately_without_resources_even_at_zero_limit() {
+    use alef_core::{
+        ids::StreamId,
+        protocol::{call::Limits, frame::Frame},
+        registry::{command::Reply, context::CallContext, dispatch::Registry},
+        security::{
+            consent::{Consent, Right},
+            manifest::Permissions,
+            permissions::{PathVars, PermissionSet},
+        },
+        session::SessionManager,
+    };
+    use std::{sync::Arc, time::Duration};
+
+    let root = std::env::temp_dir().join(format!("alef-volume-substitute-{}", std::process::id()));
+    let mut limits = Limits::default();
+    limits.max_resources_per_session = 0;
+    let manager = SessionManager::new(Arc::new(|| "test-token".into()), limits);
+    let session = tokio::time::timeout(Duration::from_secs(10), manager.begin_document(1))
+        .await
+        .expect("session starts");
+    let policy: Permissions = serde_json::from_value(serde_json::json!({
+        "fs":{"read":["$TEMP/**"],"write":[]},"cli":{"exec":[]},
+        "net":{"http":[],"socket":[]},"shell":{"openExternal":[]},
+        "clipboard":{"read":false},"shortcut":{"global":false},
+        "secrets":false,"app":{"env":[]}
+    }))
+    .unwrap();
+    let vars = PathVars {
+        app_data: root.join("data"),
+        app_config: root.join("config"),
+        app_cache: root.join("cache"),
+        home: root.join("home"),
+        documents: root.join("documents"),
+        downloads: root.join("downloads"),
+        desktop: root.join("desktop"),
+        temp: root.join("temp"),
+        app: Some(root.clone()),
+    };
+    let consent = Consent::undecided();
+    let right = Right::scoped("fs.read", "$TEMP/**");
+    let mut consent = consent;
+    consent.set(right, alef_core::security::consent::Decision::Substitute);
+    let permissions = Arc::new(
+        PermissionSet::from_manifest(&policy, &vars)
+            .unwrap()
+            .with_consent(consent),
+    );
+    let mut registry = Registry::default();
+    super::register(&mut registry).unwrap();
+
+    for _ in 0..3 {
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            registry.dispatch(
+                "fs.watchVolumes",
+                CallContext::new(session.clone(), permissions.clone()),
+                serde_json::Value::Null,
+            ),
+        )
+        .await
+        .expect("handler promptly returns")
+        .unwrap();
+        let Reply::Json(value) = reply else {
+            panic!("expected stream id");
+        };
+        let id = StreamId(value["stream"].as_u64().unwrap());
+        let mut reader = session.streams().reader(id).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), reader.next_frame())
+                .await
+                .expect("end frame promptly arrives"),
+            Some(Frame::End)
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(10), reader.next_frame())
+                .await
+                .expect("stream closure promptly arrives"),
+            None
+        );
+        assert!(session.resources().is_empty());
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn mountinfo_decodes_only_supported_octal_escapes_once() {

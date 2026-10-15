@@ -14,6 +14,7 @@ use std::{
 
 use alef_core::{
     registry::{command::Reply, context::CallContext},
+    session::streams::StreamWriter,
     AlefError, ErrorCode,
 };
 use notify::{
@@ -112,7 +113,7 @@ pub(super) async fn start(
     place: Place,
     recursive: bool,
 ) -> Result<Reply, AlefError> {
-    let (events, mut arrived) = mpsc::channel::<notify::Result<Event>>(QUEUE);
+    let (events, arrived) = mpsc::channel::<notify::Result<Event>>(QUEUE);
     let lost = Arc::new(AtomicBool::new(false));
     let marker = lost.clone();
     let target = place.clone();
@@ -145,46 +146,53 @@ pub(super) async fn start(
     })
     .await?;
     let (writer, id) = ctx.streams().open_outgoing();
-    let shown = place.shown.to_string_lossy().into_owned();
+    // The stream owns the watcher; dropping the detached pump cancels it.
     tokio::spawn(async move {
-        // The watcher is created and destroyed on blocking pool threads.
-        let mut watcher = Some(watched);
-        let run = async {
-            loop {
-                let first = tokio::select! {
-                    _ = writer.closed() => break,
-                    event = arrived.recv() => match event { Some(event) => event, None => break },
-                };
-                let mut batch = told_all(&place, [first]);
-                let moment = tokio::time::sleep(DEBOUNCE);
-                tokio::pin!(moment);
-                loop {
-                    tokio::select! {
-                        _ = writer.closed() => break,
-                        () = &mut moment => break,
-                        more = arrived.recv() => match more {
-                            Some(event) => batch.extend(told_all(&place, [event])),
-                            None => break,
-                        },
-                    }
-                }
-                for event in tidy(batch, lost.swap(false, Ordering::SeqCst), &shown) {
-                    if writer
-                        .send_json(serde_json::to_value(&event).unwrap_or_default())
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-            }
-        };
-        run.await;
-        if let Some(watcher) = watcher.take() {
-            let _ = tokio::task::spawn_blocking(move || drop(watcher)).await;
-        }
+        pump(writer, place, arrived, lost, watched).await;
     });
     json(&serde_json::json!({ "stream": id.0 }))
+}
+
+async fn pump<W: Send + 'static>(
+    writer: StreamWriter,
+    place: Place,
+    mut arrived: mpsc::Receiver<notify::Result<Event>>,
+    lost: Arc<AtomicBool>,
+    watched: W,
+) {
+    let shown = place.shown.to_string_lossy().into_owned();
+    let run = async {
+        loop {
+            let first = tokio::select! {
+                _ = writer.closed() => break,
+                event = arrived.recv() => match event { Some(event) => event, None => break },
+            };
+            let mut batch = told_all(&place, [first]);
+            let moment = tokio::time::sleep(DEBOUNCE);
+            tokio::pin!(moment);
+            loop {
+                tokio::select! {
+                    _ = writer.closed() => break,
+                    () = &mut moment => break,
+                    more = arrived.recv() => match more {
+                        Some(event) => batch.extend(told_all(&place, [event])),
+                        None => break,
+                    },
+                }
+            }
+            for event in tidy(batch, lost.swap(false, Ordering::SeqCst), &shown) {
+                if writer
+                    .send_json(serde_json::to_value(&event).unwrap_or_default())
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }
+    };
+    run.await;
+    let _ = tokio::task::spawn_blocking(move || drop(watched)).await;
 }
 
 /// The events of a moment: each told once, and a call to look again when events were lost.
@@ -221,6 +229,103 @@ mod tests {
     use notify::event::{AccessKind, CreateKind, DataChange, MetadataKind, RemoveKind};
 
     use super::*;
+    use std::{future::Future, thread::ThreadId};
+    use tokio::sync::oneshot;
+
+    struct DropSignalWatcher {
+        watcher: Option<RecommendedWatcher>,
+        dropped: Option<oneshot::Sender<ThreadId>>,
+    }
+
+    impl Drop for DropSignalWatcher {
+        fn drop(&mut self) {
+            drop(self.watcher.take());
+            if let Some(dropped) = self.dropped.take() {
+                let _ = dropped.send(std::thread::current().id());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_stream_close_releases_real_watcher_on_blocking_thread() {
+        let dir = tempfile::tempdir().expect("create watch directory");
+        let root = dir.path().to_path_buf();
+        let (arrived_tx, arrived) = mpsc::channel(QUEUE);
+        let watched_root = root.clone();
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let watched = tokio::time::timeout(
+            Duration::from_secs(10),
+            super::super::blocking(move || {
+                let mut watcher = RecommendedWatcher::new(
+                    move |event| {
+                        let _ = arrived_tx.try_send(event);
+                    },
+                    Config::default(),
+                )
+                .expect("create real watcher");
+                watcher
+                    .watch(&watched_root, RecursiveMode::NonRecursive)
+                    .expect("watch directory");
+                Ok(DropSignalWatcher {
+                    watcher: Some(watcher),
+                    dropped: Some(dropped_tx),
+                })
+            }),
+        )
+        .await
+        .expect("setup completes")
+        .expect("register real watcher");
+        let place = Place::for_test(root.clone(), root, None);
+        let hub = alef_core::session::streams::StreamHub::new(512, 256);
+        let (writer, id) = hub.open_outgoing();
+        let caller = std::thread::current().id();
+        let (polled_tx, polled_rx) = oneshot::channel();
+        let mut pump_task = tokio::spawn(async move {
+            let mut future = Box::pin(pump(
+                writer,
+                place,
+                arrived,
+                Arc::new(AtomicBool::new(false)),
+                watched,
+            ));
+            let mut signal = Some(polled_tx);
+            std::future::poll_fn(|cx| {
+                let result = future.as_mut().poll(cx);
+                if result.is_pending() {
+                    if let Some(tx) = signal.take() {
+                        let _ = tx.send(());
+                    }
+                }
+                result
+            })
+            .await
+        });
+        match tokio::time::timeout(Duration::from_secs(10), polled_rx).await {
+            Ok(Ok(())) => {}
+            _ => {
+                pump_task.abort();
+                let _ = pump_task.await;
+                panic!("pump did not start");
+            }
+        }
+        hub.close(id).expect("close stream");
+        match tokio::time::timeout(Duration::from_secs(10), &mut pump_task).await {
+            Ok(result) => result.expect("pump task succeeded"),
+            Err(_) => {
+                pump_task.abort();
+                let _ = pump_task.await;
+                panic!("pump did not stop");
+            }
+        }
+        let drop_thread = tokio::time::timeout(Duration::from_secs(10), dropped_rx)
+            .await
+            .expect("watcher dropped")
+            .expect("drop signal");
+        assert_ne!(
+            drop_thread, caller,
+            "watcher must be destroyed off the async thread"
+        );
+    }
 
     fn event(kind: EventKind, paths: &[&Path]) -> Event {
         paths.iter().fold(Event::new(kind), |event, path| {
