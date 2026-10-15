@@ -103,7 +103,7 @@ bounded('a tool call runs the handler and reports the result', async () => {
     await settle();
     // a live chat tracks chat 7; without it nothing is dispatched for the chat
     replies.set('ai.chat', { json: { chat: 7, stream: 71 } });
-    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { /* every part is ignored here */ } })();
+    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { void part; } /* every part is ignored here */ })();
     const body = await openStream('71');
     feed.push(jsonFrame({ name: 'ai.tool_call', payload: { chat: 7, callId: 'call-1', name: 'summarizeSelection', arguments: { input: 'ping' } } }));
     await waitFor(() => args('ai.tools.result').some(result => result.chat === 7 && result.callId === 'call-1'));
@@ -125,7 +125,7 @@ bounded('a failing handler reports a cleared error', async () => {
     await settle();
     // a live chat tracks chat 7; without it nothing is dispatched for the chat
     replies.set('ai.chat', { json: { chat: 7, stream: 72 } });
-    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { /* every part is ignored here */ } })();
+    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { void part; } /* every part is ignored here */ })();
     const body = await openStream('72');
     feed.push(jsonFrame({ name: 'ai.tool_call', payload: { chat: 7, callId: 'call-2', name: 'summarizeSelection', arguments: {} } }));
     await waitFor(() => args('ai.tools.result').some(result => result.callId === 'call-2'));
@@ -156,17 +156,19 @@ bounded('a denied registration is permission denied', async () => {
 bounded('unregister stops dispatching, aborts its handlers and is idempotent', async () => {
   replies.set('ai.tools.handle', { json: { registration: 82, inert: false } });
   let started = 0;
-  const unregister = await ai.tools.handle('summarizeSelection', (_callArgs, context) => {
+  let aborted = 0;
+  const unregister = await ai.tools.handle('summarizeSelection', (callArgs, context) => {
+    void callArgs;
     started += 1;
-    return new Promise((_resolve, _reject) => {
-      context.signal.addEventListener('abort', () => { /* the unregister aborts its pending handlers */ });
+    return new Promise(resolve => {
+      context.signal.addEventListener('abort', () => { aborted += 1; resolve(null); });
     });
   });
   try {
     await settle();
     // a live chat keeps the chat tracked while the body stays open
     replies.set('ai.chat', { json: { chat: 7, stream: 73 } });
-    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { /* every part is ignored here */ } })();
+    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { void part; } /* every part is ignored here */ })();
     const body = await openStream('73');
     feed.push(jsonFrame({ name: 'ai.tool_call', payload: { chat: 7, callId: 'call-5', name: 'summarizeSelection', arguments: {} } }));
     await waitFor(() => started === 1);
@@ -180,10 +182,47 @@ bounded('unregister stops dispatching, aborts its handlers and is idempotent', a
     assert.equal(args('ai.tools.result').filter(result => result.callId === 'call-6').length, 0, 'no result request for call-6');
     await unregister(); // a second call resolves without another runtime exchange
     assert.equal(args('ai.tools.unhandle').length, unhandles + 1, 'exactly one unhandle request was added by this test');
+    assert.equal(aborted, 1, 'the unregister aborted the still-pending handler exactly once');
     // end the chat so the still-pending first handler is aborted and the test ends clean
     body.push(jsonFrame({ type: 'end', reason: 'completed' }));
     body.end();
     await consumed;
+  } finally {
+    await unregister();
+  }
+});
+
+bounded('a chat_closed event aborts handlers while the iterator is paused', async () => {
+  replies.set('ai.tools.handle', { json: { registration: 86, inert: false } });
+  let started = 0;
+  let aborted = 0;
+  const unregister = await ai.tools.handle('summarizeSelection', (callArgs, context) => {
+    void callArgs;
+    started += 1;
+    return new Promise(resolve => {
+      context.signal.addEventListener('abort', () => { aborted += 1; resolve(null); });
+    });
+  });
+  try {
+    await settle();
+    // a live chat keeps the chat tracked while the body stays open
+    replies.set('ai.chat', { json: { chat: 7, stream: 76 } });
+    const it = ai.chat(chatArgs)[Symbol.asyncIterator]();
+    const body = await openStream('76');
+    body.push(jsonFrame({ type: 'text', text: 'paused' }));
+    const first = await it.next();
+    assert.deepEqual(first.value, { type: 'text', text: 'paused' });
+    // the iterator is now suspended at the yield: nothing is consumed any more
+    feed.push(jsonFrame({ name: 'ai.chat_closed', payload: { chat: 7 } }));
+    await waitFor(() => aborted === 1);
+    // a tool call for the forgotten chat must not be dispatched
+    feed.push(jsonFrame({ name: 'ai.tool_call', payload: { chat: 7, callId: 'call-8', name: 'summarizeSelection', arguments: {} } }));
+    await settle();
+    assert.equal(started, 0, 'the handler must not run for a chat that was closed');
+    assert.equal(args('ai.tools.result').filter(result => result.callId === 'call-8').length, 0, 'no result request for call-8');
+    await it.return?.(); // closes the stream cleanly
+    body.push(jsonFrame({ type: 'end', reason: 'completed' }));
+    body.end();
   } finally {
     await unregister();
   }
@@ -211,7 +250,7 @@ bounded('a tool call for an ended chat is not dispatched', async () => {
     await settle();
     // a REAL chat that runs to its end: the iterator finishing untracks chat 7
     replies.set('ai.chat', { json: { chat: 7, stream: 74 } });
-    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { /* every part is ignored here */ } })();
+    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { void part; } /* every part is ignored here */ })();
     const body = await openStream('74');
     body.push(jsonFrame({ type: 'end', reason: 'completed' }));
     body.end();
@@ -234,7 +273,7 @@ bounded('a synchronous throw reports a cleared error', async () => {
     await settle();
     // a live chat tracks chat 7; without it nothing is dispatched for the chat
     replies.set('ai.chat', { json: { chat: 7, stream: 75 } });
-    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { /* every part is ignored here */ } })();
+    const consumed = (async () => { for await (const part of ai.chat(chatArgs)) { void part; } /* every part is ignored here */ })();
     const body = await openStream('75');
     feed.push(jsonFrame({ name: 'ai.tool_call', payload: { chat: 7, callId: 'call-7', name: 'summarizeSelection', arguments: {} } }));
     await waitFor(() => args('ai.tools.result').some(result => result.callId === 'call-7'));

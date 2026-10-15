@@ -402,7 +402,7 @@ async fn results_for_a_tool_that_was_unregistered_are_rejected() {
     let registration = registered["registration"].as_u64().unwrap();
     // The probe sees the live registration before anything is removed.
     assert!(
-        ai::tool_is_registered(fixture.session(), registration),
+        ai::tool_is_registered(&fixture.session(), registration),
         "the probe sees the live registration"
     );
     fixture
@@ -412,7 +412,7 @@ async fn results_for_a_tool_that_was_unregistered_are_rejected() {
     // The resource is gone deterministically; no retry loop is needed.
     let mut gone = false;
     for _ in 0..250 {
-        if !ai::tool_is_registered(fixture.session(), registration) {
+        if !ai::tool_is_registered(&fixture.session(), registration) {
             gone = true;
             break;
         }
@@ -428,12 +428,43 @@ async fn results_for_a_tool_that_was_unregistered_are_rejected() {
     });
     assert_eq!(
         fixture
+            .call("ai.tools.result", result.clone())
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Closed
+    );
+    // Re-registering the same name issues a NEW registration generation; it must not satisfy the
+    // old pending call, and its result must not reach the provider either.
+    let registered_again = fixture
+        .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
+        .await
+        .unwrap();
+    assert_eq!(registered_again["inert"], json!(false));
+    let registration_again = registered_again["registration"].as_u64().unwrap();
+    assert_eq!(
+        fixture
             .call("ai.tools.result", result)
             .await
             .unwrap_err()
             .code,
         ErrorCode::Closed
     );
+    let after = tokio::time::timeout(Duration::from_millis(300), reader.next_frame()).await;
+    assert!(
+        after.is_err(),
+        "the provider never receives the stale result"
+    );
+    // Clean up both registrations.
+    let _ = fixture
+        .call("ai.tools.unhandle", json!({"registration": registration}))
+        .await;
+    let _ = fixture
+        .call(
+            "ai.tools.unhandle",
+            json!({"registration": registration_again}),
+        )
+        .await;
 }
 
 #[tokio::test]
@@ -457,7 +488,7 @@ async fn breaking_the_iterator_cancels_the_chat() {
     // The producer tears the chat down deterministically; the probe sees it without burning the call.
     let mut gone = false;
     for _ in 0..250 {
-        if !ai::chat_is_pending(fixture.session(), chat) {
+        if !ai::chat_is_pending(&fixture.session(), chat) {
             gone = true;
             break;
         }
