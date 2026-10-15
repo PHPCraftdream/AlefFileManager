@@ -614,20 +614,33 @@ impl alef_modules::net::updater::UpdateApplier for StoreApplier {
             // The signer was already checked against the pin above, so `decide_with_asker`
             // accepts the existing pin and never opens the ask window; an unsigned package is
             // refused as SIGNATURE_REQUIRED, again without a prompt.
-            let mut integration = self.integration.lock().await;
-            let outcome = flow::install_in(
-                &self.home,
-                &self.executable,
-                prepared,
-                bytes,
-                &crate::application::trust::TrustInputs {
-                    trust_key: Some(self.fingerprint.clone()),
-                    allow_unsigned: false,
-                },
-                &crate::application::trust::TrustAsker::Window,
-                &mut **integration,
-            )
+            // Publishing and the native integration (registry, shortcuts) are synchronous: the
+            // whole store install runs on the blocking pool, never on an async worker.
+            let home = self.home.clone();
+            let executable = self.executable.clone();
+            let integration = Arc::clone(&self.integration);
+            let trust = crate::application::trust::TrustInputs {
+                trust_key: Some(self.fingerprint.clone()),
+                allow_unsigned: false,
+            };
+            let runtime = tokio::runtime::Handle::current();
+            let outcome = tokio::task::spawn_blocking(move || {
+                runtime.block_on(async move {
+                    let mut integration = integration.lock().await;
+                    flow::install_in(
+                        &home,
+                        &executable,
+                        prepared,
+                        bytes,
+                        &trust,
+                        &crate::application::trust::TrustAsker::Window,
+                        &mut **integration,
+                    )
+                    .await
+                })
+            })
             .await
+            .map_err(|e| AlefError::new(ErrorCode::UpdateIo, e.to_string()))?
             .map_err(Self::install_error)?;
             Ok(match outcome {
                 flow::InstallOutcome::Installed(record)
