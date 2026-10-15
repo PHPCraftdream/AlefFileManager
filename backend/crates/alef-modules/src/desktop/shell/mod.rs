@@ -6,6 +6,13 @@
 //! list, otherwise "read and open" would be a way around `cli.exec`. The list is a floor: an
 //! extension the user has bound to an interpreter of their own is not known to it.
 pub mod dialog;
+pub mod icon;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod icon_linux;
+#[cfg(target_os = "macos")]
+mod icon_macos;
+#[cfg(windows)]
+mod icon_windows;
 #[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::{
@@ -340,6 +347,7 @@ pub(crate) fn register(
     registry: &mut Registry,
     backend: Arc<dyn ShellBackend>,
 ) -> Result<(), AlefError> {
+    icon::register(registry)?;
     let pair = Arc::new(Pair {
         real: backend,
         stand_in: Arc::new(PretendShell::default()),
@@ -414,5 +422,6 @@ pub(crate) fn register(
                 blocking(&backend, move |b| b.trash(&path)).await?;
                 Ok(Reply::Json(serde_json::Value::Null))
             }
-        })
+        })?;
+    Ok(())
 }

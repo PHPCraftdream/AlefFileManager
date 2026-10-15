@@ -128,6 +128,7 @@ async fn the_command_surface_is_exactly_the_documented_one() {
             "secrets.delete",
             "secrets.get",
             "secrets.set",
+            "shell.fileIcon",
             "shell.openExternal",
             "shell.openPath",
             "shell.showInFolder",

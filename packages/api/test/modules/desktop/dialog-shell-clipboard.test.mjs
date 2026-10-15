@@ -46,6 +46,55 @@ test('dialog.message and dialog.confirm carry their options', async () => {
   assert.equal((await sent('dialog.confirm', () => dialog.confirm({ message: 'Again?' }), { json: false })).result, false);
 });
 
+test('shell.fileIcon normalizes targets, carries size and decodes PNG bytes', async () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
+  const encoded = btoa(String.fromCharCode(...png));
+  const defaultIcon = await sent('shell.fileIcon', () => shell.fileIcon({ path: '/home/a.png' }), {
+    json: { png: encoded, width: 32, height: 32 },
+  });
+  assert.deepEqual(defaultIcon.args, { target: { path: '/home/a.png' }, size: 32 });
+  assert.deepEqual(defaultIcon.result, { png, width: 32, height: 32 });
+
+  const controller = new AbortController();
+  const extension = await sent('shell.fileIcon', () => shell.fileIcon({ extension: ' .PNG ' }, { size: 64, signal: controller.signal }), {
+    json: { png: encoded, width: 64, height: 64 },
+  });
+  assert.deepEqual(extension.args, { target: { extension: 'png' }, size: 64 });
+  assert.deepEqual(extension.result, { png, width: 64, height: 64 });
+  assert.equal(extension.request.signal, controller.signal);
+  assert.deepEqual((await sent('shell.fileIcon', () => shell.fileIcon({ mime: 'Image/PNG; charset=binary' }), {
+    json: { png: encoded, width: 32, height: 32 },
+  })).args, { target: { mime: 'image/png' }, size: 32 });
+  assert.deepEqual((await sent('shell.fileIcon', () => shell.fileIcon({ kind: 'folder' }), {
+    json: { png: encoded, width: 32, height: 32 },
+  })).args, { target: { kind: 'folder' }, size: 32 });
+  const aborted = new AbortController();
+  aborted.abort();
+  const beforeAbort = runtime.calls('shell.fileIcon').length;
+  await assert.rejects(shell.fileIcon({ path: '/home/a' }, { signal: aborted.signal }), { name: 'AbortError' });
+  assert.equal(runtime.calls('shell.fileIcon').length, beforeAbort);
+});
+
+test('shell.fileIcon rejects invalid targets and sizes asynchronously without calling runtime', async () => {
+  const before = runtime.calls('shell.fileIcon').length;
+  for (const [target, size] of [
+    [null, undefined], [{}, undefined], [{ path: '/a', extension: 'txt' }, undefined],
+    [{ unknown: 'x' }, undefined], [{ extension: '..txt' }, undefined], [{ extension: '   ' }, undefined],
+    [{ extension: 'a'.repeat(65) }, undefined], [{ mime: 'text/plain/extra' }, undefined],
+    [{ kind: 'other' }, undefined], [{ path: '/a\0b' }, undefined], [{ path: '/a' }, 20],
+  ]) {
+    const returned = shell.fileIcon(target, size === undefined ? {} : { size });
+    assert.equal(typeof returned?.then, 'function', 'validation must return a rejected Promise');
+    await assert.rejects(returned, error => error instanceof AlefError && error.code === 'INVALID_ARGUMENT');
+  }
+  assert.equal(runtime.calls('shell.fileIcon').length, before);
+});
+
+test('a denied path icon rejects with AlefError', async () => {
+  replies.set('shell.fileIcon', { status: 403, json: DENIED });
+  await assert.rejects(shell.fileIcon({ path: '/private/file' }), error => error instanceof AlefError && error.code === 'PERMISSION_DENIED');
+});
+
 test('a refusal of a dialog is an AlefError and the signal reaches fetch', async () => {
   replies.set('dialog.open', { status: 400, json: { code: 'INVALID_ARGUMENT', message: 'dialog.open: title is longer than 256 characters' } });
   await assert.rejects(dialog.open({ title: 'x' }), error => error instanceof AlefError && error.code === 'INVALID_ARGUMENT');
