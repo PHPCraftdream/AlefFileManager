@@ -312,7 +312,15 @@ export type ShellPermissions = {
   /**
    * Allowed external URLs.
    */
-  openExternal: Array<string>, };
+  openExternal: Array<string>,
+  /**
+   * Whether the page may ask for the system context menu of files; denied when omitted.
+   */
+  contextMenu?: boolean,
+  /**
+   * Whether an elevating (`runas`) item may be invoked; refused when omitted.
+   */
+  contextMenuRunas?: boolean, };
 
 /**
  * Global shortcut permissions.

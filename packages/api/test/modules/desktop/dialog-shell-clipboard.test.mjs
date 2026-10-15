@@ -21,6 +21,28 @@ async function sent(command, fn, reply = { json: null }) {
   return { result, request: calls.at(-1), args: runtime.argsOf(calls.at(-1)) };
 }
 
+test('shell.contextMenu exposes recursive items and session operations', async () => {
+  const items = [{ id: 'open', label: 'Open', enabled: true, icon: [1, 2], submenu: [{ id: 'child', label: 'Child', enabled: false }] }];
+  replies.set('shell.contextMenu', { json: { handle: 63, items } });
+  const before = runtime.calls('shell.contextMenu').length;
+  const menu = await shell.contextMenu(['/home/a'], { extended: true });
+  const request = runtime.calls('shell.contextMenu').at(-1);
+  assert.equal(runtime.calls('shell.contextMenu').length, before + 1);
+  assert.deepEqual(runtime.argsOf(request), { paths: ['/home/a'], extended: true });
+  assert.deepEqual(menu.items[0].icon, new Uint8Array([1, 2]));
+  assert.deepEqual(menu.items[0].submenu, [{ id: 'child', label: 'Child', enabled: false }]);
+  await sent('shell.contextMenu.invoke', () => menu.invoke('open'));
+  assert.deepEqual(runtime.argsOf(runtime.calls('shell.contextMenu.invoke').at(-1)), { handle: 63, id: 'open' });
+  await sent('shell.contextMenu.close', () => menu.close());
+  assert.deepEqual(runtime.argsOf(runtime.calls('shell.contextMenu.close').at(-1)), { handle: 63 });
+  await sent('shell.contextMenu', () => shell.contextMenu(['/home/a']), { json: { handle: 64, items: [] } }).then(({ args }) => assert.deepEqual(args, { paths: ['/home/a'], extended: false }));
+});
+
+test('shell.contextMenu forwards native failures', async () => {
+  replies.set('shell.contextMenu', { status: 400, json: { code: 'NOT_FOUND', message: 'missing' } });
+  await assert.rejects(shell.contextMenu(['/missing']), error => error instanceof AlefError && error.code === 'NOT_FOUND');
+});
+
 test('dialog.open and dialog.save carry their options and give back the choice', async () => {
   const options = { title: 'Pick', multiple: true, filters: [{ name: 'Images', extensions: ['png'] }], defaultPath: '/home' };
   const picked = await sent('dialog.open', () => dialog.open(options), { json: ['/a.png', '/b.png'] });

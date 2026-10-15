@@ -111,6 +111,14 @@ pub struct ShellPermissions {
     /// Allowed external URLs.
     #[serde(rename = "openExternal")]
     pub open_external: Vec<String>,
+    /// Whether the page may ask for the system context menu of files; denied when omitted.
+    #[serde(default, rename = "contextMenu")]
+    #[ts(optional, as = "Option<bool>")]
+    pub context_menu: bool,
+    /// Whether an elevating (`runas`) item may be invoked; refused when omitted.
+    #[serde(default, rename = "contextMenuRunas")]
+    #[ts(optional, as = "Option<bool>")]
+    pub context_menu_runas: bool,
 }
 
 /// Clipboard permissions.

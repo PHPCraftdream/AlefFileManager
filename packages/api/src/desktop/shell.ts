@@ -1,9 +1,45 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import { call } from '../core/transport.ts';
+import type { CallOptions } from '../core/transport.ts';
 import type { Cancelable } from './app.ts';
+
+export interface ContextMenuItem {
+  id: string;
+  label: string;
+  enabled: boolean;
+  checked?: boolean;
+  default?: boolean;
+  separator?: boolean;
+  icon?: Uint8Array;
+  submenu?: ContextMenuItem[];
+}
+
+export interface ContextMenu {
+  items: ContextMenuItem[];
+  invoke(id: string): Promise<void>;
+  close(): Promise<void>;
+}
 
 /** Hands addresses and files to the desktop. */
 export const shell = {
+  /** Gets a session-backed native context menu; the UI is responsible for rendering its items. */
+  contextMenu: async (paths: string[], options: Cancelable & { extended?: boolean } = {}): Promise<ContextMenu> => {
+    const { signal, extended = false } = options;
+    const { handle, items } = await call<{ handle: number; items: ContextMenuItem[] }>(
+      'shell.contextMenu', { paths, extended }, { signal } satisfies CallOptions,
+    );
+    const convert = (item: ContextMenuItem): ContextMenuItem => ({
+      ...item,
+      ...(item.icon === undefined ? {} : { icon: new Uint8Array(item.icon as unknown as number[]) }),
+      ...(item.submenu === undefined ? {} : { submenu: item.submenu.map(convert) }),
+    });
+    return {
+      items: items.map(convert),
+      invoke: id => call<void>('shell.contextMenu.invoke', { handle, id }),
+      close: () => call<void>('shell.contextMenu.close', { handle }),
+    };
+  },
+
   /** Opens a web address in the browser; the address must be inside `permissions.shell.openExternal`. */
   openExternal: (url: string, options: Cancelable = {}): Promise<void> =>
     call<void>('shell.openExternal', { url }, options),

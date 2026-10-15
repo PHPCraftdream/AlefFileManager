@@ -95,6 +95,7 @@ const ARGS = {
   'shell.openPath': ['/probe'],
   'shell.showInFolder': ['/probe'],
   'shell.trash': ['/probe'],
+  'shell.contextMenu': [['/probe']],
   'notification.show': [{ title: 'probe' }],
   'cli.run': ['hello'],
   'cli.start': ['hello'],
@@ -187,6 +188,7 @@ installRuntime({
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
     if (request.url === 'native://call/secrets.get') return { json: null };
     if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
+    if (request.url === 'native://call/shell.contextMenu') return { json: { handle: 63, items: [] } };
     return { json: { revision: 1 } };
   },
 });
