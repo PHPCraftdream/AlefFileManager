@@ -24,6 +24,15 @@ export class Shortcut {
     this.id = reply.id;
     this.#owner = reply.owner;
     this.#token = reply.token;
+    // Registered on first construction, not at module level: importing the module must do nothing.
+    const asyncDispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
+    if (typeof asyncDispose === 'symbol' && !Object.hasOwn(Shortcut.prototype, asyncDispose)) {
+      Object.defineProperty(Shortcut.prototype, asyncDispose, {
+        value(this: Shortcut): Promise<void> {
+          return this.unregister();
+        },
+      });
+    }
   }
 
   static {
@@ -46,15 +55,6 @@ export class Shortcut {
     await call<void>('shortcut.unregister', { id: this.id }, options);
     this.#registered = false;
   }
-}
-
-const asyncDispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
-if (typeof asyncDispose === 'symbol') {
-  Object.defineProperty(Shortcut.prototype, asyncDispose, {
-    value(this: Shortcut): Promise<void> {
-      return this.unregister();
-    },
-  });
 }
 
 export const shortcut = {

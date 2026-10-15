@@ -47,6 +47,15 @@ export class FileHandle {
 
   constructor(id: number) {
     this.id = id;
+    // Registered on first construction, not at module level: importing the module must do nothing.
+    const asyncDispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
+    if (typeof asyncDispose === 'symbol' && !Object.hasOwn(FileHandle.prototype, asyncDispose)) {
+      Object.defineProperty(FileHandle.prototype, asyncDispose, {
+        value(this: FileHandle): Promise<void> {
+          return this.close();
+        },
+      });
+    }
   }
 
   /** The rest of the file as a stream, from the position of the handle. */
@@ -143,16 +152,6 @@ export class FileHandle {
   close(options: Cancelable = {}): Promise<void> {
     return call<void>('fs.close', { handle: this.id }, options);
   }
-}
-
-// Where the language has `await using` the handle closes itself; older typings do not know the symbol.
-const asyncDispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
-if (typeof asyncDispose === 'symbol') {
-  Object.defineProperty(FileHandle.prototype, asyncDispose, {
-    value(this: FileHandle): Promise<void> {
-      return this.close();
-    },
-  });
 }
 
 export interface ReadTextOptions extends Cancelable {

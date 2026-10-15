@@ -170,7 +170,14 @@ export function computePlan(input) {
     plan.js_all = false;
     plan.e2e = 'none';
     plan.package_app = false;
-    plan.reason = 'docs-only change: structure+fmt only';
+    // A SEGMENTS.md change must rerun the guard test that documents the segmentation edges.
+    const segDocs = files.some(f => matchGlob(f, 'docs/api/**'));
+    if (segDocs) {
+      plan.js = ['packages/api'];
+      plan.reason = 'docs-only change: structure+fmt plus the api segmentation tests';
+    } else {
+      plan.reason = 'docs-only change: structure+fmt only';
+    }
     return plan;
   }
 

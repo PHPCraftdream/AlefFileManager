@@ -154,6 +154,15 @@ export class SqliteStatement {
     this.line = line;
     this.id = id;
     this.queued = queued;
+    // Registered on first construction, not at module level: importing the module must do nothing.
+    const dispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
+    if (typeof dispose === 'symbol' && !Object.hasOwn(SqliteStatement.prototype, dispose)) {
+      Object.defineProperty(SqliteStatement.prototype, dispose, {
+        value(this: SqliteStatement): Promise<void> {
+          return this.finalize();
+        },
+      });
+    }
   }
 
   /** Runs a statement that changes things. */
@@ -174,15 +183,6 @@ export class SqliteStatement {
   finalize(options: Cancelable = {}): Promise<void> {
     return call<void>('sqlite.finalize', { statement: this.id }, options);
   }
-}
-
-const dispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
-if (typeof dispose === 'symbol') {
-  Object.defineProperty(SqliteStatement.prototype, dispose, {
-    value(this: SqliteStatement): Promise<void> {
-      return this.finalize();
-    },
-  });
 }
 
 /** What a transaction can do: the commands of the database, inside the transaction. */
@@ -222,6 +222,15 @@ export class SqliteDatabase {
   constructor(id: number) {
     this.id = id;
     this.line = new Line(id);
+    // Registered on first construction, not at module level: importing the module must do nothing.
+    const dispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
+    if (typeof dispose === 'symbol' && !Object.hasOwn(SqliteDatabase.prototype, dispose)) {
+      Object.defineProperty(SqliteDatabase.prototype, dispose, {
+        value(this: SqliteDatabase): Promise<void> {
+          return this.close();
+        },
+      });
+    }
   }
 
   /** Runs statements that change things; with no parameters the text may hold several statements. */
@@ -274,14 +283,6 @@ export class SqliteDatabase {
   close(options: Cancelable = {}): Promise<void> {
     return call<void>('sqlite.close', { db: this.id }, options);
   }
-}
-
-if (typeof dispose === 'symbol') {
-  Object.defineProperty(SqliteDatabase.prototype, dispose, {
-    value(this: SqliteDatabase): Promise<void> {
-      return this.close();
-    },
-  });
 }
 
 export const sqlite = {

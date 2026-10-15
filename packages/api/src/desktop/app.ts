@@ -29,12 +29,12 @@ export interface AppEvents {
 type OpenUrlHandler = AppEvents['open-url'];
 const openUrlHandlers = new Set<{ handler: OpenUrlHandler }>();
 let openUrlUnsubscribe: (() => void) | undefined;
-let openUrlOperations = Promise.resolve();
+let openUrlOperations: Promise<void> | undefined;
 
 // Serialize enable/disable, including their replies. A queued last-unlisten must not disable
 // a newly added handler, and two registrations of the same callback are independent leases.
 function changeOpenUrls(operation: () => Promise<void>): Promise<void> {
-  const result = openUrlOperations.then(operation);
+  const result = (openUrlOperations ?? Promise.resolve()).then(operation);
   openUrlOperations = result.catch(() => undefined);
   return result;
 }

@@ -159,6 +159,20 @@ test('a_docs_only_change_runs_only_structure_and_fmt_on_linux_with_no_crates_js_
   assert.equal(p.fmt, true);
 });
 
+test('a_changed_docs_api_segments_md_runs_the_api_segmentation_tests_but_other_docs_do_not', () => {
+  const p = plan(['docs/api/SEGMENTS.md']);
+  assert.equal(p.full, false);
+  assert.equal(p.docs_only, true);
+  assert.deepEqual(p.js, ['packages/api']);
+  assert.deepEqual(p.os, ['ubuntu-24.04']);
+  assert.equal(p.e2e, 'none');
+  assert.deepEqual(p.crates, []);
+  assert.equal(p.crates_all, false);
+  const q = plan(['docs/stages/m0-results/ci.md']);
+  assert.equal(q.docs_only, true);
+  assert.deepEqual(q.js, []);
+});
+
 test('a_change_in_one_leaf_crate_tests_only_that_crate_its_dependents_and_linux', () => {
   const p = plan(['backend/crates/alef-package/src/lib.rs']);
   assert.equal(p.full, false);

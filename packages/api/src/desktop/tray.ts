@@ -39,6 +39,15 @@ export class Tray {
     this.id = reply.id;
     this.#owner = reply.owner;
     this.#token = reply.token;
+    // Registered on first construction, not at module level: importing the module must do nothing.
+    const asyncDispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
+    if (typeof asyncDispose === 'symbol' && !Object.hasOwn(Tray.prototype, asyncDispose)) {
+      Object.defineProperty(Tray.prototype, asyncDispose, {
+        value(this: Tray): Promise<void> {
+          return this.destroy();
+        },
+      });
+    }
   }
 
   async setIcon(icon: Uint8Array<ArrayBuffer>, options: Cancelable = {}): Promise<void> {
@@ -80,15 +89,6 @@ export class Tray {
       }
     }, options);
   }
-}
-
-const asyncDispose = (Symbol as unknown as { asyncDispose?: symbol }).asyncDispose;
-if (typeof asyncDispose === 'symbol') {
-  Object.defineProperty(Tray.prototype, asyncDispose, {
-    value(this: Tray): Promise<void> {
-      return this.destroy();
-    },
-  });
 }
 
 export const tray = {
