@@ -51,6 +51,26 @@ fn consent(tool: Decision) -> Consent {
     consent
 }
 
+/// A fixture whose application key is its own: the per-application budgets of the `ai` module
+/// never couple two tests that run side by side.
+async fn ai_fixture(app: &'static str, consent: Consent) -> Fixture {
+    let root = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("alef-modules-paths");
+    Fixture::new_sharing_authority(
+        &root,
+        Some(&ai_manifest()),
+        std::sync::Arc::new(alef_modules::MemorySecrets::default()),
+        alef_core::security::authority::Authority::SignedPackage {
+            fingerprint: app.to_owned(),
+        },
+    )
+    .await
+    .with_consent(consent)
+}
+
 /// One frame of the chat stream, within a bounded wait: a test fails, it does not hang.
 async fn frame(reader: &mut StreamReader) -> Frame {
     tokio::time::timeout(Duration::from_secs(5), reader.next_frame())
@@ -104,9 +124,7 @@ fn chat_options(tools: &[&str]) -> Value {
 
 #[tokio::test]
 async fn roles_list_only_the_allowed_roles_and_a_substituted_role_is_not_published() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("roles", Consent::allow_all()).await;
     let roles = fixture.call("ai.roles", Value::Null).await.unwrap();
     assert_eq!(
         roles,
@@ -122,9 +140,7 @@ async fn roles_list_only_the_allowed_roles_and_a_substituted_role_is_not_publish
     let mut substituted = Consent::undecided();
     substituted.set(Right::scoped("ai.role", "smart"), Decision::Substitute);
     substituted.set(Right::scoped("ai.role", "fast"), Decision::Allow);
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(substituted);
+    let fixture = ai_fixture("substituted-role", substituted).await;
     let roles = fixture.call("ai.roles", Value::Null).await.unwrap();
     assert_eq!(roles["roles"].as_array().unwrap().len(), 1);
     assert_eq!(roles["roles"][0]["id"], json!("fast"));
@@ -134,9 +150,7 @@ async fn roles_list_only_the_allowed_roles_and_a_substituted_role_is_not_publish
 async fn a_denied_role_refuses_the_chat_with_permission_denied() {
     let mut denied = Consent::allow_all();
     denied.set(Right::scoped("ai.role", "smart"), Decision::Deny);
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(denied);
+    let fixture = ai_fixture("denied-role", denied).await;
     let error = fixture
         .call("ai.chat", chat_options(&[]))
         .await
@@ -148,9 +162,7 @@ async fn a_denied_role_refuses_the_chat_with_permission_denied() {
 async fn a_substituted_role_answers_not_available_without_reaching_the_provider() {
     let mut substituted = Consent::allow_all();
     substituted.set(Right::scoped("ai.role", "smart"), Decision::Substitute);
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(substituted);
+    let fixture = ai_fixture("substituted-chat-role", substituted).await;
     let before = fixture.ai.chats_started();
     let error = fixture
         .call("ai.chat", chat_options(&[]))
@@ -163,9 +175,7 @@ async fn a_substituted_role_answers_not_available_without_reaching_the_provider(
 
 #[tokio::test]
 async fn a_chat_streams_text_usage_and_exactly_one_completed_end() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("streams", Consent::allow_all()).await;
     let (_chat, _stream, mut reader) = start_chat(&fixture, chat_options(&[])).await;
     assert_eq!(
         frame(&mut reader).await,
@@ -198,9 +208,7 @@ async fn a_chat_streams_text_usage_and_exactly_one_completed_end() {
 
 #[tokio::test]
 async fn a_tool_call_round_trip_reaches_the_handler_and_uses_its_result() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("round-trip", Consent::allow_all()).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
@@ -274,9 +282,7 @@ async fn a_tool_call_round_trip_reaches_the_handler_and_uses_its_result() {
 
 #[tokio::test]
 async fn a_replayed_or_foreign_tool_result_is_rejected() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("replay", Consent::allow_all()).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
@@ -342,9 +348,7 @@ async fn a_replayed_or_foreign_tool_result_is_rejected() {
 
 #[tokio::test]
 async fn a_result_for_a_different_tool_name_is_rejected_without_burning_the_call() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("wrong-name", Consent::allow_all()).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
@@ -388,9 +392,7 @@ async fn a_result_for_a_different_tool_name_is_rejected_without_burning_the_call
 
 #[tokio::test]
 async fn results_for_a_tool_that_was_unregistered_are_rejected() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("unregister", Consent::allow_all()).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
@@ -469,9 +471,7 @@ async fn results_for_a_tool_that_was_unregistered_are_rejected() {
 
 #[tokio::test]
 async fn breaking_the_iterator_cancels_the_chat() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("break", Consent::allow_all()).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
@@ -519,9 +519,7 @@ async fn breaking_the_iterator_cancels_the_chat() {
 
 #[tokio::test]
 async fn a_chat_naming_a_tool_without_a_handler_is_an_invalid_argument() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("missing-handler", Consent::allow_all()).await;
     let before = fixture.session().resources().len();
     let error = fixture
         .call("ai.chat", chat_options(&["summarizeSelection"]))
@@ -534,9 +532,7 @@ async fn a_chat_naming_a_tool_without_a_handler_is_an_invalid_argument() {
 
 #[tokio::test]
 async fn a_duplicate_tool_registration_is_busy_and_unregister_is_idempotent() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("duplicate", Consent::allow_all()).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
@@ -573,9 +569,7 @@ async fn a_duplicate_tool_registration_is_busy_and_unregister_is_idempotent() {
 #[tokio::test]
 async fn a_denied_tool_registration_is_permission_denied_and_an_inert_one_round_trips() {
     let denied = consent(Decision::Deny);
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(denied);
+    let fixture = ai_fixture("tool-denied", denied).await;
     assert_eq!(
         fixture
             .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
@@ -585,9 +579,7 @@ async fn a_denied_tool_registration_is_permission_denied_and_an_inert_one_round_
         ErrorCode::PermissionDenied
     );
     let substituted = consent(Decision::Substitute);
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(substituted);
+    let fixture = ai_fixture("tool-inert", substituted).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
@@ -633,9 +625,7 @@ async fn a_denied_tool_registration_is_permission_denied_and_an_inert_one_round_
 
 #[tokio::test]
 async fn a_result_of_null_is_a_valid_value() {
-    let fixture = Fixture::new(Some(&ai_manifest()), &[])
-        .await
-        .with_consent(Consent::allow_all());
+    let fixture = ai_fixture("null-result", Consent::allow_all()).await;
     let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await

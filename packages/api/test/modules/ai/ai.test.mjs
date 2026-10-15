@@ -192,7 +192,7 @@ bounded('unregister stops dispatching, aborts its handlers and is idempotent', a
   }
 });
 
-bounded('a chat_closed event aborts handlers while the iterator is paused', async () => {
+bounded('a chat_closed event aborts a running handler while the iterator is paused', async () => {
   replies.set('ai.tools.handle', { json: { registration: 86, inert: false } });
   let started = 0;
   let aborted = 0;
@@ -208,21 +208,22 @@ bounded('a chat_closed event aborts handlers while the iterator is paused', asyn
     // a live chat keeps the chat tracked while the body stays open
     replies.set('ai.chat', { json: { chat: 7, stream: 76 } });
     const it = ai.chat(chatArgs)[Symbol.asyncIterator]();
+    const firstPromise = it.next(); // starts the generator: the chat opens and the stream is created
     const body = await openStream('76');
     body.push(jsonFrame({ type: 'text', text: 'paused' }));
-    const first = await it.next();
+    const first = await firstPromise;
     assert.deepEqual(first.value, { type: 'text', text: 'paused' });
     // the iterator is now suspended at the yield: nothing is consumed any more
-    feed.push(jsonFrame({ name: 'ai.chat_closed', payload: { chat: 7 } }));
-    await waitFor(() => aborted === 1);
-    // a tool call for the forgotten chat must not be dispatched
     feed.push(jsonFrame({ name: 'ai.tool_call', payload: { chat: 7, callId: 'call-8', name: 'summarizeSelection', arguments: {} } }));
+    await waitFor(() => started === 1); // a handler is running, its promise never settles on its own
+    feed.push(jsonFrame({ name: 'ai.chat_closed', payload: { chat: 7 } }));
+    await waitFor(() => aborted === 1); // the abort fired while the iterator is still paused
+    // a further tool call for the forgotten chat must not reach the handler
+    feed.push(jsonFrame({ name: 'ai.tool_call', payload: { chat: 7, callId: 'call-9', name: 'summarizeSelection', arguments: {} } }));
     await settle();
-    assert.equal(started, 0, 'the handler must not run for a chat that was closed');
-    assert.equal(args('ai.tools.result').filter(result => result.callId === 'call-8').length, 0, 'no result request for call-8');
-    await it.return?.(); // closes the stream cleanly
-    body.push(jsonFrame({ type: 'end', reason: 'completed' }));
-    body.end();
+    assert.equal(started, 1, 'the handler must not run again after the chat was closed');
+    assert.equal(args('ai.tools.result').filter(result => result.callId === 'call-9').length, 0, 'no result request for call-9');
+    await it.return?.(); // closes the stream cleanly: nothing may be pushed to the body afterwards
   } finally {
     await unregister();
   }
