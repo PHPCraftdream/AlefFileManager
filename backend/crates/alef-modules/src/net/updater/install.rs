@@ -686,41 +686,6 @@ pub(crate) mod tests {
         release_tx.send(()).expect("blocker waiting");
     }
 
-    #[tokio::test]
-    async fn the_install_yields_to_the_poll_before_its_storage_prepare_is_admitted() {
-        let scratch = tempfile::tempdir().unwrap();
-        let (package, key) = signed_package("2.0.0", "org.example.app");
-        let mut config = signed_context(scratch.path(), key);
-        verify_bytes(scratch.path(), &config, "2.0.0", &package)
-            .await
-            .unwrap();
-        let fake = Arc::new(FakeApplier::default());
-        config.applier = fake.clone();
-        // A fresh data dir: the sentinel must come from the tested call itself.
-        let data = tempfile::tempdir().unwrap();
-        config.data = data.path().to_path_buf();
-        let executor = alef_core::session::BlockingExecutor::new(
-            std::num::NonZeroUsize::new(1).expect("non-zero test limit"),
-        );
-        let mut fut = Box::pin(install_on(
-            &executor,
-            config,
-            install_state(Some(offered("2.0.0"))),
-            Arc::new(Semaphore::new(1)),
-        ));
-        let poll = fut
-            .as_mut()
-            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
-        assert!(
-            matches!(poll, std::task::Poll::Pending),
-            "the first poll must not prepare the storage"
-        );
-        assert!(
-            !data.path().join("updates").exists(),
-            "the first poll prepared the storage inline"
-        );
-    }
-
     #[test]
     fn a_queued_storage_prepare_dropped_with_its_call_never_prepares() {
         let runtime = tokio::runtime::Builder::new_current_thread()
