@@ -40,7 +40,7 @@ async function allowed(t, check) {
   });
 
   await check('ai-tool-round-trip-uses-the-handler-result', async () => {
-    const unregister = await ai.tools.handle('summarizeSelection', args => ({ summary: `of ${args.text}` }));
+    const unregister = await ai.tools.handle('summarizeSelection', args => ({ summary: `of ${args.input}` }));
     try {
       const parts = [];
       for await (const part of ai.chat({

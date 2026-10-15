@@ -98,8 +98,9 @@ const PACE: std::time::Duration = std::time::Duration::from_millis(10);
 const RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A deterministic provider for tests and end-to-end runs: it thinks, calls the tools the request
-/// listed (in order, with fixed arguments), waits for one result per call, reports what it saw,
-/// accounts a round-based usage and completes. It knows nothing about registrations; the module
+/// listed (in order, with fixed arguments), waits for one result per call, reports what it saw
+/// (only when the request listed tools: a no-tool chat answers without a Saw text), accounts a
+/// round-based usage and completes. It knows nothing about registrations; the module
 /// decides which tools reach it.
 #[derive(Debug, Default)]
 pub struct FakeProvider {
@@ -169,7 +170,7 @@ fn echo(value: &Value) -> String {
     }
 }
 
-async fn produce(request: ChatRequest, control: ChatControl, sender: mpsc::Sender<ChatEvent>) {
+async fn produce(request: ChatRequest, mut control: ChatControl, sender: mpsc::Sender<ChatEvent>) {
     if !emit(&control, &sender, ChatEvent::Text("Thinking".to_owned())).await {
         return;
     }
@@ -219,12 +220,14 @@ async fn produce(request: ChatRequest, control: ChatControl, sender: mpsc::Sende
             _ => return,
         }
     }
-    if !emit(
-        &control,
-        &sender,
-        ChatEvent::Text(format!("Saw {results} tool result(s): {last}")),
-    )
-    .await
+    // Only a chat with tools reports what it saw; a no-tool chat answers the request directly.
+    if !request.tools.is_empty()
+        && !emit(
+            &control,
+            &sender,
+            ChatEvent::Text(format!("Saw {results} tool result(s): {last}")),
+        )
+        .await
     {
         return;
     }

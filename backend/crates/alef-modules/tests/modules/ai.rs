@@ -10,6 +10,7 @@ use alef_core::{
     session::streams::StreamReader,
     ErrorCode,
 };
+use alef_modules::ai;
 use serde_json::{json, Value};
 
 use super::common::Fixture;
@@ -233,7 +234,12 @@ async fn a_tool_call_round_trip_reaches_the_handler_and_uses_its_result() {
     let answered = fixture
         .call(
             "ai.tools.result",
-            json!({"chat": chat, "callId": "call-0", "result": {"summary": "ok"}}),
+            json!({
+                "chat": chat,
+                "callId": "call-0",
+                "name": "summarizeSelection",
+                "result": {"summary": "ok"},
+            }),
         )
         .await
         .unwrap();
@@ -259,6 +265,11 @@ async fn a_tool_call_round_trip_reaches_the_handler_and_uses_its_result() {
         Frame::Json(json!({"type": "end", "reason": "completed"}))
     );
     assert_eq!(frame(&mut reader).await, Frame::End);
+    // The registration of this test must not leak into the next one.
+    let registration = registered["registration"].as_u64().unwrap();
+    let _ = fixture
+        .call("ai.tools.unhandle", json!({"registration": registration}))
+        .await;
 }
 
 #[tokio::test]
@@ -266,7 +277,7 @@ async fn a_replayed_or_foreign_tool_result_is_rejected() {
     let fixture = Fixture::new(Some(&ai_manifest()), &[])
         .await
         .with_consent(Consent::allow_all());
-    fixture
+    let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
         .unwrap();
@@ -274,7 +285,12 @@ async fn a_replayed_or_foreign_tool_result_is_rejected() {
         start_chat(&fixture, chat_options(&["summarizeSelection"])).await;
     frame(&mut reader).await;
     frame(&mut reader).await;
-    let result = json!({"chat": chat, "callId": "call-0", "result": 1});
+    let result = json!({
+        "chat": chat,
+        "callId": "call-0",
+        "name": "summarizeSelection",
+        "result": 1,
+    });
     fixture
         .call("ai.tools.result", result.clone())
         .await
@@ -289,7 +305,12 @@ async fn a_replayed_or_foreign_tool_result_is_rejected() {
         ErrorCode::Closed
     );
     // A chat that is not ours looks exactly like one that is over.
-    let foreign = json!({"chat": chat + 9999, "callId": "call-0", "result": 1});
+    let foreign = json!({
+        "chat": chat + 9999,
+        "callId": "call-0",
+        "name": "summarizeSelection",
+        "result": 1,
+    });
     assert_eq!(
         fixture
             .call("ai.tools.result", foreign)
@@ -298,7 +319,12 @@ async fn a_replayed_or_foreign_tool_result_is_rejected() {
             .code,
         ErrorCode::Closed
     );
-    let unknown = json!({"chat": chat, "callId": "call-9", "result": 1});
+    let unknown = json!({
+        "chat": chat,
+        "callId": "call-9",
+        "name": "summarizeSelection",
+        "result": 1,
+    });
     assert_eq!(
         fixture
             .call("ai.tools.result", unknown)
@@ -307,6 +333,11 @@ async fn a_replayed_or_foreign_tool_result_is_rejected() {
             .code,
         ErrorCode::Closed
     );
+    // The registration of this test must not leak into the next one.
+    let registration = registered["registration"].as_u64().unwrap();
+    let _ = fixture
+        .call("ai.tools.unhandle", json!({"registration": registration}))
+        .await;
 }
 
 #[tokio::test]
@@ -314,7 +345,7 @@ async fn a_result_for_a_different_tool_name_is_rejected_without_burning_the_call
     let fixture = Fixture::new(Some(&ai_manifest()), &[])
         .await
         .with_consent(Consent::allow_all());
-    fixture
+    let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
         .unwrap();
@@ -348,6 +379,11 @@ async fn a_result_for_a_different_tool_name_is_rejected_without_burning_the_call
         frame(&mut reader).await,
         Frame::Json(json!({"type": "text", "text": "Saw 1 tool result(s): ok"}))
     );
+    // The registration of this test must not leak into the next one.
+    let registration = registered["registration"].as_u64().unwrap();
+    let _ = fixture
+        .call("ai.tools.unhandle", json!({"registration": registration}))
+        .await;
 }
 
 #[tokio::test]
@@ -364,22 +400,32 @@ async fn results_for_a_tool_that_was_unregistered_are_rejected() {
     frame(&mut reader).await;
     frame(&mut reader).await;
     let registration = registered["registration"].as_u64().unwrap();
+    // The probe sees the live registration before anything is removed.
+    assert!(
+        ai::tool_is_registered(fixture.session(), registration),
+        "the probe sees the live registration"
+    );
     fixture
         .call("ai.tools.unhandle", json!({"registration": registration}))
         .await
         .unwrap();
-    let result = json!({"chat": chat, "callId": "call-0", "result": 1});
-    // The teardown of the pending calls is only a moment away; wait for it, bounded.
+    // The resource is gone deterministically; no retry loop is needed.
+    let mut gone = false;
     for _ in 0..250 {
-        if fixture
-            .call("ai.tools.result", result.clone())
-            .await
-            .is_err_and(|error| error.code == ErrorCode::Closed)
-        {
+        if !ai::tool_is_registered(fixture.session(), registration) {
+            gone = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(gone, "the registration was never removed");
+    // Exactly one answer, deterministically: the call was torn down with the tool.
+    let result = json!({
+        "chat": chat,
+        "callId": "call-0",
+        "name": "summarizeSelection",
+        "result": 1,
+    });
     assert_eq!(
         fixture
             .call("ai.tools.result", result)
@@ -395,7 +441,7 @@ async fn breaking_the_iterator_cancels_the_chat() {
     let fixture = Fixture::new(Some(&ai_manifest()), &[])
         .await
         .with_consent(Consent::allow_all());
-    fixture
+    let registered = fixture
         .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
         .await
         .unwrap();
@@ -408,18 +454,23 @@ async fn breaking_the_iterator_cancels_the_chat() {
         .streams()
         .close(StreamId(stream))
         .expect("the stream closes");
-    // Sooner or later the producer tears the chat down; from then on every result is Closed.
-    let result = json!({"chat": chat, "callId": "call-0", "result": 1});
+    // The producer tears the chat down deterministically; the probe sees it without burning the call.
+    let mut gone = false;
     for _ in 0..250 {
-        match fixture.call("ai.tools.result", result.clone()).await {
-            // Not torn down yet; a burned call answers Closed on the very next try.
-            Ok(_) => {}
-            Err(error) if error.code == ErrorCode::Closed => break,
-            Err(error) => panic!("unexpected error: {error}"),
+        if !ai::chat_is_pending(fixture.session(), chat) {
+            gone = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // After the teardown every later result is Closed, deterministically.
+    assert!(gone, "the chat was never torn down");
+    // After the teardown the result is Closed, deterministically, exactly once.
+    let result = json!({
+        "chat": chat,
+        "callId": "call-0",
+        "name": "summarizeSelection",
+        "result": 1,
+    });
     assert_eq!(
         fixture
             .call("ai.tools.result", result)
@@ -428,6 +479,11 @@ async fn breaking_the_iterator_cancels_the_chat() {
             .code,
         ErrorCode::Closed
     );
+    // The registration of this test must not leak into the next one.
+    let registration = registered["registration"].as_u64().unwrap();
+    let _ = fixture
+        .call("ai.tools.unhandle", json!({"registration": registration}))
+        .await;
 }
 
 #[tokio::test]
@@ -537,4 +593,75 @@ async fn a_denied_tool_registration_is_permission_denied_and_an_inert_one_round_
         .unwrap()
         .iter()
         .all(|(_, name, _)| name != "ai.tool_call"));
+    // The registration of this test must not leak into the next one.
+    let registration = registered["registration"].as_u64().unwrap();
+    let _ = fixture
+        .call("ai.tools.unhandle", json!({"registration": registration}))
+        .await;
+}
+
+#[tokio::test]
+async fn a_result_of_null_is_a_valid_value() {
+    let fixture = Fixture::new(Some(&ai_manifest()), &[])
+        .await
+        .with_consent(Consent::allow_all());
+    let registered = fixture
+        .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
+        .await
+        .unwrap();
+    let (chat, _stream, mut reader) =
+        start_chat(&fixture, chat_options(&["summarizeSelection"])).await;
+    assert_eq!(
+        frame(&mut reader).await,
+        Frame::Json(json!({"type": "text", "text": "Thinking"}))
+    );
+    assert_eq!(
+        frame(&mut reader).await,
+        Frame::Json(json!({
+            "type": "tool_call",
+            "id": "call-0",
+            "name": "summarizeSelection",
+            "arguments": {"input": "ping"},
+        }))
+    );
+    // An explicit null is a value the handler returned, not a missing one.
+    let answered = fixture
+        .call(
+            "ai.tools.result",
+            json!({
+                "chat": chat,
+                "callId": "call-0",
+                "name": "summarizeSelection",
+                "result": null,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answered, Value::Null);
+    assert_eq!(
+        frame(&mut reader).await,
+        Frame::Json(json!({"type": "text", "text": "Saw 1 tool result(s): null"}))
+    );
+    assert_eq!(
+        frame(&mut reader).await,
+        Frame::Json(json!({
+            "type": "usage",
+            "inputTokens": 15,
+            "outputTokens": 8,
+            "cacheReadTokens": null,
+            "cacheCreationTokens": null,
+            "estimated": true,
+            "complete": true,
+        }))
+    );
+    assert_eq!(
+        frame(&mut reader).await,
+        Frame::Json(json!({"type": "end", "reason": "completed"}))
+    );
+    assert_eq!(frame(&mut reader).await, Frame::End);
+    // The registration of this test must not leak into the next one.
+    let registration = registered["registration"].as_u64().unwrap();
+    let _ = fixture
+        .call("ai.tools.unhandle", json!({"registration": registration}))
+        .await;
 }

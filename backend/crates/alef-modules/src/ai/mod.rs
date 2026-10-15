@@ -11,7 +11,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use alef_core::{
@@ -22,48 +22,52 @@ use alef_core::{
         dispatch::Registry,
         host::Host,
     },
-    security::{consent::Decision, permissions::Permission},
+    security::{
+        consent::Decision,
+        permissions::{Grants, Permission, PermissionSet},
+    },
     session::{resources::Resource, session::Session, streams::StreamWriter},
     AlefError, ErrorCode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::{json, ModuleContext};
 use dto::{ChatMessage, Role};
-use provider::{AiProvider, ChatControl, ChatEvent, ChatRequest, ToolDef};
+use provider::{ChatControl, ChatEvent, ChatRequest, ToolDef};
 
 pub mod dto;
 pub mod limits;
 pub mod provider;
 
-/// The live tool registrations of every session: `(session, tool name)` to the registration
+/// The live tool registrations of every application: `(app_key, tool name)` to the registration
 /// resource id and whether it is inert (a substituted tool: registered, never offered). A short
-/// lock, never held across an await.
-static TOOLS: std::sync::LazyLock<Mutex<HashMap<(u64, String), (u64, bool)>>> =
+/// lock, never held across an await. The key is the authority token of the application when it
+/// has one, its manifest id otherwise: two applications never see each other's tools.
+static TOOLS: std::sync::LazyLock<Mutex<HashMap<(String, String), (u64, bool)>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn tools() -> MutexGuard<'static, HashMap<(u64, String), (u64, bool)>> {
+fn tools() -> MutexGuard<'static, HashMap<(String, String), (u64, bool)>> {
     TOOLS.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// The live chats of every session: the session id to its chat ids and their state. A short lock,
-/// never held across an await (docs/stages/m9-ai.md §6).
-static CHATS: std::sync::LazyLock<Mutex<HashMap<u64, HashMap<u64, Arc<ChatState>>>>> =
+/// The live chats of every application: the application key to its chat ids and their state. A
+/// short lock, never held across an await (docs/stages/m9-ai.md §6).
+static CHATS: std::sync::LazyLock<Mutex<HashMap<String, HashMap<u64, Arc<ChatState>>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn chats() -> MutexGuard<'static, HashMap<u64, HashMap<u64, Arc<ChatState>>>> {
+fn chats() -> MutexGuard<'static, HashMap<String, HashMap<u64, Arc<ChatState>>>> {
     CHATS.lock().unwrap_or_else(|error| error.into_inner())
 }
 
-/// Forgets one chat of one session; an empty session leaves the map too.
-fn forget_chat(session: u64, chat: u64) {
+/// Forgets one chat of one application; an empty application leaves the map too.
+fn forget_chat(app_key: &str, chat: u64) {
     let mut all = chats();
-    if let Some(own) = all.get_mut(&session) {
+    if let Some(own) = all.get_mut(app_key) {
         own.remove(&chat);
         if own.is_empty() {
-            all.remove(&session);
+            all.remove(app_key);
         }
     }
 }
@@ -165,7 +169,7 @@ impl Resource for ChatHandle {
 /// A registered tool of the session; closing it (explicit unregister or session teardown) removes
 /// it from the global map, so no later chat offers it.
 struct Registration {
-    key: (u64, String),
+    key: (String, String),
 }
 
 impl Resource for Registration {
@@ -175,25 +179,56 @@ impl Resource for Registration {
     }
 }
 
-/// Cancels the provider, deadens the pending calls and forgets the resource.
+/// Notifies the page that the chat is over (in particular by timeout), then cancels the provider,
+/// deadens the pending calls and forgets the resource. The event comes first: it has to reach the
+/// page even when no iterator frame ever will.
 fn abandon_chat(
+    host: &Arc<dyn Host>,
+    window: u64,
     state: &Arc<ChatState>,
     cancel: &CancelSender,
     session: &Session,
     resource: ResourceId,
+    app_key: &str,
     chat: u64,
 ) {
+    host.emit(Some(window), "ai.chat_closed", json!({"chat": chat}));
     cancel.cancel();
     state.fail();
     let _ = session.resources().remove(resource);
-    forget_chat(session.id().0, chat);
+    forget_chat(app_key, chat);
 }
 
-/// Sends one frame of the chat within the idle budget: false when the page could not keep up.
-async fn relay(writer: &StreamWriter, frame: Value, budget: Duration) -> bool {
-    tokio::time::timeout(budget, writer.send_json(frame))
-        .await
+/// Whether the chat still holds a resource in `session`.
+pub fn chat_is_pending(session: &Session, chat: u64) -> bool {
+    session
+        .resources()
+        .with_as::<ChatHandle, _>(ResourceId(chat), |_| ())
         .is_ok()
+}
+
+/// Whether the registration resource still exists in `session`.
+pub fn tool_is_registered(session: &Session, registration: u64) -> bool {
+    session
+        .resources()
+        .with_as::<Registration, _>(ResourceId(registration), |_| ())
+        .is_ok()
+}
+
+/// What one relayed frame did: it went out, the stream or the page is gone, or the page was too
+/// slow within the remaining budget.
+enum Delivery {
+    Sent,
+    Closed,
+    Slow,
+}
+
+async fn relay(writer: &StreamWriter, frame: Value, at: tokio::time::Instant) -> Delivery {
+    match tokio::time::timeout_at(at, writer.send_json(frame)).await {
+        Ok(Ok(())) => Delivery::Sent,
+        Ok(Err(_)) => Delivery::Closed, // the stream or the page is gone; already terminal
+        Err(_) => Delivery::Slow,
+    }
 }
 
 /// Whether a serialized frame of the chat is larger than a part may be.
@@ -229,7 +264,11 @@ fn validate_chat(args: &ChatArgs) -> Result<(), AlefError> {
 /// The tools of the chat that reach the provider: allowed, registered, and not inert. A
 /// substituted tool is left out, a denied or undeclared one is refused, and a declared and allowed
 /// one without a live registration is an argument error before anything starts.
-fn allowed_tools(ctx: &CallContext, args: &ChatArgs) -> Result<Vec<ToolDef>, AlefError> {
+fn allowed_tools(
+    ctx: &CallContext,
+    args: &ChatArgs,
+    app_key: &str,
+) -> Result<Vec<ToolDef>, AlefError> {
     let mut seen = HashSet::new();
     let mut offered = Vec::new();
     for name in &args.tools {
@@ -249,7 +288,7 @@ fn allowed_tools(ctx: &CallContext, args: &ChatArgs) -> Result<Vec<ToolDef>, Ale
                 ));
             }
         }
-        let registered = tools().get(&(ctx.session.id().0, name.clone())).copied();
+        let registered = tools().get(&(app_key.to_owned(), name.clone())).copied();
         match registered {
             Some((_, false)) => {}
             // An inert registration keeps the round trip working; the chat never sees the tool.
@@ -285,7 +324,7 @@ enum Step {
 /// whose handler is too slow is left alone: the provider's own wait on the result fails the chat
 /// with `Timeout`, and the deadlines above bound it all the same.
 async fn produce(
-    mut writer: StreamWriter,
+    writer: StreamWriter,
     mut events: mpsc::Receiver<ChatEvent>,
     state: Arc<ChatState>,
     cancel: CancelSender,
@@ -294,6 +333,9 @@ async fn produce(
     host: Arc<dyn Host>,
     window: u64,
     chat: u64,
+    app_key: String,
+    permissions: Arc<PermissionSet>,
+    grants: Arc<Grants>,
 ) {
     let overall = tokio::time::Instant::now() + limits::CHAT_TIME;
     let mut stage = tokio::time::Instant::now() + limits::FIRST_EVENT_TIME;
@@ -303,6 +345,12 @@ async fn produce(
             let pending = state.pending();
             pending.values().map(|call| call.deadline).min()
         };
+        // The earliest of all the deadlines: nothing may wait longer than this, not even one frame.
+        let at = overall.min(stage).min(
+            next_deadline
+                .map(tokio::time::Instant::from_std)
+                .unwrap_or(overall),
+        );
         let step = {
             let closed = writer.closed();
             tokio::pin!(closed);
@@ -326,11 +374,15 @@ async fn produce(
         match step {
             // The page broke the iterator, or the session closed: nothing is written any more.
             Step::Closed => {
-                abandon_chat(&state, &cancel, &session, resource, chat);
+                abandon_chat(
+                    &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                );
                 return;
             }
             Step::TimedOut => {
-                abandon_chat(&state, &cancel, &session, resource, chat);
+                abandon_chat(
+                    &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                );
                 writer.error(timeout_of("the chat took too long"));
                 return;
             }
@@ -343,12 +395,16 @@ async fn produce(
                 if !expired {
                     continue;
                 }
-                abandon_chat(&state, &cancel, &session, resource, chat);
+                abandon_chat(
+                    &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                );
                 writer.error(timeout_of("a tool handler took too long"));
                 return;
             }
             Step::Ended => {
-                abandon_chat(&state, &cancel, &session, resource, chat);
+                abandon_chat(
+                    &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                );
                 writer.error(internal("the provider ended without completing"));
                 return;
             }
@@ -358,15 +414,31 @@ async fn produce(
                     ChatEvent::Text(text) => {
                         let frame = json!({"type": "text", "text": text});
                         if oversized(&frame) {
-                            abandon_chat(&state, &cancel, &session, resource, chat);
+                            abandon_chat(
+                                &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                            );
                             writer.error(internal("the provider sent a part that is too large"));
                             return;
                         }
-                        // A slow or gone page fails the whole chat.
-                        if !relay(&writer, frame, limits::STREAM_IDLE_TIME).await {
-                            abandon_chat(&state, &cancel, &session, resource, chat);
-                            writer.error(timeout_of("the chat could not keep up with the page"));
-                            return;
+                        // A gone page is already terminal; a slow one fails the whole chat.
+                        match relay(&writer, frame, at).await {
+                            Delivery::Sent => {}
+                            Delivery::Closed => {
+                                abandon_chat(
+                                    &host, window, &state, &cancel, &session, resource, &app_key,
+                                    chat,
+                                );
+                                return;
+                            }
+                            Delivery::Slow => {
+                                abandon_chat(
+                                    &host, window, &state, &cancel, &session, resource, &app_key,
+                                    chat,
+                                );
+                                writer
+                                    .error(timeout_of("the chat could not keep up with the page"));
+                                return;
+                            }
                         }
                     }
                     ChatEvent::ToolCall {
@@ -381,37 +453,84 @@ async fn produce(
                             "arguments": arguments,
                         });
                         if oversized(&frame) {
-                            abandon_chat(&state, &cancel, &session, resource, chat);
+                            abandon_chat(
+                                &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                            );
                             writer.error(internal("the provider sent a part that is too large"));
                             return;
                         }
-                        // The pending budget of the whole application (docs/stages/m9-ai.md §6).
-                        let pending_calls = {
-                            let all = chats();
-                            all.get(&session.id().0)
+                        // The binding of the chat start is re-checked at dispatch: a tool whose
+                        // registration is gone, or that no longer has the permission, is never
+                        // admitted — a stale call of the provider cannot revive it.
+                        let bound = tools()
+                            .get(&(app_key.clone(), name.clone()))
+                            .is_some_and(|(_, inert)| !*inert)
+                            && permissions.check(Permission::AiTool, Some(&name), &grants)
+                                == Ok(Decision::Allow);
+                        if !bound {
+                            abandon_chat(
+                                &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                            );
+                            writer.error(internal(
+                                "a tool call arrived for a tool that is no longer offered",
+                            ));
+                            return;
+                        }
+                        // The pending budget of the whole application, and the admission of the
+                        // call, happen in one critical section without an await (the lock order
+                        // CHATS before `state.pending` is the one `ai.tools.unhandle` uses too).
+                        let over = {
+                            let mut all = chats();
+                            let pending_calls = all
+                                .get(&app_key)
                                 .map(|own| {
                                     own.values()
                                         .map(|chat_state| chat_state.pending().len())
                                         .sum::<usize>()
                                 })
-                                .unwrap_or(0)
+                                .unwrap_or(0);
+                            if pending_calls >= limits::MAX_PENDING_CALLS {
+                                true
+                            } else {
+                                if let Some(own) = all.get_mut(&app_key) {
+                                    if let Some(chat_state) = own.get_mut(&chat) {
+                                        chat_state.pending().insert(
+                                            call_id.clone(),
+                                            PendingCall {
+                                                deadline: Instant::now() + limits::HANDLER_TIME,
+                                                name: name.clone(),
+                                            },
+                                        );
+                                    }
+                                }
+                                false
+                            }
                         };
-                        if pending_calls >= limits::MAX_PENDING_CALLS {
-                            abandon_chat(&state, &cancel, &session, resource, chat);
+                        if over {
+                            abandon_chat(
+                                &host, window, &state, &cancel, &session, resource, &app_key, chat,
+                            );
                             writer.error(internal("too many pending tool calls"));
                             return;
                         }
-                        state.pending().insert(
-                            call_id.clone(),
-                            PendingCall {
-                                deadline: Instant::now() + limits::HANDLER_TIME,
-                                name: name.clone(),
-                            },
-                        );
-                        if !relay(&writer, frame, limits::STREAM_IDLE_TIME).await {
-                            abandon_chat(&state, &cancel, &session, resource, chat);
-                            writer.error(timeout_of("the chat could not keep up with the page"));
-                            return;
+                        match relay(&writer, frame, at).await {
+                            Delivery::Sent => {}
+                            Delivery::Closed => {
+                                abandon_chat(
+                                    &host, window, &state, &cancel, &session, resource, &app_key,
+                                    chat,
+                                );
+                                return;
+                            }
+                            Delivery::Slow => {
+                                abandon_chat(
+                                    &host, window, &state, &cancel, &session, resource, &app_key,
+                                    chat,
+                                );
+                                writer
+                                    .error(timeout_of("the chat could not keep up with the page"));
+                                return;
+                            }
                         }
                         // The event drives the page handler independently of the iterator.
                         host.emit(
@@ -435,27 +554,44 @@ async fn produce(
                             "estimated": usage.estimated,
                             "complete": usage.complete,
                         });
-                        if !relay(&writer, frame, limits::STREAM_IDLE_TIME).await {
-                            abandon_chat(&state, &cancel, &session, resource, chat);
-                            writer.error(timeout_of("the chat could not keep up with the page"));
-                            return;
+                        match relay(&writer, frame, at).await {
+                            Delivery::Sent => {}
+                            Delivery::Closed => {
+                                abandon_chat(
+                                    &host, window, &state, &cancel, &session, resource, &app_key,
+                                    chat,
+                                );
+                                return;
+                            }
+                            Delivery::Slow => {
+                                abandon_chat(
+                                    &host, window, &state, &cancel, &session, resource, &app_key,
+                                    chat,
+                                );
+                                writer
+                                    .error(timeout_of("the chat could not keep up with the page"));
+                                return;
+                            }
                         }
                     }
                     ChatEvent::Completed => {
                         // Exactly one end (docs/stages/m9-ai.md §2): the frame, then the transport end.
-                        if !relay(
-                            &writer,
-                            json!({"type": "end", "reason": "completed"}),
-                            limits::STREAM_IDLE_TIME,
-                        )
-                        .await
+                        match relay(&writer, json!({"type": "end", "reason": "completed"}), at)
+                            .await
                         {
-                            abandon_chat(&state, &cancel, &session, resource, chat);
-                            return;
+                            Delivery::Sent => {}
+                            Delivery::Closed | Delivery::Slow => {
+                                abandon_chat(
+                                    &host, window, &state, &cancel, &session, resource, &app_key,
+                                    chat,
+                                );
+                                return;
+                            }
                         }
+                        host.emit(Some(window), "ai.chat_closed", json!({"chat": chat}));
                         state.fail();
                         let _ = session.resources().remove(resource);
-                        forget_chat(session.id().0, chat);
+                        forget_chat(&app_key, chat);
                         writer.end();
                         return;
                     }
@@ -465,7 +601,15 @@ async fn produce(
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// Whether a JSON field was present at all: absent is the default, an explicit `null` is
+/// `Some(Value::Null)`.
+fn deserialize_some<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
+    value: D,
+) -> Result<Option<T>, D::Error> {
+    Ok(Some(T::deserialize(value)?))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChatArgs {
     role: String,
@@ -492,9 +636,9 @@ struct ResultArgs {
     chat: u64,
     call_id: String,
     /// The tool the caller claims the call was for; checked before the call is consumed.
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
+    name: String,
+    /// Absent is the default; an explicit `null` is a valid value.
+    #[serde(default, deserialize_with = "deserialize_some")]
     result: Option<Value>,
     #[serde(default)]
     error: Option<String>,
@@ -506,6 +650,12 @@ pub(crate) fn register(
     context: &ModuleContext,
 ) -> Result<(), AlefError> {
     let provider = context.backends.ai.clone();
+    // Every application is its own world: the authority token when the application is a package,
+    // the manifest id otherwise. Tools and chats are keyed by it.
+    let app_key: String = context
+        .authority
+        .package_token(&context.app.id)
+        .unwrap_or_else(|| context.app.id.clone());
 
     // No permission on the wrapper: the handler publishes only the roles the user allowed; a
     // substituted role is not published (docs/stages/m9-ai.md §2).
@@ -548,6 +698,8 @@ pub(crate) fn register(
         .waits()
         .handler(move |ctx, args| {
             let provider = chat_provider.clone();
+            let host = host.clone();
+            let app_key = app_key.clone();
             async move {
                 // Nothing at all reaches the provider for a substituted role.
                 if ctx.decision() == Decision::Substitute {
@@ -557,46 +709,50 @@ pub(crate) fn register(
                     ));
                 }
                 validate_chat(&args)?;
-                let tools = allowed_tools(&ctx, &args)?;
-                // The admission budgets of docs/stages/m9-ai.md §6, before anything opens.
-                {
+                let tools = allowed_tools(&ctx, &args, &app_key)?;
+                let (cancel, cancelled) = CancelHandle::channel();
+                let (results, result_receiver) = mpsc::channel(1);
+                // The admission budgets of docs/stages/m9-ai.md §6, the start of the provider and
+                // the recording of the chat happen in ONE critical section; it holds no `.await`,
+                // and the producer started inside cannot reach the CHATS lock before it is
+                // released (its first event is paced by the provider). A `?` drops the guard.
+                let (writer, stream_id, events, resource, state) = {
                     let mut all = chats();
                     if all.values().map(|own| own.len()).sum::<usize>() >= limits::MAX_CHATS {
                         return Err(busy("too many chats across the applications".to_owned()));
                     }
-                    let own = all.entry(ctx.session.id().0).or_default();
+                    let own = all.entry(app_key.clone()).or_default();
                     if own.len() >= limits::MAX_CHATS_PER_APPLICATION {
                         return Err(busy("too many chats for this application".to_owned()));
                     }
-                }
-                let (cancel, cancelled) = CancelHandle::channel();
-                let (results, result_receiver) = mpsc::channel(1);
-                let events = provider.chat(
-                    ChatRequest {
-                        role: args.role.clone(),
-                        messages: args.messages.clone(),
-                        tools,
-                    },
-                    ChatControl {
-                        cancel: cancelled,
-                        results: result_receiver,
-                    },
-                )?;
-                let (writer, stream_id) = ctx.streams().open_outgoing();
-                let state = Arc::new(ChatState::new());
-                let resource = ctx.resources().insert(Box::new(ChatHandle {
-                    state: state.clone(),
-                    cancel: cancel.clone(),
-                    results,
-                }))?;
+                    let events = provider.chat(
+                        ChatRequest {
+                            role: args.role.clone(),
+                            messages: args.messages.clone(),
+                            tools,
+                        },
+                        ChatControl {
+                            cancel: cancelled,
+                            results: result_receiver,
+                        },
+                    )?;
+                    let (writer, stream_id) = ctx.streams().open_outgoing();
+                    let state = Arc::new(ChatState::new());
+                    let resource = ctx.resources().insert(Box::new(ChatHandle {
+                        state: state.clone(),
+                        cancel: cancel.clone(),
+                        results,
+                    }))?;
+                    let chat = resource.0;
+                    // The chat is admitted; the entry is never stranded.
+                    own.insert(chat, state.clone());
+                    (writer, stream_id, events, resource, state)
+                };
                 let chat = resource.0;
-                // The chat is admitted; nothing after this can fail, so the entry is never stranded.
-                chats()
-                    .entry(ctx.session.id().0)
-                    .or_default()
-                    .insert(chat, state.clone());
                 let window = ctx.session.window();
                 let session = ctx.session.clone();
+                let permissions = ctx.permissions.clone();
+                let grants = ctx.grants();
                 tokio::spawn(produce(
                     writer,
                     events,
@@ -604,9 +760,12 @@ pub(crate) fn register(
                     cancel,
                     session,
                     resource,
-                    host.clone(),
+                    host,
                     window,
                     chat,
+                    app_key,
+                    permissions,
+                    grants,
                 ));
                 json(&json!({ "chat": chat, "stream": stream_id.0 }))
             }
@@ -616,25 +775,24 @@ pub(crate) fn register(
         .command::<HandleArgs>("ai.tools.handle")?
         .permission(Permission::AiTool, |args| Some(args.name.clone()))
         .substitutes()
-        .handler(|ctx, args| async move {
+        .handler(move |ctx, args| async move {
             let inert = ctx.decision() == Decision::Substitute;
-            let session = ctx.session.id().0;
             let mut registrations = tools();
             if registrations
-                .values()
-                .filter(|(who, _)| *who == session)
+                .keys()
+                .filter(|(who, _)| who == &app_key)
                 .count()
                 >= limits::MAX_TOOLS
             {
                 return Err(busy("too many tool registrations".to_owned()));
             }
-            if registrations.contains_key(&(session, args.name.clone())) {
+            if registrations.contains_key(&(app_key.clone(), args.name.clone())) {
                 return Err(busy(format!(
                     "the tool {} is registered already",
                     args.name
                 )));
             }
-            let key = (session, args.name.clone());
+            let key = (app_key.clone(), args.name.clone());
             let id = ctx
                 .resources()
                 .insert(Box::new(Registration { key: key.clone() }))?;
@@ -646,20 +804,21 @@ pub(crate) fn register(
     // Removing a registration is a plain handle: no right of its own, idempotent either way.
     registry
         .command::<UnhandleArgs>("ai.tools.unhandle")?
-        .handler(|ctx, args| async move {
+        .handler(move |ctx, args| async move {
             let id = ResourceId(args.registration);
             let key = ctx
                 .resources()
                 .with_as::<Registration, _>(id, |registration| registration.key.clone());
-            if let Ok((session, name)) = key {
-                if session == ctx.session.id().0 {
+            if let Ok((who, name)) = key {
+                // Only the application that registered the tool may remove it.
+                if who == app_key {
                     if let Ok(resource) = ctx.resources().take(id) {
                         // The close of the resource removes it from the global map.
                         resource.close().await;
                     }
                     // The pending calls of the tool are invalidated: their later results answer CLOSED.
                     let mut all = chats();
-                    if let Some(own) = all.get_mut(&session) {
+                    if let Some(own) = all.get_mut(&app_key) {
                         for state in own.values() {
                             state.pending().retain(|_, call| call.name != name);
                         }
@@ -671,8 +830,8 @@ pub(crate) fn register(
 
     registry
         .command::<ResultArgs>("ai.tools.result")?
-        .handler(|ctx, args| async move {
-            // Exactly one of the value and the failure, whatever the caller claims about the name.
+        .handler(move |ctx, args| async move {
+            // Exactly one of the value and the failure.
             match (&args.result, &args.error) {
                 (Some(_), None) | (None, Some(_)) => {}
                 _ => {
@@ -703,27 +862,31 @@ pub(crate) fn register(
             if state.cancelled() {
                 return Err(closed_call());
             }
-            // The stored binding is checked before the call is consumed: a mismatched name,
-            // an expired deadline or an unknown call never burns the single-use claim.
+            // The tool must still be registered and offered by this application; a result for a
+            // dead tool never burns the single-use claim.
+            if !tools()
+                .get(&(app_key.clone(), args.name.clone()))
+                .is_some_and(|(_, inert)| !*inert)
             {
-                let pending = state.pending();
+                return Err(closed_call());
+            }
+            // Binding and consumption in one guard scope: a mismatched name, an expired deadline
+            // or an unknown call never burns the single-use claim; taking the entry is the claim.
+            {
+                let mut pending = state.pending();
                 let Some(call) = pending.get(&args.call_id) else {
                     return Err(closed_call());
                 };
-                if let Some(provided) = &args.name {
-                    if provided != &call.name {
-                        return Err(closed_call());
-                    }
-                }
-                if call_expired(call.deadline, Instant::now()) {
-                    drop(pending);
-                    state.pending().remove(&args.call_id);
+                if args.name != call.name {
                     return Err(closed_call());
                 }
-            }
-            // Taking the pending call is the single-use claim: the same result never passes twice.
-            if state.pending().remove(&args.call_id).is_none() {
-                return Err(closed_call());
+                if call_expired(call.deadline, Instant::now()) {
+                    pending.remove(&args.call_id);
+                    return Err(closed_call());
+                }
+                if pending.remove(&args.call_id).is_none() {
+                    return Err(closed_call());
+                }
             }
             let payload = match (args.result, args.error) {
                 (Some(value), _) => Ok(value),
@@ -734,8 +897,10 @@ pub(crate) fn register(
                 _ => unreachable!("exactly one of result and error was checked above"),
             };
             // Forwarding to the provider; a full or dropped channel means the chat is over anyway.
-            let _ = results.send(payload).await;
-            Ok(Reply::Json(Value::Null))
+            match results.send(payload).await {
+                Ok(()) => Ok(Reply::Json(Value::Null)),
+                Err(_) => Err(closed_call()),
+            }
         })?;
 
     Ok(())
@@ -744,6 +909,7 @@ pub(crate) fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn a_call_expires_strictly_after_its_deadline_not_at_it() {

@@ -49,7 +49,7 @@ export interface ToolContext {
   signal: AbortSignal;
 }
 
-type ToolHandler = (args: unknown, context: ToolContext) => Promise<unknown>;
+type ToolHandler = (args: unknown, context: ToolContext) => unknown;
 
 interface ToolCallEvent {
   chat: number;
@@ -62,48 +62,54 @@ const NAME = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
 
 // Live handlers by tool name; the `ai.tool_call` subscription opens with the first handle().
 const handlers = new Map<string, { registration: number; run: ToolHandler }>();
-let dispatchUnsubscribe: (() => void) | undefined;
+let dispatchOffs: (() => void)[] | undefined;
 
-// Pending handler controllers by chat id; a chat that ends (or fails) aborts its handlers.
-const pending = new Map<number, Set<AbortController>>();
+// Pending handler entries by chat id; a chat that ends (or fails) aborts its handlers.
+const pending = new Map<number, Set<{ controller: AbortController; registration: number }>>();
 
 /** Aborts every still-running tool handler of `chat` and forgets the chat. */
-function abortChat(chat: number): void {
-  const controllers = pending.get(chat);
+function abortChat(chatId: number): void {
+  const controllers = pending.get(chatId);
   if (!controllers) return;
-  pending.delete(chat);
-  for (const controller of controllers) controller.abort();
+  pending.delete(chatId);
+  for (const item of controllers) item.controller.abort();
 }
 
 /** Registers a chat so its tool handlers can be aborted; the callback unregisters it. */
-function trackChat(chat: number): () => void {
-  if (!pending.has(chat)) pending.set(chat, new Set());
-  return () => abortChat(chat);
+function trackChat(chatId: number): () => void {
+  if (!pending.has(chatId)) pending.set(chatId, new Set());
+  return () => abortChat(chatId);
 }
 
 /** Runs a handler and reports the outcome; neither the call nor a failure ever surfaces here. */
-function report(entry: { run: ToolHandler }, event: ToolCallEvent): void {
+function report(entry: { registration: number; run: ToolHandler }, event: ToolCallEvent): void {
   const controllers = pending.get(event.chat);
   if (!controllers) return; // the chat already ended (or was never tracked): dispatch nothing
   const controller = new AbortController();
-  controllers.add(controller);
+  controllers.add({ controller, registration: entry.registration });
   const context: ToolContext = { callId: event.callId, chat: event.chat, signal: controller.signal };
-  Promise.resolve(entry.run(event.arguments, context)).then(
-    result => call('ai.tools.result', { chat: event.chat, callId: event.callId, name: event.name, result }),
-    () => call('ai.tools.result', { chat: event.chat, callId: event.callId, name: event.name, error: 'the tool handler failed' }),
-  ).catch(error => console.error('Alef: reporting the tool result failed:', error)).finally(() => {
-    controllers.delete(controller);
-  });
+  Promise.resolve()
+    .then(() => entry.run(event.arguments, context))
+    .then(
+      result => call('ai.tools.result', { chat: event.chat, callId: event.callId, name: event.name, result }),
+      () => call('ai.tools.result', { chat: event.chat, callId: event.callId, name: event.name, error: 'the tool handler failed' }),
+    )
+    .catch(error => console.error('Alef: reporting the tool result failed:', error))
+    .finally(() => {
+      for (const item of [...controllers]) {
+        if (item.controller === controller) controllers.delete(item);
+      }
+    });
 }
 
 /** Dispatches one `ai.tool_call` event to its live handler; foreign or malformed events are ignored. */
 function dispatch(payload: unknown): void {
   if (typeof payload !== 'object' || payload === null) return;
-  const { chat, callId, name, arguments: args } = payload as Partial<ToolCallEvent>;
-  if (typeof chat !== 'number' || typeof callId !== 'string' || typeof name !== 'string') return;
+  const { chat: chatId, callId, name, arguments: args } = payload as Partial<ToolCallEvent>;
+  if (typeof chatId !== 'number' || typeof callId !== 'string' || typeof name !== 'string') return;
   const entry = handlers.get(name);
   if (!entry) return;
-  report(entry, { chat, callId, name, arguments: args });
+  report(entry, { chat: chatId, callId, name, arguments: args });
 }
 
 /**
@@ -156,7 +162,9 @@ const ai = {
   chat,
   tools: {
     /**
-     * Handles the tool `name` for every chat of this document. Resolves with the function that
+     * Handles the tool `name` for every chat of this document. The handler may return a plain
+     * value or a promise of one; a synchronous throw is reported as a cleared error, not raised.
+     * Resolves with the function that
      * unregisters the tool (idempotent: a second call resolves without talking to the runtime).
      * An `inert` reply means the runtime serves the call but excludes the tool from the model;
      * the round trip and the unregister are identical, so nothing is special-cased here.
@@ -167,14 +175,32 @@ const ai = {
       }
       const { registration } = await call<{ registration: number; inert: boolean }>('ai.tools.handle', { name });
       handlers.set(name, { registration, run: handler });
-      dispatchUnsubscribe ??= await on<ToolCallEvent>('ai.tool_call', dispatch);
+      if (dispatchOffs === undefined) {
+        dispatchOffs = [
+          await on<ToolCallEvent>('ai.tool_call', dispatch),
+          await on<{ chat: number }>('ai.chat_closed', payload => {
+            if (typeof payload !== 'object' || payload === null) return;
+            const { chat: chatId } = payload as { chat?: unknown };
+            if (typeof chatId === 'number') abortChat(chatId);
+          }),
+        ];
+      }
       return async () => {
-        if (!handlers.get(name)) return; // already unregistered: nothing to do
+        const live = handlers.get(name);
+        if (!live || live.registration !== registration) return; // already unregistered (or replaced): nothing to do
         handlers.delete(name);
         if (handlers.size === 0) {
-          const unsubscribe = dispatchUnsubscribe;
-          dispatchUnsubscribe = undefined;
-          unsubscribe?.();
+          const offs = dispatchOffs;
+          dispatchOffs = undefined;
+          offs?.forEach(off => off());
+        }
+        for (const set of pending.values()) {
+          for (const item of [...set]) {
+            if (item.registration === registration) {
+              item.controller.abort();
+              set.delete(item);
+            }
+          }
         }
         await call('ai.tools.unhandle', { registration });
       };

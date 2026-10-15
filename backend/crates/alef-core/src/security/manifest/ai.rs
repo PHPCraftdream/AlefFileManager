@@ -462,7 +462,7 @@ mod tests {
             );
         }
         for role in ["_smart", "9lives", "a".repeat(65).as_str()] {
-            let err = error(&ai(&[role.as_str()], vec![simple_tool("t")]));
+            let err = error(&ai(&[role], vec![simple_tool("t")]));
             assert_eq!(err.details, Some(json!({"path": "ai.roles[0]"})), "{role}");
         }
         let err = error(&ai(
