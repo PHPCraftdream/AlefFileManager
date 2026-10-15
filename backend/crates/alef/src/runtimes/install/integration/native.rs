@@ -116,7 +116,8 @@ impl Integration for NativeIntegration {
         {
             return Err(invalid("unsafe application identity"));
         }
-        let root = Self::directory()?;
+        // The configured folder may sit behind a system symlink (macOS /var); links below it stay refused.
+        let root = crate::consent::resolve_root(&Self::directory()?);
         #[cfg(target_os = "linux")]
         check_dir(&root)?;
         #[cfg(any(target_os = "macos", windows))]
@@ -167,7 +168,8 @@ impl Integration for NativeIntegration {
         if !crate::install::valid_id(id) {
             return Err(invalid("unsafe application id"));
         }
-        let root = Self::directory()?;
+        // The configured folder may sit behind a system symlink (macOS /var); links below it stay refused.
+        let root = crate::consent::resolve_root(&Self::directory()?);
         if !crate::runtimes::store::is_plain_directory(&root) {
             return match std::fs::symlink_metadata(&root) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
