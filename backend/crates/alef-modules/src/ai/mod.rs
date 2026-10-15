@@ -45,7 +45,7 @@ pub mod provider;
 /// state. Two sessions of one application never share it; a session that is gone leaves its
 /// entries behind only until its resources are torn down.
 fn session_key(session: &Arc<Session>) -> u64 {
-    Arc::as_ptr(session) as usize
+    Arc::as_ptr(session) as usize as u64
 }
 
 /// One live tool registration: an application of one document session and the tool name, to the
@@ -673,6 +673,7 @@ pub(crate) fn register(
             }
         })?;
 
+    let chat_app_key = app_key.clone();
     let chat_provider = provider.clone();
     registry
         .command::<ChatArgs>("ai.chat")?
@@ -682,8 +683,7 @@ pub(crate) fn register(
         .handler(move |ctx, args| {
             let provider = chat_provider.clone();
             let host = host.clone();
-            let app_key = app_key.clone();
-            let app_key = app_key.clone();
+            let app_key = chat_app_key.clone();
             async move {
                 // Nothing at all reaches the provider for a substituted role.
                 if ctx.decision() == Decision::Substitute {
@@ -763,13 +763,13 @@ pub(crate) fn register(
             }
         })?;
 
+    let handle_app_key = app_key.clone();
     registry
         .command::<HandleArgs>("ai.tools.handle")?
         .permission(Permission::AiTool, |args| Some(args.name.clone()))
         .substitutes()
         .handler(move |ctx, args| {
-            let app_key = app_key.clone();
-            let app_key = app_key.clone();
+            let app_key = handle_app_key.clone();
             async move {
                 let inert = ctx.decision() == Decision::Substitute;
                 let session_key = session_key(&ctx.session);
@@ -799,11 +799,11 @@ pub(crate) fn register(
         })?;
 
     // Removing a registration is a plain handle: no right of its own, idempotent either way.
+    let unhandle_app_key = app_key.clone();
     registry
         .command::<UnhandleArgs>("ai.tools.unhandle")?
         .handler(move |ctx, args| {
-            let app_key = app_key.clone();
-            let app_key = app_key.clone();
+            let app_key = unhandle_app_key.clone();
             async move {
                 let session_key = session_key(&ctx.session);
                 let id = ResourceId(args.registration);
@@ -832,11 +832,11 @@ pub(crate) fn register(
             }
         })?;
 
+    let result_app_key = app_key.clone();
     registry
         .command::<ResultArgs>("ai.tools.result")?
         .handler(move |ctx, args| {
-            let app_key = app_key.clone();
-            let app_key = app_key.clone();
+            let app_key = result_app_key.clone();
             async move {
                 // Exactly one of the value and the failure.
                 match (&args.result, &args.error) {
