@@ -868,7 +868,7 @@ mod tests {
             ErrorCode::Busy
         );
         release_tx.send(()).expect("blocker waiting");
-        tokio::time::timeout(LIMIT, blocker)
+        tokio::time::timeout(LIMIT, blocker.result())
             .await
             .expect("blocker exits")
             .expect("blocker joins");

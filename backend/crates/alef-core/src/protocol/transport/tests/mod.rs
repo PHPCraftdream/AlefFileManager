@@ -306,7 +306,7 @@ pub(super) fn fixture_with_parse(config: TransportConfig, parse: BlockingExecuto
     let sessions = Arc::new(SessionManager::new(source, config.limits));
     let transport = Transport::new(config, registry, sessions.clone(), closed_permissions())
         .expect("transport")
-        .with_parse_executor(parse);
+        .with_parse_executor(std::sync::Arc::new(parse));
     Fixture {
         transport: Arc::new(transport),
         sessions,

@@ -736,17 +736,10 @@ pub(crate) mod tests {
                 .await
                 .expect("blocker started")
                 .expect("signal");
-            let scratch = tempfile::tempdir().unwrap();
-            let (package, key) = signed_package("2.0.0", "org.example.app");
-            let mut config = signed_context(scratch.path(), key);
-            verify_bytes(scratch.path(), &config, "2.0.0", &package)
-                .await
-                .unwrap();
-            let fake = Arc::new(FakeApplier::default());
-            config.applier = fake.clone();
-            // A fresh data dir: the sentinel must come from the tested call itself.
             let data = tempfile::tempdir().unwrap();
-            config.data = data.path().to_path_buf();
+            let (_package, key) = signed_package("2.0.0", "org.example.app");
+            let mut config = signed_context(data.path(), key);
+            config.applier = Arc::new(FakeApplier::default());
             let executor = alef_core::session::BlockingExecutor::new(
                 std::num::NonZeroUsize::new(1).expect("non-zero test limit"),
             );

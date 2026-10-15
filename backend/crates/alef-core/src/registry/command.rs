@@ -64,13 +64,14 @@ impl<'r, A: DeserializeOwned + Send + 'static> CommandBuilder<'r, A> {
         Fut: Future<Output = Result<Reply, AlefError>> + Send + 'static,
     {
         let permission = self.permission;
-        let target = self.target;
         let substitutes = self.substitutes;
         let waits = self.waits;
+        let target = Arc::new(self.target);
         let handler = Arc::new(handler);
         let invoke = Arc::new(
             move |ctx: CallContext, value: serde_json::Value| -> super::dispatch::Invocation {
                 let handler = Arc::clone(&handler);
+                let target = Arc::clone(&target);
                 // The permission check is awaited: filesystem scopes resolve off the poll.
                 Box::pin(async move {
                     let args: A = serde_json::from_value(value).map_err(|_| {

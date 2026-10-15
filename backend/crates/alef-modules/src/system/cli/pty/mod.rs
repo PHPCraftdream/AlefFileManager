@@ -131,12 +131,14 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn the_pty_open_yields_to_the_poll_before_its_open_is_admitted() {
+        use std::future::Future;
         use std::num::NonZeroUsize;
         use std::task::Poll;
         let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+        let session = session().await;
         let mut fut = Box::pin(open(
             &executor,
-            &session().await,
+            &session,
             PathBuf::from("unused"),
             Vec::new(),
             std::env::temp_dir(),
@@ -164,6 +166,7 @@ mod tests {
             .build()
             .expect("test runtime");
         runtime.block_on(async {
+            use std::future::Future;
             use std::num::NonZeroUsize;
             use std::sync::mpsc;
             use std::task::Poll;
@@ -188,9 +191,10 @@ mod tests {
             let file =
                 std::env::temp_dir().join(format!("alef-pty-queued-{}.txt", std::process::id()));
             let _ = std::fs::remove_file(&file);
+            let session = session().await;
             let mut fut = Box::pin(open(
                 &executor,
-                &session().await,
+                &session,
                 program,
                 vec![
                     "-NoProfile".to_owned(),

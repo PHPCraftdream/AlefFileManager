@@ -50,16 +50,21 @@ pub struct Transport {
     registry: Registry,
     sessions: Arc<SessionManager>,
     permissions: Arc<PermissionSet>,
-    parse: BlockingExecutor,
+    parse: Arc<BlockingExecutor>,
 }
 
 /// Local request-parse budget: at most four queued or running parses. This is not a global
 /// or per-session framework limit.
-fn parse_executor() -> &'static BlockingExecutor {
-    static PARSE: std::sync::OnceLock<BlockingExecutor> = std::sync::OnceLock::new();
-    PARSE.get_or_init(|| {
-        BlockingExecutor::new(std::num::NonZeroUsize::new(4).expect("non-zero parse budget"))
-    })
+fn parse_executor() -> std::sync::Arc<BlockingExecutor> {
+    static PARSE: std::sync::OnceLock<std::sync::Arc<BlockingExecutor>> =
+        std::sync::OnceLock::new();
+    PARSE
+        .get_or_init(|| {
+            std::sync::Arc::new(BlockingExecutor::new(
+                std::num::NonZeroUsize::new(4).expect("non-zero parse budget"),
+            ))
+        })
+        .clone()
 }
 
 enum Route<'a> {
@@ -103,7 +108,7 @@ impl Transport {
     }
 
     #[cfg(test)]
-    pub(super) fn with_parse_executor(mut self, parse: BlockingExecutor) -> Self {
+    pub(super) fn with_parse_executor(mut self, parse: std::sync::Arc<BlockingExecutor>) -> Self {
         self.parse = parse;
         self
     }

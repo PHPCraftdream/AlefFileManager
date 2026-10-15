@@ -472,6 +472,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn the_run_yields_to_the_poll_before_its_spawn_is_admitted() {
+        use std::future::Future;
         use std::num::NonZeroUsize;
         use std::task::Poll;
         let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
@@ -498,6 +499,7 @@ mod tests {
             .build()
             .expect("test runtime");
         runtime.block_on(async {
+            use std::future::Future;
             use std::num::NonZeroUsize;
             use std::sync::mpsc;
             use std::task::Poll;
@@ -553,6 +555,69 @@ mod tests {
                 !target.exists(),
                 "the queued child ran after its call was dropped"
             );
+            let _ = std::fs::remove_file(&target);
+            drop(blocker);
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_queued_run_that_stays_alive_writes_its_sentinel_once_the_pool_frees() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            use std::future::Future;
+            use std::num::NonZeroUsize;
+            use std::sync::mpsc;
+            use std::task::Poll;
+            // Pool blocker first, as in the dropped-run test.
+            let (block_started_tx, block_started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = mpsc::sync_channel::<()>(1);
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = block_started_tx.send(());
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), block_started_rx)
+                .await
+                .expect("blocker started")
+                .expect("signal");
+            let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+            let target =
+                std::env::temp_dir().join(format!("alef-exec-queued-alive-{}", std::process::id()));
+            let _ = std::fs::remove_file(&target);
+            let spec = Spec {
+                program: command("cmd"),
+                args: vec![
+                    "/c".to_owned(),
+                    format!("type nul > \"{}\"", target.display()),
+                ],
+                cwd: std::env::temp_dir(),
+                env: Vec::new(),
+                body: None,
+                limit: None,
+            };
+            let mut fut = Box::pin(run(&executor, spec));
+            let poll = fut
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+            assert!(matches!(poll, Poll::Pending), "the admitted run queues");
+            release_tx.send(()).expect("blocker waiting");
+            // The queued spawn runs and the run completes: the sentinel appears.
+            let (_, _, code, _) = tokio::time::timeout(std::time::Duration::from_secs(10), fut)
+                .await
+                .expect("run completes")
+                .expect("run succeeds");
+            assert_eq!(code, Some(0));
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !target.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the sentinel appears");
             let _ = std::fs::remove_file(&target);
             drop(blocker);
         });

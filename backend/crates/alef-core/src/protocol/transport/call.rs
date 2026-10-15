@@ -110,7 +110,8 @@ impl Transport {
             .submit(move || unary_args(&media, args_header.as_deref(), body, &limits))
         {
             Ok(job) => match job.result().await {
-                Ok(parsed) => parsed,
+                Ok(Ok(parsed)) => parsed,
+                Ok(Err(error)) => return http::error(&error),
                 Err(error) => return http::error(&error),
             },
             Err(error) => return http::error(&error),
