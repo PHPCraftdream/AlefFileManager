@@ -68,6 +68,8 @@ const DESKTOP_CHECKS = [
   'shell-open-path-does-not-start-a-program', 'shell-a-path-that-is-not-there-is-not-found',
   'clipboard-text-passes-whatever-its-size', 'clipboard-html-passes-and-text-replaces-it',
   'clipboard-image-passes-as-png-and-text-replaces-it', 'clipboard-refuses-what-is-not-an-image-or-not-text',
+  'shell-file-icon-targets-return-valid-png-and-dimensions', 'shell-file-icon-invalid-size-is-rejected',
+  'shell-file-icon-generic-fallback-is-valid-png',
   'notification-is-shown-and-its-text-and-icon-are-checked',
 ];
 

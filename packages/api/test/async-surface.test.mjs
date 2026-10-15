@@ -95,6 +95,7 @@ const ARGS = {
   'shell.openPath': ['/probe'],
   'shell.showInFolder': ['/probe'],
   'shell.trash': ['/probe'],
+  'shell.fileIcon': [{ path: '/probe' }],
   'notification.show': [{ title: 'probe' }],
   'cli.run': ['hello'],
   'cli.start': ['hello'],
@@ -167,6 +168,7 @@ installRuntime({
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/shortcut.register') return { json: { id: 's1:r1', owner: 1, token: 17 } };
     if (request.url === 'native://call/tray.create') return { json: { id: 's1:r2', owner: 1, token: 'tray:1' } };
+    if (request.url === 'native://call/shell.fileIcon') return { json: { png: '', width: 32, height: 32 } };
     if (request.url === 'native://call/window.all') return { json: [] };
     if (request.url === 'native://call/http.request') return { json: { status: 200, statusText: 'OK', url: 'http://127.0.0.1/', redirected: false, headers: [], stream: null } };
     if (request.url === 'native://call/http.download') return { json: { stream: 9 } };
