@@ -1,10 +1,10 @@
-// node --test scripts/release/size.test.mjs: byte counts, summary row and JSON output of size.mjs.
+// node --test scripts/release/tests/size.test.mjs: byte counts, summary row and JSON output of size.mjs.
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { formatSummary, sizeReport, writeJson } from './size.mjs';
+import { formatSummary, sizeReport, writeJson } from '../size.mjs';
 
 test('sizeReport_returns_the_exact_byte_counts_of_both_files', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'alef-size-'));

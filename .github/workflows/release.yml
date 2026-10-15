@@ -53,7 +53,7 @@ jobs:
           fi
       # Чистые unit-тесты планировщика: npm ci не нужен.
       - name: Planner and release unit tests
-        run: node --test scripts/ci/plan.test.mjs scripts/release/plan.test.mjs scripts/release/size.test.mjs scripts/release/installer.test.mjs
+        run: node --test scripts/ci/plan.test.mjs scripts/release/tests/plan.test.mjs scripts/release/tests/size.test.mjs scripts/release/tests/installer.test.mjs
 
   build:
     name: ${{ matrix.name }}
@@ -255,6 +255,10 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: npm ci
         run: npm ci
+      # API-4: dist/ of @alef-runtime/api is a build artifact, not checked in; staging runs through
+      # publish-package.mjs, which executes no lifecycle scripts.
+      - name: Build @alef-runtime/api dist
+        run: node packages/api/build.mjs
       # Действия download-artifact в репозитории нет — качаем через gh run download.
       - name: Download build artifacts
         env:

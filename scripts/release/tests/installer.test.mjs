@@ -1,4 +1,4 @@
-// node --test scripts/release/installer.test.mjs: installer.mjs builders, deb layout,
+// node --test scripts/release/tests/installer.test.mjs: installer.mjs builders, deb layout,
 // darwin staging tree, NSIS text, determinism and the CLI entry point.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import test from 'node:test';
-import { INSTALLER_PLATFORMS, alternativesPriority, buildRuntimeInstaller, isStrictRuntimeVersion } from './installer.mjs';
-import { SUFFIX_BY_CI_NAME } from './plan.mjs';
+import { INSTALLER_PLATFORMS, alternativesPriority, buildRuntimeInstaller, isStrictRuntimeVersion } from '../installer.mjs';
+import { SUFFIX_BY_CI_NAME } from '../plan.mjs';
 
 const RUNTIME = Buffer.from('ALEF-RUNTIME-BYTES-0123456789');
 const V = '1.2.3';
@@ -41,7 +41,7 @@ test('a_strict_version_is_accepted_on_all_four_platforms', () => {
 });
 
 test('every_ci_matrix_platform_is_accepted_by_the_generator', () => {
-  const data = JSON.parse(readFileSync(new URL('../ci/affected.json', import.meta.url), 'utf8'));
+  const data = JSON.parse(readFileSync(new URL('../../ci/affected.json', import.meta.url), 'utf8'));
   for (const p of data.platforms) {
     assert.ok(INSTALLER_PLATFORMS.includes(SUFFIX_BY_CI_NAME[p.name]), p.name);
     assert.doesNotThrow(() => build(SUFFIX_BY_CI_NAME[p.name]), p.name);

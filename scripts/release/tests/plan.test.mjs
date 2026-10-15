@@ -1,4 +1,4 @@
-// node --test scripts/release/plan.test.mjs: the release plan's pure logic, the affected.json data and the release workflow's shape.
+// node --test scripts/release/tests/plan.test.mjs: the release plan's pure logic, the affected.json data and the release workflow's shape.
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { checkVersions, collectPackages, planRelease, platformPackageNames } from './plan.mjs';
-import { copyInto, filesToCopy } from './publish-package.mjs';
+import { checkVersions, collectPackages, planRelease, platformPackageNames } from '../plan.mjs';
+import { copyInto, filesToCopy } from '../publish-package.mjs';
 
 const PLATFORMS = [
   { os: 'windows-latest', name: 'windows-x64', target: 'x86_64-pc-windows-msvc', bin: 'alef.exe' },
@@ -27,7 +27,7 @@ const PACKAGES = [
   { name: 'create-alef-runtime', version: '0.1.0' },
 ];
 
-const data = JSON.parse(readFileSync(new URL('../ci/affected.json', import.meta.url), 'utf8'));
+const data = JSON.parse(readFileSync(new URL('../../ci/affected.json', import.meta.url), 'utf8'));
 
 test('the_versions_of_all_publishable_packages_are_one_consistent_version', () => {
   const result = planRelease({ platforms: PLATFORMS, packages: PACKAGES, tag: 'v0.1.0', real: true });
@@ -87,7 +87,7 @@ test('a_tail_package_missing_from_packages_fails_with_its_name', () => {
   );
 });
 
-const workflowUrl = new URL('../../.github/workflows/release.yml', import.meta.url);
+const workflowUrl = new URL('../../../.github/workflows/release.yml', import.meta.url);
 // Top-level jobs are the two-space-indented keys under `jobs:`; slice out one job's block.
 function jobBlock(yaml, name) {
   const start = yaml.indexOf(`  ${name}:\n`);
@@ -235,7 +235,7 @@ test('the_size_report_step_appends_the_summary_and_writes_the_json_artifact', ()
 });
 
 test('the_dist_profile_strips_and_uses_thin_lto_while_plain_release_stays_untouched', () => {
-  const toml = readFileSync(new URL('../../backend/Cargo.toml', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
+  const toml = readFileSync(new URL('../../../backend/Cargo.toml', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
   // Scoped to the [profile.dist] section only: a regex on the whole file cannot tell which profile a key belongs to.
   const section = (name) => {
     const start = toml.indexOf(`[${name}]`);
@@ -257,6 +257,6 @@ test('the_dist_profile_strips_and_uses_thin_lto_while_plain_release_stays_untouc
 });
 
 test('the_real_packages_all_declare_one_version', () => {
-  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
   assert.equal(checkVersions(collectPackages(root)), '0.1.0');
 });

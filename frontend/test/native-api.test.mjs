@@ -2,15 +2,23 @@
 // The page of the File Manager talks to the framework through frontend/src/native/api.ts: the language in the
 // store, the folder through fs. The runtime is a fake; the page imports @alef-runtime/api as the bundler does.
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
 import { register } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const apiUrl = pathToFileURL(resolve(here, '../../packages/api/src/index.ts')).href;
+const apiDir = resolve(here, '../../packages/api');
+// Every subpath resolves to the source named by the "alef-sources" field, exactly what the bundler alias does.
+const apiEntries = Object.entries(JSON.parse(readFileSync(resolve(apiDir, 'package.json'), 'utf8'))['alef-sources'])
+  .map(([subpath, source]) => [
+    subpath === '.' ? '@alef-runtime/api' : `@alef-runtime/api${subpath.slice(1)}`,
+    pathToFileURL(resolve(apiDir, source)).href,
+  ]);
 register(`data:text/javascript,${encodeURIComponent(`export async function resolve(specifier, context, next) {
-  if (specifier === '@alef-runtime/api') return { url: ${JSON.stringify(apiUrl)}, shortCircuit: true };
+  const mapped = new Map(${JSON.stringify(apiEntries)}).get(specifier);
+  if (mapped) return { url: mapped, shortCircuit: true };
   return next(specifier, context);
 }`)}`);
 
@@ -98,4 +106,32 @@ test('a refusal of the runtime (outside the scope) reaches the page as it is', a
   replies.set('app.args', { json: { raw: [], parsed: {}, positional: [] } });
   replies.set('fs.readDir', { status: 403, json: { code: 'PERMISSION_DENIED', message: 'no', details: { permission: 'fs.read' } } });
   await assert.rejects(nativeApi.listDirectory('/etc'), error => error instanceof AlefError && error.code === 'PERMISSION_DENIED');
+});
+
+test('every_api_specifier_of_the_frontend_is_an_exported_subpath_whose_aliases_target_its_source', () => {
+  const specifiers = new Set();
+  for (const file of readdirSync(resolve(here, '../src'), { recursive: true }).map(String)) {
+    if (!/\.(ts|tsx)$/.test(file)) continue;
+    for (const match of readFileSync(resolve(here, '../src', file), 'utf8').matchAll(/'@alef-runtime\/api([^']*)'/g)) {
+      specifiers.add(match[1] === '' ? '.' : `.${match[1]}`);
+    }
+  }
+  assert.ok(specifiers.size > 0, 'the frontend must import the api by its subpaths');
+  const pkg = JSON.parse(readFileSync(resolve(here, '../../packages/api/package.json'), 'utf8'));
+  for (const subpath of specifiers) {
+    assert.ok(pkg.exports[subpath] !== undefined, `frontend imports "${subpath}", which the package does not export`);
+    assert.match(String(pkg['alef-sources'][subpath] ?? ''), /^\.\/.*\.ts$/, `subpath "${subpath}" must name its monorepo source in "alef-sources"`);
+  }
+  // Each alias must map the specifier to the very file "alef-sources" names, not just to some api file.
+  const aliasLine = /['"](@alef-runtime\/api[^'"]*)['"]\s*:\s*\[?\s*['"]([^'"]+)['"]/g;
+  for (const file of ['../../tsconfig.json', '../../rsbuild.config.ts']) {
+    const listed = new Map();
+    for (const match of readFileSync(resolve(here, file), 'utf8').matchAll(aliasLine)) {
+      const key = match[1] === '@alef-runtime/api' ? '.' : `.${match[1].slice('@alef-runtime/api'.length)}`;
+      listed.set(key, match[2].replaceAll('\\', '/').replace(/^\.\//, ''));
+    }
+    for (const subpath of specifiers) {
+      assert.equal(listed.get(subpath), `packages/api/${pkg['alef-sources'][subpath].slice(2)}`, `"${subpath}" must map to its source in ${file}`);
+    }
+  }
 });

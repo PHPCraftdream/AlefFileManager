@@ -1,4 +1,6 @@
-import { fs, http, path } from '@alef-runtime/api';
+import { fs } from '@alef-runtime/api/fs';
+import { http } from '@alef-runtime/api/http';
+import { path } from '@alef-runtime/api/path';
 
 function describe(error) {
   if (error?.code === 'PERMISSION_DENIED') return 'Permission denied (intentional with the closed starter manifest).';

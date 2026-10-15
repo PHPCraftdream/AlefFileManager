@@ -42,6 +42,8 @@
     { "glob": "backend/crates/alef-modules/src/desktop/shell/context_menu/**", "scenarios": ["context-menu"] },
     { "glob": "backend/crates/alef-modules/src/desktop/**", "scenarios": ["desktop", "menu", "context-menu", "tray", "shortcut"] },
     { "glob": "packages/api/src/desktop/shell.ts", "scenarios": ["desktop", "context-menu"] },
+    { "glob": "packages/api/package.json", "scenarios": ["devflow"] },
+    { "glob": "packages/api/build.mjs", "scenarios": ["devflow"] },
     { "glob": "packages/api/test/modules/desktop/dialog-shell-clipboard.test.mjs", "scenarios": ["desktop"] },
     { "glob": "tests/e2e/apps/modules/desktop/dist/page.js", "scenarios": ["desktop"] },
     { "glob": "tests/e2e/apps/modules/desktop/alef.ktav", "scenarios": ["desktop"] },
