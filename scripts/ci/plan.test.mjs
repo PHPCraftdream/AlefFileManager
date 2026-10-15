@@ -154,7 +154,9 @@ test('a_changed_root_readme_md_is_docs_only_not_an_unknown_path', () => {
 
 test('the_cli_parses_full_false_as_an_affected_plan_not_full', () => {
   const planPath = fileURLToPath(new URL('./plan.mjs', import.meta.url));
-  const out = spawnSync(process.execPath, [planPath, '--full', 'false', '--files', 'backend/crates/alef-core/src/lib.rs'], { encoding: 'utf8' });
+  // The CI environment of a push to main (GITHUB_EVENT_NAME, GITHUB_REF) would make the plan full on its own.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(GITHUB_|INPUT_|COMMIT_MESSAGE$)/.test(name)));
+  const out = spawnSync(process.execPath, [planPath, '--full', 'false', '--files', 'backend/crates/alef-core/src/lib.rs'], { encoding: 'utf8', env });
   assert.equal(JSON.parse(out.stdout.slice(out.stdout.indexOf('{'))).full, false);
 });
 
