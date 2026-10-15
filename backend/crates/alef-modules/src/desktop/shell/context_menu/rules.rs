@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Pure rules for context-menu identifiers and paths.
 use alef_core::{AlefError, ErrorCode};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const UNKNOWN: &str = "unknown menu item id";
 

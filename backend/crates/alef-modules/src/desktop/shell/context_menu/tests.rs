@@ -2,8 +2,8 @@
 use super::*;
 
 #[derive(Debug, Default)]
-struct Fake {
-    calls: Mutex<Vec<String>>,
+pub(super) struct Fake {
+    pub(super) calls: Mutex<Vec<String>>,
 }
 impl ShellBackend for Fake {
     fn open_external(&self, _: &str) -> Result<(), AlefError> {
@@ -46,7 +46,7 @@ fn state(
         backend: Some(Backend::Fallback(shell)),
     }))
 }
-fn permissions(
+pub(super) fn permissions(
     root: &Path,
     menu: bool,
     read: bool,
@@ -282,10 +282,15 @@ async fn table_reserves_capacity_and_close_disables_menu_state() {
     menu.close_now();
     assert!(menu.0.lock().unwrap().closed);
     assert!(menu.0.lock().unwrap().backend.is_none());
+    let root = tempfile::tempdir().unwrap();
     assert_eq!(
-        run(menu, "open", permissions(Path::new("."), true, true, false))
-            .unwrap_err()
-            .code,
+        run(
+            menu.0.clone(),
+            "open",
+            permissions(root.path(), true, true, false)
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::NotFound
     );
 }

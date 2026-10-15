@@ -13,7 +13,7 @@ export const E2E_GROUPS = [
   'induced,dev',
   'consent,narrowing,ask,cancel,decisions',
   'app,quit,relaunch,instance,restore,autostart,deeplink,devflow',
-  'system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands',
+  'system,desktop,menu,context-menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands',
   'fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied',
   'http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp',
   'origin,webcrypto-undeclared,webcrypto-substitute,package,fm-package,updater',

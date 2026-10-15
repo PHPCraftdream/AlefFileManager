@@ -37,6 +37,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     future::Future,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
@@ -144,6 +145,17 @@ fn authorized(
     rules::same_parent(&canonical)?;
     Ok((canonical, substituted))
 }
+
+type MenuOpener = Arc<
+    dyn Fn(
+            &[PathBuf],
+            Arc<dyn ShellBackend>,
+            bool,
+        ) -> Result<(Vec<ContextMenuItem>, Option<Backend>), AlefError>
+        + Send
+        + Sync,
+>;
+
 fn open_items(
     paths: &[PathBuf],
     shell: Arc<dyn ShellBackend>,
@@ -342,81 +354,136 @@ pub(crate) fn register(
     registry: &mut Registry,
     shell: Arc<dyn ShellBackend>,
 ) -> Result<(), AlefError> {
-    let backend = shell.clone();
+    let permission_executor = Arc::new(alef_core::session::executor::BlockingExecutor::new(
+        NonZeroUsize::new(64).unwrap(),
+    ));
+    let work_executor = Arc::new(alef_core::session::executor::BlockingExecutor::new(
+        NonZeroUsize::new(64).unwrap(),
+    ));
+    register_with(
+        registry,
+        shell,
+        Arc::new(open_items),
+        permission_executor,
+        work_executor,
+    )
+}
+
+fn register_with(
+    registry: &mut Registry,
+    shell: Arc<dyn ShellBackend>,
+    opener: MenuOpener,
+    permission_executor: Arc<alef_core::session::executor::BlockingExecutor>,
+    work_executor: Arc<alef_core::session::executor::BlockingExecutor>,
+) -> Result<(), AlefError> {
+    let open_executor = work_executor.clone();
     registry
         .command::<OpenArgs>("shell.contextMenu")?
         .handler(move |ctx, args| {
-            let shell = backend.clone();
-            let transaction = tokio::spawn(async move {
-                let paths = args.paths.clone();
-                let extended = args.extended.unwrap_or(false);
-                let state = Arc::new(Mutex::new(State {
-                    closed: false,
-                    substituted: false,
-                    paths: Vec::new(),
-                    originals: Vec::new(),
-                    items: Vec::new(),
-                    backend: None,
-                }));
-                let resource = MenuResource(state.clone());
-                let handle = ctx.resources().insert(Box::new(resource))?;
-                let result = async {
-                    let ctx2 = ctx.clone();
-                    let (canonical, substituted) =
-                        tokio::task::spawn_blocking(move || authorized(&ctx2, &paths))
-                            .await
-                            .map_err(|e| AlefError::new(ErrorCode::Internal, e.to_string()))??;
-                    let originals = args.paths;
-                    let work_state = state.clone();
-                    tokio::task::spawn_blocking(
-                        move || -> Result<Vec<ContextMenuItem>, AlefError> {
-                            let (items, backend) = if substituted {
-                                (Vec::new(), None)
-                            } else {
-                                open_items(&canonical, shell, extended)?
-                            };
-                            let mut state = work_state.lock().unwrap_or_else(|e| e.into_inner());
-                            if state.closed {
-                                return Err(AlefError::new(
-                                    ErrorCode::Closed,
-                                    "menu closed during creation",
-                                ));
-                            }
-                            state.paths = canonical;
-                            state.originals = originals;
-                            state.items = items.clone();
-                            state.backend = backend;
-                            state.substituted = substituted;
-                            Ok(items)
-                        },
-                    )
-                    .await
-                    .map_err(|e| AlefError::new(ErrorCode::Internal, e.to_string()))?
-                }
-                .await;
-                if result.is_err() {
-                    let _ = ctx.resources().remove(handle);
-                }
-                result.map(|items| Reply::Json(json!({"handle":handle.0,"items":items})))
-            });
+            let opener = opener.clone();
+            let permission_executor = permission_executor.clone();
+            let work_executor = open_executor.clone();
+            let shell = shell.clone();
             async move {
+                let transaction = tokio::spawn(async move {
+                    let paths = args.paths.clone();
+                    let originals = args.paths;
+                    let extended = args.extended.unwrap_or(false);
+                    let state = Arc::new(Mutex::new(State {
+                        closed: false,
+                        substituted: false,
+                        paths: Vec::new(),
+                        originals: Vec::new(),
+                        items: Vec::new(),
+                        backend: None,
+                    }));
+                    let handle = ctx
+                        .resources()
+                        .insert(Box::new(MenuResource(state.clone())))?;
+
+                    // This transaction survives caller cancellation; on success the resource remains session-owned.
+                    let result = async {
+                        let ctx2 = ctx.clone();
+                        let (canonical, substituted) = permission_executor
+                            .submit(move || authorized(&ctx2, &paths))?
+                            .result()
+                            .await??;
+                        let work_state = state.clone();
+                        let session = ctx.session.clone();
+                        let items = work_executor
+                            .submit(move || {
+                                if !session.is_open() {
+                                    return Err(AlefError::new(
+                                        ErrorCode::Closed,
+                                        "session closed during menu creation",
+                                    ));
+                                }
+                                if work_state.lock().unwrap_or_else(|e| e.into_inner()).closed {
+                                    return Err(AlefError::new(
+                                        ErrorCode::Closed,
+                                        "menu closed during creation",
+                                    ));
+                                }
+                                let (items, backend) = if substituted {
+                                    (Vec::new(), None)
+                                } else {
+                                    opener(&canonical, shell, extended)?
+                                };
+                                let mut state =
+                                    work_state.lock().unwrap_or_else(|e| e.into_inner());
+                                if state.closed || !session.is_open() {
+                                    drop(state);
+                                    drop(backend);
+                                    return Err(AlefError::new(
+                                        ErrorCode::Closed,
+                                        "menu closed during creation",
+                                    ));
+                                }
+                                state.paths = canonical;
+                                state.originals = originals;
+                                state.items = items.clone();
+                                state.backend = backend;
+                                state.substituted = substituted;
+                                Ok(items)
+                            })?
+                            .result()
+                            .await??;
+                        if !ctx.session.is_open() {
+                            return Err(AlefError::new(
+                                ErrorCode::Closed,
+                                "session closed during menu creation",
+                            ));
+                        }
+                        Ok(items)
+                    }
+                    .await;
+                    if result.is_err() {
+                        let _ = ctx.resources().remove(handle);
+                    }
+                    result.map(|items| Reply::Json(json!({"handle":handle.0,"items":items})))
+                });
                 transaction
                     .await
                     .map_err(|e| AlefError::new(ErrorCode::Internal, e.to_string()))?
             }
         })?;
+    let invoke_executor = work_executor.clone();
     registry
         .command::<InvokeArgs>("shell.contextMenu.invoke")?
-        .handler(|ctx, args| async move {
-            let menu = ctx
-                .resources()
-                .with_as::<MenuResource, _>(ResourceId(args.handle), Clone::clone)?;
-            let p = ctx.permissions.clone();
-            let g = ctx.grants();
-            tokio::task::spawn_blocking(move || invoke_state(menu.0, args.id, p, g))
-                .await
-                .map_err(|e| AlefError::new(ErrorCode::Internal, e.to_string()))??;
-            Ok(Reply::Json(Value::Null))
+        .handler(move |ctx, args| {
+            let work_executor = invoke_executor.clone();
+            async move {
+                let menu = ctx
+                    .resources()
+                    .with_as::<MenuResource, _>(ResourceId(args.handle), Clone::clone)?;
+                let p = ctx.permissions.clone();
+                let g = ctx.grants();
+                work_executor
+                    .submit(move || invoke_state(menu.0, args.id, p, g))?
+                    .result()
+                    .await??;
+                Ok(Reply::Json(Value::Null))
+            }
         })?;
     registry
         .command::<CloseArgs>("shell.contextMenu.close")?
@@ -434,6 +501,9 @@ pub(crate) fn register(
     Ok(())
 }
 
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod registry_tests;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

@@ -22,6 +22,8 @@ fn policy(webcrypto: bool) -> PermissionSet {
         },
         shell: ShellPermissions {
             open_external: Vec::new(),
+            context_menu: false,
+            context_menu_runas: false,
         },
         clipboard: ClipboardPermissions { read: false },
         shortcut: ShortcutPermissions { global: false },
