@@ -245,7 +245,7 @@ function renderDebControl(fields) {
   for (const key of DEB_CONTROL_KEYS) {
     if (!(key in fields)) continue;
     const value = fields[key];
-    if (typeof value !== 'string' || value === '' || /[\n\r\u0000-\u001f\u007f]/.test(value)) {
+    if (typeof value !== 'string' || value === '' || [...value].some(ch => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f)) {
       throw new Error(`Deb control: invalid field '${key}'`);
     }
   }

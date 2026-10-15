@@ -278,7 +278,7 @@ test('is_strict_runtime_version_mirrors_the_builder_validation', () => {
   assert.equal(isStrictRuntimeVersion('1.2.3\n'), false);
 });
 
-test('cli_writes_the_win32_staging_tree_and_fails_on_bad_versions', t => {
+test('cli_writes_the_win32_staging_tree_and_fails_on_bad_versions', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'alef-installer-'));
   try {
     const binary = path.join(dir, 'alef.exe');
