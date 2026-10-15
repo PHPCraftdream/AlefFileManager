@@ -58,6 +58,8 @@ struct Incoming {
     reason: Arc<Mutex<Option<AlefError>>>,
     /// Flips to true on termination so a write blocked on backpressure wakes up.
     cancel: watch::Sender<bool>,
+    #[cfg(feature = "e2e")]
+    accepted: std::sync::atomic::AtomicUsize,
 }
 impl Incoming {
     fn is_terminal(&self) -> bool {
@@ -65,11 +67,23 @@ impl Incoming {
     }
     /// Terminates once; the reason is stored before the channel closes so the reader always sees it.
     fn terminate(&self, reason: Option<AlefError>) {
+        #[cfg(feature = "e2e")]
+        let end = match &reason {
+            None => "End".to_owned(),
+            Some(e) => format!("Error: {e}"),
+        };
         let mut tx = self.tx.lock().expect("incoming mutex poisoned");
         if tx.is_some() {
             *self.reason.lock().expect("reason mutex poisoned") = reason;
             self.cancel.send_replace(true);
             tx.take();
+            #[cfg(feature = "e2e")]
+            eprintln!(
+                "ALEF_E2E console-incoming id={} accepted={} end={}",
+                self.id.0,
+                self.accepted.load(std::sync::atomic::Ordering::Relaxed),
+                end,
+            );
         }
     }
 }
@@ -172,6 +186,8 @@ impl StreamHub {
             rx: Mutex::new(Some(rx)),
             reason: Arc::new(Mutex::new(None)),
             cancel: watch::channel(false).0,
+            #[cfg(feature = "e2e")]
+            accepted: std::sync::atomic::AtomicUsize::new(0),
         });
         if h.closed {
             i.terminate(Some(closed()));
@@ -197,6 +213,8 @@ impl StreamHub {
             rx: Mutex::new(None),
             reason: Arc::new(Mutex::new(None)),
             cancel: watch::channel(false).0,
+            #[cfg(feature = "e2e")]
+            accepted: std::sync::atomic::AtomicUsize::new(0),
         });
         if h.closed {
             i.terminate(Some(closed()));
@@ -432,10 +450,20 @@ impl IncomingWriter {
             .cloned()
             .ok_or_else(closed)?;
         let mut cancelled = self.i.cancel.subscribe();
+        #[cfg(feature = "e2e")]
+        let len = b.len();
         tokio::select! {
             biased;
             _ = cancelled.wait_for(|c| *c) => Err(closed()),
-            sent = tx.send(b) => sent.map_err(|_| closed()),
+            sent = tx.send(b) => {
+                #[cfg(feature = "e2e")]
+                if sent.is_ok() {
+                    self.i
+                        .accepted
+                        .fetch_add(len, std::sync::atomic::Ordering::Relaxed);
+                }
+                sent.map_err(|_| closed())
+            }
         }
     }
     /// Ends input cleanly.

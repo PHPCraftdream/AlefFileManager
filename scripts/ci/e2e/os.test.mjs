@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { E2E_GROUPS } from './groups.mjs';
+import { E2E_GROUPS, expandGroup } from './groups.mjs';
 
 const script = fileURLToPath(new URL('./os.mjs', import.meta.url));
 const ciYml = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
@@ -24,7 +24,7 @@ test('every_group_scenario_is_known_to_the_runner', () => {
 });
 
 test('the_windows_steps_use_exactly_the_canonical_groups', () => {
-  const steps = [...ciYml.matchAll(/--group "([^"]+)"/g)].map(m => m[1].split(','));
+  const steps = [...ciYml.matchAll(/--group "([^"]+)"/g)].map(m => expandGroup(m[1]).split(','));
   assert.deepEqual(steps, E2E_GROUPS.map(group => group.split(',')));
 });
 
@@ -111,9 +111,9 @@ test('a_failing_group_does_not_stop_the_later_groups_and_the_run_fails', async (
     assert.equal(result.error, undefined);
     assert.equal(result.signal, null);
     assert.equal(result.status, 1, result.stderr);
-    assert.ok(result.stdout.includes('group core: FAIL'), result.stdout);
+    assert.ok(result.stdout.includes('group core,bus: FAIL'), result.stdout);
     assert.ok(result.stdout.includes('group window: PASS'), result.stdout);
-    assert.ok(result.stderr.includes('e2e groups failed: core'), result.stderr);
+    assert.ok(result.stderr.includes('e2e groups failed: core,bus'), result.stderr);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

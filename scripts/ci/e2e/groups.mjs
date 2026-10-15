@@ -4,9 +4,13 @@
 // them through scripts/ci/e2e/os.mjs. The groups are total: every scenario of tests/e2e/run.mjs
 // is in exactly one group; platform-only scenarios stay in a group and skip themselves with a
 // reason. The test keeps the Windows steps and this list identical.
+export function expandGroup(group) {
+  return group === 'core' ? 'core,bus' : group;
+}
+
 export const E2E_GROUPS = [
   'console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest',
-  'core',
+  'core,bus',
   'window',
   'csp',
   'permissions',

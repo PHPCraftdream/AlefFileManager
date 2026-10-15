@@ -23,6 +23,44 @@ export function appDataOf(id) {
 export const exeName = process.platform === 'win32' ? '.exe' : '';
 
 /**
+ * Checks the stall diagnostics of a run against allowances. An allowance matches AT MOST `count`
+ * stalls of its kind in `minMs`-`maxMs` inside the `after`/`before` phase markers; with the
+ * default `required: false` fewer matches are fine, but any matching stall beyond `count` stays
+ * unexpected. `required: true` restores the exact semantics (fewer than `count` is a problem),
+ * used only for the deliberate negative control around `e2e.blockBus`, which must fire.
+ */
+export function busStallProblems(lines, expected = []) {
+  const problems = [];
+  const actual = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (!line.includes('ALEF_BUS_STALL')) continue;
+    const match = /^ALEF_BUS_STALL (\S+) (\d+)$/.exec(line);
+    if (!match) problems.push(`malformed bus stall diagnostic: ${line}`);
+    else actual.push({ kind: match[1], ms: Number(match[2]), index });
+  }
+  const consumed = new Set();
+  for (const allowance of expected) {
+    const { kind, minMs, maxMs, count = 1, after, before, required = false } = allowance;
+    const afterIndex = after === undefined ? -1 : lines.indexOf(after);
+    const beforeIndex = before === undefined ? lines.length : lines.indexOf(before);
+    if ((after !== undefined && afterIndex < 0) || (before !== undefined && beforeIndex < 0) || afterIndex >= beforeIndex) {
+      problems.push(`missing or invalid bus stall phase markers for ${kind}`);
+      continue;
+    }
+    const matches = actual.filter(item => !consumed.has(item.index) && item.kind === kind
+      && item.ms >= minMs && item.ms <= maxMs && item.index > afterIndex && item.index < beforeIndex);
+    const want = required ? count : 0;
+    for (const item of matches.slice(0, count)) consumed.add(item.index);
+    if (matches.length < want) problems.push(`expected ${count} bus stall(s) of ${kind} in ${minMs}-${maxMs}ms; found ${matches.length}`);
+  }
+  for (const item of actual) {
+    if (!consumed.has(item.index)) problems.push(`unexpected bus stall: ${item.kind} ${item.ms}ms`);
+  }
+  return problems;
+}
+
+/**
  * Nobody should have to watch a test: the runtime never shows its windows (`ALEF_E2E_QUIET=1`:
  * geometry, events and the rest are real, visibility and focus are the runtime's own bookkeeping).
  * Linux defaults to a virtual display (`xvfb`) with real windows; `ALEF_E2E_QUIET=1` overrides it.
@@ -31,7 +69,38 @@ export const exeName = process.platform === 'win32' ? '.exe' : '';
 export const quiet = process.env.ALEF_E2E_VISIBLE !== '1'
   && (process.platform !== 'linux' || process.env.ALEF_E2E_QUIET === '1');
 
+let activeScenario = null;
 let transpiled;
+
+/** Runs one scenario with process-scoped stderr stall enforcement. Scenarios must not overlap. */
+export async function runScenario(body) {
+  if (activeScenario) throw new Error('concurrent E2E scenarios are not allowed');
+  const scope = { records: new Set() };
+  activeScenario = scope;
+  const problems = [];
+  let outcome;
+  try {
+    outcome = await body();
+  } catch (error) {
+    problems.push(error?.message ?? String(error));
+  } finally {
+    for (const record of scope.records) {
+      try {
+        if (!record.exit) record.stop();
+        if (!(await record.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
+      } catch (error) {
+        problems.push(`could not close runtime log pipe: ${error?.message ?? error}`);
+      }
+    }
+    for (const record of scope.records) {
+      try { problems.push(...busStallProblems(record.stderrLines, record.expectedBusStalls)); }
+      catch (error) { problems.push(`could not evaluate bus stall diagnostics: ${error?.message ?? error}`); }
+    }
+    activeScenario = null;
+  }
+  return { lines: [], ...(outcome ?? {}), problems: [...(outcome?.problems ?? []), ...problems] };
+}
+
 
 /** Emits @alef-runtime/api as plain ES modules (`src/`, `types/`); done once per run. */
 export function transpileApi() {
@@ -131,11 +200,18 @@ const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '
  * Starts the runtime; its stderr and stdout are kept line by line and can be awaited. `input` (text or bytes)
  * is written to its stdin, which is then closed; without it stdin is closed from the start.
  */
-export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false }) {
+export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false, expectedBusStalls = [], undecidedConsent = false }) {
   assertQuiet(exe);
+  // `undecidedConsent`: no scripted answer at all, so the real consent window opens (an empty
+  // `ALEF_E2E_CONSENT` script would answer nothing and refuse every right without a window).
+  // Every inherited consent override is removed BEFORE the scenario env is merged, so only what the
+  // scenario passes explicitly (e.g. the UI steps and the hold) reaches the child.
+  const childEnv = { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1' };
+  if (undecidedConsent) for (const name of ['ALEF_E2E_CONSENT', 'ALEF_E2E_CONSENT_UI', 'ALEF_E2E_CONSENT_HOLD_MS']) delete childEnv[name];
+  Object.assign(childEnv, quiet ? { ALEF_E2E_QUIET: '1' } : {}, undecidedConsent ? {} : defaultDecisions, env,
+    process.env.ALEF_E2E_VISIBLE === '1' ? { ALEF_E2E_QUIET: '', ALEF_E2E_SOFTWARE: '' } : {});
   const child = spawn(exe, args, {
-    env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env,
-      ...(process.env.ALEF_E2E_VISIBLE === '1' ? { ALEF_E2E_QUIET: '', ALEF_E2E_SOFTWARE: '' } : {}) },
+    env: childEnv,
     stdio: [input === undefined && !interactive ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
   if (input !== undefined || interactive) child.stdin.on('error', () => {});
@@ -145,32 +221,59 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   child.stderr.on('data', chunk => errors.push(Buffer.from(chunk)));
   child.stdout.on('data', chunk => output.push(Buffer.from(chunk)));
   const lines = [];
+  const stderrLines = [];
   const watchers = new Set();
   let exit = null;
   const wake = () => [...watchers].forEach(watcher => watcher());
-  const collect = stream => {
+  const record = (raw, targets) => {
+    const line = raw.trim();
+    if (!line) return;
+    // One split state per stream: a stderr line is recorded once and lands in every
+    // collector (the ordered log and the stall diagnostics) in the same handler.
+    for (const target of targets) target.push(line);
+    if (targets.includes(lines)) {
+      if (verbose) console.log(`    | ${line}`);
+      wake();
+    }
+  };
+  const collect = (stream, targets) => {
     let buffer = '';
     stream.on('data', chunk => {
       buffer += chunk;
       const parts = buffer.split('\n');
       buffer = parts.pop();
-      for (const raw of parts) {
-        const line = raw.trim();
-        if (!line) continue;
-        lines.push(line);
-        if (verbose) console.log(`    | ${line}`);
-      }
-      wake();
+      for (const raw of parts) record(raw, targets);
+    });
+    stream.on('end', () => {
+      if (buffer) record(buffer, targets);
     });
   };
-  collect(child.stderr);
-  collect(child.stdout);
+  collect(child.stderr, [lines, stderrLines]);
+  collect(child.stdout, [lines]);
   child.on('exit', code => {
     exit = { code };
     wake();
   });
   // Every holder of the pipe is gone: a program the runtime started again has finished as well.
   const closed = new Promise(resolvePromise => child.stderr.on('close', resolvePromise));
+  // The stdout pipe is closed only when the runtime and everything holding it are done: reading
+  // `stdout()` before that loses the tail of a large stream (the drain race).
+  const stdoutClosed = new Promise(resolvePromise => child.stdout.on('close', resolvePromise));
+  const processRecord = {
+    stderrLines, expectedBusStalls, stop: () => child.kill(),
+    waitForClosed: ms => new Promise(resolvePromise => {
+      let done = false;
+      const timer = setTimeout(() => { done = true; resolvePromise(false); }, ms);
+      closed.then(() => {
+        if (done) return;
+        clearTimeout(timer);
+        done = true;
+        resolvePromise(true);
+      });
+    }),
+    get exit() { return exit; },
+  };
+  if (activeScenario) activeScenario.records.add(processRecord);
   const waitFor = (predicate, ms, what, { survivesExit = false } = {}) => new Promise((resolvePromise, reject) => {
     const timer = setTimeout(() => {
       watchers.delete(look);
@@ -200,7 +303,20 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
     waitFor,
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
-    waitForClosed: ms => Promise.race([closed.then(() => true), new Promise(resolvePromise => setTimeout(resolvePromise, ms, false))]),
+    waitForClosed: processRecord.waitForClosed,
+    /** Resolves `true` once the stdout pipe is closed, `false` after `ms`: await before `stdout()`. */
+    stdoutDrained: ms => new Promise(resolvePromise => {
+      let done = false;
+      const timer = setTimeout(() => { done = true; resolvePromise(false); }, ms);
+      stdoutClosed.then(() => {
+        if (done) return;
+        clearTimeout(timer);
+        done = true;
+        resolvePromise(true);
+      });
+    }),
+    /** Stall diagnostics from stderr only, for direct startApp users outside runScenario. */
+    busProblems: () => busStallProblems(stderrLines, expectedBusStalls),
     /** Writes to the stdin of an `interactive` run; `endInput` closes it. */
     write: text => child.stdin.write(text),
     endInput: () => child.stdin.end(),
@@ -277,9 +393,9 @@ const missing = (lines, expected) => expected.filter(name => !okNames(lines).has
  * running)` adds scenario-specific checks and may wait for the runtime to exit.
  */
 export function makeDriver({ exe, verbose, timeoutMs }) {
-  return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, judge, appArgs, input }) {
+  return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, expectedBusStalls = [], judge, appArgs, input }) {
     const site = prepareSite(name, app, { replacements, targets });
-    const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose, input });
+    const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose, input, expectedBusStalls });
     const problems = [];
     try {
       await running.waitFor(line => line.includes('ALEF_E2E RESULT'), timeoutMs, 'the verdict of the page');
@@ -295,7 +411,8 @@ export function makeDriver({ exe, verbose, timeoutMs }) {
       problems.push(error.message);
     } finally {
       running.stop();
+      if (!(await running.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
     }
-    return { problems, lines: running.lines, site };
+    return { problems, lines: running.lines, site, expectedBusStalls };
   };
 }

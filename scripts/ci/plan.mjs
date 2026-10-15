@@ -104,7 +104,13 @@ export function e2eFor(files, rules, smoke, full, docsOnly) {
       if (matchGlob(file, rule.glob)) for (const s of rule.scenarios) scenarios.add(s);
     }
   }
-  // harness-level or core-layer changes pull in the whole smoke set
+  const busHit = files.some(f =>
+    matchGlob(f, 'backend/crates/alef-core/**') ||
+    matchGlob(f, 'backend/crates/alef-runtime/src/bridge/**') ||
+    ['tests/e2e/scenarios/startup.mjs', 'tests/e2e/lib.mjs', 'tests/e2e/run.mjs', 'tests/e2e/harness.js'].includes(f) ||
+    matchGlob(f, 'tests/e2e/apps/modules/system/bus/**'));
+  if (busHit) scenarios.add('bus');
+  // harness-level changes pull in the whole smoke set
   const smokeHit = files.some(f =>
     ['tests/e2e/harness.js', 'tests/e2e/lib.mjs', 'tests/e2e/run.mjs', 'tests/e2e/ws-server.mjs'].includes(f) ||
     matchGlob(f, 'tests/e2e/apps/**') ||
