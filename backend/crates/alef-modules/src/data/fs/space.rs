@@ -123,7 +123,7 @@ impl Space {
 impl Space {
     /// The synchronous core of [`Space::place`]: authorize, and resolve the stand-in.
     fn place_sync(
-        shadow: &Path,
+        shadow_root: &Path,
         permissions: &PermissionSet,
         grants: &Grants,
         permission: Permission,
@@ -138,7 +138,7 @@ impl Space {
                 root: None,
             },
             Some(shadow) => {
-                let folder = Path::new(shadow).join(scope_folder(&shadow.scope));
+                let folder = shadow_root.join(scope_folder(&shadow.scope));
                 let root = canonical_root(&folder).unwrap_or(folder);
                 Place {
                     real: root.join(&shadow.inside),
