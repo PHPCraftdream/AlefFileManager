@@ -15,18 +15,19 @@ export type ArgValue = boolean | number | string;
 
 /**
  * One message of the history the application sends; only `user` and `assistant` are allowed.
+ * (A tagged enum buffers its content, so `deny_unknown_fields` says nothing here.)
  */
-export type ChatMessage = { "role": "user", content: string } | { "role": "assistant", content: string };
+export type ChatMessage = { "role": "user", content: string, } | { "role": "assistant", content: string, };
 
 /**
  * What the page asks of `ai.chat`.
  */
-export type ChatOptions = { role: string, messages: Array<ChatMessage>, tools: Array<string> };
+export type ChatOptions = { role: string, messages: Array<ChatMessage>, tools: Array<string>, };
 
 /**
  * One part of a chat as it streams to the page (`ai.chat` iterator).
  */
-export type ChatPart = { "type": "text", text: string } | { "type": "tool_call", id: string, name: string, arguments: unknown } | { "type": "usage", inputTokens: number | null, outputTokens: number | null, cacheReadTokens: number | null, cacheCreationTokens: number | null, estimated: boolean, complete: boolean } | { "type": "end", reason: string };
+export type ChatPart = { "type": "text", text: string, } | { "type": "tool_call", id: string, name: string, arguments: unknown, } | { "type": "usage", inputTokens: number | null, outputTokens: number | null, cacheReadTokens: number | null, cacheCreationTokens: number | null, estimated: boolean, complete: boolean, } | { "type": "end", reason: string, };
 
 /**
  * One entry of `fs.readDir`: the entry itself, a link is not followed.
@@ -93,7 +94,11 @@ export type ParsedArgs = {
 /**
  * A Rush role the application may ask for (`ai.roles`), as the provider describes it.
  */
-export type Role = { id: string, title: string, description: string, capabilities: Array<string> };
+export type Role = { id: string, title: string, description: string,
+  /**
+   * What the role can do (`text`, `tool_calls`, `usage`, `cancel`).
+   */
+  capabilities: Array<string>, };
 
 export type UpdaterCheckReply = { available: boolean, version?: string, notes?: string, runtime?: UpdaterRuntimeRequirement, };
 
