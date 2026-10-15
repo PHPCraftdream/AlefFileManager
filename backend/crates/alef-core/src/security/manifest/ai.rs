@@ -30,6 +30,7 @@ pub struct AiTool {
     /// Non-empty text of at most 512 bytes, shown to the user.
     pub description: String,
     /// Argument schema in the allowed JSON Schema subset.
+    #[ts(type = "unknown")]
     pub schema: Value,
 }
 

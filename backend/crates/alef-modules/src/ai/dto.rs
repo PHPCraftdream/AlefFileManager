@@ -35,6 +35,7 @@ pub enum ChatPart {
     ToolCall {
         id: String,
         name: String,
+        #[ts(type = "unknown")]
         arguments: serde_json::Value,
     },
     #[serde(rename_all = "camelCase")]
