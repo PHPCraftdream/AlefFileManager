@@ -309,3 +309,31 @@ fn the_running_store_package_of_a_valid_record_is_installed() {
         std::fs::canonicalize(&package).unwrap()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_inside_the_app_store_is_still_refused() {
+    use std::os::unix::fs::symlink;
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(home.path().join("apps")).expect("plain store root");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    symlink(
+        elsewhere.path(),
+        home.path().join("apps").join(hash_of("org.example.app")),
+    )
+    .expect("symlinked app directory");
+    let error = resolve_installed_in(home.path(), "org.example.app").expect_err("linked");
+    assert_eq!(error.category, "APP_STORE");
+    assert_eq!(
+        error.detail,
+        "application directory is linked or not a directory"
+    );
+    // Only the configured root is exempt: a linked prefix below a real root stays refused.
+    symlink(elsewhere.path(), home.path().join("apps").join("elsewhere")).expect("second symlink");
+    assert_eq!(
+        crate::install::store::create_checked_dir(&home.path().join("apps").join("elsewhere"))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}

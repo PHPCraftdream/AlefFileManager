@@ -44,16 +44,52 @@ pub const SCRIPT_VARIABLE: &str = "ALEF_E2E_CONSENT";
 
 /// The data folder of the runtime: nothing in it belongs to an application.
 pub fn runtime_home() -> PathBuf {
-    if let Some(home) = std::env::var_os(HOME_VARIABLE)
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
-    {
-        return home;
+    // macOS serves /tmp and /var through system symlinks and the store refuses linked
+    // ancestors, so the configured root is resolved once here; links planted inside the
+    // store stay refused.
+    resolve_root(
+        &std::env::var_os(HOME_VARIABLE)
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute())
+            .unwrap_or_else(|| {
+                dirs::data_local_dir()
+                    .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("alef")
+            }),
+    )
+}
+
+/// Canonicalizes the longest existing ancestor and re-attaches the missing tail, so a configured
+/// root behind a system symlink (macOS `/var` -> `/private/var`) passes the store checks. Only
+/// roots the user configures go through here; links below a root stay refused.
+pub(crate) fn resolve_root(path: &Path) -> PathBuf {
+    if cfg!(not(unix)) {
+        return path.to_owned();
     }
-    dirs::data_local_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("share")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("alef")
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut candidate = path.to_owned();
+    loop {
+        match std::fs::canonicalize(&candidate) {
+            Ok(real) => {
+                let mut resolved = real;
+                for part in tail.iter().rev() {
+                    resolved.push(part);
+                }
+                return resolved;
+            }
+            Err(_) => match (
+                candidate.file_name().map(|name| name.to_owned()),
+                candidate.parent(),
+            ) {
+                (Some(name), Some(parent)) => {
+                    tail.push(name);
+                    candidate = parent.to_owned();
+                }
+                _ => return path.to_owned(),
+            },
+        }
+    }
 }
 
 /// Where the stand-ins of the application keep their content: a folder of the runtime under the
@@ -609,5 +645,47 @@ mod tests {
                 .code,
             ErrorCode::NotFound
         );
+    }
+
+    #[cfg(unix)]
+    mod home_links {
+        use super::*;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+
+        /// A real directory and a symlink to it, both unique to this test.
+        fn linked_root() -> (PathBuf, PathBuf) {
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let target =
+                std::env::temp_dir().join(format!("alef-root-target-{}-{n}", std::process::id()));
+            std::fs::create_dir_all(&target).expect("create target");
+            let link =
+                std::env::temp_dir().join(format!("alef-root-link-{}-{n}", std::process::id()));
+            std::os::unix::fs::symlink(&target, &link).expect("symlink");
+            (target, link)
+        }
+
+        #[test]
+        fn a_symlinked_root_resolves_to_its_target_and_keeps_the_missing_tail() {
+            let (target, link) = linked_root();
+            let real = std::fs::canonicalize(&target).unwrap();
+            assert_eq!(resolve_root(&link), real);
+            assert_eq!(
+                resolve_root(&link.join("alef").join("apps")),
+                real.join("alef").join("apps")
+            );
+            let _ = std::fs::remove_file(&link);
+            let _ = std::fs::remove_dir_all(&target);
+        }
+
+        #[test]
+        fn a_resolved_symlinked_root_passes_the_store_prefix_check_but_the_raw_link_does_not() {
+            let (target, link) = linked_root();
+            assert!(crate::install::store::create_checked_dir(&link.join("apps")).is_err());
+            crate::install::store::create_checked_dir(&resolve_root(&link).join("apps"))
+                .expect("store root under a resolved linked home");
+            let _ = std::fs::remove_file(&link);
+            let _ = std::fs::remove_dir_all(&target);
+        }
     }
 }

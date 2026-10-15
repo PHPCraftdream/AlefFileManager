@@ -12,7 +12,7 @@
     "gen:types": "node scripts/types/gen-types.mjs",
     "check:types": "node scripts/types/gen-types.mjs --check",
     "test:types": "node --test scripts/types/gen-types.test.mjs",
-    "test:ci": "node --test scripts/ci/*.test.mjs",
+    "test:ci": "node --test scripts/ci/*.test.mjs scripts/ci/e2e/*.test.mjs",
     "test:release": "node --test scripts/release/*.test.mjs",
     "test:api": "node --experimental-strip-types --test packages/api/test/*.test.mjs packages/api/test/*/*.test.mjs packages/api/test/*/*/*.test.mjs frontend/test/*.test.mjs",
     "test:mcp": "node --experimental-strip-types --test packages/mcp/test/*.test.mjs",
