@@ -2,6 +2,7 @@
 import { decodeBase64 } from '../core/base64.ts';
 import { AlefError } from '../core/errors.ts';
 import { call } from '../core/transport.ts';
+import type { CallOptions } from '../core/transport.ts';
 import type { Cancelable } from './app.ts';
 
 /** Exactly one target selector is accepted. */
@@ -58,6 +59,23 @@ function validateIconTarget(target: unknown): Record<string, string> {
   return { path: value };
 }
 
+export interface ContextMenuItem {
+  id: string;
+  label: string;
+  enabled: boolean;
+  checked?: boolean;
+  default?: boolean;
+  separator?: boolean;
+  icon?: Uint8Array;
+  submenu?: ContextMenuItem[];
+}
+
+export interface ContextMenu {
+  items: ContextMenuItem[];
+  invoke(id: string): Promise<void>;
+  close(): Promise<void>;
+}
+
 /** Hands addresses and files to the desktop. */
 export const shell = {
   /** Returns a native icon as PNG bytes. Paths must be readable by this document. */
@@ -75,6 +93,24 @@ export const shell = {
       { signal: options.signal },
     );
     return { png: decodeBase64(reply.png), width: reply.width, height: reply.height };
+  },
+
+  /** Gets a session-backed native context menu; the UI is responsible for rendering its items. */
+  contextMenu: async (paths: string[], options: Cancelable & { extended?: boolean } = {}): Promise<ContextMenu> => {
+    const { signal, extended = false } = options;
+    const { handle, items } = await call<{ handle: number; items: ContextMenuItem[] }>(
+      'shell.contextMenu', { paths, extended }, { signal } satisfies CallOptions,
+    );
+    const convert = (item: ContextMenuItem): ContextMenuItem => ({
+      ...item,
+      ...(item.icon === undefined ? {} : { icon: new Uint8Array(item.icon as unknown as number[]) }),
+      ...(item.submenu === undefined ? {} : { submenu: item.submenu.map(convert) }),
+    });
+    return {
+      items: items.map(convert),
+      invoke: id => call<void>('shell.contextMenu.invoke', { handle, id }),
+      close: () => call<void>('shell.contextMenu.close', { handle }),
+    };
   },
 
   /** Opens a web address in the browser; the address must be inside `permissions.shell.openExternal`. */

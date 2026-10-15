@@ -222,7 +222,6 @@ fn random_token() -> io::Result<String> {
 fn startup(error: AlefError) -> io::Error {
     io::Error::other(format!("{}: {}", error.code.as_str(), error.message))
 }
-
 /// A policy that allows nothing: commands without a permission still run.
 fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
     let policy = Permissions {
@@ -240,6 +239,8 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         },
         shell: ShellPermissions {
             open_external: Vec::new(),
+            context_menu: false,
+            context_menu_runas: false,
         },
         clipboard: ClipboardPermissions { read: false },
         shortcut: ShortcutPermissions { global: false },
@@ -268,7 +269,6 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
         .map(Arc::new)
         .map_err(startup)
 }
-
 /// Build the same command table for startup and registry-level tests.
 fn command_registry(
     commands: &Commands,

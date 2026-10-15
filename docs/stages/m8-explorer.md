@@ -52,6 +52,14 @@
 
 ## M8.3 — контекстное меню
 
+`shell.contextMenu(paths, { extended? })` асинхронно возвращает `ContextMenu`: `items` с `id`, `label`, `enabled` и необязательными `checked`, `default`, `separator`, PNG `icon` (`Uint8Array`) и рекурсивным `submenu`; методы `invoke(id)` и `close()` работают с native-сессией. Это ресурс в глобальном лимите `ResourceTable`; UI приложения само отображает элементы, системное popup-окно не рисуется. Проверка путей: все цели должны иметь один и тот же канонический родительский каталог; каждый путь проверяется как `fs.read`.
+
+При объявленном `shell.contextMenu` решение согласия обрабатывается явно: `Allow` разрешает обычную работу, `Substitute` возвращает пустое меню и запрещает `invoke`, а `Deny` (как и отсутствие права в манифесте) возвращает `PermissionDenied`. `contextMenuRunas` по умолчанию выключен; `runas` запрещён до проверки наличия пункта меню и до обращения к backend. Опасные `open`/`open-with` используют те же ограничения, что `openPath`; `trash` требует `fs.write`.
+
+Реализация платформ: Windows использует COM STA с message loop, private canonical-verb map и ленивый `QueryContextMenu` через `WM_INITMENUPOPUP`; HWND равен null, поскольку host не предоставляет native handle. macOS использует `LSCopyApplicationURLsForURL`/`LSOpenFromURLSpec` (отклонение от NSWorkspace document). Linux запускает GIO `all_for_type` на синхронном native thread; не утверждается, что GTK-контекст инициализирован. Проверка полномочий выполняется на общем ограниченном permission executor (ёмкость 64), затем native-работа выполняется на отдельном общем ограниченном executor (ёмкость 64); COM использует собственную STA-очередь ёмкостью 8 и pump. Согласие сохраняется при запуске, поэтому отдельного prompt на вызов нет; полномочия перепроверяются перед исполнением. Принудительный таймаут расширений shell не гарантируется. macOS использует LaunchServices без AppKit UI.
+
+Не реализованы native drawing, DnD verbs и fallback «Send to»; сторонние shell extensions требуют ручной проверки.
+
 ## Приёмка
 
 | Проверка | Как |

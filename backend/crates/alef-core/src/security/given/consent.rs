@@ -74,6 +74,9 @@ impl Right {
     /// `None` for a right that reaches no further than it says. Allowing a risky right takes a
     /// confirmation of its own.
     pub fn risk(&self) -> Option<&'static str> {
+        if self.permission == "shell.contextMenu" {
+            return Some("the system menu of a file can run any program of the computer");
+        }
         let scope = self.scope.as_deref()?;
         match self.permission.as_str() {
             "cli.exec" if scope == "*" => Some("runs any program on this computer"),
@@ -400,6 +403,12 @@ mod tests {
 
     fn right(permission: &str, scope: &str) -> Right {
         Right::scoped(permission, scope)
+    }
+
+    #[test]
+    fn the_context_menu_right_is_risky_whatever_its_shape() {
+        assert!(Right::plain("shell.contextMenu").risk().is_some());
+        assert!(Right::plain("tray").risk().is_none());
     }
 
     #[test]
