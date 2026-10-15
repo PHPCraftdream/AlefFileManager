@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AlefError, Tray, menu as applicationMenu, tray } from '../../src/index.ts';
-import { on } from '../../src/core/events.ts';
-import { barrier, installRuntime, jsonFrame, liveStream } from '../fake-runtime.mjs';
+import { AlefError, Tray, menu as applicationMenu, tray } from '../../../src/index.ts';
+import { on } from '../../../src/core/events.ts';
+import { barrier, installRuntime, jsonFrame, liveStream } from '../../fake-runtime.mjs';
 
 const feed = liveStream();
 const reply = { id: 's31:r8', owner: 31, token: 'tray:17' };

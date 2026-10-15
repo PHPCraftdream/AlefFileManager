@@ -155,6 +155,9 @@ const ARGS = {
   'updater.check': [],
   'updater.download': [],
   'updater.install': [],
+  'ai.roles': [],
+  'ai.chat': [{ role: 'smart', messages: [{ role: 'user', content: 'hi' }] }],
+  'ai.tools.handle': ['toolName', async () => null],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -181,6 +184,12 @@ installRuntime({
     if (request.url === 'native://stream/9') return { chunks: [endFrame()] };
     if (request.url === 'native://call/updater.check') return { json: { available: false } };
     if (request.url === 'native://call/updater.download') return { json: { stream: 61, resource: 62 } };
+    if (request.url === 'native://call/ai.roles') return { json: { roles: [] } };
+    if (request.url === 'native://call/ai.chat') return { json: { chat: 1, stream: 71 } };
+    if (request.url === 'native://stream/71') return { chunks: [endFrame()] };
+    if (request.url === 'native://call/ai.tools.handle') return { json: { registration: 81, inert: false } };
+    if (request.url === 'native://call/ai.tools.unhandle') return { json: null };
+    if (request.url === 'native://call/ai.tools.result') return { json: null };
     if (request.url === 'native://call/updater.install') return { json: null };
     if (request.url === 'native://stream/61') return { chunks: [jsonFrame({ received: 1, total: 1, done: true }), endFrame()] };
     if (request.url === 'native://call/http.serve') return { json: { server: 6, requests: 51, address: { host: '127.0.0.1', port: 5 }, secure: false } };
@@ -231,5 +240,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'updater', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'ai', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'updater', 'websocket', 'window']);
 });

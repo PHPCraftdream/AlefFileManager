@@ -7,6 +7,8 @@ use serde_json::json;
 use super::window::WindowDef;
 use crate::{AlefError, ErrorCode};
 
+mod ai;
+pub use ai::{validate_ai, AiPermissions, AiTool};
 mod assets;
 use assets::{deserialize_assets, field_line};
 mod runtime;
@@ -194,6 +196,10 @@ pub struct Permissions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub window: Option<WindowPermissions>,
+    /// AI roles and application tools (M9); closed by default: denied when the section is absent.
+    #[serde(default, rename = "ai", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ai: Option<AiPermissions>,
 }
 
 /// Value type of a command-line option.
@@ -448,6 +454,9 @@ impl Manifest {
             validate_updater(updater, &manifest.permissions.net.http)?;
         }
         super::command::parse_cli(&manifest.permissions.cli)?;
+        if let Some(ai) = &manifest.permissions.ai {
+            validate_ai(ai)?;
+        }
         if let Some(arguments) = &manifest.arguments {
             validate_arguments(arguments).map_err(|(path, reason)| invalid(&path, reason))?;
         }

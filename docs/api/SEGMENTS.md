@@ -6,7 +6,8 @@
 | --- | --- | --- |
 | `.` | `src/index.ts` | всё сразу: публичная поверхность пакета |
 | `./types` | `types/index.ts` | сгенерированные DTO-типы (только типы) |
-| `./core` | `src/core.ts` | ошибки, handshake, транспорт, события, стримы |
+| `./core` | `src/core/index.ts` | ошибки, handshake, транспорт, события, стримы |
+| `./ai` | `src/system/ai.ts` | `ai`: роли Rush, чат-поток и обработчики инструментов |
 | `./app` | `src/desktop/app.ts` | `app`: жизненный цикл приложения, события |
 | `./window` | `src/desktop/window.ts` | `window`, `nativeWindow`, `screen`, `AppWindow` |
 | `./dialog` | `src/desktop/dialog.ts` | `dialog`: диалоги открытия/сохранения |

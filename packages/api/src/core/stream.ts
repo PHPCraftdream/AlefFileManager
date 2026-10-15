@@ -3,7 +3,7 @@
 // byte of a json or binary frame is credit: the reader acks consumed bytes, the runtime pauses a
 // producer whose window (1 MiB) is used up.
 import { AlefError, errorFromBody, errorFromResponse } from './errors.ts';
-import { session } from './handshake.ts';
+import { session } from './transport.ts';
 import { bearer, call, send } from './transport.ts';
 
 const HEADER = 5;

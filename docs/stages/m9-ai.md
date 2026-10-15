@@ -1,6 +1,6 @@
 # M9 — безопасный мост приложения к AI-ролям Rush
 
-> **Статус: проектный контракт, не реализация.** Этот документ не добавляет API, исполнителя, изоляцию, журнал или защиту в runtime/Rush. Все требования **TARGET** должны быть реализованы и проверены. Наблюдения основаны на статическом чтении, не на запуске.
+> **Статус: контракт + реализация заглушки (M9.2, задача #164).** Контракт ниже реализован в объёме M9.2 — см. раздел 9: манифестная секция `permissions.ai`, команды `ai.roles`/`ai.chat`/`ai.tools.*`, сегмент `@alef-runtime/api/ai` и e2e-сценарий, за трейтом `AiProvider` с заглушечными бэкендами (обычная сборка — `MissingProvider`, e2e — детерминированный `FakeProvider`); реальный транспорт Rush — задача #167. Требования **TARGET**, не упомянутые в разделе 9, остаются нереализованными. Наблюдения основаны на статическом чтении кода.
 
 ## 1. Назначение и границы
 
@@ -213,3 +213,24 @@ M9.1 включает этот проектный документ и одну �
 Полный UI вне CLI не входит в M9. Не цели: выбор транспорта в рамках этой спецификации, изменение хранения credentials Rush, общий provider SDK, произвольные model IDs, личная история, широкий Web API, автономные инструменты, OS-изоляция в этом изменении. Открытыми остаются конкретный аутентифицированный адаптер, OS-механизмы и принципал, сроки хранения журнала, гарантии usage провайдеров и отображение протокольной отмены/credit.
 
 Проверка этого изменения документационная: тесты, сборки, CI и обращения к провайдерам не запускались и не заявляются.
+
+## 9. Статус M9.2 (задача #164)
+
+**Реализовано в M9.2:**
+
+- **Манифест** (`backend/crates/alef-core/src/security/manifest/ai.rs`): секция `permissions.ai { roles, tools[{name, description, schema}] }`, закрыта по умолчанию; права `Permission::AiRole`/`AiTool` со scope `ai.role:<id>` и `ai.tool:<name>`, оба входят в `PermissionSet::rights()` (allow / substitute / deny по M2b). Валидация: имена `[a-zA-Z][a-zA-Z0-9_]{0,63}` (1–64 байта), уникальность в каждом пространстве отдельно, описание 1–512 байт; схема — ограниченное подмножество JSON Schema (ключи `type`/`properties`/`required`/`items`/`enum`/`additionalProperties`/`minimum`/`maximum`/`minLength`/`maxLength`/`minItems`/`maxItems`, 7 типов, глубина ≤ 32, `properties` ≤ 256, массив обязан объявить целый `maxItems` ≤ 4096 ≥ `minItems`, `enum` 1–64 значений, sane-границы, сериализованный размер ≤ 64 KiB, `$ref` и неизвестные ключи запрещены).
+- **Исполнитель** (`backend/crates/alef-modules/src/ai/`): команды `ai.roles`, `ai.chat`, `ai.tools.handle`, `ai.tools.result`, `ai.tools.unhandle`; лимиты §6 — константы в `src/ai/limits.rs` с тестами. Поставщик за трейтом `AiProvider` (`src/ai/provider.rs`): обычная сборка — `MissingProvider` (`NOT_AVAILABLE` для roles и chat), e2e-сборка (cargo feature `e2e`) — детерминированный `FakeProvider` (текст → по одному `tool_call` на запрошенный инструмент с аргументами `{"input":"ping"}` → ожидание ровно одного результата → текст «Saw N tool result(s)» → накопительный usage (estimated/complete) → ровно один `end(completed)`).
+- **Семантика**: исходящий stream с кредитом; break/закрытие потока отменяет чат и обработчики; `context.signal` JS-обработчика срабатывает при закрытии чата/выгрузке/ошибке; повтор, чужой и запоздалый результат отвергаются (`CLOSED`); подмена роли — `NOT_AVAILABLE` без отправки провайдеру; подмена инструмента — регистрация инертна, инструмент исключён из набора; отказ — `PERMISSION_DENIED`; повторная регистрация — `BUSY`; `chat` с инструментом без обработчика — `INVALID_ARGUMENT`. Событие `ai.tool_call` `{chat, callId, name, arguments}` уходит странице независимо от чтения итератора.
+- **JS API** (`packages/api/src/system/ai.ts`, экспорт `./ai` и реэкспорт в корне `.`): `ai.roles()`, `ai.chat(options) → AsyncIterable<ChatPart>`, `ai.tools.handle(name, handler) → Promise<unregister>`; подписка на `ai.tool_call` открывается при первом `handle()`. Результат обработчика (`ai.tools.result`) несёт `name` и, при сбое, очищенное поле `error` без деталей исключения. Сегмент добавлен в segments-тест и async-surface тест; карта сегментов — `docs/api/SEGMENTS.md`.
+- **Реорганизация**: `packages/api/src/core.ts` перенесён в `src/core/index.ts`, `src/core/handshake.ts` слит в `src/core/transport.ts` (лимит 7 записей на каталог; поведение и экспорты не изменились).
+- **e2e**: приложение `tests/e2e/apps/modules/system/ai` (id `org.alef.e2e.modules.ai`), сценарий `ai` (четыре прогона по согласию: allowed / role-denied / role-substituted / tool-denied); проверки `ai-roles-list-the-allowed-role`, `ai-chat-streams-to-a-completed-end`, `ai-tool-round-trip-uses-the-handler-result`, `ai-cancel-by-break-closes-the-chat`, `ai-denied-role-is-permission-denied`, `ai-substituted-role-is-not-available`, `ai-denied-tool-registration-is-permission-denied`; сценарий в группе network/MCP (`scripts/ci/e2e/groups.mjs`, `.github/workflows/ci.yml`), правило в `scripts/ci/affected.json`.
+- **Тесты**: Rust — `backend/crates/alef-modules/tests/modules/ai.rs` (фильтр ролей и скрытие подменённой, PERMISSION_DENIED запрещённой роли, NOT_AVAILABLE подменённой без обращения к провайдеру, поток текст/usage/ровно один completed end, round-trip инструмента с результатом обработчика, отказ повторного/чужого результата, отмена по break, INVALID_ARGUMENT без обработчика, BUSY повторной регистрации и идемпотентный unregister, PERMISSION_DENIED запрещённого и инертная регистрация подменённого инструмента); манифест — тесты в `security/manifest/ai.rs`; лимиты — в `src/ai/limits.rs`; JS — `packages/api/test/modules/ai/ai.test.mjs`.
+
+**Сознательно не сделано в M9.2:**
+
+- #165: окно согласия с текстами роли/инструмента, per-app квоты, пользовательский журнал, доверенное уведомление перед запуском инструмента.
+- #166: threat-model e2e (OS-изоляция, sentinel-credentials).
+- #167: реальный транспорт Rush (`RushAiProvider`), аутентификация, credit-контроль на границе — пока заглушечный `AiProvider`.
+- Реальные коды `QUOTA_EXCEEDED`/`PROVIDER_ERROR` в существующем наборе отсутствуют; использованы `TIMEOUT`/`BUSY`/`CLOSED`/`NOT_AVAILABLE`/`PERMISSION_DENIED`/`INVALID_ARGUMENT`. Per-app дневные квоты и «fail closed» при неизвестной верхней границе токенов не реализованы (§6 остаётся TARGET).
+
+CI для этих правок в этом worktree не запускался.

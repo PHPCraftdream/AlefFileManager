@@ -126,6 +126,22 @@ const CLI_COMMAND_CHECKS = [
   'cli-declared-value-starting-with-a-hyphen-needs-the-double-dash',
 ];
 
+// The ai module (docs/stages/m9-ai.md): the four answers of the user to the rights of the `ai`
+// application — everything allowed, a denied role, a substituted role (`NOT_AVAILABLE`) and a
+// denied tool registration; each run states which checks the page must report.
+const AI_ALLOWED_CHECKS = [
+  'ai-roles-list-the-allowed-role',
+  'ai-chat-streams-to-a-completed-end',
+  'ai-tool-round-trip-uses-the-handler-result',
+  'ai-cancel-by-break-closes-the-chat',
+];
+const AI_MODE_CHECKS = {
+  allowed: AI_ALLOWED_CHECKS,
+  'role-denied': ['ai-denied-role-is-permission-denied'],
+  'role-substituted': ['ai-substituted-role-is-not-available'],
+  'tool-denied': ['ai-denied-tool-registration-is-permission-denied'],
+};
+
 const MENU_VALIDATION_CHECKS = [
   'menu-malformed-trees-are-rejected', 'menu-duplicate-ids-across-the-tree-are-rejected',
   'menu-invalid-accelerators-are-rejected', 'menu-roles-with-custom-ids-are-rejected',
@@ -297,6 +313,27 @@ export function moduleScenarios({ drive, exe, verbose }) {
     shortcut: () => shortcutRun('allowed'),
     'shortcut-denied': () => shortcutRun('denied'),
     'shortcut-substitute': () => shortcutRun('substituted'),
+
+    // The chat with the Rush roles: the FakeProvider answers deterministically, and each consent
+    // mode decides what the page may ask for. The page reports one check per answer of the user.
+    async ai() {
+      const runs = [];
+      const problems = [];
+      for (const [mode, expected] of Object.entries(AI_MODE_CHECKS)) {
+        const decision = mode === 'allowed' ? '*=allow'
+          : mode === 'role-denied' ? 'ai.role:smart=deny;*=allow'
+          : mode === 'role-substituted' ? 'ai.role:smart=substitute;*=allow'
+          : 'ai.tool:summarizeSelection=deny;*=allow';
+        const result = await drive({
+          name: `ai-${mode}`, app: 'modules/system/ai', targets: { mode },
+          env: { ALEF_E2E_CONSENT: decision },
+          expectedChecks: expected,
+        });
+        runs.push(...result.lines);
+        problems.push(...result.problems.map(problem => `${mode}: ${problem}`));
+      }
+      return { problems, lines: runs };
+    },
     app: () => drive({
       name: 'app', app: 'modules/app/basic', targets: { cwd: process.cwd() },
       env: { ALEF_E2E_ENV_ALLOWED: 'yes', ALEF_E2E_ENV_SECRET: 'secret-value-31337' },

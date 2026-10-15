@@ -18,11 +18,17 @@ use alef_core::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod ai;
 pub mod data;
 pub mod desktop;
 pub mod net;
 pub mod system;
 
+pub use ai::dto::{ChatMessage, ChatOptions, ChatPart, Role};
+pub use ai::provider::{
+    AiProvider, ChatControl, ChatEvent, ChatRequest, ChatUsage, FakeProvider, MissingProvider,
+    ToolDef,
+};
 pub use data::secrets::{MemorySecrets, SecretsBackend, SystemSecrets};
 pub use desktop::{
     app::{
@@ -49,6 +55,8 @@ pub struct Backends {
     pub shell: Arc<dyn ShellBackend>,
     pub notification: Arc<dyn NotificationBackend>,
     pub secrets: Arc<dyn SecretsBackend>,
+    /// Where the chats of the `ai` module go; none in a build without a bridge to Rush.
+    pub ai: Arc<dyn AiProvider>,
 }
 
 impl Backends {
@@ -62,6 +70,7 @@ impl Backends {
             shell: Arc::new(SystemShell),
             notification: Arc::new(SystemNotifications::new(application)),
             secrets: Arc::new(SystemSecrets::default()),
+            ai: Arc::new(MissingProvider),
         }
     }
 
@@ -81,6 +90,7 @@ impl Backends {
                 None => PretendNotifications::default(),
             }),
             secrets: Arc::new(MemorySecrets::default()),
+            ai: Arc::new(MissingProvider),
         }
     }
 
@@ -122,6 +132,8 @@ impl Backends {
             backends.autostart = Arc::new(SystemAutostart::default());
             backends.deep_links = Arc::new(SystemDeepLinks::default());
         }
+        // An end-to-end run chats with the deterministic fake; nothing reaches a real model.
+        backends.ai = Arc::new(FakeProvider::default());
         backends
     }
 }
@@ -299,6 +311,7 @@ pub fn register_all(
     desktop::register(registry, host.clone(), context)?;
     data::register(registry, context)?;
     net::register(registry, context)?;
+    ai::register(registry, host.clone(), context)?;
     system::register(registry, host, context)
 }
 

@@ -38,7 +38,7 @@ function isAllowed(from, to) {
   if (under(to, 'types')) return true;
   if (under(to, 'src/core')) return true;
   if (under(from, 'src/core') && dirname(from) === dirname(to)) return true;
-  if (from === `${pkgUrl}/src/index.ts` || from === `${pkgUrl}/src/core.ts`) return true;
+  if (from === `${pkgUrl}/src/index.ts`) return true;
   return EDGES.some(edge => from === `${pkgUrl}/${edge.from}` && to === `${pkgUrl}/${edge.to}`);
 }
 

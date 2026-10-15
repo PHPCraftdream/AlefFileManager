@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./types": "./types/index.ts",
-    "./core": "./src/core.ts",
+    "./core": "./src/core/index.ts",
+    "./ai": "./src/system/ai.ts",
     "./app": "./src/desktop/app.ts",
     "./window": "./src/desktop/window.ts",
     "./dialog": "./src/desktop/dialog.ts",
