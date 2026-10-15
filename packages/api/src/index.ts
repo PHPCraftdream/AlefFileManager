@@ -90,7 +90,8 @@ export { menu, type MenuItem, type MenuKind, type MenuRole } from './desktop/men
 export { dialog } from './desktop/dialog.ts';
 export { shortcut, Shortcut } from './desktop/shortcut.ts';
 export { tray, Tray, type TrayOptions, type TrayEvents } from './desktop/tray.ts';
-export { shell } from './desktop/shell.ts';
+export { shell, type ContextMenu, type ContextMenuItem } from './desktop/shell.ts';
+export type { FileIconOptions, FileIconResult, FileIconSize, FileIconTarget } from './desktop/shell.ts';
 export {
   ChildProcess,
   Pty,

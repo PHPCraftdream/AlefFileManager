@@ -21,6 +21,32 @@ async function sent(command, fn, reply = { json: null }) {
   return { result, request: calls.at(-1), args: runtime.argsOf(calls.at(-1)) };
 }
 
+test('shell.contextMenu exposes recursive items and session operations', async () => {
+  const items = [{ id: 'open', label: 'Open', enabled: true, icon: [1, 2], submenu: [{ id: 'child', label: 'Child', enabled: false, icon: [3, 4] }] }];
+  replies.set('shell.contextMenu', { json: { handle: 63, items } });
+  const before = runtime.calls('shell.contextMenu').length;
+  const menu = await shell.contextMenu(['/home/a'], { extended: true });
+  const request = runtime.calls('shell.contextMenu').at(-1);
+  assert.equal(runtime.calls('shell.contextMenu').length, before + 1);
+  assert.deepEqual(runtime.argsOf(request), { paths: ['/home/a'], extended: true });
+  assert.deepEqual(menu.items[0].icon, new Uint8Array([1, 2]));
+  assert.deepEqual(menu.items[0].submenu, [{ id: 'child', label: 'Child', enabled: false, icon: new Uint8Array([3, 4]) }]);
+  await sent('shell.contextMenu.invoke', () => menu.invoke('open'));
+  assert.deepEqual(runtime.argsOf(runtime.calls('shell.contextMenu.invoke').at(-1)), { handle: 63, id: 'open' });
+  await sent('shell.contextMenu.close', () => menu.close());
+  assert.deepEqual(runtime.argsOf(runtime.calls('shell.contextMenu.close').at(-1)), { handle: 63 });
+  replies.set('shell.contextMenu.invoke', { status: 400, json: { code: 'NOT_FOUND', message: 'missing item' } });
+  await assert.rejects(menu.invoke('missing'), error => error instanceof AlefError && error.code === 'NOT_FOUND');
+  replies.set('shell.contextMenu.close', { status: 400, json: { code: 'NOT_FOUND', message: 'missing session' } });
+  await assert.rejects(menu.close(), error => error instanceof AlefError && error.code === 'NOT_FOUND');
+  await sent('shell.contextMenu', () => shell.contextMenu(['/home/a']), { json: { handle: 64, items: [] } }).then(({ args }) => assert.deepEqual(args, { paths: ['/home/a'], extended: false }));
+});
+
+test('shell.contextMenu forwards native failures', async () => {
+  replies.set('shell.contextMenu', { status: 400, json: { code: 'NOT_FOUND', message: 'missing' } });
+  await assert.rejects(shell.contextMenu(['/missing']), error => error instanceof AlefError && error.code === 'NOT_FOUND');
+});
+
 test('dialog.open and dialog.save carry their options and give back the choice', async () => {
   const options = { title: 'Pick', multiple: true, filters: [{ name: 'Images', extensions: ['png'] }], defaultPath: '/home' };
   const picked = await sent('dialog.open', () => dialog.open(options), { json: ['/a.png', '/b.png'] });
@@ -44,6 +70,55 @@ test('dialog.message and dialog.confirm carry their options', async () => {
   assert.deepEqual(yes.args, options);
   assert.equal(yes.result, true);
   assert.equal((await sent('dialog.confirm', () => dialog.confirm({ message: 'Again?' }), { json: false })).result, false);
+});
+
+test('shell.fileIcon normalizes targets, carries size and decodes PNG bytes', async () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
+  const encoded = btoa(String.fromCharCode(...png));
+  const defaultIcon = await sent('shell.fileIcon', () => shell.fileIcon({ path: '/home/a.png' }), {
+    json: { png: encoded, width: 32, height: 32 },
+  });
+  assert.deepEqual(defaultIcon.args, { target: { path: '/home/a.png' }, size: 32 });
+  assert.deepEqual(defaultIcon.result, { png, width: 32, height: 32 });
+
+  const controller = new AbortController();
+  const extension = await sent('shell.fileIcon', () => shell.fileIcon({ extension: ' .PNG ' }, { size: 64, signal: controller.signal }), {
+    json: { png: encoded, width: 64, height: 64 },
+  });
+  assert.deepEqual(extension.args, { target: { extension: 'png' }, size: 64 });
+  assert.deepEqual(extension.result, { png, width: 64, height: 64 });
+  assert.equal(extension.request.signal, controller.signal);
+  assert.deepEqual((await sent('shell.fileIcon', () => shell.fileIcon({ mime: 'Image/PNG; charset=binary' }), {
+    json: { png: encoded, width: 32, height: 32 },
+  })).args, { target: { mime: 'image/png' }, size: 32 });
+  assert.deepEqual((await sent('shell.fileIcon', () => shell.fileIcon({ kind: 'folder' }), {
+    json: { png: encoded, width: 32, height: 32 },
+  })).args, { target: { kind: 'folder' }, size: 32 });
+  const aborted = new AbortController();
+  aborted.abort();
+  const beforeAbort = runtime.calls('shell.fileIcon').length;
+  await assert.rejects(shell.fileIcon({ path: '/home/a' }, { signal: aborted.signal }), { name: 'AbortError' });
+  assert.equal(runtime.calls('shell.fileIcon').length, beforeAbort);
+});
+
+test('shell.fileIcon rejects invalid targets and sizes asynchronously without calling runtime', async () => {
+  const before = runtime.calls('shell.fileIcon').length;
+  for (const [target, size] of [
+    [null, undefined], [{}, undefined], [{ path: '/a', extension: 'txt' }, undefined],
+    [{ unknown: 'x' }, undefined], [{ extension: '..txt' }, undefined], [{ extension: '   ' }, undefined],
+    [{ extension: 'a'.repeat(65) }, undefined], [{ mime: 'text/plain/extra' }, undefined],
+    [{ kind: 'other' }, undefined], [{ path: '/a\0b' }, undefined], [{ path: '/a' }, 20],
+  ]) {
+    const returned = shell.fileIcon(target, size === undefined ? {} : { size });
+    assert.equal(typeof returned?.then, 'function', 'validation must return a rejected Promise');
+    await assert.rejects(returned, error => error instanceof AlefError && error.code === 'INVALID_ARGUMENT');
+  }
+  assert.equal(runtime.calls('shell.fileIcon').length, before);
+});
+
+test('a denied path icon rejects with AlefError', async () => {
+  replies.set('shell.fileIcon', { status: 403, json: DENIED });
+  await assert.rejects(shell.fileIcon({ path: '/private/file' }), error => error instanceof AlefError && error.code === 'PERMISSION_DENIED');
 });
 
 test('a refusal of a dialog is an AlefError and the signal reaches fetch', async () => {

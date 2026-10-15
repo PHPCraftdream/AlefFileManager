@@ -95,6 +95,8 @@ const ARGS = {
   'shell.openPath': ['/probe'],
   'shell.showInFolder': ['/probe'],
   'shell.trash': ['/probe'],
+  'shell.fileIcon': [{ path: '/probe' }],
+  'shell.contextMenu': [['/probe']],
   'notification.show': [{ title: 'probe' }],
   'cli.run': ['hello'],
   'cli.start': ['hello'],
@@ -122,6 +124,8 @@ const ARGS = {
   'fs.open': ['/probe'],
   'fs.readDirStream': ['/probe'],
   'fs.watch': ['/probe'],
+  'fs.volumes': [],
+  'fs.watchVolumes': [],
   'sqlite.open': ['/probe'],
   'crypto.random': [4],
   'crypto.digest': ['sha-256', 'x'],
@@ -163,10 +167,14 @@ const ARGS = {
 
 installRuntime({
   handler(request) {
+    if (request.url === 'native://call/fs.watchVolumes') return { json: { stream: 99 } };
+    if (request.url === 'native://stream/99') return { chunks: [endFrame()] };
+    if (request.url === 'native://call/fs.volumes') return { json: [] };
     if (request.url === 'native://call/runtime.events.subscribe') return { json: { stream: 5 } };
     if (request.url === 'native://stream/5') return liveStream().reply; // a fresh body per request
     if (request.url === 'native://call/shortcut.register') return { json: { id: 's1:r1', owner: 1, token: 17 } };
     if (request.url === 'native://call/tray.create') return { json: { id: 's1:r2', owner: 1, token: 'tray:1' } };
+    if (request.url === 'native://call/shell.fileIcon') return { json: { png: '', width: 32, height: 32 } };
     if (request.url === 'native://call/window.all') return { json: [] };
     if (request.url === 'native://call/http.request') return { json: { status: 200, statusText: 'OK', url: 'http://127.0.0.1/', redirected: false, headers: [], stream: null } };
     if (request.url === 'native://call/http.download') return { json: { stream: 9 } };
@@ -187,6 +195,7 @@ installRuntime({
     if (request.url === 'native://call/crypto.ed25519Generate') return { json: { privateKey: '', publicKey: '' } };
     if (request.url === 'native://call/secrets.get') return { json: null };
     if (/^native:\/\/call\/(clipboard\.read(Text|Html)|fs\.readFile)$/.test(request.url)) return { bytes: new Uint8Array(0) };
+    if (request.url === 'native://call/shell.contextMenu') return { json: { handle: 63, items: [] } };
     return { json: { revision: 1 } };
   },
 });

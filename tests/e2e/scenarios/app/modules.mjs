@@ -68,6 +68,8 @@ const DESKTOP_CHECKS = [
   'shell-open-path-does-not-start-a-program', 'shell-a-path-that-is-not-there-is-not-found',
   'clipboard-text-passes-whatever-its-size', 'clipboard-html-passes-and-text-replaces-it',
   'clipboard-image-passes-as-png-and-text-replaces-it', 'clipboard-refuses-what-is-not-an-image-or-not-text',
+  'shell-file-icon-targets-return-valid-png-and-dimensions', 'shell-file-icon-invalid-size-is-rejected',
+  'shell-file-icon-generic-fallback-is-valid-png',
   'notification-is-shown-and-its-text-and-icon-are-checked',
 ];
 
@@ -216,7 +218,39 @@ export function moduleScenarios({ drive, exe, verbose }) {
     return { problems, lines: running.lines, site };
   }
 
+  const contextMenuRun = async mode => {
+    const directory = mkdtempSync(join(scratch, 'context-menu-'));
+    const note = join(directory, 'note.txt');
+    writeFileSync(note, 'context menu note\n');
+    const pathScope = directory.replaceAll('\\', '/');
+    try {
+      const result = await drive({
+      name: `context-menu-${mode}`, app: 'modules/desktop/menu/context-menu',
+      replacements: { ID: `org.alef.e2e.context-menu.${mode}`, RIGHT: mode === 'undeclared' ? 'false' : 'true', SCOPE: pathScope },
+      targets: { note, platform: process.platform, mode },
+      env: {
+        ALEF_HOME: join(scratch, `context-menu-home-${mode}`),
+        ALEF_APP_HOME: join(scratch, `context-menu-app-home-${mode}`),
+        ALEF_E2E_CONSENT: `shell.contextMenu=${mode === 'substituted' ? 'substitute' : 'allow'};fs.read:${pathScope}/**=allow;*=allow`,
+      },
+      expectedChecks: [`context-menu-${mode === 'allowed' ? 'allowed-lists-and-safely-refuses' : mode === 'substituted' ? 'substitute-lists-no-items-and-refuses-invoke' : 'undeclared-right-is-refused'}`],
+    });
+      return result;
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
   return {
+    'context-menu': async () => {
+      const runs = [];
+      const problems = [];
+      for (const mode of ['allowed', 'substituted', 'undeclared']) {
+        const result = await contextMenuRun(mode);
+        runs.push(...result.lines);
+        problems.push(...result.problems.map(problem => `${mode}: ${problem}`));
+      }
+      return { problems, lines: runs };
+    },
     menu: () => drive({
       name: 'menu', app: 'modules/desktop/menu', targets: { platform: process.platform },
       expectedChecks: [

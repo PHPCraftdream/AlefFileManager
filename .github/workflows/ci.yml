@@ -153,6 +153,8 @@ jobs:
             clang libclang-dev cmake ninja-build pkg-config \
             build-essential python3 curl git \
             libfontconfig1-dev libfreetype-dev \
+            libglib2.0-dev \
+            libgdk-pixbuf-2.0-dev \
             libx11-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libwayland-dev libegl1-mesa-dev libgl1-mesa-dev \
             libx11-6 libxcb1 libxcursor1 libxrandr2 libxi6 \
@@ -366,7 +368,7 @@ jobs:
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "system,desktop,menu,context-menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, data: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'

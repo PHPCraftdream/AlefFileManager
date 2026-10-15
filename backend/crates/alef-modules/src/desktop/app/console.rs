@@ -92,22 +92,32 @@ impl Console {
         #[cfg(feature = "e2e")]
         let task_count = tasks.len();
         #[cfg(feature = "e2e")]
-        let started = std::time::Instant::now();
+        let ids: Vec<String> = tasks
+            .iter()
+            .map(|task| task.id().to_string())
+            .collect();
         #[cfg(feature = "e2e")]
+        let started = std::time::Instant::now();
+        #[cfg_attr(not(feature = "e2e"), allow(unused_mut))]
+        let mut done: Vec<&'static str> = Vec::new();
+        #[cfg_attr(not(feature = "e2e"), allow(unused_variables))]
         let timed_out = tokio::time::timeout(DRAIN, async {
             for task in tasks {
-                let _ = task.await;
+                let result = task.await;
+                #[cfg(feature = "e2e")]
+                done.push(match result {
+                    Ok(()) => "ok",
+                    Err(error) if error.is_cancelled() => "cancelled",
+                    Err(_) => "panicked",
+                });
+                #[cfg(not(feature = "e2e"))]
+                let _ = result;
             }
         })
         .await
         .is_err();
         #[cfg(not(feature = "e2e"))]
-        let _ = tokio::time::timeout(DRAIN, async {
-            for task in tasks {
-                let _ = task.await;
-            }
-        })
-        .await;
+        let _ = done;
         #[cfg(feature = "e2e")]
         let mut flush_ok = true;
         for stream in [&self.0.stdout, &self.0.stderr] {
@@ -121,8 +131,10 @@ impl Console {
         }
         #[cfg(feature = "e2e")]
         eprintln!(
-            "ALEF_E2E console-drain tasks={} timed_out={} elapsed_ms={} flush={}",
+            "ALEF_E2E console-drain tasks={} ids={:?} done={:?} timed_out={} elapsed_ms={} flush={}",
             task_count,
+            ids,
+            done,
             timed_out,
             started.elapsed().as_millis(),
             if flush_ok { "ok" } else { "err" },
@@ -160,6 +172,8 @@ async fn read_pump(mut input: Input, writer: alef_core::session::streams::Stream
 /// (a pipe the reader closed) the stream of the page is closed, and its next write fails.
 async fn write_pump(mut reader: IncomingReader, output: Arc<AsyncMutex<Output>>) {
     #[cfg(feature = "e2e")]
+    eprintln!("ALEF_E2E console-write-pump-start id={}", reader.id().0);
+    #[cfg(feature = "e2e")]
     let mut received = 0_u64;
     #[cfg(feature = "e2e")]
     let mut written = 0_u64;
@@ -184,6 +198,10 @@ async fn write_pump(mut reader: IncomingReader, output: Arc<AsyncMutex<Output>>)
                     );
                     return;
                 }
+                #[cfg(feature = "e2e")]
+                {
+                    written += bytes.len() as u64;
+                }
                 let flushed = output.flush().await;
                 if flushed.is_err() {
                     #[cfg(feature = "e2e")]
@@ -196,10 +214,6 @@ async fn write_pump(mut reader: IncomingReader, output: Arc<AsyncMutex<Output>>)
                         flushed.unwrap_err(),
                     );
                     return;
-                }
-                #[cfg(feature = "e2e")]
-                {
-                    written += bytes.len() as u64;
                 }
             }
             Some(Err(_)) => {
@@ -279,7 +293,14 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
                 let (reader, stream) = ctx.streams().open_incoming_reader();
                 let mut writing = console.0.writing.lock().unwrap_or_else(|e| e.into_inner());
                 writing.retain(|task| !task.is_finished());
-                writing.push(tokio::spawn(write_pump(reader, output)));
+                let task = tokio::spawn(write_pump(reader, output));
+                #[cfg(feature = "e2e")]
+                eprintln!(
+                    "ALEF_E2E console-write-pump-spawn stream={} task={}",
+                    stream.0,
+                    task.id()
+                );
+                writing.push(task);
                 json(&json!({ "stream": stream.0 }))
             }
         })?;

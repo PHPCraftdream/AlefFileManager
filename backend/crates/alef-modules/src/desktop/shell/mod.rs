@@ -5,7 +5,18 @@
 //! executable, a script, a shortcut, an application bundle) is refused by its extension against a
 //! list, otherwise "read and open" would be a way around `cli.exec`. The list is a floor: an
 //! extension the user has bound to an interpreter of their own is not known to it.
+pub mod context_menu;
 pub mod dialog;
+pub mod icon;
+#[cfg(all(unix, not(target_os = "macos")))]
+#[path = "icon/linux.rs"]
+mod icon_linux;
+#[cfg(target_os = "macos")]
+#[path = "icon/macos.rs"]
+mod icon_macos;
+#[cfg(windows)]
+#[path = "icon/windows.rs"]
+mod icon_windows;
 #[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::{
@@ -340,8 +351,9 @@ pub(crate) fn register(
     registry: &mut Registry,
     backend: Arc<dyn ShellBackend>,
 ) -> Result<(), AlefError> {
+    icon::register(registry)?;
     let pair = Arc::new(Pair {
-        real: backend,
+        real: backend.clone(),
         stand_in: Arc::new(PretendShell::default()),
     });
     let this = pair.clone();
@@ -414,5 +426,6 @@ pub(crate) fn register(
                 blocking(&backend, move |b| b.trash(&path)).await?;
                 Ok(Reply::Json(serde_json::Value::Null))
             }
-        })
+        })?;
+    context_menu::register(registry, backend)
 }

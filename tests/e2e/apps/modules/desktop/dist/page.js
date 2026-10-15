@@ -5,6 +5,7 @@ import { api, guard, rejection, same, suite, verdict } from './harness.js';
 
 // A 2x2 RGBA PNG; the first pixel is opaque red.
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAF0lEQVR4nGP4z8DwHwwZGP7/5xKRawAAQPIGtwHS64IAAAAASUVORK5CYII=';
+const GENERIC_ICON = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAANUlEQVR4nO3OMREAMAwDsUAz9DBrryjcQcP/rElyms3b7lYCAAAAAAAAAAAAAAAAAPgH0OwCI8hCtZW22LMAAAAASUVORK5CYII=';
 const pngBytes = Uint8Array.from(atob(PNG), char => char.charCodeAt(0));
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -21,7 +22,11 @@ const expectCode = async (what, promise, code) => {
 };
 
 const dimensions = png => {
+  if (png.length < 24) throw new Error(`PNG header is truncated (${png.length} bytes)`);
   const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
+  if (view.getUint32(8) !== 13 || String.fromCharCode(...png.subarray(12, 16)) !== 'IHDR') {
+    throw new Error('PNG does not begin with a valid IHDR chunk');
+  }
   return [view.getUint32(16), view.getUint32(20)];
 };
 
@@ -132,6 +137,49 @@ async function main() {
     expectEqual('the clipboard is as it was', await clipboard.readText(), 'kept');
     await expectCode('bytes that are not text', api.call('clipboard.writeText', null, { body: new Uint8Array([0x66, 0xff, 0xfe]) }), 'INVALID_ARGUMENT');
     await expectCode('no body', api.call('clipboard.writeText', null), 'INVALID_ARGUMENT');
+  });
+
+  await check('shell-file-icon-targets-return-valid-png-and-dimensions', async () => {
+    const icons = [];
+    const folder = await shell.fileIcon({ path: t.folder }, { size: 32 });
+    icons.push(folder);
+    if (!folder.png || !same(Array.from(folder.png.subarray(0, 8)), SIGNATURE)) throw new Error('folder icon is not a PNG');
+    expectEqual('folder dimensions', dimensions(folder.png), [folder.width, folder.height]);
+    const file = await shell.fileIcon({ path: t.chosen }, { size: 32 });
+    icons.push(file);
+    if (!file.png || !same(Array.from(file.png.subarray(0, 8)), SIGNATURE)) throw new Error('file icon is not a PNG');
+    expectEqual('file dimensions', dimensions(file.png), [file.width, file.height]);
+    const extension = await shell.fileIcon({ extension: '.TXT' }, { size: 48 });
+    icons.push(extension);
+    if (!same(Array.from(extension.png.subarray(0, 8)), SIGNATURE)) throw new Error('extension icon is not a PNG');
+    expectEqual('extension dimensions', dimensions(extension.png), [extension.width, extension.height]);
+    const mime = await shell.fileIcon({ mime: 'image/png' }, { size: 32 });
+    icons.push(mime);
+    if (!same(Array.from(mime.png.subarray(0, 8)), SIGNATURE)) throw new Error('MIME icon is not a PNG');
+    expectEqual('MIME dimensions', dimensions(mime.png), [mime.width, mime.height]);
+    for (const kind of ['folder', 'file', 'drive']) {
+      const icon = await shell.fileIcon({ kind }, { size: 32 });
+      icons.push(icon);
+      if (!same(Array.from(icon.png.subarray(0, 8)), SIGNATURE)) throw new Error(`${kind} icon is not a PNG`);
+      expectEqual(`${kind} dimensions`, dimensions(icon.png), [icon.width, icon.height]);
+    }
+    for (const icon of icons) {
+      if (![16, 24, 32, 48, 64, 128, 256].includes(icon.width) || ![16, 24, 32, 48, 64, 128, 256].includes(icon.height)) {
+        throw new Error(`unexpected dimensions ${icon.width}x${icon.height}`);
+      }
+    }
+  });
+  await check('shell-file-icon-invalid-size-is-rejected', async () => {
+    await expectCode('unsupported icon size', api.call('shell.fileIcon', { target: { kind: 'folder' }, size: 17 }), 'INVALID_ARGUMENT');
+    await expectCode('path outside the granted filesystem scope', shell.fileIcon({ path: t.outside }), 'PERMISSION_DENIED');
+  });
+  await check('shell-file-icon-generic-fallback-is-valid-png', async () => {
+    const icon = await shell.fileIcon({ mime: 'application/x-alef-unknown' }, { size: 32 });
+    if (!same(Array.from(icon.png.subarray(0, 8)), SIGNATURE)) throw new Error('generic fallback is not a PNG');
+    expectEqual('fallback dimensions', dimensions(icon.png), [icon.width, icon.height]);
+    const bundled = Uint8Array.from(atob(GENERIC_ICON), char => char.charCodeAt(0));
+    if (same(icon.png, bundled)) return 'bundled generic fallback verified';
+    return `native platform supplied a distinct valid fallback (${icon.width}x${icon.height})`;
   });
 
   await check('notification-is-shown-and-its-text-and-icon-are-checked', async () => {

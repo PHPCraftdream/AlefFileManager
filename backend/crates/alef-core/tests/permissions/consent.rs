@@ -694,3 +694,88 @@ fn the_user_can_substitute_the_webcrypto_of_the_engine_or_refuse_it() {
     let err = check(&denied, Permission::WebCrypto, None).unwrap_err();
     assert_eq!(err.code, ErrorCode::PermissionDenied);
 }
+
+#[test]
+fn a_context_menu_right_is_asked_decided_and_checked_like_a_plain_right() {
+    use alef_core::security::grants::Grants;
+    let root = tempfile::tempdir().unwrap();
+    let asked = set(
+        root.path(),
+        json!({"shell": {"openExternal": [], "contextMenu": true}}),
+    );
+    assert!(asked.rights().contains(&Right::plain("shell.contextMenu")));
+    assert_eq!(
+        asked
+            .check(Permission::ShellContextMenu, None, &Grants::default())
+            .unwrap(),
+        Decision::Allow,
+        "an undecided consent defaults to allow"
+    );
+    assert_eq!(
+        asked
+            .clone()
+            .with_consent(consent(&[(
+                Right::plain("shell.contextMenu"),
+                Decision::Allow
+            )]))
+            .check(Permission::ShellContextMenu, None, &Grants::default())
+            .unwrap(),
+        Decision::Allow
+    );
+    assert_eq!(
+        asked
+            .clone()
+            .with_consent(consent(&[(
+                Right::plain("shell.contextMenu"),
+                Decision::Substitute
+            )]))
+            .check(Permission::ShellContextMenu, None, &Grants::default())
+            .unwrap(),
+        Decision::Substitute
+    );
+    assert_eq!(
+        asked
+            .with_consent(consent(&[(
+                Right::plain("shell.contextMenu"),
+                Decision::Deny
+            )]))
+            .check(Permission::ShellContextMenu, None, &Grants::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    let explicit_false = set(
+        root.path(),
+        json!({"shell": {"openExternal": [], "contextMenu": false}}),
+    );
+    assert!(!explicit_false
+        .rights()
+        .contains(&Right::plain("shell.contextMenu")));
+    assert_eq!(
+        explicit_false
+            .check(Permission::ShellContextMenu, None, &Grants::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::PermissionDenied
+    );
+    let runas_default = set(root.path(), json!({"shell": {"openExternal": []}}));
+    assert!(!runas_default
+        .rights()
+        .contains(&Right::plain("shell.contextMenu.runas")));
+    let runas = set(
+        root.path(),
+        json!({"shell": {"openExternal": [], "contextMenuRunas": true}}),
+    );
+    assert!(runas.context_menu_runas());
+    assert!(!runas
+        .rights()
+        .contains(&Right::plain("shell.contextMenu.runas")));
+    assert!(!runas_default.context_menu_runas());
+    assert!(!runas_default
+        .rights()
+        .contains(&Right::plain("shell.contextMenu")));
+    let err = runas_default
+        .check(Permission::ShellContextMenu, None, &Grants::default())
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+}

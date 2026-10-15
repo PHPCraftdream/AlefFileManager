@@ -50,6 +50,8 @@ pub enum Permission {
     Tray,
     /// Use the secret store (`secrets`).
     Secrets,
+    /// Invoke items of the system context menu (`shell.contextMenu`).
+    ShellContextMenu,
     /// Use the WebCrypto of the engine (`webcrypto`).
     WebCrypto,
     /// Read an environment variable listed in `app.env`.
@@ -78,6 +80,7 @@ impl Permission {
             Self::ShortcutGlobal => "shortcut.global",
             Self::Tray => "tray",
             Self::Secrets => "secrets",
+            Self::ShellContextMenu => "shell.contextMenu",
             Self::WebCrypto => "webcrypto",
             Self::AppEnv => "app.env",
             Self::AppDeepLinks => "app.deepLinks",
@@ -177,6 +180,10 @@ pub struct PermissionSet {
     clipboard: bool,
     shortcut: bool,
     tray: bool,
+    /// Invoke items of the system context menu (`shell.contextMenu`).
+    context_menu: bool,
+    /// Whether a `runas` (elevating) item may be invoked (`permissions.shell.contextMenuRunas`).
+    context_menu_runas: bool,
     secrets: bool,
     webcrypto: bool,
     deep_links: Vec<String>,
@@ -302,6 +309,8 @@ impl PermissionSet {
             clipboard: policy.clipboard.read,
             shortcut: policy.shortcut.global,
             tray: policy.tray,
+            context_menu: policy.shell.context_menu,
+            context_menu_runas: policy.shell.context_menu_runas,
             secrets: policy.secrets,
             webcrypto: policy.webcrypto,
             deep_links: Vec::new(),
@@ -340,6 +349,11 @@ impl PermissionSet {
             components.len() >= folder.len()
                 && folder.iter().zip(components).all(|(a, b)| same(a, b))
         })
+    }
+
+    /// Whether the manifest allows elevating (`runas`) items of the context menu.
+    pub fn context_menu_runas(&self) -> bool {
+        self.context_menu_runas
     }
 
     fn decided_by_user(&self) -> RwLockReadGuard<'_, Consent> {
@@ -397,6 +411,7 @@ impl PermissionSet {
             (self.clipboard, "clipboard.read"),
             (self.shortcut, "shortcut.global"),
             (self.tray, "tray"),
+            (self.context_menu, "shell.contextMenu"),
             (self.secrets, "secrets"),
             (self.webcrypto, "webcrypto"),
             (self.autostart, "app.autostart"),
@@ -458,6 +473,7 @@ impl PermissionSet {
             Permission::ClipboardRead => flag(self.clipboard, "clipboard.read"),
             Permission::ShortcutGlobal => flag(self.shortcut, "shortcut.global"),
             Permission::Tray => flag(self.tray, "tray"),
+            Permission::ShellContextMenu => flag(self.context_menu, "shell.contextMenu"),
             Permission::Secrets => flag(self.secrets, "secrets"),
             Permission::WebCrypto => flag(self.webcrypto, "webcrypto"),
             Permission::AppDeepLinks => target

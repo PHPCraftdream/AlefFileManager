@@ -59,6 +59,8 @@ pub enum WatchKind {
     Rename,
     /// Events were lost: look at the folder again.
     Overflow,
+    /// Metadata changed: permissions, times or attributes; not the content.
+    Attrib,
 }
 
 /// One frame of the stream of `fs.watch`.
@@ -72,4 +74,63 @@ pub struct WatchEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub to: Option<String>,
+}
+
+/// What kind of volume a mount is, as far as the system tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "modules.ts")]
+pub enum VolumeKind {
+    Fixed,
+    Removable,
+    Network,
+    Optical,
+    Ram,
+    Unknown,
+}
+
+/// One mounted volume, as far as the system tells about it.
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "modules.ts")]
+pub struct Volume {
+    /// The mount point, as the platform spells it.
+    pub root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub label: Option<String>,
+    pub kind: VolumeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_system: Option<String>,
+    /// Bytes of the whole volume.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub total: Option<u64>,
+    /// Bytes still free for the user of this process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub free: Option<u64>,
+    pub read_only: bool,
+}
+
+/// What happened to the volumes of the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "modules.ts")]
+pub enum VolumeEventKind {
+    Mount,
+    Unmount,
+    Change,
+}
+
+/// One frame of the stream of `fs.watchVolumes`.
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "modules.ts")]
+pub struct VolumeEvent {
+    pub r#type: VolumeEventKind,
+    pub volume: Volume,
 }
