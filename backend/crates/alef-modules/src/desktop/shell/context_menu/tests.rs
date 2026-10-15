@@ -81,6 +81,14 @@ pub(super) fn permissions(
     let manifest: Permissions = serde_json::from_value(value).unwrap();
     Arc::new(PermissionSet::from_manifest(&manifest, &vars).unwrap())
 }
+/// The physical path as the permission layer resolves it (no `\\?\` prefix).
+fn resolved(path: &Path) -> PathBuf {
+    let real = path.canonicalize().unwrap();
+    match real.to_string_lossy().strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => real,
+    }
+}
 fn run(
     state: Arc<Mutex<State>>,
     id: &str,
@@ -190,9 +198,9 @@ async fn invocation_refuses_dangerous_open_before_any_backend_call_and_allows_re
     let bat = root.path().join("script.bat");
     std::fs::write(&txt, b"").unwrap();
     std::fs::write(&bat, b"").unwrap();
-    // Menu state holds authorized (resolved) paths; macOS temp lives behind /var -> /private/var.
-    #[cfg(unix)]
-    let (txt, bat) = (txt.canonicalize().unwrap(), bat.canonicalize().unwrap());
+    // Menu state holds authorized (resolved) paths: macOS temp lives behind /var -> /private/var,
+    // Windows temp may be an 8.3 short name.
+    let (txt, bat) = (resolved(&txt), resolved(&bat));
     let fake = Arc::new(Fake::default());
     let p = permissions(txt.parent().unwrap(), true, true, true);
     let menu = state(
