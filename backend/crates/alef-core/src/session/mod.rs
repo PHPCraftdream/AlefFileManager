@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 #![allow(clippy::module_inception)]
+pub mod executor;
 pub mod resources;
 pub mod session;
 pub mod streams;
 
+pub use executor::{BlockingExecutor, BlockingJob};
 /// Session-owned resource interface and table.
 pub use resources::{Resource, ResourceTable};
 /// Session lifecycle and call permit types.

@@ -299,6 +299,7 @@ jobs:
       # tests/e2e: the real alef binary on scenario applications; Servo renders through Mesa software GL.
       - name: e2e (alef on Servo, headless X11)
         if: runner.os == 'Linux' && needs.plan.outputs.e2e != 'none'
+        timeout-minutes: 30
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         # The window scenarios (maximize, resize events) need a window manager; openbox is the smallest.
@@ -316,68 +317,87 @@ jobs:
         if: runner.os == 'Windows'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest" --exe backend/target/debug/alef.exe --timeout-s 150
 
       # Independent groups run even when an earlier group fails (#117).
       - name: "e2e (alef on Servo, Windows, window: core)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "core" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "core" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, window: window)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "window" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "window" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, window: csp)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "csp" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "csp" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, window: permissions)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "permissions" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "permissions" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, transport/development: induced, dev)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "induced,dev" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "induced,dev" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, consent: decisions)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "consent,narrowing,ask,cancel,decisions" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "consent,narrowing,ask,cancel,decisions" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, lifecycle/integration: app)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "app,quit,relaunch,instance,restore,autostart,deeplink,devflow" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "app,quit,relaunch,instance,restore,autostart,deeplink,devflow" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, desktop/system/processes: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "system,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, data: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto,secrets,secrets-substitute,secrets-denied" --exe backend/target/debug/alef.exe --timeout-s 150
 
       - name: "e2e (alef on Servo, Windows, network/MCP: modules)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e-group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp" --exe backend/target/debug/alef.exe --timeout-s 150
+
+      - name: "e2e (alef on Servo, Windows, origin/packaging extras)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
+        timeout-minutes: 30
+        shell: bash
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "origin,webcrypto-undeclared,webcrypto-substitute,package,fm-package,updater" --exe backend/target/debug/alef.exe --timeout-s 150
+
+      # macOS has a WindowServer, so every canonical group runs like on a developer machine
+      # (quiet mode is the default outside Linux); skips are declared in the scenarios themselves
+      # (startup: Win32 probe; menu/tray on Linux: product reports unavailability). One step runs
+      # every group of scripts/ci/e2e/groups.mjs; a failed group does not hide the others (#117).
+      # The bound is the sum of the per-group deadlines (62 scenarios x 150 s + 12 groups x 2 min
+      # margin = 179 min, rounded up): a worst-case ceiling where every scenario hangs to its
+      # limit, not an expectation (the observed full Linux e2e is minutes).
+      - name: e2e (alef on Servo, macOS, canonical groups)
+        if: runner.os == 'macOS' && needs.plan.outputs.e2e != 'none'
+        timeout-minutes: 180
+        shell: bash
+        run: node scripts/ci/e2e/os.mjs --plan "${{ needs.plan.outputs.e2e }}" --exe backend/target/debug/alef --timeout-s 150
 
       - name: Upload executable
         if: runner.os != 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')

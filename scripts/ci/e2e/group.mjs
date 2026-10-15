@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // e2e group selector: intersects the plan's e2e list with one fixed Windows group and calls
 // tests/e2e/run.mjs; empty intersection prints a note and exits 0.
-//   node scripts/ci/e2e-group.mjs --plan "<plan e2e>" --group a,b,c --exe <path> [--timeout-s 150]
+//   node scripts/ci/e2e/group.mjs --plan "<plan e2e>" --group a,b,c --exe <path> [--timeout-s 150]
 // Env ALEF_E2E_GROUP_RUNNER (test hook, never set by CI) points at a stub runner script.
 
 import { spawn } from 'node:child_process';
@@ -21,7 +21,7 @@ export function selectGroup(plan, group) {
 
 function usage(message) {
   console.error(message);
-  console.error('usage: node scripts/ci/e2e-group.mjs --plan <plan e2e> --group <comma list> --exe <path> [--timeout-s <n>]');
+  console.error('usage: node scripts/ci/e2e/group.mjs --plan <plan e2e> --group <comma list> --exe <path> [--timeout-s <n>]');
 }
 
 function parseArgs(argv) {
@@ -53,7 +53,7 @@ function run() {
   }
   const runner = process.env.ALEF_E2E_GROUP_RUNNER
     ? path.resolve(process.env.ALEF_E2E_GROUP_RUNNER)
-    : fileURLToPath(new URL('../../tests/e2e/run.mjs', import.meta.url));
+    : fileURLToPath(new URL('../../../tests/e2e/run.mjs', import.meta.url));
   const child = spawn(process.execPath, [
     runner,
     '--exe', args['--exe'],

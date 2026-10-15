@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// node --test scripts/ci/e2e-group.test.mjs: the group selector keeps the CI e2e steps' exact contract.
+// node --test scripts/ci/e2e/group.test.mjs: the group selector keeps the CI e2e steps' exact contract.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -8,9 +8,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { selectGroup } from './e2e-group.mjs';
+import { selectGroup } from './group.mjs';
 
-const script = fileURLToPath(new URL('./e2e-group.mjs', import.meta.url));
+const script = fileURLToPath(new URL('./group.mjs', import.meta.url));
 
 function spawn_cli(args, env = {}) {
   const result = spawnSync(process.execPath, [script, ...args], {
@@ -71,7 +71,7 @@ test('a_planned_scenario_spawns_the_runner_with_the_selected_list_in_group_order
     assert.ok(argv.includes('--verbose'));
     // CI never sets the test hook; the default runner is the real run.mjs relative to the script.
     const source = readFileSync(script, 'utf8');
-    assert.ok(source.includes("'../../tests/e2e/run.mjs'"));
+    assert.ok(source.includes("'../../../tests/e2e/run.mjs'"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
