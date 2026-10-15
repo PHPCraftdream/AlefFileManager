@@ -22,6 +22,36 @@ export function appDataOf(id) {
 
 export const exeName = process.platform === 'win32' ? '.exe' : '';
 
+export function busStallProblems(lines, expected = []) {
+  const problems = [];
+  const actual = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (!line.includes('ALEF_BUS_STALL')) continue;
+    const match = /^ALEF_BUS_STALL (\S+) (\d+)$/.exec(line);
+    if (!match) problems.push(`malformed bus stall diagnostic: ${line}`);
+    else actual.push({ kind: match[1], ms: Number(match[2]), index });
+  }
+  const consumed = new Set();
+  for (const allowance of expected) {
+    const { kind, minMs, maxMs, count = 1, after, before } = allowance;
+    const afterIndex = after === undefined ? -1 : lines.indexOf(after);
+    const beforeIndex = before === undefined ? lines.length : lines.indexOf(before);
+    if ((after !== undefined && afterIndex < 0) || (before !== undefined && beforeIndex < 0) || afterIndex >= beforeIndex) {
+      problems.push(`missing or invalid bus stall phase markers for ${kind}`);
+      continue;
+    }
+    const matches = actual.filter(item => !consumed.has(item.index) && item.kind === kind
+      && item.ms >= minMs && item.ms <= maxMs && item.index > afterIndex && item.index < beforeIndex);
+    for (const item of matches.slice(0, count)) consumed.add(item.index);
+    if (matches.length < count) problems.push(`expected ${count} bus stall(s) of ${kind} in ${minMs}-${maxMs}ms; found ${matches.length}`);
+  }
+  for (const item of actual) {
+    if (!consumed.has(item.index)) problems.push(`unexpected bus stall: ${item.kind} ${item.ms}ms`);
+  }
+  return problems;
+}
+
 /**
  * Nobody should have to watch a test: the runtime never shows its windows (`ALEF_E2E_QUIET=1`:
  * geometry, events and the rest are real, visibility and focus are the runtime's own bookkeeping).
@@ -148,19 +178,23 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   const watchers = new Set();
   let exit = null;
   const wake = () => [...watchers].forEach(watcher => watcher());
+  const record = raw => {
+    const line = raw.trim();
+    if (!line) return;
+    lines.push(line);
+    if (verbose) console.log(`    | ${line}`);
+    wake();
+  };
   const collect = stream => {
     let buffer = '';
     stream.on('data', chunk => {
       buffer += chunk;
       const parts = buffer.split('\n');
       buffer = parts.pop();
-      for (const raw of parts) {
-        const line = raw.trim();
-        if (!line) continue;
-        lines.push(line);
-        if (verbose) console.log(`    | ${line}`);
-      }
-      wake();
+      for (const raw of parts) record(raw);
+    });
+    stream.on('end', () => {
+      if (buffer) record(buffer);
     });
   };
   collect(child.stderr);
@@ -277,7 +311,7 @@ const missing = (lines, expected) => expected.filter(name => !okNames(lines).has
  * running)` adds scenario-specific checks and may wait for the runtime to exit.
  */
 export function makeDriver({ exe, verbose, timeoutMs }) {
-  return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, judge, appArgs, input }) {
+  return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, expectedBusStalls = [], judge, appArgs, input }) {
     const site = prepareSite(name, app, { replacements, targets });
     const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose, input });
     const problems = [];
@@ -295,7 +329,9 @@ export function makeDriver({ exe, verbose, timeoutMs }) {
       problems.push(error.message);
     } finally {
       running.stop();
+      if (!(await running.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
     }
-    return { problems, lines: running.lines, site };
+    problems.push(...busStallProblems(running.lines, expectedBusStalls));
+    return { problems, lines: running.lines, site, expectedBusStalls };
   };
 }

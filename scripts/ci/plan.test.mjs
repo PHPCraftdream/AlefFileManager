@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { busStallProblems } from '../../tests/e2e/lib.mjs';
 import { affectedJs, applyOverrides, computePlan, e2eFor, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -35,6 +36,48 @@ function plan(files, overrides = {}) {
   });
 }
 
+test('bus_changes_select_bus_across_core_layers_and_scenario_app_harness_paths', () => {
+  const paths = [
+    'backend/crates/alef-core/src/registry/dispatch.rs',
+    'backend/crates/alef-core/src/protocol/transport/mod.rs',
+    'backend/crates/alef-core/src/session/mod.rs',
+    'backend/crates/alef-runtime/src/bridge/e2e.rs',
+    'tests/e2e/scenarios/startup.mjs',
+    'tests/e2e/apps/modules/system/bus/alef.ktav',
+    'tests/e2e/lib.mjs',
+    'tests/e2e/run.mjs',
+    'tests/e2e/harness.js',
+  ];
+  for (const file of paths) assert.ok(e2eFor([file], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('bus'), file);
+  for (const file of ['backend/crates/alef-core/src/registry/dispatch.rs', 'tests/e2e/lib.mjs']) {
+    assert.ok(e2eFor([file], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('core'), file);
+  }
+  assert.ok(!e2eFor(['tests/e2e/scenarios/data.mjs'], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('bus'));
+  assert.ok(!e2eFor(['tests/e2e/apps/modules/data/alef.ktav'], data.e2e_rules, data.e2e_smoke, false, false).split(',').includes('bus'));
+});
+
+test('bus_stall_diagnostics_accept_only_expected_well_formed_entries_in_phase', () => {
+  const allowance = { kind: 'executor', minMs: 10, maxMs: 20, after: 'START', before: 'END' };
+  assert.deepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [allowance]), []);
+  for (const bad of [
+    ['START', 'ALEF_BUS_STALL other 15', 'END'],
+    ['START', 'ALEF_BUS_STALL executor nope', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 15 extra', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 15', 'ALEF_BUS_STALL executor 15', 'END'],
+    ['START', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 9', 'END'],
+    ['START', 'ALEF_BUS_STALL executor 21', 'END'],
+    ['ALEF_BUS_STALL executor 15', 'START', 'END'],
+    ['START', 'END', 'ALEF_BUS_STALL executor 15'],
+  ]) assert.notDeepEqual(busStallProblems(bad, [allowance]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL rogue 15', 'END'], [allowance]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END']), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [{ ...allowance, count: 2 }]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [{ ...allowance, after: 'MISSING' }]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [{ ...allowance, before: 'MISSING' }]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'END', 'END', 'ALEF_BUS_STALL executor 15'], [{ ...allowance, before: 'END' }]), []);
+  assert.deepEqual(busStallProblems(['quiet line']), []);
+});
 test('a_docs_only_change_runs_only_structure_and_fmt_on_linux_with_no_crates_js_or_e2e', () => {
   const p = plan(['docs/stages/m0-results/ci.md']);
   assert.equal(p.full, false);

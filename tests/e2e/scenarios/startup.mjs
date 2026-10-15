@@ -33,3 +33,19 @@ export function startupScenarios({ exe }) {
     },
   };
 }
+
+const BUS_XFAIL = 'XFAIL bus-runtime-consent-remains-a-prelaunch-gate-audit-160';
+export function busScenarios({ drive }) {
+  return {
+    bus: () => drive({
+      name: 'bus', app: 'modules/system/bus', expectedChecks: [
+        'bus-warm-api-calls', 'bus-executor-entered', 'bus-unrelated-calls-while-blocked',
+        'bus-event-roundtrip-while-blocked', 'bus-capacity-one-is-busy', 'bus-blocking-duration-bounded',
+        'bus-invalid-duration-rejected', 'bus-negative-control-stalls',
+        'bus-runtime-consent-remains-a-prelaunch-gate-audit-160',
+      ],
+      expectedBusStalls: [{ kind: 'call/e2e.blockBus', minMs: 150, maxMs: 5000, count: 1, after: 'ALEF_E2E bus-negative-begin', before: 'ALEF_E2E bus-negative-end' }],
+      judge: lines => lines.some(line => line.includes(BUS_XFAIL)) ? [] : [`missing explicit ${BUS_XFAIL} audit`],
+    }),
+  };
+}

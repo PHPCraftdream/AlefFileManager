@@ -57,6 +57,23 @@ enum Route<'a> {
     Stream(&'a str),
 }
 
+#[cfg(any(test, feature = "e2e"))]
+fn safe_route_kind(path: &str) -> String {
+    let bounded: String = path
+        .trim_start_matches('/')
+        .chars()
+        .take(80)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("route/{bounded}")
+}
+
 impl Transport {
     /// Builds the transport and registers the `runtime.stream.*` commands into `registry`.
     pub fn new(
@@ -76,6 +93,17 @@ impl Transport {
 
     /// Handles one request. Never panics and never fails: every problem is a response.
     pub async fn handle(&self, request: TransportRequest) -> TransportResponse {
+        #[cfg(any(test, feature = "e2e"))]
+        let response = {
+            let kind = safe_route_kind(&request.path);
+            crate::session::watchdog::watch(&kind, self.handle_inner(request)).await
+        };
+        #[cfg(not(any(test, feature = "e2e")))]
+        let response = self.handle_inner(request).await;
+        response
+    }
+
+    async fn handle_inner(&self, request: TransportRequest) -> TransportResponse {
         let origin = request.header("origin").map(str::to_owned);
         let allowed = auth::origin_allowed(&self.config.allowed_origins, origin.as_deref());
         let mut response = if allowed {

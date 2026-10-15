@@ -6,6 +6,9 @@ rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+e2e = []
+
 [dependencies]
 bytes = "=1.12.1"
 ktav = "=0.8.0"
