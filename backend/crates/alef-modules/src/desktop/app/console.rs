@@ -92,10 +92,7 @@ impl Console {
         #[cfg(feature = "e2e")]
         let task_count = tasks.len();
         #[cfg(feature = "e2e")]
-        let ids: Vec<String> = tasks
-            .iter()
-            .map(|task| task.id().to_string())
-            .collect();
+        let ids: Vec<String> = tasks.iter().map(|task| task.id().to_string()).collect();
         #[cfg(feature = "e2e")]
         let started = std::time::Instant::now();
         #[cfg_attr(not(feature = "e2e"), allow(unused_mut))]
