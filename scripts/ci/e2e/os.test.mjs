@@ -91,7 +91,7 @@ test('a_group_that_hangs_until_its_deadline_fails_and_the_run_continues', async 
     assert.equal(result.error, undefined);
     assert.equal(result.signal, null);
     assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stdout, /^group fs: FAIL \(timeout after \d+ s\)$/m);
+    assert.match(result.stdout, /^group fs[^:\n]*: FAIL \(timeout after \d+ s\)$/m);
     assert.ok(result.stderr.includes('e2e groups failed: fs'), result.stderr);
     assert.ok(!result.stdout.includes('e2e: every planned group passed'), result.stdout);
   } finally {

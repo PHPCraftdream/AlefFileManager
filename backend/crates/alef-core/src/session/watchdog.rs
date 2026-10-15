@@ -8,7 +8,7 @@ use std::{
 
 const STALL_THRESHOLD: Duration = Duration::from_millis(50);
 
-pub(crate) async fn watch<F: Future>(kind: &str, future: F) -> F::Output {
+pub async fn watch<F: Future>(kind: &str, future: F) -> F::Output {
     poll_watch(kind, future, Instant::now, emit).await
 }
 

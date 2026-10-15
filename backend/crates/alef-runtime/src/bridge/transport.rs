@@ -25,6 +25,11 @@ use url::Url;
 
 use super::MemoryProtocol;
 
+#[cfg(feature = "e2e")]
+pub(super) async fn watch_request<F: std::future::Future>(future: F) -> F::Output {
+    alef_core::session::watchdog::watch("bridge.request", future).await
+}
+
 /// `native://call/<command>` → `call/<command>`, `native://stream/<id>` → `stream/<id>`.
 pub(super) fn transport_path(url: &Url) -> Option<String> {
     let kind = url.host_str()?;
@@ -121,7 +126,14 @@ impl Drop for Terminal {
 }
 
 /// Moves a response body into the fetch channel in chunks of at most 256 KiB, then terminates it.
-pub(super) async fn pump(mut terminal: Terminal, body: ResponseBody) {
+pub(super) async fn pump(terminal: Terminal, body: ResponseBody) {
+    #[cfg(feature = "e2e")]
+    alef_core::session::watchdog::watch("bridge.pump", pump_inner(terminal, body)).await;
+    #[cfg(not(feature = "e2e"))]
+    pump_inner(terminal, body).await;
+}
+
+async fn pump_inner(mut terminal: Terminal, body: ResponseBody) {
     match body {
         ResponseBody::Empty => {}
         ResponseBody::Bytes(bytes) => {
@@ -152,6 +164,18 @@ fn failure(status: u16, code: &str, message: &str) -> TransportResponse {
 }
 
 impl MemoryProtocol {
+    pub(super) async fn route_load(
+        &self,
+        request: &mut Request,
+        path: Option<String>,
+        sender: Option<UnboundedSender<Data>>,
+    ) -> Response {
+        if let (Some(path), Some(sender)) = (path, sender) {
+            return self.transport(request, path, sender).await;
+        }
+        self.asset_response(request).await
+    }
+
     /// Handles one transport fetch. The body channel was installed synchronously by `load`;
     /// from then on EVERYTHING (also errors) travels through it.
     pub(super) async fn transport(
@@ -298,7 +322,7 @@ pub(super) async fn read_body(body: RequestBody, limit: usize) -> io::Result<Vec
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Invocation body stream failed",
-                ))
+                ));
             }
         }
     }

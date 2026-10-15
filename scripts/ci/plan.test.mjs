@@ -26,6 +26,40 @@ const pkgs = [
   { folder: 'packages/mcp', name: '@alef-runtime/mcp', dependencies: {} },
 ];
 
+test('harness_process_stall_enforcement_uses_stderr_only_and_final_fragment', () => {
+  const runHarness = (code, expected = []) => {
+    const source = `import { runScenario, startApp } from './tests/e2e/lib.mjs';\nconst result = await runScenario(async () => {\n  const running = startApp({ exe: process.execPath, args: ['-e', ${JSON.stringify(code)}], expectedBusStalls: ${JSON.stringify(expected)} });\n  if (!await running.waitForClosed(2000)) throw new Error('child did not close');\n  return { problems: [], lines: [] };\n});\nconsole.log(JSON.stringify(result.problems));`;
+    return spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      cwd: root, env: { ...process.env, ALEF_E2E_VISIBLE: '1', ALEF_E2E_SOFTWARE: '' }, encoding: 'utf8', timeout: 10000,
+    });
+  };
+  const stderrOnly = runHarness("process.stdout.write('ALEF_BUS_STALL fake 10\\n'); process.stderr.write('ALEF_BUS_STALL executor '); setTimeout(() => process.stderr.write('12'), 10)");
+  assert.equal(stderrOnly.error, undefined, stderrOnly.error?.message);
+  assert.equal(stderrOnly.status, 0, stderrOnly.stderr);
+  assert.deepEqual(JSON.parse(stderrOnly.stdout), ['unexpected bus stall: executor 12ms']);
+
+  const stdoutOnly = runHarness("process.stdout.write('ALEF_BUS_STALL fake 10\\n')");
+  assert.equal(stdoutOnly.error, undefined, stdoutOnly.error?.message);
+  assert.equal(stdoutOnly.status, 0, stdoutOnly.stderr);
+  assert.deepEqual(JSON.parse(stdoutOnly.stdout), []);
+
+  const expected = [{ kind: 'executor', minMs: 10, maxMs: 20, after: 'START', before: 'END' }];
+  const success = runHarness("process.stderr.write('START\\nALEF_BUS_STALL executor 12\\nEND\\n')", expected);
+  assert.equal(success.error, undefined, success.error?.message);
+  assert.equal(success.status, 0, success.stderr);
+  assert.deepEqual(JSON.parse(success.stdout), []);
+
+  const duplicate = runHarness("process.stderr.write('START\\nALEF_BUS_STALL executor 12\\nALEF_BUS_STALL executor 12\\nEND\\n')", expected);
+  assert.equal(duplicate.error, undefined, duplicate.error?.message);
+  assert.equal(duplicate.status, 0, duplicate.stderr);
+  assert.deepEqual(JSON.parse(duplicate.stdout), ['unexpected bus stall: executor 12ms']);
+
+  const missing = runHarness("process.stderr.write('START\\nEND\\n')", expected);
+  assert.equal(missing.error, undefined, missing.error?.message);
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.deepEqual(JSON.parse(missing.stdout), ['expected 1 bus stall(s) of executor in 10-20ms; found 0']);
+});
+
 function plan(files, overrides = {}) {
   return computePlan({
     event: 'push', ref: 'refs/heads/ci-plan', files, filesKnown: true, message: '', manualFull: false,

@@ -544,12 +544,10 @@ impl ProtocolHandler for MemoryProtocol {
         let transport_sender = transport_path
             .as_ref()
             .map(|_| transport::install(done_chan));
-        Box::pin(async move {
-            if let (Some(path), Some(sender)) = (transport_path, transport_sender) {
-                return self.transport(request, path, sender).await;
-            }
-            self.asset_response(request).await
-        })
+        let future = self.route_load(request, transport_path, transport_sender);
+        #[cfg(feature = "e2e")]
+        let future = transport::watch_request(future);
+        Box::pin(future)
     }
 }
 

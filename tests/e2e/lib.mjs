@@ -61,7 +61,38 @@ export function busStallProblems(lines, expected = []) {
 export const quiet = process.env.ALEF_E2E_VISIBLE !== '1'
   && (process.platform !== 'linux' || process.env.ALEF_E2E_QUIET === '1');
 
+let activeScenario = null;
 let transpiled;
+
+/** Runs one scenario with process-scoped stderr stall enforcement. Scenarios must not overlap. */
+export async function runScenario(body) {
+  if (activeScenario) throw new Error('concurrent E2E scenarios are not allowed');
+  const scope = { records: new Set() };
+  activeScenario = scope;
+  const problems = [];
+  let outcome;
+  try {
+    outcome = await body();
+  } catch (error) {
+    problems.push(error?.message ?? String(error));
+  } finally {
+    for (const record of scope.records) {
+      try {
+        if (!record.exit) record.stop();
+        if (!(await record.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
+      } catch (error) {
+        problems.push(`could not close runtime log pipe: ${error?.message ?? error}`);
+      }
+    }
+    for (const record of scope.records) {
+      try { problems.push(...busStallProblems(record.stderrLines, record.expectedBusStalls)); }
+      catch (error) { problems.push(`could not evaluate bus stall diagnostics: ${error?.message ?? error}`); }
+    }
+    activeScenario = null;
+  }
+  return { lines: [], ...(outcome ?? {}), problems: [...(outcome?.problems ?? []), ...problems] };
+}
+
 
 /** Emits @alef-runtime/api as plain ES modules (`src/`, `types/`); done once per run. */
 export function transpileApi() {
@@ -161,7 +192,7 @@ const defaultDecisions = { ALEF_HOME: join(scratch, 'home'), ALEF_E2E_CONSENT: '
  * Starts the runtime; its stderr and stdout are kept line by line and can be awaited. `input` (text or bytes)
  * is written to its stdin, which is then closed; without it stdin is closed from the start.
  */
-export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false }) {
+export function startApp({ exe, args, env = {}, verbose = false, input, interactive = false, expectedBusStalls = [] }) {
   assertQuiet(exe);
   const child = spawn(exe, args, {
     env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...defaultDecisions, ...env,
@@ -175,29 +206,33 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   child.stderr.on('data', chunk => errors.push(Buffer.from(chunk)));
   child.stdout.on('data', chunk => output.push(Buffer.from(chunk)));
   const lines = [];
+  const stderrLines = [];
   const watchers = new Set();
   let exit = null;
   const wake = () => [...watchers].forEach(watcher => watcher());
-  const record = raw => {
+  const record = (raw, target = lines) => {
     const line = raw.trim();
     if (!line) return;
-    lines.push(line);
-    if (verbose) console.log(`    | ${line}`);
-    wake();
+    target.push(line);
+    if (target === lines) {
+      if (verbose) console.log(`    | ${line}`);
+      wake();
+    }
   };
-  const collect = stream => {
+  const collect = (stream, target = lines) => {
     let buffer = '';
     stream.on('data', chunk => {
       buffer += chunk;
       const parts = buffer.split('\n');
       buffer = parts.pop();
-      for (const raw of parts) record(raw);
+      for (const raw of parts) record(raw, target);
     });
     stream.on('end', () => {
-      if (buffer) record(buffer);
+      if (buffer) record(buffer, target);
     });
   };
   collect(child.stderr);
+  collect(child.stderr, stderrLines);
   collect(child.stdout);
   child.on('exit', code => {
     exit = { code };
@@ -205,6 +240,21 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   });
   // Every holder of the pipe is gone: a program the runtime started again has finished as well.
   const closed = new Promise(resolvePromise => child.stderr.on('close', resolvePromise));
+  const processRecord = {
+    stderrLines, expectedBusStalls, stop: () => child.kill(),
+    waitForClosed: ms => new Promise(resolvePromise => {
+      let done = false;
+      const timer = setTimeout(() => { done = true; resolvePromise(false); }, ms);
+      closed.then(() => {
+        if (done) return;
+        clearTimeout(timer);
+        done = true;
+        resolvePromise(true);
+      });
+    }),
+    get exit() { return exit; },
+  };
+  if (activeScenario) activeScenario.records.add(processRecord);
   const waitFor = (predicate, ms, what, { survivesExit = false } = {}) => new Promise((resolvePromise, reject) => {
     const timer = setTimeout(() => {
       watchers.delete(look);
@@ -234,7 +284,9 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
     waitFor,
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
-    waitForClosed: ms => Promise.race([closed.then(() => true), new Promise(resolvePromise => setTimeout(resolvePromise, ms, false))]),
+    waitForClosed: processRecord.waitForClosed,
+    /** Stall diagnostics from stderr only, for direct startApp users outside runScenario. */
+    busProblems: () => busStallProblems(stderrLines, expectedBusStalls),
     /** Writes to the stdin of an `interactive` run; `endInput` closes it. */
     write: text => child.stdin.write(text),
     endInput: () => child.stdin.end(),
@@ -313,7 +365,7 @@ const missing = (lines, expected) => expected.filter(name => !okNames(lines).has
 export function makeDriver({ exe, verbose, timeoutMs }) {
   return async function drive({ name, app, replacements, targets, env, args: extra = [], expectedChecks, expectedBusStalls = [], judge, appArgs, input }) {
     const site = prepareSite(name, app, { replacements, targets });
-    const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose, input });
+    const running = startApp({ exe, args: appArgs ?? ['--app', site, ...extra], env, verbose, input, expectedBusStalls });
     const problems = [];
     try {
       await running.waitFor(line => line.includes('ALEF_E2E RESULT'), timeoutMs, 'the verdict of the page');
@@ -331,7 +383,6 @@ export function makeDriver({ exe, verbose, timeoutMs }) {
       running.stop();
       if (!(await running.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
     }
-    problems.push(...busStallProblems(running.lines, expectedBusStalls));
     return { problems, lines: running.lines, site, expectedBusStalls };
   };
 }

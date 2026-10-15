@@ -10,7 +10,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { busStallProblems, countingServer, exeName, field, interesting, makeDriver, root, scratch, staticServer, startApp } from './lib.mjs';
+import { countingServer, exeName, field, interesting, makeDriver, root, runScenario, scratch, staticServer, startApp } from './lib.mjs';
 import { consentScenarios } from './scenarios/consent.mjs';
 import { dataScenarios } from './scenarios/data.mjs';
 import { mcpScenarios } from './scenarios/mcp.mjs';
@@ -88,7 +88,7 @@ const scenarios = {
   ...devflowScenarios({ exe, verbose, timeoutMs }),
   ...fmPackageScenarios({ exe, verbose, timeoutMs }),
   ...updaterScenarios({ exe, verbose, timeoutMs }),
-  ...busScenarios({ drive }),
+  ...busScenarios({ drive, exe, verbose, timeoutMs }),
   ...consentScenarios({ drive, exe, verbose }),
   ...dataScenarios({ drive, exe, verbose }),
   ...mcpScenarios({ exe, verbose, timeoutMs }),
@@ -245,12 +245,11 @@ for (const name of selected) {
   console.log(`== ${name}`);
   let outcome;
   try {
-    outcome = await scenarios[name]();
+    outcome = await runScenario(() => scenarios[name]());
   } catch (error) {
     outcome = { problems: [error.message], lines: [] };
   }
-  const stallProblems = busStallProblems(outcome.lines ?? [], outcome.expectedBusStalls ?? []);
-  outcome.problems = [...new Set([...(outcome.problems ?? []), ...stallProblems])];
+  outcome.problems = [...new Set(outcome.problems ?? [])];
   for (const problem of outcome.problems) console.log(`    PROBLEM ${problem}`);
   if (outcome.problems.length > 0) {
     failures += 1;

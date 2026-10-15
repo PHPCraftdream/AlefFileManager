@@ -5,7 +5,7 @@ pub mod resources;
 pub mod session;
 pub mod streams;
 #[cfg(any(test, feature = "e2e"))]
-pub(crate) mod watchdog;
+pub mod watchdog;
 
 pub use executor::{BlockingExecutor, BlockingJob};
 /// Session-owned resource interface and table.

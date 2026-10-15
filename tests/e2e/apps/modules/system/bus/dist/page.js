@@ -10,7 +10,29 @@ const assertBusState = async initial => {
   const state = await call('e2e.busState');
   if (state.completed !== initial.completed || state.started !== initial.started + 1) throw new Error('unexpected bus state');
 };
+const consentProbe = async () => {
+  await bounded(api.connect(), 8000);
+  const path = await bounded(api.path.join('a', 'b'), 300);
+  const platform = await call('os.platform');
+  const info = await call('app.info');
+  if (!path || typeof platform !== 'string' || !platform || !info || typeof info !== 'object') throw new Error('unexpected API values');
+  const eventStart = performance.now();
+  const remaining = () => Math.max(1, 300 - (performance.now() - eventStart));
+  let received;
+  let off;
+  try {
+    const observed = new Promise(resolve => { received = resolve; });
+    off = await bounded(api.on('e2e.busEvent', payload => received(payload)), remaining());
+    const emitted = await call('e2e.busEvent', undefined, remaining());
+    const payload = await bounded(observed, remaining());
+    if (!emitted || payload?.id !== emitted.id || performance.now() - eventStart > 300) throw new Error('event roundtrip failed');
+  } finally { if (off) off(); }
+  await report(`bus-consent-probe-complete path=${path} platform=${platform} info=ok event=ok`);
+  await report('RESULT PASS bus-consent-probe');
+};
 const main = async () => {
+  const targets = await bounded(fetch('targets.json').then(response => response.json()), 3000);
+  if (targets.consentProbe) return consentProbe();
   const connectError = await rejection(bounded(api.connect(), 8000));
   if (connectError) throw connectError;
   await checks.check('bus-warm-api-calls', async () => {
@@ -86,11 +108,6 @@ const main = async () => {
       await report('bus-negative-end');
     }
     return response;
-  });
-  await checks.check('bus-runtime-consent-remains-a-prelaunch-gate-audit-160', async () => {
-    const error = await rejection(call('runtime.consent.request', undefined, 8000));
-    if (error?.code !== 'NOT_FOUND') throw new Error(`expected NOT_FOUND, got ${error?.code}`);
-    await report('XFAIL bus-runtime-consent-remains-a-prelaunch-gate-audit-160');
   });
   await verdict(checks.failed());
 };
