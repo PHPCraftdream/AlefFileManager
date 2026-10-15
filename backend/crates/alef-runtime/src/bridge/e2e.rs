@@ -32,10 +32,10 @@ pub(crate) fn consent_hold_ms(e2e: Option<&str>, hold: Option<&str>) -> Option<u
     (1..=5000).contains(&ms).then_some(ms)
 }
 
-pub(crate) async fn hold_consent_request(path: &str) {
-    if path != "call/runtime.consent.request" {
-        return;
-    }
+/// Delays the consent request of the end-to-end consent window. Called only from the
+/// `runtime.consent.request` handler, so it runs only in the consent window process; an
+/// application that fails the lookup with NOT_FOUND never reaches this code.
+pub async fn e2e_hold_consent_request() {
     let e2e = std::env::var("ALEF_E2E").ok();
     let hold = std::env::var("ALEF_E2E_CONSENT_HOLD_MS").ok();
     let Some(ms) = consent_hold_ms(e2e.as_deref(), hold.as_deref()) else {

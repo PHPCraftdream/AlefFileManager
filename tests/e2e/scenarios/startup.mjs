@@ -45,7 +45,7 @@ export function busScenarios({ drive, exe, verbose, timeoutMs }) {
           'bus-event-roundtrip-while-blocked', 'bus-capacity-one-is-busy', 'bus-blocking-duration-bounded',
           'bus-invalid-duration-rejected', 'bus-negative-control-stalls',
         ],
-        expectedBusStalls: [{ kind: 'call/e2e.blockBus', minMs: 150, maxMs: 5000, count: 1, after: 'ALEF_E2E bus-negative-begin', before: 'ALEF_E2E bus-negative-end' }],
+        expectedBusStalls: [{ kind: 'call/e2e.blockBus', minMs: 150, maxMs: 5000, count: 1, required: true, after: 'ALEF_E2E bus-negative-begin', before: 'ALEF_E2E bus-negative-end' }],
       });
       const home = join(scratch, 'bus-consent-home');
       rmSync(home, { recursive: true, force: true });

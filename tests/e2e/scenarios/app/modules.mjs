@@ -572,8 +572,8 @@ export function moduleScenarios({ drive, exe, verbose }) {
           replacements: { WORK: work.replaceAll('\\', '/') },
           targets: { mode: 'allowed', work, outside: base },
           expectedChecks: CLI_CHECKS,
-          // Named, bounded allowance for the CURRENT §3.2/§5 violation: cli.pty opens the pty
-          // synchronously on the BUS poll (audit #160); no other stall is permitted.
+          // Named, bounded at-most allowance for the CURRENT §3.2/§5 violation: cli.pty opens the
+          // pty synchronously on the BUS poll (cli/pty/mod.rs open) // audit #160
           expectedBusStalls: [{ kind: 'call/cli.pty', minMs: 150, maxMs: 500, count: 2 }],
         });
       } finally {
@@ -593,8 +593,8 @@ export function moduleScenarios({ drive, exe, verbose }) {
         if (process.platform !== 'win32') chmodSync(node, 0o755);
         running = startApp({ exe, args: ['--app', site], verbose,
           env: { ALEF_E2E_CONSENT: 'cli.command:substituted=substitute;*=allow' },
-          // Named, bounded allowance for the CURRENT §3.2/§5 violation: cli.run spawns the child
-          // synchronously on Windows (audit #160).
+          // Named, bounded at-most allowance for the CURRENT §3.2/§5 violation: the declared
+          // commands run spawns the child synchronously on Windows (cli run spawn) // audit #160
           expectedBusStalls: [{ kind: 'call/cli.run', minMs: 50, maxMs: 300, count: 1 }] });
         await running.waitFor(line => line.includes('ALEF_E2E RESULT'), 120000, 'the declared command verdict');
         const result = verdictOf(running.lines);

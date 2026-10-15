@@ -292,11 +292,11 @@ export function dataScenarios({ drive, exe, verbose }) {
           targets: { mode: 'real', root, outside, many: 100000 },
           env: { ALEF_HOME: join(base, 'home') },
           expectedChecks: SQLITE_CHECKS,
-          // Named, bounded allowances for the CURRENT §3.2/§5 violation: sqlite.exec converts the
-          // JSON arguments synchronously in the final poll (audit #160); bridge.request wraps the
-          // same poll, so the identical block surfaces under both kinds.
+          // Named, bounded at-most allowances for the CURRENT §3.2/§5 violation: the route poll
+          // parses the JSON body synchronously (sqlite mod.rs exec final-poll JSON conversion;
+          // unary_args in alef-core protocol/transport/call.rs) // audit #160
           expectedBusStalls: [
-            { kind: 'call/sqlite.exec', minMs: 150, maxMs: 600, count: 1 },
+            { kind: 'route/call/sqlite.exec', minMs: 150, maxMs: 600, count: 1 },
             { kind: 'bridge.request', minMs: 200, maxMs: 700, count: 1 },
           ],
           judge: async () => {

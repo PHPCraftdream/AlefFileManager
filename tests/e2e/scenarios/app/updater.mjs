@@ -187,8 +187,8 @@ export function updaterScenarios({ exe, verbose, timeoutMs }) {
         const storeDir = join(installHome, 'apps', createHash('sha256').update(ID).digest('hex'));
         const storePath = join(storeDir, '1.0.0.alef');
         if (!existsSync(storePath)) problems.push('the store has no 1.0.0.alef after alef install');
-        // Named, bounded allowance for the CURRENT §3.2/§5 violation: updater.install prepares the
-        // storage synchronously (audit #160); install run only, the earlier runs do not install.
+        // Named, bounded at-most allowance for the CURRENT §3.2/§5 violation: updater install
+        // prepares the storage synchronously (updater install Storage::prepare) // audit #160
         running = startApp({ exe, verbose, args: ['run', storePath], expectedBusStalls: [{ kind: 'call/updater.install', minMs: 300, maxMs: 800, count: 1 }], env: { ALEF_HOME: installHome, ALEF_APP_HOME: installHome, ALEF_E2E_CONSENT: '*=allow', ALEF_APPLICATIONS_DIR: join(dir, 'links-update'), ...xdg } });
         try {
           await running.waitFor(line => line.includes('UPDATER_INSTALLING'), timeoutMs, 'the old version to offer and download the update');

@@ -223,8 +223,6 @@ impl MemoryProtocol {
                             window,
                             document: request.pipeline_id.map(document_of),
                         };
-                        #[cfg(feature = "e2e")]
-                        super::e2e::hold_consent_request(&request.path).await;
                         let reply = self.transport.handle(request).await;
                         if let Some((route, origin)) = route {
                             eprintln!("ALEF_CALL {route} {} origin={origin}", reply.status);

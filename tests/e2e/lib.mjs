@@ -22,6 +22,13 @@ export function appDataOf(id) {
 
 export const exeName = process.platform === 'win32' ? '.exe' : '';
 
+/**
+ * Checks the stall diagnostics of a run against allowances. An allowance matches AT MOST `count`
+ * stalls of its kind in `minMs`-`maxMs` inside the `after`/`before` phase markers; with the
+ * default `required: false` fewer matches are fine, but any matching stall beyond `count` stays
+ * unexpected. `required: true` restores the exact semantics (fewer than `count` is a problem),
+ * used only for the deliberate negative control around `e2e.blockBus`, which must fire.
+ */
 export function busStallProblems(lines, expected = []) {
   const problems = [];
   const actual = [];
@@ -34,7 +41,7 @@ export function busStallProblems(lines, expected = []) {
   }
   const consumed = new Set();
   for (const allowance of expected) {
-    const { kind, minMs, maxMs, count = 1, after, before } = allowance;
+    const { kind, minMs, maxMs, count = 1, after, before, required = false } = allowance;
     const afterIndex = after === undefined ? -1 : lines.indexOf(after);
     const beforeIndex = before === undefined ? lines.length : lines.indexOf(before);
     if ((after !== undefined && afterIndex < 0) || (before !== undefined && beforeIndex < 0) || afterIndex >= beforeIndex) {
@@ -43,8 +50,9 @@ export function busStallProblems(lines, expected = []) {
     }
     const matches = actual.filter(item => !consumed.has(item.index) && item.kind === kind
       && item.ms >= minMs && item.ms <= maxMs && item.index > afterIndex && item.index < beforeIndex);
+    const want = required ? count : 0;
     for (const item of matches.slice(0, count)) consumed.add(item.index);
-    if (matches.length < count) problems.push(`expected ${count} bus stall(s) of ${kind} in ${minMs}-${maxMs}ms; found ${matches.length}`);
+    if (matches.length < want) problems.push(`expected ${count} bus stall(s) of ${kind} in ${minMs}-${maxMs}ms; found ${matches.length}`);
   }
   for (const item of actual) {
     if (!consumed.has(item.index)) problems.push(`unexpected bus stall: ${item.kind} ${item.ms}ms`);
@@ -196,9 +204,14 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   assertQuiet(exe);
   // `undecidedConsent`: no scripted answer at all, so the real consent window opens (an empty
   // `ALEF_E2E_CONSENT` script would answer nothing and refuse every right without a window).
+  // Every inherited consent override is removed BEFORE the scenario env is merged, so only what the
+  // scenario passes explicitly (e.g. the UI steps and the hold) reaches the child.
+  const childEnv = { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1' };
+  if (undecidedConsent) for (const name of ['ALEF_E2E_CONSENT', 'ALEF_E2E_CONSENT_UI', 'ALEF_E2E_CONSENT_HOLD_MS']) delete childEnv[name];
+  Object.assign(childEnv, quiet ? { ALEF_E2E_QUIET: '1' } : {}, undecidedConsent ? {} : defaultDecisions, env,
+    process.env.ALEF_E2E_VISIBLE === '1' ? { ALEF_E2E_QUIET: '', ALEF_E2E_SOFTWARE: '' } : {});
   const child = spawn(exe, args, {
-    env: { ...process.env, ALEF_E2E: '1', RUST_BACKTRACE: '1', ...(quiet ? { ALEF_E2E_QUIET: '1' } : {}), ...(undecidedConsent ? {} : defaultDecisions), ...env,
-      ...(process.env.ALEF_E2E_VISIBLE === '1' ? { ALEF_E2E_QUIET: '', ALEF_E2E_SOFTWARE: '' } : {}) },
+    env: childEnv,
     stdio: [input === undefined && !interactive ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
   if (input !== undefined || interactive) child.stdin.on('error', () => {});

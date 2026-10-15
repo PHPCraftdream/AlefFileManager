@@ -75,6 +75,10 @@ fn install(
         .handler(move |_, ()| {
             let asked = asked.clone();
             async move {
+                // End-to-end mode only: the hold applies to the consent window's own
+                // `runtime.consent.request`, which is registered only in this process.
+                #[cfg(feature = "e2e")]
+                alef_runtime::e2e_hold_consent_request().await;
                 Ok(Reply::Json(
                     serde_json::to_value(&*asked).map_err(internal)?,
                 ))

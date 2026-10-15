@@ -3,7 +3,7 @@
 pub(crate) mod assets;
 pub(crate) mod commands;
 #[cfg(feature = "e2e")]
-mod e2e;
+pub(crate) mod e2e;
 mod events;
 mod transport;
 mod windows;
