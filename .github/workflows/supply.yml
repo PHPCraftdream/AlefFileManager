@@ -74,6 +74,6 @@ jobs:
       - name: System libraries of the desktop crates
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev libdbus-1-dev pkg-config
+          sudo apt-get install -y --no-install-recommends libx11-dev libxcb1-dev libxkbcommon-dev libwayland-dev libdbus-1-dev libglib2.0-dev libgdk-pixbuf-2.0-dev pkg-config
       - name: cargo check on the declared lower bound
         run: cargo check --manifest-path backend/Cargo.toml --locked -p ${{ matrix.package }}
