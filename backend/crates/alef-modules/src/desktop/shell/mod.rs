@@ -9,10 +9,13 @@ pub mod context_menu;
 pub mod dialog;
 pub mod icon;
 #[cfg(all(unix, not(target_os = "macos")))]
+#[path = "icon/linux.rs"]
 mod icon_linux;
 #[cfg(target_os = "macos")]
+#[path = "icon/macos.rs"]
 mod icon_macos;
 #[cfg(windows)]
+#[path = "icon/windows.rs"]
 mod icon_windows;
 #[cfg(any(windows, target_os = "macos"))]
 use std::process::{Command, Stdio};
