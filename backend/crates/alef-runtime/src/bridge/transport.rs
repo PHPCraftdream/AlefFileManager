@@ -141,6 +141,8 @@ async fn pump_inner(mut terminal: Terminal, body: ResponseBody) {
                 if !terminal.send(piece) {
                     return;
                 }
+                // A chunk a poll: a big body must not hog the executor for many megabytes.
+                tokio::task::yield_now().await;
             }
         }
         ResponseBody::Frames(mut frames) => {
@@ -148,6 +150,7 @@ async fn pump_inner(mut terminal: Terminal, body: ResponseBody) {
                 if !terminal.send(piece) {
                     return;
                 }
+                tokio::task::yield_now().await;
             }
         }
     }
@@ -447,6 +450,33 @@ mod tests {
         let body = ResponseBody::Bytes(Bytes::from(vec![1u8; 600 * 1024]));
         pump(Terminal::new(sender), body).await;
         let (sizes, end) = collect(receiver).await;
+        assert_eq!(sizes, vec![256 * 1024, 256 * 1024, 88 * 1024]);
+        assert_eq!(end, "done");
+    }
+
+    #[tokio::test]
+    async fn a_multi_chunk_body_is_sent_across_several_polls() {
+        use std::future::Future;
+        use std::task::{Context, Poll};
+        let (sender, receiver) = unbounded_channel();
+        let body = ResponseBody::Bytes(Bytes::from(vec![1u8; 600 * 1024]));
+        let mut pump = Box::pin(pump(Terminal::new(sender), body));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let mut pending = 0;
+        let (sizes, end) = loop {
+            match pump.as_mut().poll(&mut cx) {
+                Poll::Pending => {
+                    pending += 1;
+                    // Let the yield the pump asks for complete before the next poll.
+                    tokio::task::yield_now().await;
+                }
+                Poll::Ready(()) => break collect(receiver).await,
+            }
+        };
+        assert!(
+            pending >= 2,
+            "each chunk should be sent from its own poll, got {pending}"
+        );
         assert_eq!(sizes, vec![256 * 1024, 256 * 1024, 88 * 1024]);
         assert_eq!(end, "done");
     }
