@@ -62,6 +62,7 @@
 | `updater` | проверка/загрузка/установка обновлений | позже |
 | `log` | логирование в файл, crash-репорты | `tracing` |
 | `devtools` | отладка страницы | Servo devtools (Firefox protocol) |
+| `ai` | роли Rush (`ai.roles`), чат-поток (`ai.chat` → `AsyncIterable<ChatPart>`), обработчики инструментов (`ai.tools.handle`/`result`/`unhandle`); права `ai.role:<id>`/`ai.tool:<name>` по согласию M2b — см. [stages/m9-ai.md](stages/m9-ai.md) | трейт `AiProvider` (M9.2 — заглушка; транспорт Rush — #167) |
 
 ## Порядок фаз
 

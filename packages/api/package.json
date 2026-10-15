@@ -9,8 +9,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./types": "./types/index.ts",
-    "./core": "./src/core.ts",
+    "./core": "./src/core/index.ts",
     "./core/types": "./type-entries/core.ts",
+    "./ai": "./src/system/ai.ts",
+    "./ai/types": "./type-entries/system/ai.ts",
     "./app": "./src/desktop/app.ts",
     "./app/types": "./type-entries/desktop/app.ts",
     "./window": "./src/desktop/window.ts",

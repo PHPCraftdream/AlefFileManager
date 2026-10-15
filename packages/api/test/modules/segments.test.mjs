@@ -40,7 +40,7 @@ function isAllowed(from, to) {
   if (under(to, 'types')) return true;
   if (under(to, 'src/core')) return true;
   if (under(from, 'src/core') && dirname(from) === dirname(to)) return true;
-  if (from === `${pkgUrl}/src/index.ts` || from === `${pkgUrl}/src/core.ts`) return true;
+  if (from === `${pkgUrl}/src/index.ts`) return true;
   return EDGES.some(edge => from === `${pkgUrl}/${edge.from}` && to === `${pkgUrl}/${edge.to}`);
 }
 
@@ -134,6 +134,11 @@ function topLevelStatements(masked) {
       if (ch === '}' && depth === 0 && head !== '' && bracedDeclarationHead(head)) {
         let j = i + 1; // consume whitespace and an optional trailing `;` (e.g. left by a stripped `as const`)
         while (masked[j] === ' ') j++;
+        // A binding goes on after its object when an operator follows: `type A = { .. } | { .. }`.
+        if (bindingHead(head) && /^(?:[|&.[,?]|as\b|satisfies\b)/.test(masked.slice(j))) {
+          i++;
+          continue;
+        }
         if (masked[j] === ';') i = j;
         end(i + 1);
         i++;
@@ -161,8 +166,12 @@ function topLevelStatements(masked) {
 function bracedDeclarationHead(head) {
   const h = head.trim();
   if (/^(?:export\s+|declare\s+|default\s+|async\s+)*(?:function|class|interface|enum|namespace)\b/.test(h)) return true;
-  // object-typed binding: `const|let|var X = {`, `export ... = {`, `type X = {`
-  return /^(?:export\s+)?(?:const|let|var|type)\b[^=]*=\s*$/.test(h);
+  return bindingHead(head);
+}
+
+// Object-typed binding: `const|let|var X = {`, `export ... = {`, `type X = {`.
+function bindingHead(head) {
+  return /^(?:export\s+)?(?:const|let|var|type)\b[^=]*=\s*$/.test(head.trim());
 }
 
 // A line keeps the statement going only with an explicit operator tail; when unsure, split.
@@ -277,7 +286,7 @@ test('importing any subpath entry issues no runtime call', { timeout: 300000 }, 
 
 test('every code subpath has exactly one uniform type entry under type_entries', () => {
   const codeEntries = Object.entries(exportsMap).filter(([subpath]) => subpath !== '.' && subpath !== './types' && !subpath.endsWith('/types'));
-  assert.equal(codeEntries.length, 23, `expected 23 code subpaths, got ${codeEntries.length}`);
+  assert.equal(codeEntries.length, 24, `expected 24 code subpaths, got ${codeEntries.length}`);
   const violations = [];
   for (const [subpath] of codeEntries) {
     const typesSubpath = `${subpath}/types`;
@@ -706,6 +715,9 @@ test('the type statement scanner accepts type statements and generated re-export
   assert.deepEqual(typeStatementTextViolations('t', "import type { A } from './b.ts';\nexport type * from './a.ts';"), []);
   assert.deepEqual(typeStatementTextViolations('t', "export { type A, type B } from './x.ts';"), []);
   assert.deepEqual(typeStatementTextViolations('t', 'interface A {\n  b: string;\n}\ntype C = number;'), []);
+  // a union of object types is one statement (ts-rs emits tagged enums this way)
+  assert.deepEqual(typeStatementTextViolations('t', 'export type U = { "k": "a", n: string, } | { "k": "b", };'), []);
+  assert.equal(typeStatementTextViolations('t', 'export type U = { a: string } | { b: string }\nglobalThis.__probe = true;').length, 1);
   // `export * from` is allowed only in the generated types directory
   assert.equal(typeStatementTextViolations('t', "export * from './x.ts';").length, 1);
   assert.deepEqual(typeStatementTextViolations('t', "export * from './x.ts';", true), []);

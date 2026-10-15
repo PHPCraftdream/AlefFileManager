@@ -2,10 +2,12 @@
 // Public surface of @alef-runtime/api. Every function is asynchronous: it returns a Promise or an
 // AsyncIterable (checked by packages/api/test/async-surface.test.mjs).
 export { AlefError, type AlefErrorCode } from './core/errors.ts';
-export { connect, type RuntimeInfo, type RuntimeLimits } from './core/handshake.ts';
+export { connect, type RuntimeInfo, type RuntimeLimits } from './core/transport.ts';
 export { call, type CallOptions } from './core/transport.ts';
 export { openReadable, openWritable, type Readable, type StreamFrame, type Writable } from './core/stream.ts';
 export { on } from './core/events.ts';
+export { ai } from './system/ai.ts';
+export type { ChatMessage, ChatOptions, ChatPart, Role, RoleCapability, ToolContext } from './system/ai.ts';
 export {
   AppWindow,
   nativeWindow,

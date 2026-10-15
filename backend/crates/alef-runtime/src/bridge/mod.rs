@@ -102,7 +102,6 @@ fn native_entry(entry: Option<&str>) -> io::Result<Url> {
         .and_then(|base| base.join(&entry))
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
-
 async fn check_documents(
     source: &Arc<assets::Source>,
     native_entry: Url,
@@ -252,6 +251,7 @@ fn closed_permissions() -> io::Result<Arc<PermissionSet>> {
             autostart: false,
         },
         window: None,
+        ai: None,
     };
     let root = std::env::temp_dir();
     let vars = PathVars {
