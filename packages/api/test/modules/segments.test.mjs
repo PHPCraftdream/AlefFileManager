@@ -33,7 +33,6 @@ const EDGES = [
   { from: 'src/desktop/menu.ts', to: 'src/desktop/window.ts', typeOnly: true },
 ];
 
-const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function isAllowed(from, to) {
   if (under(to, 'types')) return true;
