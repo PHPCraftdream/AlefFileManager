@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `shell.fileIcon`: icon lookup with filesystem, encoding and OS work off async runtime threads.
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
@@ -314,11 +316,87 @@ pub(crate) struct IconJob {
     pub reply: JobReply,
 }
 pub(crate) type JobReceiver = tokio::sync::mpsc::Receiver<IconJob>;
+#[cfg(windows)]
+pub(crate) struct WindowsJobSender {
+    sender: Option<tokio::sync::mpsc::Sender<IconJob>>,
+    wake: Arc<OwnedHandle>,
+}
+#[cfg(windows)]
+impl Clone for WindowsJobSender {
+    fn clone(&self) -> Self {
+        Self {
+            sender: Some(
+                self.sender
+                    .as_ref()
+                    .expect("sender exists before drop")
+                    .clone(),
+            ),
+            wake: self.wake.clone(),
+        }
+    }
+}
+#[cfg(windows)]
+impl Drop for WindowsJobSender {
+    fn drop(&mut self) {
+        // Close this clone before signalling; final disconnect can never be lost in a wait race.
+        drop(self.sender.take());
+        // SAFETY: the event handle remains alive throughout Drop.
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(self.wake.as_raw_handle() as _) };
+    }
+}
+
+#[cfg(windows)]
+impl WindowsJobSender {
+    pub(crate) fn try_send(
+        &self,
+        job: IconJob,
+    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<IconJob>> {
+        self.sender
+            .as_ref()
+            .expect("sender exists before drop")
+            .try_send(job)
+            .map(|()| {
+                // SAFETY: the event handle is owned and remains alive for this call.
+                unsafe {
+                    windows_sys::Win32::System::Threading::SetEvent(self.wake.as_raw_handle() as _);
+                }
+            })
+    }
+    pub(crate) fn channel() -> Result<(Self, JobReceiver, Arc<OwnedHandle>), AlefError> {
+        // SAFETY: unnamed auto-reset event, initially unsignalled.
+        let event = unsafe {
+            windows_sys::Win32::System::Threading::CreateEventW(
+                std::ptr::null(),
+                0,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if event.is_null() {
+            return Err(png_error("failed to create icon worker event"));
+        }
+        // SAFETY: CreateEventW returns a new owned handle.
+        let wake = Arc::new(unsafe { OwnedHandle::from_raw_handle(event as _) });
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        Ok((
+            Self {
+                sender: Some(sender),
+                wake: wake.clone(),
+            },
+            receiver,
+            wake,
+        ))
+    }
+}
+#[cfg(not(windows))]
+type PlatformSender = tokio::sync::mpsc::Sender<IconJob>;
+#[cfg(windows)]
+type PlatformSender = WindowsJobSender;
 pub(crate) type JobReply = tokio::sync::oneshot::Sender<Result<IconImage, AlefError>>;
 type JobAnswer = tokio::sync::oneshot::Receiver<Result<IconImage, AlefError>>;
 
 pub(crate) struct IconService {
-    sender: tokio::sync::OnceCell<tokio::sync::mpsc::Sender<IconJob>>,
+    sender: tokio::sync::OnceCell<PlatformSender>,
     starter: BlockingExecutor,
 }
 impl Default for IconService {
@@ -332,17 +410,31 @@ impl Default for IconService {
     }
 }
 impl IconService {
-    async fn sender(&self) -> Result<tokio::sync::mpsc::Sender<IconJob>, AlefError> {
+    async fn sender(&self) -> Result<PlatformSender, AlefError> {
         self.sender
             .get_or_try_init(|| async {
-                let (tx, rx) = tokio::sync::mpsc::channel(32);
-                let startup = self.starter.submit(move || {
+                #[cfg(windows)]
+                let starter = self.starter.clone();
+                #[cfg(windows)]
+                let startup = starter.submit(move || {
+                    let (tx, rx, wake) = WindowsJobSender::channel()?;
                     std::thread::Builder::new()
                         .name("shell-icons".into())
-                        .spawn(move || worker_loop(rx))
+                        .spawn(move || crate::desktop::shell::icon_windows::worker_loop(rx, wake))
                         .map(|_| tx)
                         .map_err(|error| png_error(format!("worker spawn: {error}")))
                 })?;
+                #[cfg(not(windows))]
+                let startup = {
+                    let (tx, rx) = tokio::sync::mpsc::channel(32);
+                    self.starter.submit(move || {
+                        std::thread::Builder::new()
+                            .name("shell-icons".into())
+                            .spawn(move || worker_loop(rx))
+                            .map(|_| tx)
+                            .map_err(|error| png_error(format!("worker spawn: {error}")))
+                    })?
+                };
                 startup.result().await?
             })
             .await
@@ -391,8 +483,11 @@ pub(crate) trait IconBackend {
     fn render(&mut self, target: &IconTarget, size: u32) -> Result<IconImage, AlefError>;
 }
 
-pub(crate) fn run_worker_loop<B: IconBackend>(mut receiver: JobReceiver, mut backend: B) {
-    while let Some(job) = receiver.blocking_recv() {
+pub(crate) fn run_worker_loop_with_receive<B: IconBackend>(
+    mut receive: impl FnMut() -> Option<IconJob>,
+    mut backend: B,
+) {
+    while let Some(job) = receive() {
         if job.reply.is_closed() {
             continue;
         }
@@ -400,6 +495,11 @@ pub(crate) fn run_worker_loop<B: IconBackend>(mut receiver: JobReceiver, mut bac
         let _ = job.reply.send(result);
     }
 }
+#[cfg(any(not(windows), test))]
+pub(crate) fn run_worker_loop<B: IconBackend>(mut receiver: JobReceiver, backend: B) {
+    run_worker_loop_with_receive(|| receiver.blocking_recv(), backend);
+}
+#[cfg(not(windows))]
 pub(crate) fn worker_loop(receiver: JobReceiver) {
     platform::worker_loop(receiver)
 }
@@ -408,8 +508,6 @@ mod platform {
     pub(crate) use crate::desktop::shell::icon_linux::worker_loop;
     #[cfg(target_os = "macos")]
     pub(crate) use crate::desktop::shell::icon_macos::worker_loop;
-    #[cfg(windows)]
-    pub(crate) use crate::desktop::shell::icon_windows::worker_loop;
     #[cfg(not(any(windows, target_os = "macos", all(unix, not(target_os = "macos")))))]
     pub(crate) fn worker_loop(mut receiver: super::JobReceiver) {
         super::run_worker_loop(receiver, FallbackBackend);

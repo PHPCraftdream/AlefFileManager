@@ -96,6 +96,10 @@ impl Drop for GraphicsContextRestore {
 fn render_png(image: &NSImage, width: u32, height: u32) -> Result<IconImage, alef_core::AlefError> {
     let width = i32::try_from(width).map_err(|_| internal("icon width overflow"))?;
     let height = i32::try_from(height).map_err(|_| internal("icon height overflow"))?;
+    if width <= 0 || height <= 0 || width > 256 || height > 256 {
+        return Err(invalid("shell.fileIcon: invalid icon dimensions"));
+    }
+    // SAFETY: positive dimensions are validated and bounded above; null planes ask AppKit to allocate its own bitmap buffer. The bitmap is 8-bit, 4-sample, alpha, nonplanar RGB, with AppKit's default row/bit sizing. NSDeviceRGBColorSpace is a static color-space name whose lifetime is sufficient for this call.
     let bitmap = unsafe {
         NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
             NSBitmapImageRep::alloc(), std::ptr::null_mut(), width.into(), height.into(), 8, 4, true,

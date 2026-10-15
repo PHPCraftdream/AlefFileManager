@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Windows shell icons. Small and large system image lists supply native sizes above 32px.
-use std::{mem, os::windows::ffi::OsStrExt, path::Path, ptr};
+use std::{
+    mem,
+    os::windows::{ffi::OsStrExt, io::AsRawHandle},
+    path::Path,
+    ptr,
+};
 
 use alef_core::{AlefError, ErrorCode};
 use windows::Win32::{
@@ -14,13 +19,14 @@ use windows::Win32::{
     },
 };
 use windows_sys::Win32::{
-    Foundation::{S_FALSE, S_OK},
+    Foundation::{S_FALSE, S_OK, WAIT_FAILED, WAIT_OBJECT_0},
     Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDIBits,
         SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
     },
     Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
     System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED},
+    System::Threading::INFINITE,
     UI::{
         Shell::{
             SHGetFileInfoW, SHGetStockIconInfo, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
@@ -28,15 +34,19 @@ use windows_sys::Win32::{
             SHGSI_SMALLICON, SHGSI_SYSICONINDEX, SHSTOCKICONINFO, SIID_DRIVEFIXED, SIID_FOLDER,
         },
         WindowsAndMessaging::{
-            DestroyIcon, DispatchMessageW, DrawIconEx, PeekMessageW, TranslateMessage, DI_NORMAL,
-            HICON, MSG, PM_REMOVE,
+            DestroyIcon, DispatchMessageW, DrawIconEx, MsgWaitForMultipleObjectsEx, PeekMessageW,
+            TranslateMessage, DI_NORMAL, HICON, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
         },
     },
 };
 
+#[cfg(test)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_APP};
+
 use super::icon::{
-    generic_fallback, mime_to_extension, rgba_to_png, run_worker_loop, ExtensionTarget,
-    IconBackend, IconImage, IconKind, IconTarget, JobReceiver, MimeTarget, PathTarget,
+    generic_fallback, mime_to_extension, rgba_to_png, run_worker_loop_with_receive,
+    ExtensionTarget, IconBackend, IconImage, IconKind, IconTarget, JobReceiver, MimeTarget,
+    PathTarget,
 };
 
 const SMALL: u32 = 16;
@@ -155,15 +165,65 @@ impl IconBackend for WindowsBackend {
     }
 }
 
-pub(crate) fn worker_loop(receiver: JobReceiver) {
-    run_worker_loop(receiver, WindowsBackend(initialize_com()));
+pub(crate) fn worker_loop(
+    mut receiver: JobReceiver,
+    wake: std::sync::Arc<std::os::windows::io::OwnedHandle>,
+) {
+    let event = wake.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    run_worker_loop_with_receive(
+        || receive_or_pump(&mut receiver, event),
+        WindowsBackend(initialize_com()),
+    );
+}
+
+fn receive_or_pump(
+    receiver: &mut JobReceiver,
+    event: windows_sys::Win32::Foundation::HANDLE,
+) -> Option<super::icon::IconJob> {
+    receive_or_pump_with(receiver, event, pump_messages)
+}
+
+fn receive_or_pump_with(
+    receiver: &mut JobReceiver,
+    event: windows_sys::Win32::Foundation::HANDLE,
+    mut pump: impl FnMut(),
+) -> Option<super::icon::IconJob> {
+    loop {
+        match receiver.try_recv() {
+            Ok(job) => return Some(job),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return None,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+        }
+        pump();
+        // SAFETY: event is a valid owned event handle and the handle array has one item.
+        let result = unsafe {
+            MsgWaitForMultipleObjectsEx(1, &event, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+        };
+        if result == WAIT_FAILED {
+            return None;
+        }
+        if result == WAIT_OBJECT_0 {
+            continue;
+        }
+        if result == WAIT_OBJECT_0 + 1 {
+            pump();
+            continue;
+        }
+        // WAIT_FAILED or an unexpected result must not turn into a hot loop.
+        return None;
+    }
 }
 
 fn pump_messages() {
+    pump_messages_with(|_| {});
+}
+
+fn pump_messages_with(mut on_message: impl FnMut(&MSG)) {
     // SAFETY: zeroed MSG is writable output for PeekMessageW; null hwnd drains this STA's queue.
     let mut message: MSG = unsafe { mem::zeroed() };
     // SAFETY: message is a valid output buffer; PM_REMOVE removes messages owned by this thread.
     while unsafe { PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+        on_message(&message);
         // SAFETY: retrieved message is valid for translation and dispatch on this thread.
         unsafe {
             TranslateMessage(&message);
@@ -578,6 +638,83 @@ mod tests {
     }
 
     #[test]
+    fn idle_sta_pumps_posted_thread_message_and_exits_on_sender_drop() {
+        let (sender, receiver, wake) =
+            super::super::icon::WindowsJobSender::channel().expect("create bounded wake event");
+        let (thread_tx, thread_rx) = mpsc::channel();
+        let (message_tx, message_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut receiver = receiver;
+            let event = wake.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+            let _sta = initialize_com().expect("initialize test COM STA");
+            let mut queue_probe: MSG = unsafe { mem::zeroed() };
+            // SAFETY: queue_probe is writable; null HWND initializes this thread's queue.
+            unsafe { PeekMessageW(&mut queue_probe, ptr::null_mut(), 0, 0, PM_REMOVE) };
+            // SAFETY: returns the calling thread's identifier for PostThreadMessageW.
+            let thread_id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+            thread_tx.send(thread_id).unwrap();
+            let job = receive_or_pump_with(&mut receiver, event, || {
+                pump_messages_with(|message| {
+                    if message.message == WM_APP + 7 {
+                        let _ = message_tx.send(());
+                    }
+                });
+            });
+            done_tx.send(job.is_some()).unwrap();
+            let closed = receive_or_pump_with(&mut receiver, event, pump_messages);
+            done_tx.send(closed.is_none()).unwrap();
+        });
+        let thread_id = thread_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("STA thread start");
+        // SAFETY: PostThreadMessageW posts a plain application message to the live worker thread.
+        let posted = unsafe { PostThreadMessageW(thread_id, WM_APP + 7, 0, 0) };
+        assert_ne!(posted, 0, "post idle STA message");
+        message_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("idle message dispatched");
+        let (_reply, reply_rx) = tokio::sync::oneshot::channel();
+        sender
+            .try_send(super::super::icon::IconJob {
+                target: IconTarget::Kind(super::super::icon::KindTarget {
+                    kind: IconKind::Folder,
+                }),
+                size: 32,
+                reply: _reply,
+            })
+            .expect("enqueue test job signals wake event");
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("queued job received"));
+        drop(reply_rx);
+        drop(sender);
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker exits on close"));
+        worker.join().expect("worker joined");
+    }
+
+    fn assert_png_has_opaque_non_background_pixel(png: &[u8]) {
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().expect("decode PNG header");
+        let mut buffer = vec![0; reader.output_buffer_size().expect("PNG output buffer size")];
+        let info = reader.next_frame(&mut buffer).expect("decode PNG pixels");
+        let pixels = &buffer[..info.buffer_size()];
+        let (channels, has_alpha) = match info.color_type {
+            png::ColorType::Rgba => (4, true),
+            png::ColorType::Rgb => (3, false),
+            _ => panic!("unexpected decoded PNG color type: {:?}", info.color_type),
+        };
+        assert!(
+            pixels
+                .chunks_exact(channels)
+                .any(|p| p[0..3] != [0, 0, 0] && (!has_alpha || p[3] == 255)),
+            "all decoded pixels are transparent or black"
+        );
+    }
+
+    #[test]
     fn native_path_and_generic_large_icons_have_real_png_dimensions() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let target = IconTarget::Path(PathTarget {
@@ -608,6 +745,7 @@ mod tests {
                 image.width > 32 && image.height > 32,
                 "{requested}: {image:?}"
             );
+            assert_png_has_opaque_non_background_pixel(&image.png);
             assert_eq!(
                 super::super::icon::png_dimensions(&image.png),
                 Some((image.width, image.height))
@@ -615,6 +753,7 @@ mod tests {
         }
         let generic = generic.expect("generic extension image-list icon");
         assert!(generic.width > 32 && generic.height > 32);
+        assert_png_has_opaque_non_background_pixel(&generic.png);
         assert_eq!(
             super::super::icon::png_dimensions(&generic.png),
             Some((generic.width, generic.height))

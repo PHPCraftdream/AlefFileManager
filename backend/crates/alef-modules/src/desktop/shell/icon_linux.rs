@@ -201,51 +201,56 @@ fn theme_name_is_safe(name: &str) -> bool {
 }
 
 fn theme_order(root: &Path, preferred: Option<String>) -> Vec<String> {
-    const MAX_THEMES: usize = 32;
     const FALLBACKS: [&str; 2] = ["Adwaita", "hicolor"];
-    let mut order = Vec::new();
-    if let Some(theme) = preferred.filter(|theme| theme_name_is_safe(theme)) {
-        if !FALLBACKS.contains(&theme.as_str()) {
-            order.push(theme);
+
+    fn visit(root: &Path, name: &str, order: &mut Vec<String>) {
+        const MAX_THEMES: usize = 32;
+        const FALLBACKS: [&str; 2] = ["Adwaita", "hicolor"];
+        if !theme_name_is_safe(name) || order.iter().any(|item| item == name) {
+            return;
         }
-    }
-    let mut pending = order.clone();
-    while let Some(theme) = pending.pop() {
-        let index = root.join(&theme).join("index.theme");
-        let Ok(text) = fs::read_to_string(index) else {
-            continue;
+        let missing_fallbacks = FALLBACKS
+            .iter()
+            .filter(|fallback| !order.iter().any(|item| item == **fallback))
+            .count();
+        let reserve_after = missing_fallbacks - usize::from(FALLBACKS.contains(&name));
+        if order.len() + 1 + reserve_after > MAX_THEMES {
+            return;
+        }
+        order.push(name.to_owned());
+
+        let Ok(text) = fs::read_to_string(root.join(name).join("index.theme")) else {
+            return;
         };
         let mut in_icon_theme = false;
+        let mut parents = Vec::new();
         for line in text.lines().map(str::trim) {
             if line.starts_with('[') {
                 in_icon_theme = line == "[Icon Theme]";
-                continue;
-            }
-            if in_icon_theme {
+            } else if in_icon_theme {
                 if let Some(value) = line.strip_prefix("Inherits=") {
-                    for parent in value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|parent| theme_name_is_safe(parent) && !FALLBACKS.contains(parent))
-                    {
-                        if order.len() >= MAX_THEMES - FALLBACKS.len() {
-                            break;
-                        }
-                        if !order.iter().any(|item| item == parent) {
-                            order.push(parent.to_owned());
-                            pending.push(parent.to_owned());
-                        }
-                    }
+                    parents.extend(
+                        value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|parent| theme_name_is_safe(parent))
+                            .map(str::to_owned),
+                    );
                 }
             }
         }
-    }
-    for fallback in FALLBACKS {
-        if !order.iter().any(|item| item == fallback) {
-            order.push(fallback.to_owned());
+        for parent in parents {
+            visit(root, &parent, order);
         }
     }
-    order.truncate(MAX_THEMES);
+
+    let mut order = Vec::new();
+    if let Some(theme) = preferred {
+        visit(root, &theme, &mut order);
+    }
+    for fallback in FALLBACKS {
+        visit(root, fallback, &mut order);
+    }
     order
 }
 
@@ -321,15 +326,18 @@ mod tests {
         fs::create_dir_all(theme.join("32x32/mimetypes")).expect("theme directory");
         fs::write(
             theme.join("index.theme"),
-            "[Icon Theme]\nInherits=hicolor,Adwaita\n[32x32/status]\nSize=32\n",
+            "[Icon Theme]\nInherits=Parent\n[32x32/status]\nSize=32\n",
         )
         .expect("index");
-        let inherited = root.path().join("hicolor/32x32/mimetypes");
+        let inherited = root.path().join("Parent/32x32/mimetypes");
         fs::create_dir_all(&inherited).expect("inherited directory");
         fs::write(inherited.join("application-x-test.png"), b"test").expect("inherited icon");
         assert_eq!(
             find_named_icon(root.path(), "application-x-test", 24, Some("Custom")),
-            Some(inherited.join("application-x-test.png"))
+            Some(
+                root.path()
+                    .join("Parent/32x32/mimetypes/application-x-test.png")
+            )
         );
     }
 
@@ -339,6 +347,17 @@ mod tests {
         assert_eq!(
             theme_order(root.path(), Some("../outside".to_owned())),
             ["Adwaita", "hicolor"]
+        );
+        let root = tempfile::tempdir().expect("tempdir");
+        let inherited = root.path().join("A/index.theme");
+        fs::create_dir_all(root.path().join("A")).expect("theme");
+        fs::write(&inherited, "[Icon Theme]\nInherits=hicolor,Other\n").expect("index");
+        let branch = root.path().join("Other/index.theme");
+        fs::create_dir_all(root.path().join("Other")).expect("other theme");
+        fs::write(&branch, "[Icon Theme]\nInherits=Nested\n").expect("other index");
+        assert_eq!(
+            theme_order(root.path(), Some("A".to_owned())),
+            ["A", "hicolor", "Other", "Nested", "Adwaita"]
         );
     }
 
@@ -359,19 +378,74 @@ mod tests {
             ["A", "B", "Adwaita", "hicolor"]
         );
 
+        let root = tempfile::tempdir().expect("nested theme root");
+        for (name, inherits) in [("A", "B,C"), ("B", "D")] {
+            fs::create_dir_all(root.path().join(name)).expect("theme directory");
+            fs::write(
+                root.path().join(name).join("index.theme"),
+                format!("[Icon Theme]\nInherits={inherits}\n"),
+            )
+            .expect("index");
+        }
+        assert_eq!(
+            theme_order(root.path(), Some("A".to_owned())),
+            ["A", "B", "D", "C", "Adwaita", "hicolor"]
+        );
+
         let parents = (0..40)
             .map(|index| format!("Theme{index}"))
             .collect::<Vec<_>>()
             .join(",");
+        let root = tempfile::tempdir().expect("bounded theme root");
+        fs::create_dir_all(root.path().join("A")).expect("theme A");
         fs::write(
             root.path().join("A/index.theme"),
             format!("[Icon Theme]\nInherits={parents}\n"),
         )
         .expect("index");
+        assert_eq!(theme_order(root.path(), Some("A".to_owned())).len(), 32);
+        fs::write(
+            root.path().join("A/index.theme"),
+            format!(
+                "[Icon Theme]\nInherits={}\n",
+                (0..30)
+                    .map(|index| format!("T{index}"))
+                    .chain(["hicolor".to_owned(), "Later".to_owned()])
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        )
+        .expect("capacity index");
+        let capacity = theme_order(root.path(), Some("A".to_owned()));
+        assert_eq!(capacity.len(), 32);
+        assert_eq!(capacity[31], "Adwaita");
+        assert!(capacity.contains(&"hicolor".to_owned()));
+
+        let exact = (0..29).map(|index| format!("T{index}")).collect::<Vec<_>>();
+        fs::write(
+            root.path().join("A/index.theme"),
+            format!("[Icon Theme]\nInherits={}\n", exact.join(",")),
+        )
+        .expect("index");
         let order = theme_order(root.path(), Some("A".to_owned()));
         assert_eq!(order.len(), 32);
-        assert_eq!(order.iter().filter(|name| *name == "Adwaita").count(), 1);
-        assert_eq!(order.iter().filter(|name| *name == "hicolor").count(), 1);
+        assert!(order.contains(&"Adwaita".to_owned()));
+        assert!(order.contains(&"hicolor".to_owned()));
+    }
+
+    #[test]
+    fn configured_hicolor_precedes_adwaita_assets() {
+        let root = tempfile::tempdir().expect("theme root");
+        fs::create_dir_all(root.path().join("hicolor/32x32/mimetypes")).expect("hicolor");
+        fs::create_dir_all(root.path().join("Adwaita/32x32/mimetypes")).expect("Adwaita");
+        fs::write(root.path().join("hicolor/32x32/mimetypes/asset.png"), b"h")
+            .expect("hicolor asset");
+        fs::write(root.path().join("Adwaita/32x32/mimetypes/asset.png"), b"a")
+            .expect("Adwaita asset");
+        assert_eq!(
+            find_named_icon(root.path(), "asset", 32, Some("hicolor")),
+            Some(root.path().join("hicolor/32x32/mimetypes/asset.png"))
+        );
     }
 
     #[test]
@@ -425,10 +499,36 @@ mod tests {
     }
 
     #[test]
+    fn requested_size_falls_back_to_largest_smaller_asset() {
+        let root = tempfile::tempdir().expect("theme root");
+        for size in [16, 32, 48] {
+            let directory = root.path().join(format!("{size}x{size}/mimetypes"));
+            fs::create_dir_all(&directory).expect("size context");
+            fs::write(directory.join("sample.png"), [size as u8]).expect("asset");
+        }
+        assert!(find_theme_icon(root.path(), "sample", 64)
+            .unwrap()
+            .ends_with("48x48/mimetypes/sample.png"));
+    }
+
+    #[test]
     fn no_theme_asset_is_a_generic_fallback_for_non_paths() {
-        let root = tempfile::tempdir().expect("tempdir");
-        assert!(find_named_icon(root.path(), "not-installed", 32, None).is_none());
-        assert!(!generic_fallback().png.is_empty());
+        let scratch = tempfile::tempdir().expect("scratch data root");
+        let data_dirs = std::env::join_paths([scratch.path()]).expect("single data path");
+        let config = ThemeConfig {
+            roots: icon_roots_with_system(None, Some(data_dirs.as_os_str()), &[]),
+            preferred: None,
+        };
+        let fallback = generic_fallback();
+        let result = icon_for_with_config(
+            &IconTarget::Extension(super::super::icon::ExtensionTarget {
+                extension: "txt".into(),
+            }),
+            32,
+            &config,
+        )
+        .expect("GIO content type resolution returns fallback");
+        assert_eq!(result.png, fallback.png);
     }
 }
 
