@@ -35,7 +35,6 @@ export function startupScenarios({ exe }) {
   };
 }
 
-const BUS_XFAIL = 'XFAIL audit #160: the pre-launch consent gate correctly holds the probes until release, but the launcher\'s consent settle path is not yet proven off the BUS';
 export function busScenarios({ drive, exe, verbose, timeoutMs }) {
   return {
     async bus() {
@@ -81,9 +80,10 @@ export function busScenarios({ drive, exe, verbose, timeoutMs }) {
         if (!/path=\S+ info=ok appInfo=ok event=ok$/.test(complete)) problems.push(`probe did not verify path/os.info/app.info/event: ${complete}`);
         const verdictLine = await running.waitFor(line => line === 'ALEF_E2E RESULT PASS bus-consent-probe', timeoutMs, 'PASS probe verdict');
         if (!verdictLine || running.lines.indexOf(verdictLine) <= probeAt) problems.push('probe PASS verdict did not follow successful probe');
+        const stalls = running.lines.filter(line => line.startsWith('ALEF_BUS_STALL'));
+        if (stalls.length > 0) problems.push(`the consent launch raised bus stall diagnostics: ${stalls.join(' | ')}`);
         if (problems.length === 0) {
-          console.log(`    ${BUS_XFAIL}`);
-          lines.push(BUS_XFAIL);
+          lines.push('consent launch: probes held until release, then finished without a bus stall');
         }
       } catch (error) {
         problems.push(error.message);

@@ -3,8 +3,9 @@
 //! and how the rights an application asks for are decided before it starts.
 use std::{
     fmt,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -14,6 +15,7 @@ use alef_core::{
         consent::{Consent, ConsentStore, Decision, FileConsentStore, Identity, Right},
         permissions::PermissionSet,
     },
+    session::BlockingExecutor,
 };
 #[cfg(feature = "e2e")]
 use serde_json::Value;
@@ -28,6 +30,8 @@ pub mod permissions;
 use hooks::{scripted_asker, window_asker, with_automation};
 #[cfg(test)]
 pub(crate) mod fixtures;
+#[cfg(test)]
+mod settle_io_tests;
 
 use ask::{ask_in_window, request_for, AppSummary};
 
@@ -101,6 +105,53 @@ pub fn shadow_folder(identity: &Identity) -> PathBuf {
 /// The decisions of the users, one file per application.
 pub fn store() -> FileConsentStore {
     FileConsentStore::new(runtime_home().join("consent"))
+}
+
+/// Local consent budget of the launcher: at most two queued or running jobs — the reads of the
+/// watch and the answer write of the consent window. This is not a global or per-session
+/// framework limit.
+pub(crate) fn executor() -> &'static BlockingExecutor {
+    static EXECUTOR: OnceLock<BlockingExecutor> = OnceLock::new();
+    EXECUTOR.get_or_init(|| {
+        BlockingExecutor::new(NonZeroUsize::new(2).expect("non-zero consent budget"))
+    })
+}
+
+/// The stored decisions of the application, read on `executor`: the file of the store is blocking
+/// work and never a wait on the async context. A lost turn of the executor is a store failure.
+pub async fn stored_decisions(
+    executor: &BlockingExecutor,
+    store: &FileConsentStore,
+    identity: &Identity,
+) -> std::io::Result<Option<Consent>> {
+    let (store, identity) = (store.clone(), identity.clone());
+    executor
+        .submit(move || store.load(&identity))
+        .map_err(store_error)?
+        .result()
+        .await
+        .map_err(store_error)?
+}
+
+/// Writes the decisions of the application on `executor`; otherwise as [`stored_decisions`].
+pub async fn store_decisions(
+    executor: &BlockingExecutor,
+    store: &FileConsentStore,
+    identity: &Identity,
+    consent: &Consent,
+) -> std::io::Result<()> {
+    let (store, identity, consent) = (store.clone(), identity.clone(), consent.clone());
+    executor
+        .submit(move || store.save(&identity, &consent))
+        .map_err(store_error)?
+        .result()
+        .await
+        .map_err(store_error)?
+}
+
+/// A lost turn on the consent budget (full, cancelled, panicked) is a store failure.
+fn store_error(error: AlefError) -> std::io::Error {
+    std::io::Error::other(error.to_string())
 }
 
 /// Whom the decisions belong to. An application run from a folder is known by its id and where it
@@ -308,11 +359,7 @@ pub fn settle_with(
     stored: Option<Consent>,
     asker: &Asker,
 ) -> Result<Settled, Unanswered> {
-    let mut consent = stored.unwrap_or_else(Consent::undecided);
-    let new: Vec<Right> = consent.missing(wanted).into_iter().cloned().collect();
-    let dropped = consent
-        .decisions()
-        .any(|(right, _)| !wanted.contains(right));
+    let (mut consent, new, dropped) = pending(stored, wanted);
     if !new.is_empty() {
         let unanswered = |why| Unanswered {
             rights: new.clone(),
@@ -363,6 +410,61 @@ pub fn settle_with(
     })
 }
 
+/// [`settle_with`] off the calling context: the ask of the window — the files of the exchange and
+/// the wait for the window process — runs on `executor`, the other askers decide in place as
+/// [`settle_with`] does. The outcomes and the persistence are the same.
+pub async fn settle_with_async(
+    executor: &BlockingExecutor,
+    app: &AppSummary,
+    wanted: &[Right],
+    describe: &dyn Fn(&Right) -> Option<String>,
+    stored: Option<Consent>,
+    asker: &Asker,
+) -> Result<Settled, Unanswered> {
+    if !matches!(asker, Asker::Window { .. }) {
+        return settle_with(app, wanted, describe, stored, asker);
+    }
+    let (mut consent, new, dropped) = pending(stored, wanted);
+    if new.is_empty() {
+        consent.retain(wanted);
+        return Ok(Settled {
+            consent,
+            changed: dropped,
+        });
+    }
+    // The question is built here; only owned data crosses into the executor.
+    let request = window_request(asker, app, wanted, describe, &consent);
+    let unanswered = |why| Unanswered {
+        rights: new.clone(),
+        why,
+    };
+    match ask::ask_in_window_on(executor, &request).await {
+        Ok(Some((decisions, _))) => {
+            for (right, decision) in decisions {
+                consent.set(right, decision);
+            }
+        }
+        Ok(None) => return Err(unanswered(Why::Cancelled)),
+        Err(reason) => return Err(unanswered(Why::Failed(reason))),
+    }
+    consent.retain(wanted);
+    Ok(Settled {
+        consent,
+        changed: true,
+    })
+}
+
+/// What is undecided before any question: the consent to start from, the rights nobody decided on
+/// and whether a right the manifest dropped is to be forgotten.
+fn pending(stored: Option<Consent>, wanted: &[Right]) -> (Consent, Vec<Right>, bool) {
+    let mut consent = stored.unwrap_or_else(Consent::undecided);
+    let new: Vec<Right> = consent.missing(wanted).into_iter().cloned().collect();
+    let dropped = consent
+        .decisions()
+        .any(|(right, _)| !wanted.contains(right));
+    (consent, new, dropped)
+}
+
 /// The rights of the running application are what the user decided, right by right. The following
 /// of the store (`watch`) narrows whatever is too wide, so a wrong start would be put right behind
 /// its back within a moment: the start is checked instead of being trusted to that.
@@ -393,9 +495,22 @@ pub fn watch(
         let mut tick = tokio::time::interval(every);
         loop {
             tick.tick().await;
-            if let Ok(Some(stored)) = store.load(&identity) {
-                permissions.narrow(&stored);
-            }
+            // The read is blocking file work: it waits on the consent budget, never on a runtime
+            // worker; a tick that finds the budget full is skipped, the next one reads again.
+            let Ok(job) = executor().submit({
+                let (permissions, store, identity) =
+                    (permissions.clone(), store.clone(), identity.clone());
+                move || {
+                    store
+                        .load(&identity)
+                        .ok()
+                        .flatten()
+                        .map(|stored| permissions.narrow(&stored))
+                }
+            }) else {
+                continue;
+            };
+            let _ = job.result().await;
         }
     })
 }
@@ -403,6 +518,13 @@ pub fn watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every await of a test is bounded: a regression fails instead of hanging the suite.
+    async fn bounded<F: std::future::Future>(future: F) -> F::Output {
+        tokio::time::timeout(std::time::Duration::from_secs(10), future)
+            .await
+            .expect("bounded test await")
+    }
 
     fn app() -> AppSummary {
         AppSummary {
@@ -600,6 +722,109 @@ mod tests {
             "a right given waits for the next start"
         );
         handle.abort();
+    }
+
+    fn window_asker_of_tests() -> Asker {
+        #[cfg(feature = "e2e")]
+        let asker = Asker::Window { automation: None };
+        #[cfg(not(feature = "e2e"))]
+        let asker = Asker::Window {};
+        asker
+    }
+
+    #[tokio::test]
+    async fn askers_that_decide_in_place_settle_the_same_through_the_async_path() {
+        let executor = BlockingExecutor::new(std::num::NonZeroUsize::new(2).unwrap());
+        let wanted = rights();
+        let granted = bounded(settle_with_async(
+            &executor,
+            &app(),
+            &wanted,
+            &|_| None,
+            None,
+            &Asker::Grant(Decision::Allow),
+        ))
+        .await
+        .unwrap();
+        let settled = settle(&app(), &wanted, None, &Asker::Grant(Decision::Allow)).unwrap();
+        assert_eq!(granted.consent, settled.consent);
+        assert_eq!(granted.changed, settled.changed);
+        let async_error = bounded(settle_with_async(
+            &executor,
+            &app(),
+            &wanted,
+            &|_| None,
+            None,
+            &Asker::Nobody,
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(
+            async_error,
+            settle(&app(), &wanted, None, &Asker::Nobody).unwrap_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_is_asked_off_the_bus_when_every_right_is_already_decided() {
+        let wanted = rights();
+        let mut stored = Consent::undecided();
+        for (index, right) in wanted.iter().enumerate() {
+            stored.set(
+                right.clone(),
+                [Decision::Allow, Decision::Substitute, Decision::Deny][index],
+            );
+        }
+        let executor = BlockingExecutor::new(std::num::NonZeroUsize::new(2).unwrap());
+        let asker = window_asker_of_tests();
+        let settled = bounded(settle_with_async(
+            &executor,
+            &app(),
+            &wanted,
+            &|_| None,
+            Some(stored.clone()),
+            &asker,
+        ))
+        .await
+        .unwrap();
+        assert!(!settled.changed);
+        assert_eq!(settled.consent, stored);
+    }
+
+    #[tokio::test]
+    async fn the_decisions_are_written_and_read_on_an_injected_executor() {
+        let executor = BlockingExecutor::new(std::num::NonZeroUsize::new(2).unwrap());
+        let scratch = tempfile::tempdir().unwrap();
+        let store = FileConsentStore::new(scratch.path().join("consent"));
+        let identity = Identity {
+            app_id: "org.example.app".to_owned(),
+            signer: Some("dir:example".to_owned()),
+        };
+        let nothing = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stored_decisions(&executor, &store, &identity),
+        )
+        .await
+        .expect("the read finishes")
+        .unwrap();
+        assert_eq!(nothing, None, "nothing is stored before the first write");
+        let mut consent = Consent::undecided();
+        consent.set(Right::plain("clipboard.read"), Decision::Substitute);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store_decisions(&executor, &store, &identity, &consent),
+        )
+        .await
+        .expect("the write finishes")
+        .unwrap();
+        let read_back = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stored_decisions(&executor, &store, &identity),
+        )
+        .await
+        .expect("the read finishes")
+        .unwrap();
+        assert_eq!(read_back, Some(consent));
     }
 
     #[test]

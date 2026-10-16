@@ -9,7 +9,10 @@ use std::{
     process::Command,
 };
 
-use alef_core::security::consent::{Consent, Decision, Right};
+use alef_core::{
+    security::consent::{Consent, Decision, Right},
+    session::BlockingExecutor,
+};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "e2e")]
 use serde_json::Value;
@@ -180,6 +183,43 @@ pub fn write_answer(path: &Path, answer: &Answer) -> io::Result<()> {
     fs::rename(&partial, path)
 }
 
+/// [`ask_in_window`] on `executor`: the files of the exchange are written and the window process
+/// is waited for off the async context. A lost turn of the executor (full, cancelled) is a
+/// failure of the window.
+pub async fn ask_in_window_on(
+    executor: &BlockingExecutor,
+    request: &Request,
+) -> Result<Option<(BTreeMap<Right, Decision>, Option<bool>)>, String> {
+    let request = request.clone();
+    executor
+        .submit(move || ask_in_window(&request))
+        .map_err(|error| format!("the window cannot be started: {error}"))?
+        .result()
+        .await
+        .map_err(|error| format!("the window cannot be waited for: {error}"))?
+}
+
+/// [`write_answer`] on `executor`: the file of the exchange is blocking work, and the handler of
+/// the window must not hold a runtime worker while it writes.
+pub async fn write_answer_on(
+    executor: &BlockingExecutor,
+    path: &Path,
+    answer: &Answer,
+) -> io::Result<()> {
+    let (path, answer) = (path.to_owned(), answer.clone());
+    executor
+        .submit(move || write_answer(&path, &answer))
+        .map_err(|error| io::Error::other(format!("the answer cannot be written: {error}")))?
+        .result()
+        .await
+        .map_err(|error| io::Error::other(format!("the answer cannot be written: {error}")))?
+}
+
+/// [`write_answer_on`] on the shared consent budget.
+pub async fn write_answer_async(path: &Path, answer: &Answer) -> io::Result<()> {
+    write_answer_on(super::executor(), path, answer).await
+}
+
 /// Shows the window in a process of its own and waits for it. `Ok(None)`: the user closed it
 /// without answering. The files of the exchange are removed whatever happens.
 pub fn ask_in_window(
@@ -227,6 +267,7 @@ pub fn ask_in_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
 
     fn app() -> AppSummary {
         AppSummary {
@@ -417,6 +458,103 @@ mod tests {
             validate(&request, &incomplete).unwrap_err(),
             "clipboard.read is not answered"
         );
+    }
+
+    #[tokio::test]
+    async fn the_answer_is_written_through_an_injected_executor_and_is_never_half_written() {
+        let executor = BlockingExecutor::new(std::num::NonZeroUsize::new(2).unwrap());
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("a.answer.json");
+        let wanted = rights();
+        let given = answer(&[(&wanted[0], Decision::Deny, false)]);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            write_answer_on(&executor, &path, &given),
+        )
+        .await
+        .expect("the answer is written in time")
+        .unwrap();
+        let back: Answer = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(back, given);
+        assert!(!path.with_extension("part").exists());
+    }
+
+    #[tokio::test]
+    async fn a_full_budget_refuses_the_window_without_starting_it() {
+        let executor = BlockingExecutor::new(std::num::NonZeroUsize::new(1).unwrap());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let blocker = executor
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(30));
+            })
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("blocker started")
+            .expect("signal");
+        let request = request_for(&app(), &rights(), &|_| None, &Consent::undecided());
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ask_in_window_on(&executor, &request),
+        )
+        .await
+        .expect("the refused ask does not wait")
+        .unwrap_err();
+        assert!(error.contains("full"), "{error}");
+        release_tx.send(()).expect("release the blocker");
+        tokio::time::timeout(std::time::Duration::from_secs(5), blocker.result())
+            .await
+            .expect("blocker finishes")
+            .expect("blocker job");
+    }
+
+    #[test]
+    fn the_answer_write_waits_for_its_turn_on_the_executor_and_does_not_run_inline() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .expect("the test runtime starts");
+        runtime.block_on(async {
+            let executor = BlockingExecutor::new(std::num::NonZeroUsize::new(2).unwrap());
+            // The single blocking thread of the runtime is held by the blocker, so the submitted
+            // write is admitted but cannot start: a poll stays pending and no file appears.
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(30));
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+                .await
+                .expect("blocker started")
+                .expect("signal");
+            let folder = tempfile::tempdir().unwrap();
+            let path = folder.path().join("a.answer.json");
+            let wanted = rights();
+            let given = answer(&[(&wanted[0], Decision::Deny, false)]);
+            let mut write = Box::pin(write_answer_on(&executor, &path, &given));
+            let waker = std::task::Waker::noop();
+            let mut cx = std::task::Context::from_waker(waker);
+            assert!(
+                write.as_mut().poll(&mut cx).is_pending(),
+                "an inline write would finish in the first poll"
+            );
+            assert!(!path.exists(), "the answer was written before its turn");
+            release_tx.send(()).expect("release the blocker");
+            tokio::time::timeout(std::time::Duration::from_secs(5), write.as_mut())
+                .await
+                .expect("the write finishes after the release")
+                .expect("the write succeeds");
+            let back: Answer = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(back, given);
+            tokio::time::timeout(std::time::Duration::from_secs(5), blocker)
+                .await
+                .expect("blocker exits")
+                .expect("blocker joins");
+        });
     }
 
     #[test]
