@@ -17,6 +17,21 @@ pub struct AiPermissions {
     pub roles: Vec<String>,
     /// Tools of the application the model may call (`ai.tool`), in manifest order.
     pub tools: Vec<AiTool>,
+    /// Builtin capabilities delegated to the model.
+    #[serde(default)]
+    pub builtin: Vec<AiBuiltin>,
+}
+
+/// A builtin capability and its optional filesystem scopes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "manifest.ts")]
+pub struct AiBuiltin {
+    /// One of the supported builtin capability names.
+    pub name: String,
+    /// Filesystem path scopes; must be empty for execution capabilities.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 /// A tool the application declares for the model: name, description and a JSON schema of the
@@ -42,6 +57,40 @@ fn valid_name(name: &str) -> bool {
         && bytes[1..]
             .iter()
             .all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
+/// Reject broad or parent-traversing roots before the permission grammar is parsed.
+fn specific_scope(scope: &str) -> bool {
+    let normalized = scope.replace('\\', "/");
+    let parts: Vec<&str> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect();
+    let drive_prefix = parts.first().is_some_and(|part| part.ends_with(':'));
+    let variable_prefix = parts.first().is_some_and(|part| part.starts_with('$'));
+    let rooted = normalized.starts_with('/') || drive_prefix;
+    if parts.iter().any(|part| *part == "..") {
+        return false;
+    }
+    let base_start = usize::from(drive_prefix || variable_prefix);
+    let first_wildcard = parts.iter().position(|part| part.contains('*'));
+    if first_wildcard.is_some_and(|index| index < base_start) {
+        return false;
+    }
+    let concrete = parts[base_start..]
+        .iter()
+        .take_while(|part| !part.contains('*'))
+        .count();
+    if concrete == 0 && first_wildcard.is_some() {
+        return false;
+    }
+    if variable_prefix {
+        concrete >= 1
+    } else if rooted {
+        concrete >= 2
+    } else {
+        concrete >= 1
+    }
 }
 
 /// Schema keywords of the allowed subset; anything else (`$ref` included) is rejected.
@@ -75,6 +124,45 @@ pub fn validate_ai(ai: &AiPermissions) -> Result<(), AlefError> {
         AlefError::new(ErrorCode::ManifestInvalid, format!("{path}: {reason}"))
             .with_details(json!({"path": path}))
     };
+    for (index, builtin) in ai.builtin.iter().enumerate() {
+        let path = format!("ai.builtin[{index}]");
+        if !["fs.read", "fs.write", "fs.list", "exec", "bash"].contains(&builtin.name.as_str()) {
+            return Err(invalid(&format!("{path}.name"), "unsupported builtin name"));
+        }
+        if ai.builtin[..index]
+            .iter()
+            .any(|other| other.name == builtin.name)
+        {
+            return Err(invalid(&format!("{path}.name"), "duplicate builtin"));
+        }
+        let filesystem = builtin.name.starts_with("fs.");
+        if filesystem && builtin.scopes.is_empty() {
+            return Err(invalid(
+                &format!("{path}.scopes"),
+                "filesystem builtin requires scopes",
+            ));
+        }
+        if !filesystem && !builtin.scopes.is_empty() {
+            return Err(invalid(
+                &format!("{path}.scopes"),
+                "execution builtin cannot have scopes",
+            ));
+        }
+        for (scope_index, scope) in builtin.scopes.iter().enumerate() {
+            if builtin.scopes[..scope_index].contains(scope) {
+                return Err(invalid(
+                    &format!("{path}.scopes[{scope_index}]"),
+                    "duplicate scope",
+                ));
+            }
+            if !specific_scope(scope) {
+                return Err(invalid(
+                    &format!("{path}.scopes[{scope_index}]"),
+                    "scope must be a specific, safe path",
+                ));
+            }
+        }
+    }
     for (index, role) in ai.roles.iter().enumerate() {
         if !valid_name(role) {
             return Err(invalid(
@@ -309,6 +397,7 @@ mod tests {
         AiPermissions {
             roles: roles.iter().map(|role| role.to_string()).collect(),
             tools,
+            builtin: Vec::new(),
         }
     }
 
@@ -398,6 +487,45 @@ mod tests {
 
     fn set(section: Option<AiPermissions>) -> PermissionSet {
         PermissionSet::from_manifest(&policy(section), &vars()).expect("valid policy")
+    }
+
+    #[test]
+    fn specific_scope_requires_a_concrete_base_before_wildcards() {
+        for scope in ["/home/alef-ai/**", "C:/Users/Example/**"] {
+            assert!(specific_scope(scope), "{scope}");
+        }
+        for scope in ["/home/**", "C:/Users/**", "$HOME/**", "$HOME/*/later/**"] {
+            assert!(!specific_scope(scope), "{scope}");
+        }
+    }
+
+    #[test]
+    fn builtin_names_scopes_and_defaults_are_validated() {
+        let parsed: AiPermissions = serde_json::from_value(json!({"roles": [], "tools": [], "builtin": [{"name": "fs.read", "scopes": ["$HOME/Documents/*"]}, {"name": "exec"}]})).expect("builtin shape");
+        validate_ai(&parsed).expect("supported builtins");
+        let omitted: AiPermissions = serde_json::from_value(json!({"roles": [], "tools": []}))
+            .expect("omitted builtin defaults");
+        assert!(omitted.builtin.is_empty());
+        for value in [
+            json!({"roles": [], "tools": [], "builtin": [{"name": "unknown"}]}),
+            json!({"roles": [], "tools": [], "builtin": [{"name": "exec", "scopes": ["x"]}]}),
+            json!({"roles": [], "tools": [], "builtin": [{"name": "fs.read", "scopes": ["$HOME/../x"]}]}),
+            json!({"roles": [], "tools": [], "builtin": [{"name": "fs.read", "scopes": ["/home/**"]}]}),
+        ] {
+            let parsed: AiPermissions = serde_json::from_value(value).expect("deserializes");
+            error(&parsed);
+        }
+    }
+
+    #[test]
+    fn builtin_scope_and_name_duplicates_are_rejected() {
+        for value in [
+            json!({"roles": [], "tools": [], "builtin": [{"name": "fs.read", "scopes": ["$HOME/a", "$HOME/a"]}]}),
+            json!({"roles": [], "tools": [], "builtin": [{"name": "exec"}, {"name": "exec"}]}),
+        ] {
+            let parsed: AiPermissions = serde_json::from_value(value).expect("deserializes");
+            error(&parsed);
+        }
     }
 
     #[test]

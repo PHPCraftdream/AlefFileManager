@@ -110,6 +110,12 @@ test('every subpath export of @alef-runtime/api points at an existing source fil
   }
 });
 
+test('the AI segment exports only its allow-listed values', async () => {
+  const segment = await import('../../src/system/ai.ts');
+  assert.deepEqual(Object.keys(segment).sort(), ['ai', 'chat', 'request', 'roles', 'session']);
+  assert.deepEqual(Object.keys(segment.ai).sort(), ['chat', 'request', 'roles', 'session', 'tools']);
+});
+
 // Split masked source into top-level statements: { text, line } (1-based line of the statement head).
 function topLevelStatements(masked) {
   const statements = [];

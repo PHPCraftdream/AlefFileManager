@@ -1,8 +1,4 @@
-// The ai module through the real transport against the deterministic FakeProvider of the e2e build
-// (docs/stages/m9-ai.md): the roles, the chat stream to its completed end, a tool round trip that
-// carries the result of the page's handler back into the next answer, and a break that cancels the
-// chat. In the other consent modes the user answered before the start: a denied role, a substituted
-// role and a denied tool registration each name their own error.
+// The M9.2 AI surface: roles, requests, session history, application tools and scoped builtins.
 import { api, guard, rejection, suite, until, verdict } from './harness.js';
 
 const { ai } = api;
@@ -25,6 +21,64 @@ async function allowed(t, check) {
     if (roles.length !== 1) throw new Error(`${roles.length} roles, expected only the allowed one`);
   });
 
+  await check('ai-request-api-streams-to-a-completed-end', async () => {
+    const parts = [];
+    for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }] })) parts.push(part);
+    if (!endOf(parts).includes('Thinking')) throw new Error('request had no text response');
+  });
+
+  await check('ai-session-history-is-carried-between-sends', async () => {
+    const session = await ai.session({ role: 'smart' });
+    try {
+      const first = [];
+      for await (const part of session.send({ messages: [{ role: 'user', content: 'hello' }] })) first.push(part);
+      const firstText = endOf(first);
+      const second = [];
+      for await (const part of session.send({ messages: [{ role: 'user', content: 'follow up' }] })) second.push(part);
+      const secondText = endOf(second);
+      if (!secondText.startsWith('History ')) throw new Error(`unexpected follow-up: ${secondText}`);
+      const history = JSON.parse(secondText.slice('History '.length));
+      if (!Array.isArray(history) || history.length !== 3
+        || history[0]?.role !== 'user' || history[0]?.content !== 'hello'
+        || history[1]?.role !== 'assistant' || history[1]?.content !== firstText
+        || history[2]?.role !== 'user' || history[2]?.content !== 'follow up') {
+        throw new Error(`unexpected history: ${JSON.stringify(history)}`);
+      }
+    } finally { await session.close(); }
+  });
+
+  await check('ai-session-without-tools-streams', async () => {
+    const session = await ai.session({ role: 'smart' });
+    try {
+      const parts = [];
+      for await (const part of session.send({ messages: [{ role: 'user', content: 'hello' }] })) parts.push(part);
+      const text = endOf(parts);
+      if (!text.startsWith('History ')) throw new Error(`session response: ${text}`);
+      if (parts.some(part => part.type === 'tool_call')) throw new Error('session without tools emitted a tool_call');
+    } finally { await session.close(); }
+  });
+
+  await check('ai-builtin-inside-scope-returns-sentinel-content', async () => {
+    const parts = [];
+    for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: JSON.stringify({ path: t.aiInside }) }], builtin: ['fs.read'] })) parts.push(part);
+    const text = endOf(parts);
+    if (!text.includes(t.aiSentinel)) throw new Error(`inside-scope content missing: ${text}`);
+  });
+  await check('ai-builtin-outside-scope-is-denied', async () => {
+    const error = await rejection((async () => { for await (const _part of ai.request({ role: 'smart', messages: [{ role: 'user', content: JSON.stringify({ path: t.aiOutside }) }], builtin: ['fs.read'] })) {} })());
+    if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name}, expected PERMISSION_DENIED`);
+  });
+
+  await check('ai-red-absent-and-exec-denied', async () => {
+    const roles = await ai.roles();
+    if (roles.some(role => role.id === 'red')) throw new Error('red role must not be exposed');
+    const error = await rejection((async () => {
+      for await (const _part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }], builtin: ['exec'] })) {}
+    })());
+    if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name}, expected PERMISSION_DENIED for absent exec right`);
+  });
+
+
   await check('ai-chat-streams-to-a-completed-end', async () => {
     const parts = [];
     for await (const part of ai.chat({ role: 'smart', messages: [{ role: 'user', content: 'hello' }] })) {
@@ -33,7 +87,6 @@ async function allowed(t, check) {
     const text = endOf(parts);
     if (!text.includes('Thinking')) throw new Error(`text: ${JSON.stringify(text)}`);
     const usage = parts.find(part => part.type === 'usage');
-    // The FakeProvider of the e2e build: 10 + 5 per round in, 5 + 3 per result out, estimated, complete.
     if (!usage || usage.inputTokens !== 10 || usage.outputTokens !== 5 || usage.estimated !== true || usage.complete !== true) {
       throw new Error(`usage: ${JSON.stringify(usage)}`);
     }

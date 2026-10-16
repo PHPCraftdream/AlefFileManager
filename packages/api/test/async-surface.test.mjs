@@ -157,6 +157,8 @@ const ARGS = {
   'updater.install': [],
   'ai.roles': [],
   'ai.chat': [{ role: 'smart', messages: [{ role: 'user', content: 'hi' }] }],
+  'ai.request': [{ role: 'smart', messages: [{ role: 'user', content: 'hi' }] }],
+  'ai.session': [{ role: 'smart' }],
   'ai.tools.handle': ['toolName', async () => null],
   'store.get': ['k'],
   'store.set': ['k', 1],
@@ -186,6 +188,10 @@ installRuntime({
     if (request.url === 'native://call/updater.download') return { json: { stream: 61, resource: 62 } };
     if (request.url === 'native://call/ai.roles') return { json: { roles: [] } };
     if (request.url === 'native://call/ai.chat') return { json: { chat: 1, stream: 71 } };
+    if (request.url === 'native://call/ai.request') return { json: { chat: 1, stream: 71 } };
+    if (request.url === 'native://call/ai.session.open') return { json: { conversation: 180 } };
+    if (request.url === 'native://call/ai.session.close') return { json: null };
+    if (request.url === 'native://call/ai.session.send') return { json: { chat: 1, stream: 71 } };
     if (request.url === 'native://stream/71') return { chunks: [endFrame()] };
     if (request.url === 'native://call/ai.tools.handle') return { json: { registration: 81, inert: false } };
     if (request.url === 'native://call/ai.tools.unhandle') return { json: null };

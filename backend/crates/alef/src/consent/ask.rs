@@ -10,7 +10,7 @@ use std::{
 };
 
 use alef_core::{
-    security::consent::{Consent, Decision, Right},
+    security::consent::{Consent, Decision, Right, RiskLevel},
     session::BlockingExecutor,
 };
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,9 @@ pub struct AskedRight {
     pub permission: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// How seriously the user should regard the right.
+    #[serde(default)]
+    pub level: RiskLevel,
     /// Why the user should think twice (see `Right::risk`); allowing it needs a confirmation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk: Option<String>,
@@ -112,6 +115,7 @@ pub fn request_for(
             .map(|right| AskedRight {
                 permission: right.permission.clone(),
                 scope: right.scope.clone(),
+                level: right.level(),
                 risk: right.risk().map(str::to_owned),
                 detail: describe(right),
                 decision: stored.decided(right).then(|| stored.decision(right)),
@@ -351,6 +355,34 @@ mod tests {
             let answered = answer(&[(&right, decision, false)]);
             assert_eq!(validate(&request, &answered).unwrap().0[&right], decision);
         }
+    }
+
+    #[test]
+    fn a_red_right_keeps_its_warning_and_requires_confirmation_to_allow() {
+        let right = Right::plain("ai.builtin.bash");
+        let request = request_for(
+            &app(),
+            std::slice::from_ref(&right),
+            &|_| None,
+            &Consent::undecided(),
+        );
+        let asked = &request.rights[0];
+        assert_eq!(asked.level, RiskLevel::Red);
+        assert!(asked
+            .risk
+            .as_deref()
+            .unwrap()
+            .contains("bypasses every protection"));
+
+        let missing_confirmation = answer(&[(&right, Decision::Allow, false)]);
+        assert!(validate(&request, &missing_confirmation)
+            .unwrap_err()
+            .contains("needs the confirmation"));
+        let confirmed = answer(&[(&right, Decision::Allow, true)]);
+        assert_eq!(
+            validate(&request, &confirmed).unwrap().0[&right],
+            Decision::Allow
+        );
     }
 
     #[test]

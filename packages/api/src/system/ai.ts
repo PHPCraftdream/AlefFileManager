@@ -40,6 +40,16 @@ export interface ChatOptions extends Cancelable {
   role: string;
   messages: ChatMessage[];
   tools?: string[];
+  builtin?: string[];
+}
+
+export type AiRequestOptions = ChatOptions;
+export type AiSessionOptions = { role: string; signal?: AbortSignal };
+export type AiSessionSendOptions = { messages: ChatMessage[]; tools?: string[]; builtin?: string[]; signal?: AbortSignal };
+export interface AiSession {
+  readonly id: number;
+  send(options: AiSessionSendOptions): AsyncIterable<ChatPart>;
+  close(): Promise<void>;
 }
 
 /** What a tool handler learns about the call that invoked it. */
@@ -126,6 +136,56 @@ function isMessage(message: unknown): message is ChatMessage {
   return (role === 'user' || role === 'assistant') && typeof content === 'string';
 }
 
+function validateMessages(messages: unknown, label: string): asserts messages is ChatMessage[] {
+  if (!Array.isArray(messages) || messages.length === 0 || !messages.every(isMessage)) {
+    throw new AlefError('INVALID_ARGUMENT', `${label}: messages must be a non-empty array of user/assistant messages.`);
+  }
+}
+
+function stream(chatCommand: string, args: object, signal?: AbortSignal): AsyncIterable<ChatPart> {
+  return iterate();
+
+  async function* iterate(): AsyncGenerator<ChatPart> {
+    const { chat: id, stream: streamId } = await call<{ chat: number; stream: number }>(chatCommand, args, { signal });
+    const untrack = trackChat(id);
+    try {
+      for await (const frame of await openReadable(streamId, { signal })) {
+        if (frame.kind === 'json') yield frame.value as ChatPart;
+      }
+    } finally {
+      untrack();
+    }
+  }
+}
+
+export function request(options: AiRequestOptions): AsyncIterable<ChatPart> {
+  const { role, messages, signal } = options ?? {} as AiRequestOptions;
+  if (typeof role !== 'string' || role === '') throw new AlefError('INVALID_ARGUMENT', 'request(): the role is missing.');
+  validateMessages(messages, 'request()');
+  return stream('ai.request', { role, messages, tools: options.tools ?? [], builtin: options.builtin ?? [] }, signal);
+}
+
+export async function session(options: AiSessionOptions): Promise<AiSession> {
+  const { role, signal } = options ?? {} as AiSessionOptions;
+  if (typeof role !== 'string' || role === '') throw new AlefError('INVALID_ARGUMENT', 'session(): the role is missing.');
+  const { conversation } = await call<{ conversation: number }>('ai.session.open', { role }, { signal });
+  let closed = false;
+  return {
+    id: conversation,
+    send(sendOptions: AiSessionSendOptions): AsyncIterable<ChatPart> {
+      if (closed) throw new AlefError('CLOSED', 'session.send(): the session is closed.');
+      const { messages, signal: sendSignal } = sendOptions ?? {} as AiSessionSendOptions;
+      validateMessages(messages, 'session.send()');
+      return stream('ai.session.send', { conversation, messages, tools: sendOptions.tools ?? [], builtin: sendOptions.builtin ?? [] }, sendSignal);
+    },
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      await call('ai.session.close', { conversation });
+    },
+  };
+}
+
 /**
  * Streams a chat with the role named `options.role`. Yields `text`, `tool_call`, `usage` and a
  * final `end` part; the iteration opens the stream of the runtime. Breaking out of the loop (or an
@@ -137,29 +197,15 @@ export function chat(options: ChatOptions): AsyncIterable<ChatPart> {
   if (typeof role !== 'string' || role === '') {
     throw new AlefError('INVALID_ARGUMENT', 'chat(): the role is missing.');
   }
-  if (!Array.isArray(messages) || messages.length === 0 || !messages.every(isMessage)) {
-    throw new AlefError('INVALID_ARGUMENT', 'chat(): messages must be a non-empty array of user/assistant messages.');
-  }
-  const args = { role, messages, tools: options.tools ?? [] };
-  return iterate();
-
-  async function* iterate(): AsyncGenerator<ChatPart> {
-    const { chat: id, stream } = await call<{ chat: number; stream: number }>('ai.chat', args, { signal });
-    const untrack = trackChat(id);
-    try {
-      for await (const frame of await openReadable(stream, { signal })) {
-        if (frame.kind !== 'json') continue;
-        yield frame.value as ChatPart; // including the public final `end` part, as the runtime sent it
-      }
-    } finally {
-      untrack(); // a break, an error or the end of the stream aborts the handlers of this chat
-    }
-  }
+  validateMessages(messages, 'chat()');
+  return stream('ai.chat', { role, messages, tools: options.tools ?? [], ...(options.builtin === undefined ? {} : { builtin: options.builtin }) }, signal);
 }
 
 const ai = {
   roles,
   chat,
+  request,
+  session,
   tools: {
     /**
      * Handles the tool `name` for every chat of this document. The handler may return a plain

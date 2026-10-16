@@ -32,7 +32,12 @@ Rush настраивает ключи через конфигурацию и re
 
 ## 2. Проектный API Alef
 
-Каждая операция асинхронна; ниже проектный TypeScript-псевдоконтракт, не существующий код. Все методы имеют конечные дедлайны из §6.
+Каждая операция асинхронна. Реализованный API включает `ai.roles()`, `ai.chat(options)`, `ai.request(options)`, `ai.session({ role })` и `ai.tools.handle(...)`. `request` — одноразовый запрос; session поддерживает последовательные `send({messages, tools?, builtin?})` с bounded history и `close()`. Chat/request/session.send возвращают `AsyncIterable<ChatPart>`. `ChatOptions` принимает только role, messages, tools, builtin и signal; провайдерские endpoint/model/headers/credentials недоступны странице.
+
+```ts
+interface AiRequestOptions { role: string; messages: ChatMessage[]; tools?: string[]; builtin?: string[]; signal?: AbortSignal }
+interface AiSession { readonly id: number; send(options: { messages: ChatMessage[]; tools?: string[]; builtin?: string[]; signal?: AbortSignal }): AsyncIterable<ChatPart>; close(): Promise<void> }
+```
 
 ```ts
 export interface Role {
@@ -55,6 +60,7 @@ export interface ChatOptions {
   role: string;
   messages: ChatMessage[];
   tools?: string[];
+  builtin?: string[];
   signal?: AbortSignal;
 }
 export interface AiTools {
@@ -65,13 +71,15 @@ export interface AiTools {
 export interface AiApi {
   roles(): Promise<Role[]>;
   chat(options: ChatOptions): AsyncIterable<ChatPart>;
+  request(options: AiRequestOptions): AsyncIterable<ChatPart>;
+  session(options: { role: string }): Promise<AiSession>;
   tools: AiTools;
 }
 ```
 
 `text` означает только текстовые части, `tool_calls` — наблюдение вызовов инструментов, `usage` — доступность учёта, `cancel` — возможность запросить отмену. Перечень ролей scoped по authority, ограничен длиной и дедлайном 10 с; не раскрывает конфигурацию Rush или существование запрещённых ролей. Роль без обязательных для запроса возможностей недоступна.
 
-Сообщения `user` и `assistant` допустимы. Запрещены сообщения `system`, `tool`, произвольные метаданные провайдера, скрытые рассуждения и чужая история. История assistant, придуманная приложением, и результат его инструмента — недоверенные данные, а не доказательство ответа модели. API не принимает session ID, provider/model, endpoint, headers, ключи, транспортный токен или пользовательскую схему.
+Сообщения `user` и `assistant` допустимы. Запрещены сообщения `system`, `tool`, произвольные метаданные провайдера, скрытые рассуждения и чужая история. `request` не сохраняет историю; session аккумулирует bounded историю своих успешных ходов, принадлежащую только этой сессии приложения, и очищает её при close. `builtin` содержит только явно объявленные и согласованные возможности; по умолчанию список пуст. API не принимает session ID Rush, provider/model, endpoint, headers, ключи или транспортный токен.
 
 Параметр `tools` по умолчанию пуст; в него можно включить лишь объявленные и разрешённые имена. До `chat` должен быть зарегистрирован обработчик. Дублирование регистрации даёт `BUSY`; отсутствующий обработчик — `INVALID_ARGUMENT` до старта. Регистрация подменённого инструмента возвращает инертный unregister; регистрация запрещённого инструмента отклоняется с `PERMISSION_DENIED`. Подмена роли возвращает `NOT_AVAILABLE` и не отправляет данные провайдеру. Отказ возвращает `PERMISSION_DENIED`. Имена не расширяют право. Существующие вызовы app tools остаются на исходных полномочиях приложения: запрос модели не может их расширить.
 
@@ -81,7 +89,9 @@ Usage в Rush — снимки, не приращения. Публичный Al
 
 ## 3. Манифест, полномочия и согласие
 
-Добавляется закрытый по умолчанию `permissions.ai`. Пример Ktav-подобной структуры (без запятых):
+Добавляется закрытый по умолчанию `permissions.ai`: роли и инструменты приложения, а также `builtin` с ограниченными возможностями `fs.read`, `fs.write`, `fs.list`, `exec`, `bash`. Файловые builtins требуют конкретных `scopes`; путь запроса канонизируется и проверяется по праву непосредственно перед операцией. `exec`/`bash` пока недоступны и не запускают процесс. Объявление не является согласием: файловые права — точные scopes `ai.builtin.fs.read:<scope>` (аналогично `fs.write` и `fs.list`); `exec`/`bash` — plain keys `ai.builtin.exec` и `ai.builtin.bash`. Эти красные права требуют явного отдельного подтверждения; отсутствие декларации или отказ запрещает запуск до провайдера. `request`/`chat`/`session.send` передают builtin имена как запрашиваемые возможности, но runtime раскрывает провайдеру только разрешённые.
+
+Пример Ktav-подобной структуры (без запятых):
 
 ```text
 permissions: {
@@ -111,6 +121,7 @@ permissions: {
 |---|---|
 | Каждая роль AI: отправка выбранных сообщений/данных и возможная стоимость | Полный перечень роли и возможностей; разрешить, подменить или отказать. Подмена — `NOT_AVAILABLE`, без отправки; отказ — `PERMISSION_DENIED`. |
 | Каждый инструмент приложения: возможные побочные эффекты | Показывать имя, описание и каноническую схему; разрешить, подменить (исключить из набора, регистрация инертна) или отказать (регистрация отклоняется). |
+| Builtin права | filesystem: `ai.builtin.fs.read:<scope>` (аналогично write/list); execution: plain `ai.builtin.exec` и `ai.builtin.bash`. `exec`/`bash` — красные права с явным дополнительным подтверждением; #165 hook/UI не реализован. |
 
 Любой инструмент приложения — рискованный эффект; согласие не делает его честным. До запуска инструмента обязательны доверенное уведомление и запись в журнале. Это доверенный UI/CLI Alef, не UI приложения; в headless режиме допустима только реально доступная пользователю запись журнала. Если доверенное уведомление/журнал недоступны, инструмент не запускается. В журнале — authority, app ID, роль, инструмент, время, исход; секреты, заголовки и сырые ошибки исключены. Полные запросы/ответы не сохраняются по умолчанию. Предлагаемый `alef ai log <app-id>` доступен пользователю, не JS; неоднозначная идентичность отклоняется.
 
@@ -118,11 +129,14 @@ permissions: {
 
 ## 4. Угроза и границы защиты
 
+Помимо перечисленных ниже угроз, AI builtins — полномочия самого приложения, делегируемые модели: аргумент-путь не является разрешением. Файловая операция проходит через canonicalize + scope authorization в bounded blocking job; путь вне scope должен завершаться отказом, не затрагивая файл. Остаются гонки между проверкой и использованием canonical path; это residual risk, не обещание защиты от враждебной ОС/ссылок.
+
 Угрозы: недоверенные страницы и зависимости, prompt injection, злонамеренный обработчик, поддельные/повторные ответы, процесс sidecar/CLI того же пользователя, утечка окружения/файлов/ошибок/заголовков, обход напрямую к провайдеру, эксфильтрация через сеть, межприложенческие журналы и квоты, DoS и незапрошенные/повторные вызовы инструментов. Prompt injection типами не устраняется.
 
 | Атака/актив | Обязательный механизм / честная граница |
 |---|---|
-| Файлы, окружение и секреты Rush | Запретить несовместимые сырой CLI/sidecar/shell и доступ к файлам/окружению Rush без проверенной OS-изоляции или отдельного принципала. Защищённый runtime_home не ограничивает внешний процесс того же пользователя. |
+| Файлы, окружение и секреты Rush | Не утверждать защиту Rush config/data/env силами этих builtins: файловый доступ ограничен каждым вызовом выбранным объявленным scope; execution `exec`/`bash` явно недоступны/отклоняются. Общие процессы того же пользователя и OS-граница остаются вне гарантии; #165 hook/UI ещё не реализован. |
+| История и сессии | `request` stateless; app session хранит только bounded историю собственных успешных ходов, инструменты не включены без per-call выбора, close/unload очищает runtime-сессию. Это не Rush session и не защита от враждебной ОС. |
 | Ошибки и provider headers | Rush-only credentials; все ошибки должны быть очищены, но гарантия для всех путей — **не найдено**; до доказательства нельзя обещать полноту. |
 | Прямой provider/net | Нет ключей Rush, endpoint или маршрутизирующих параметров в API. Прямой запрос с собственными credentials приложения не запрещён сам по себе, если отдельно выдано сетевое право. |
 | Redirect/маршрут/чужой app | Runtime не позволяет приложению перенаправить собственный AI provider path и не передаёт ему ответ ДРУГОГО приложения. Приложение вправе эксфильтровать собственные данные в рамках прав net/external; native и page network контролируются независимо. AI право не даёт net, files или CLI права. |
@@ -134,7 +148,7 @@ permissions: {
 
 Жёсткое условие выпуска: до OS-изоляции запрещать запуск недоверенного приложения, если несовместимый сырой CLI/sidecar/shell либо общий доступ к Rush config/data/env позволяет украсть секреты. Это касается приложений и без `permissions.ai`. Уже работающие неограниченные sibling-процессы того же пользователя также препятствуют гарантии. M3 namespace `secrets` не защищает от raw CLI. Не считать предупреждение, denylist или согласие заменой OS-границы. Скомпрометированная ОС и сознательная передача пользователем секрета вне границы — вне модели.
 
-Каждый чат — новая ограниченная сессия Rush: без личной истории, workspace/cwd приложения, контекстного поиска, встроенных bash/fs/net/MCP/hooks, reviewer/subagent и автономного делегирования. Если отключение полномочия не подтверждено, отказать в запуске. Существующий Web API Rush (TCP `/auth`, `/auth/check`, `/ws`, широкие session/config/log-команды) не является адаптером Alef; пользовательская аутентификация не изолирует процессы одного пользователя. Go SDK не служит IPC. Наблюдаемая SQLite persistence/workspace ownership не являются полномочиями или app authority.
+Каждый запрос без builtin по умолчанию; filesystem builtin имеет доступ только к выбранным приложениям declared scopes, проверяемым на каждой операции. Нельзя заявлять абсолютный запрет на сессии Rush: текущий API не открывает приложению Rush session ID, а `ai.session` — отдельная runtime session с ограниченной историей и cleanup при close/unload. Нельзя утверждать защиту ключей Rush средствами Alef: #165 hook/UI и гарантия границы отсутствуют, #167 реальный транспорт Rush недоступен.
 
 ## 5. Исполнение и будущий интерфейс Rush
 
@@ -178,6 +192,7 @@ trait RushAiProvider {
 | Параллельные чаты | приложение 2, всего 16 |
 | Входное сообщение целиком | 256 KiB, включая накладные расходы схемы |
 | Инструменты на приложение | 32 |
+| История session | 32 сообщения / 256 KiB |
 | Схема/аргументы/результат инструмента | не более 64 KiB сериализованных данных каждый |
 | Кредит потока / размер части | 1 MiB / 256 KiB |
 
@@ -216,14 +231,15 @@ M9.1 включает этот проектный документ и одну �
 
 ## 9. Статус M9.2 (задача #164)
 
-**Реализовано в M9.2:**
+**Реализовано в текущем worktree (M9.2 + последующие изменения AI API):**
 
 - **Манифест** (`backend/crates/alef-core/src/security/manifest/ai.rs`): секция `permissions.ai { roles, tools[{name, description, schema}] }`, закрыта по умолчанию; права `Permission::AiRole`/`AiTool` со scope `ai.role:<id>` и `ai.tool:<name>`, оба входят в `PermissionSet::rights()` (allow / substitute / deny по M2b). Валидация: имена `[a-zA-Z][a-zA-Z0-9_]{0,63}` (1–64 байта), уникальность в каждом пространстве отдельно, описание 1–512 байт; схема — ограниченное подмножество JSON Schema (ключи `type`/`properties`/`required`/`items`/`enum`/`additionalProperties`/`minimum`/`maximum`/`minLength`/`maxLength`/`minItems`/`maxItems`, 7 типов, глубина ≤ 32, `properties` ≤ 256, массив обязан объявить целый `maxItems` ≤ 4096 ≥ `minItems`, `enum` 1–64 значений, sane-границы, сериализованный размер ≤ 64 KiB, `$ref` и неизвестные ключи запрещены).
 - **Исполнитель** (`backend/crates/alef-modules/src/ai/`): команды `ai.roles`, `ai.chat`, `ai.tools.handle`, `ai.tools.result`, `ai.tools.unhandle`; лимиты §6 — константы в `src/ai/limits.rs` с тестами. Поставщик за трейтом `AiProvider` (`src/ai/provider.rs`): обычная сборка — `MissingProvider` (`NOT_AVAILABLE` для roles и chat), e2e-сборка (cargo feature `e2e`) — детерминированный `FakeProvider` (текст → по одному `tool_call` на запрошенный инструмент с аргументами `{"input":"ping"}` → ожидание ровно одного результата → текст «Saw N tool result(s)» → накопительный usage (estimated/complete) → ровно один `end(completed)`).
 - **Семантика**: исходящий stream с кредитом; break/закрытие потока отменяет чат и обработчики; `context.signal` JS-обработчика срабатывает при закрытии чата/выгрузке/ошибке; повтор, чужой и запоздалый результат отвергаются (`CLOSED`); подмена роли — `NOT_AVAILABLE` без отправки провайдеру; подмена инструмента — регистрация инертна, инструмент исключён из набора; отказ — `PERMISSION_DENIED`; повторная регистрация — `BUSY`; `chat` с инструментом без обработчика — `INVALID_ARGUMENT`. Событие `ai.tool_call` `{chat, callId, name, arguments}` уходит странице независимо от чтения итератора; событие `ai.chat_closed {chat}` уведомляет страницу о завершении чата (в том числе по таймауту) независимо от чтения итератора.
 - **JS API** (`packages/api/src/system/ai.ts`, экспорт `./ai` и реэкспорт в корне `.`): `ai.roles()`, `ai.chat(options) → AsyncIterable<ChatPart>`, `ai.tools.handle(name, handler) → Promise<unregister>`; подписка на `ai.tool_call` открывается при первом `handle()`. Результат обработчика (`ai.tools.result`) несёт `name` и, при сбое, очищенное поле `error` без деталей исключения. Сегмент добавлен в segments-тест и async-surface тест; карта сегментов — `docs/api/SEGMENTS.md`.
 - **Реорганизация**: `packages/api/src/core.ts` перенесён в `src/core/index.ts`, `src/core/handshake.ts` слит в `src/core/transport.ts` (лимит 7 записей на каталог; поведение и экспорты не изменились).
-- **e2e**: приложение `tests/e2e/apps/modules/system/ai` (id `org.alef.e2e.modules.ai`), сценарий `ai` (четыре прогона по согласию: allowed / role-denied / role-substituted / tool-denied); проверки `ai-roles-list-the-allowed-role`, `ai-chat-streams-to-a-completed-end`, `ai-tool-round-trip-uses-the-handler-result`, `ai-cancel-by-break-closes-the-chat`, `ai-denied-role-is-permission-denied`, `ai-substituted-role-is-not-available`, `ai-denied-tool-registration-is-permission-denied`; сценарий в группе network/MCP (`scripts/ci/e2e/groups.mjs`, `.github/workflows/ci.yml`), правило в `scripts/ci/affected.json`.
+- **e2e**: приложение `tests/e2e/apps/modules/system/ai` (id `org.alef.e2e.modules.ai`), сценарий `ai`; текущие проверки включают request, session history, session без tools, builtin внутри/вне scope и отсутствие роли `red`, наряду с прежними stream/tool/cancel и режимами согласия. Это проверки fake e2e provider; они не доказывают OS-изоляцию или безопасность Rush transport.
+- **Builtin/session API** (`packages/api/src/system/ai.ts`, `backend/crates/alef-modules/src/ai/{sessions,builtin,launch}.rs`): request/session и scope-проверки файловых builtins присутствуют в текущем исходнике.
 - **Тесты**: Rust — `backend/crates/alef-modules/tests/modules/ai.rs` (фильтр ролей и скрытие подменённой, PERMISSION_DENIED запрещённой роли, NOT_AVAILABLE подменённой без обращения к провайдеру, поток текст/usage/ровно один completed end, round-trip инструмента с результатом обработчика, отказ повторного/чужого результата, отмена по break, INVALID_ARGUMENT без обработчика, BUSY повторной регистрации и идемпотентный unregister, PERMISSION_DENIED запрещённого и инертная регистрация подменённого инструмента); манифест — тесты в `security/manifest/ai.rs`; лимиты — в `src/ai/limits.rs`; JS — `packages/api/test/modules/ai/ai.test.mjs`.
 
 **Сознательно не сделано в M9.2:**

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use alef_core::{registry::context::CancelHandle, AlefError, ErrorCode};
 use serde::Serialize;
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::dto::{ChatMessage, Role};
 
@@ -50,6 +50,8 @@ pub struct ChatRequest {
     pub role: String,
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ToolDef>,
+    pub builtin: Vec<ToolDef>,
+    pub history: bool,
 }
 
 /// How the module drives a chat it has already handed to the provider: cancellation, and the
@@ -105,9 +107,37 @@ const RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 #[derive(Debug, Default)]
 pub struct FakeProvider {
     started: AtomicUsize,
+    next_chat_gate: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+/// Opens a single fake chat's producer gate. Dropping the guard also releases it.
+#[derive(Debug)]
+pub struct ChatGate(Option<oneshot::Sender<()>>);
+
+impl ChatGate {
+    pub fn release(mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+impl Drop for ChatGate {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
 }
 
 impl FakeProvider {
+    /// Hold the next chat before its first event; dropping the returned guard releases it.
+    pub fn hold_next_chat(&self) -> ChatGate {
+        let (sender, receiver) = oneshot::channel();
+        *self.next_chat_gate.lock().expect("fake chat gate lock") = Some(receiver);
+        ChatGate(Some(sender))
+    }
+
     /// How many chats this provider has started.
     pub fn chats_started(&self) -> usize {
         self.started.load(Ordering::SeqCst)
@@ -143,7 +173,12 @@ impl AiProvider for FakeProvider {
     ) -> Result<mpsc::Receiver<ChatEvent>, AlefError> {
         self.started.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = mpsc::channel(16);
-        tokio::spawn(produce(request, control, sender));
+        let gate = self
+            .next_chat_gate
+            .lock()
+            .expect("fake chat gate lock")
+            .take();
+        tokio::spawn(produce(request, control, sender, gate));
         Ok(receiver)
     }
 }
@@ -170,18 +205,50 @@ fn echo(value: &Value) -> String {
     }
 }
 
-async fn produce(request: ChatRequest, mut control: ChatControl, sender: mpsc::Sender<ChatEvent>) {
-    if !emit(&control, &sender, ChatEvent::Text("Thinking".to_owned())).await {
+async fn produce(
+    request: ChatRequest,
+    mut control: ChatControl,
+    sender: mpsc::Sender<ChatEvent>,
+    gate: Option<oneshot::Receiver<()>>,
+) {
+    if let Some(gate) = gate {
+        tokio::select! {
+            _ = control.cancel.cancelled() => return,
+            _ = gate => {}
+        }
+    }
+    if request.history {
+        let history = serde_json::to_string(&request.messages).unwrap_or_default();
+        if !emit(
+            &control,
+            &sender,
+            ChatEvent::Text(format!("History {history}")),
+        )
+        .await
+        {
+            return;
+        }
+    } else if !emit(&control, &sender, ChatEvent::Text("Thinking".to_owned())).await {
         return;
     }
+    let arguments = request
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            ChatMessage::User { content } => serde_json::from_str::<Value>(content).ok(),
+            _ => None,
+        })
+        .unwrap_or_else(|| json!({"input":"ping"}));
     let calls = request
         .tools
         .iter()
+        .chain(request.builtin.iter())
         .enumerate()
         .map(|(index, tool)| ChatEvent::ToolCall {
             call_id: format!("call-{index}"),
             name: tool.name.clone(),
-            arguments: json!({"input": "ping"}),
+            arguments: arguments.clone(),
         })
         .collect::<Vec<_>>();
     for call in calls {
@@ -207,9 +274,9 @@ async fn produce(request: ChatRequest, mut control: ChatControl, sender: mpsc::S
             return;
         }
     }
-    let mut results = 0_usize;
     let mut last = String::new();
-    for _ in 0..request.tools.len() {
+    let mut results = 0_usize;
+    for _ in 0..request.tools.len() + request.builtin.len() {
         let wait = tokio::time::timeout(RESULT_WAIT, control.results.recv());
         match wait.await {
             Ok(Some(Ok(value))) => {
@@ -221,7 +288,7 @@ async fn produce(request: ChatRequest, mut control: ChatControl, sender: mpsc::S
         }
     }
     // Only a chat with tools reports what it saw; a no-tool chat answers the request directly.
-    if !request.tools.is_empty()
+    if (!request.tools.is_empty() || !request.builtin.is_empty())
         && !emit(
             &control,
             &sender,
@@ -231,7 +298,7 @@ async fn produce(request: ChatRequest, mut control: ChatControl, sender: mpsc::S
     {
         return;
     }
-    let rounds = request.tools.len() as u64;
+    let rounds = (request.tools.len() + request.builtin.len()) as u64;
     if !emit(
         &control,
         &sender,
@@ -279,6 +346,8 @@ mod tests {
                             content: "hi".to_owned(),
                         }],
                         tools: Vec::new(),
+                        builtin: Vec::new(),
+                        history: false,
                     },
                     ChatControl {
                         cancel: cancelled,

@@ -47,6 +47,47 @@ async function waitFor(check, limit = 2000) {
 const bounded = (name, fn) => test(name, { timeout: 5000 }, fn);
 const chatArgs = { role: 'coder', messages: [{ role: 'user', content: 'hi' }] };
 
+bounded('request and sessions use runtime-owned history and close once', async () => {
+  replies.set('ai.request', { json: { chat: 17, stream: 171 } });
+  replies.set('ai.session.open', { json: { conversation: 180 } });
+  replies.set('ai.session.send', { json: { chat: 18, stream: 181 } });
+  replies.set('ai.session.close', { json: null });
+  const requestTask = (async () => { for await (const part of ai.request({ ...chatArgs, builtin: ['fs.read'] })) void part; })();
+  const requestBody = await openStream('171');
+  requestBody.end();
+  await requestTask;
+  assert.deepEqual(args('ai.request').at(-1), { ...chatArgs, tools: [], builtin: ['fs.read'] });
+
+  const conversation = await ai.session({ role: 'coder' });
+  assert.equal(conversation.id, 180);
+  const sendTask = (async () => { for await (const part of conversation.send({ messages: chatArgs.messages, builtin: ['exec'] })) void part; })();
+  const sendBody = await openStream('181');
+  sendBody.end();
+  await sendTask;
+  assert.deepEqual(args('ai.session.open').at(-1), { role: 'coder' });
+  assert.deepEqual(args('ai.session.send').at(-1), { conversation: 180, messages: chatArgs.messages, tools: [], builtin: ['exec'] });
+  await conversation.close();
+  await conversation.close();
+  assert.deepEqual(args('ai.session.close'), [{ conversation: 180 }]);
+  assert.throws(() => conversation.send({ messages: chatArgs.messages }), error => error.code === 'CLOSED');
+});
+
+bounded('request validates arguments without a runtime call', () => {
+  const before = runtime.requests.length;
+  assert.throws(() => ai.request({ role: 'coder', messages: [] }), error => error instanceof AlefError && error.code === 'INVALID_ARGUMENT');
+  assert.equal(runtime.requests.length, before);
+});
+
+bounded('breaking request cancels its stream', async () => {
+  replies.set('ai.request', { json: { chat: 19, stream: 191 } });
+  const task = (async () => { for await (const part of ai.request(chatArgs)) { void part; break; } })();
+  const body = await openStream('191');
+  body.push(jsonFrame({ type: 'text', text: 'first' }));
+  await task;
+  await waitFor(() => args('runtime.stream.close').some(close => close.id === 191));
+  assert.equal(body.aborted, true);
+});
+
 bounded('roles returns the roles the runtime lists', async () => {
   replies.set('ai.roles', { json: { roles: [{ id: 'coder', title: 'Coder', description: 'writes code', capabilities: ['text', 'tool_calls'] }] } });
   assert.deepEqual(await ai.roles(), [

@@ -35,11 +35,15 @@ use tokio::sync::mpsc;
 
 use crate::{json, ModuleContext};
 use dto::{ChatMessage, Role};
+use launch::start_chat;
+mod launch;
 use provider::{ChatControl, ChatEvent, ChatRequest, ToolDef};
 
+pub mod builtin;
 pub mod dto;
 pub mod limits;
 pub mod provider;
+mod sessions;
 
 /// A stable identity of one document session for the process-global maps: the address of its
 /// state. Two sessions of one application never share it; a session that is gone leaves its
@@ -257,7 +261,7 @@ fn validate_chat(args: &ChatArgs) -> Result<(), AlefError> {
     if bytes.len() > limits::MAX_MESSAGE_BYTES {
         return Err(invalid("the chat is longer than 256 KiB".to_owned()));
     }
-    if args.tools.len() > limits::MAX_TOOLS {
+    if args.tools.len().saturating_add(args.builtin.len()) > limits::MAX_TOOLS {
         return Err(invalid("too many tools for one chat".to_owned()));
     }
     Ok(())
@@ -336,6 +340,7 @@ async fn produce(
     writer: StreamWriter,
     mut events: mpsc::Receiver<ChatEvent>,
     state: Arc<ChatState>,
+    control: CancelHandle,
     cancel: CancelSender,
     session: Arc<Session>,
     resource: ResourceId,
@@ -345,9 +350,13 @@ async fn produce(
     app_key: String,
     session_key: u64,
     offered: HashMap<String, u64>,
+    builtins: HashSet<String>,
+    builtin_results: mpsc::Sender<Result<Value, AlefError>>,
     permissions: Arc<PermissionSet>,
     grants: Arc<Grants>,
+    mut turn: Option<sessions::Turn>,
 ) {
+    let mut assistant = String::new();
     let overall = tokio::time::Instant::now() + limits::CHAT_TIME;
     let mut stage = tokio::time::Instant::now() + limits::FIRST_EVENT_TIME;
     // Notifies the page that the chat is over, then cancels the provider, deadens the pending
@@ -366,6 +375,7 @@ async fn produce(
             tokio::pin!(closed);
             tokio::select! {
                 _ = &mut closed => Step::Closed,
+                _ = control.cancelled() => Step::Closed,
                 _ = async {
                     // The same earliest-deadline bound as every relay; without a pending call it
                     // waits forever (the stage and the overall deadlines bound the rest).
@@ -386,6 +396,7 @@ async fn produce(
             // The page broke the iterator, or the session closed: nothing is written any more.
             Step::Closed => {
                 abandon(&state);
+                writer.error(AlefError::new(ErrorCode::Closed, "the chat is closed"));
                 return;
             }
             Step::TimedOut => {
@@ -415,6 +426,23 @@ async fn produce(
                 stage = tokio::time::Instant::now() + limits::STREAM_IDLE_TIME;
                 match event {
                     ChatEvent::Text(text) => {
+                        if let Some(turn) = &turn {
+                            if turn.closed() {
+                                abandon(&state);
+                                return;
+                            }
+                        }
+                        if turn.is_some()
+                            && assistant.len().saturating_add(text.len())
+                                > limits::MAX_MESSAGE_BYTES
+                        {
+                            abandon(&state);
+                            writer.error(invalid("assistant response exceeds 256 KiB".to_owned()));
+                            return;
+                        }
+                        if turn.is_some() {
+                            assistant.push_str(&text);
+                        }
                         let frame = json!({"type": "text", "text": text});
                         if oversized(&frame) {
                             abandon(&state);
@@ -442,6 +470,54 @@ async fn produce(
                         name,
                         arguments,
                     } => {
+                        if serde_json::to_vec(&arguments)
+                            .map_or(true, |bytes| bytes.len() > 64 * 1024)
+                        {
+                            abandon(&state);
+                            writer.error(invalid("tool arguments exceed 64 KiB".to_owned()));
+                            return;
+                        }
+                        if builtins.contains(&name) {
+                            let deadline = earliest(overall, stage, &state);
+                            let result = {
+                                let closed = writer.closed();
+                                tokio::pin!(closed);
+                                tokio::select! {
+                                    biased;
+                                    _ = control.cancelled() => Err(AlefError::new(ErrorCode::Closed, "the chat is closed")),
+                                    _ = &mut closed => Err(AlefError::new(ErrorCode::Closed, "the chat is closed")),
+                                    _ = tokio::time::sleep_until(deadline) => Err(timeout_of("a tool handler took too long")),
+                                    result = builtin::execute(
+                                        permissions.clone(),
+                                        name.clone(),
+                                        arguments,
+                                        control.clone(),
+                                    ) => result,
+                                }
+                            };
+                            let value = match result {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    abandon(&state);
+                                    writer.error(error);
+                                    return;
+                                }
+                            };
+                            match tokio::time::timeout_at(
+                                earliest(overall, stage, &state),
+                                builtin_results.send(Ok(value)),
+                            )
+                            .await
+                            {
+                                Ok(Ok(())) => {}
+                                _ => {
+                                    abandon(&state);
+                                    writer.error(timeout_of("a tool handler took too long"));
+                                    return;
+                                }
+                            }
+                            continue;
+                        }
                         let frame = json!({
                             "type": "tool_call",
                             "id": call_id,
@@ -564,14 +640,12 @@ async fn produce(
                     ChatEvent::Completed => {
                         // Exactly one end (docs/stages/m9-ai.md §2): the frame, then the transport end.
                         let at = earliest(overall, stage, &state);
-                        match relay(&writer, json!({"type": "end", "reason": "completed"}), at)
-                            .await
+                        if let Err(error) =
+                            sessions::finish_turn(&writer, turn.take(), assistant, at).await
                         {
-                            Delivery::Sent => {}
-                            Delivery::Closed | Delivery::Slow => {
-                                abandon(&state);
-                                return;
-                            }
+                            abandon(&state);
+                            writer.error(error);
+                            return;
                         }
                         // The chat is over: notify, cancel, deaden, forget.
                         abandon(&state);
@@ -599,6 +673,8 @@ struct ChatArgs {
     messages: Vec<ChatMessage>,
     #[serde(default)]
     tools: Vec<String>,
+    #[serde(default)]
+    builtin: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -673,95 +749,24 @@ pub(crate) fn register(
             }
         })?;
 
-    let chat_app_key = app_key.clone();
-    let chat_provider = provider.clone();
-    registry
-        .command::<ChatArgs>("ai.chat")?
-        .permission(Permission::AiRole, |args| Some(args.role.clone()))
-        .substitutes()
-        .waits()
-        .handler(move |ctx, args| {
-            let provider = chat_provider.clone();
-            let host = host.clone();
-            let app_key = chat_app_key.clone();
-            async move {
-                // Nothing at all reaches the provider for a substituted role.
-                if ctx.decision() == Decision::Substitute {
-                    return Err(AlefError::new(
-                        ErrorCode::NotAvailable,
-                        "the role is not available",
-                    ));
-                }
-                validate_chat(&args)?;
-                let session_key = session_key(&ctx.session);
-                let tools = allowed_tools(&ctx, &args, &app_key, session_key)?;
-                let offered: HashMap<String, u64> = tools
-                    .iter()
-                    .map(|(tool, id)| (tool.name.clone(), *id))
-                    .collect();
-                let (cancel, cancelled) = CancelHandle::channel();
-                let (results, result_receiver) = mpsc::channel(1);
-                // The admission budgets of docs/stages/m9-ai.md §6, the start of the provider and
-                // the recording of the chat happen in ONE critical section; it holds no `.await`,
-                // and the producer started inside cannot reach the CHATS lock before it is
-                // released (its first event is paced by the provider). A `?` drops the guard.
-                let (writer, stream_id, events, resource, state) = {
-                    let mut all = chats();
-                    if all.len() >= limits::MAX_CHATS {
-                        return Err(busy("too many chats across the applications".to_owned()));
-                    }
-                    if all.keys().filter(|(who, _, _)| who == &app_key).count()
-                        >= limits::MAX_CHATS_PER_APPLICATION
-                    {
-                        return Err(busy("too many chats for this application".to_owned()));
-                    }
-                    let events = provider.chat(
-                        ChatRequest {
-                            role: args.role.clone(),
-                            messages: args.messages.clone(),
-                            tools: tools.into_iter().map(|(tool, _)| tool).collect(),
-                        },
-                        ChatControl {
-                            cancel: cancelled,
-                            results: result_receiver,
-                        },
-                    )?;
-                    let (writer, stream_id) = ctx.streams().open_outgoing();
-                    let state = Arc::new(ChatState::new());
-                    let resource = ctx.resources().insert(Box::new(ChatHandle {
-                        state: state.clone(),
-                        cancel: cancel.clone(),
-                        results,
-                    }))?;
-                    let chat = resource.0;
-                    // The chat is admitted; the entry is never stranded.
-                    all.insert((app_key.clone(), session_key, chat), state.clone());
-                    (writer, stream_id, events, resource, state)
-                };
-                let chat = resource.0;
-                let window = ctx.session.window();
-                let session = ctx.session.clone();
-                let permissions = ctx.permissions.clone();
-                let grants = ctx.grants();
-                tokio::spawn(produce(
-                    writer,
-                    events,
-                    state,
-                    cancel,
-                    session,
-                    resource,
-                    host,
-                    window,
-                    chat,
-                    app_key,
-                    session_key,
-                    offered,
-                    permissions,
-                    grants,
-                ));
-                json(&json!({ "chat": chat, "stream": stream_id.0 }))
-            }
-        })?;
+    sessions::register(registry, provider.clone(), host.clone(), app_key.clone())?;
+
+    for name in ["ai.chat", "ai.request"] {
+        let chat_app_key = app_key.clone();
+        let chat_provider = provider.clone();
+        let chat_host = host.clone();
+        registry
+            .command::<ChatArgs>(name)?
+            .permission(Permission::AiRole, |args| Some(args.role.clone()))
+            .substitutes()
+            .waits()
+            .handler(move |ctx, args| {
+                let provider = chat_provider.clone();
+                let host = chat_host.clone();
+                let app_key = chat_app_key.clone();
+                async move { start_chat(ctx, args, provider, host, app_key, None).await }
+            })?;
+    }
 
     let handle_app_key = app_key.clone();
     registry
@@ -845,7 +850,7 @@ pub(crate) fn register(
                         return Err(invalid(
                             "a tool result carries its value or its failure, not both or neither"
                                 .to_owned(),
-                        ))
+                        ));
                     }
                 }
                 if let Some(value) = &args.result {

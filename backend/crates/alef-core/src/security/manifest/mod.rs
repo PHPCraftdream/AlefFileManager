@@ -8,7 +8,7 @@ use super::window::WindowDef;
 use crate::{AlefError, ErrorCode};
 
 mod ai;
-pub use ai::{validate_ai, AiPermissions, AiTool};
+pub use ai::{validate_ai, AiBuiltin, AiPermissions, AiTool};
 mod assets;
 use assets::{deserialize_assets, field_line};
 mod runtime;

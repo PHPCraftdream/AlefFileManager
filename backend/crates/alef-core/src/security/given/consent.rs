@@ -42,6 +42,16 @@ impl Decision {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, Default)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "core.ts")]
+pub enum RiskLevel {
+    #[default]
+    Normal,
+    Risky,
+    Red,
+}
+
 /// One thing the manifest asks for, as the consent window shows it and the store remembers it:
 /// the name of the permission and, where it has scopes, one scope as the manifest wrote it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ts_rs::TS)]
@@ -70,10 +80,33 @@ impl Right {
         }
     }
 
+    pub fn level(&self) -> RiskLevel {
+        if self.scope.is_none()
+            && matches!(
+                self.permission.as_str(),
+                "ai.builtin.exec" | "ai.builtin.bash"
+            )
+        {
+            RiskLevel::Red
+        } else if self.risk().is_some() {
+            RiskLevel::Risky
+        } else {
+            RiskLevel::Normal
+        }
+    }
+
     /// Why the user should think twice before allowing this right, in words for the consent window;
     /// `None` for a right that reaches no further than it says. Allowing a risky right takes a
     /// confirmation of its own.
     pub fn risk(&self) -> Option<&'static str> {
+        if self.scope.is_none()
+            && matches!(
+                self.permission.as_str(),
+                "ai.builtin.exec" | "ai.builtin.bash"
+            )
+        {
+            return Some("bypasses every protection, including model keys");
+        }
         if self.permission == "shell.contextMenu" {
             return Some("the system menu of a file can run any program of the computer");
         }
@@ -405,6 +438,36 @@ mod tests {
 
     fn right(permission: &str, scope: &str) -> Right {
         Right::scoped(permission, scope)
+    }
+
+    #[test]
+    fn builtin_exec_and_bash_are_red_and_warn_about_model_keys() {
+        for permission in ["ai.builtin.exec", "ai.builtin.bash"] {
+            let right = Right::plain(permission);
+            assert_eq!(right.level(), RiskLevel::Red);
+            assert_eq!(
+                right.risk(),
+                Some("bypasses every protection, including model keys")
+            );
+        }
+    }
+
+    #[test]
+    fn risk_levels_cover_other_ai_rights_ordinary_rights_and_lookalikes() {
+        assert_eq!(right("ai.role", "smart").level(), RiskLevel::Risky);
+        assert_eq!(
+            right("ai.tool", "summarizeSelection").level(),
+            RiskLevel::Risky
+        );
+        assert_eq!(right("fs.read", "$DOCUMENTS/**").level(), RiskLevel::Normal);
+        assert_eq!(
+            Right::plain("ai.builtin.exec.extra").level(),
+            RiskLevel::Normal
+        );
+        assert_eq!(
+            Right::scoped("ai.builtin.exec", "scope").level(),
+            RiskLevel::Normal
+        );
     }
 
     #[test]
