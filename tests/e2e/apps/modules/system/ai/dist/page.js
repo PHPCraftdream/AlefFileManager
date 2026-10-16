@@ -65,7 +65,7 @@ async function allowed(t, check) {
     if (!text.includes(t.aiSentinel)) throw new Error(`inside-scope content missing: ${text}`);
   });
   await check('ai-builtin-outside-scope-is-denied', async () => {
-    const error = await rejection((async () => { for await (const _part of ai.request({ role: 'smart', messages: [{ role: 'user', content: JSON.stringify({ path: t.aiOutside }) }], builtin: ['fs.read'] })) {} })());
+    const error = await rejection((async () => { for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: JSON.stringify({ path: t.aiOutside }) }], builtin: ['fs.read'] })) { void part; } })());
     if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name}, expected PERMISSION_DENIED`);
   });
 
@@ -73,7 +73,7 @@ async function allowed(t, check) {
     const roles = await ai.roles();
     if (roles.some(role => role.id === 'red')) throw new Error('red role must not be exposed');
     const error = await rejection((async () => {
-      for await (const _part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }], builtin: ['exec'] })) {}
+      for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }], builtin: ['exec'] })) { void part; }
     })());
     if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name}, expected PERMISSION_DENIED for absent exec right`);
   });
