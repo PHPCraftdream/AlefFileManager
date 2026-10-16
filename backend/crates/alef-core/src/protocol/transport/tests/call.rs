@@ -6,6 +6,12 @@ async fn session_token(fx: &Fixture) -> String {
     open(fx, WINDOW).await.token().to_owned()
 }
 
+/// A JSON body large enough to be parsed on the parse executor.
+fn big_args() -> Value {
+    let pad = "x".repeat(crate::protocol::transport::call::INLINE_JSON_BODY + 1);
+    json!({ "pad": pad })
+}
+
 fn error_code(response: &TransportResponse) -> String {
     body_json(response)["code"]
         .as_str()
@@ -348,7 +354,7 @@ fn a_call_waits_for_the_bounded_parser_before_its_handler_runs() {
         let token = session_token(&fx).await;
         let running = {
             let transport = fx.transport.clone();
-            let request = call("test.slow", &token, &json!({}));
+            let request = call("test.slow", &token, &big_args());
             tokio::spawn(async move { transport.handle(request).await })
         };
         // While the parser is blocked the handler must not start: parsing gates the dispatch.
@@ -396,7 +402,7 @@ fn a_queued_parse_dropped_with_its_call_never_reaches_the_handler() {
         let fx = fixture_with_parse(config(Limits::default()), parse);
         let token = session_token(&fx).await;
         let transport = fx.transport.clone();
-        let request = call("test.slow", &token, &json!({}));
+        let request = call("test.slow", &token, &big_args());
         let running = tokio::spawn(async move { transport.handle(request).await });
         // While the parser is blocked the call's parse is queued; the handler must not start.
         bounded(async {
@@ -428,7 +434,7 @@ fn a_queued_parse_dropped_with_its_call_never_reaches_the_handler() {
         // parser `BUSY` and require the budget to be usable again.
         let follow = bounded(async {
             loop {
-                let response = send(&fx, call("test.echo", &token, &json!({}))).await;
+                let response = send(&fx, call("test.echo", &token, &big_args())).await;
                 if response.status == 429 && error_code(&response) == "BUSY" {
                     tokio::task::yield_now().await;
                     continue;
@@ -438,6 +444,42 @@ fn a_queued_parse_dropped_with_its_call_never_reaches_the_handler() {
         })
         .await;
         assert_eq!(follow.status, 200, "the parse budget was not leaked");
+    });
+}
+
+#[test]
+fn small_and_binary_calls_never_meet_a_full_parser() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    runtime.block_on(async {
+        // The only parser slot is held: a large JSON body is refused, cheap bodies are not.
+        let parse = BlockingExecutor::new(std::num::NonZeroUsize::new(1).expect("non-zero limit"));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let _blocker = parse
+            .submit(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+            })
+            .expect("blocker admitted");
+        bounded(started_rx).await.expect("blocker started");
+        let fx = fixture_with_parse(config(Limits::default()), parse);
+        let token = session_token(&fx).await;
+        let big = send(&fx, call("test.echo", &token, &big_args())).await;
+        assert_eq!(error_code(&big), "BUSY", "a large JSON body needs the parser");
+        let small = send(&fx, call("test.echo", &token, &json!({"n": 1}))).await;
+        assert_eq!(small.status, 200, "a small JSON body is parsed in place");
+        assert_eq!(body_json(&small), json!({"n": 1}));
+        let binary = request(Method::Post, "call/test.echo")
+            .token(&token)
+            .octets(Bytes::from(vec![7u8; 1024 * 1024]), &json!({"k": "v"}));
+        let binary = send(&fx, binary).await;
+        assert_eq!(binary.status, 200, "a binary body is parsed in place");
+        assert_eq!(body_json(&binary), json!({"k": "v"}));
+        release_tx.send(()).expect("parser barrier waiting");
     });
 }
 
