@@ -48,7 +48,7 @@ const WEBCRYPTO_ALGORITHMS = [
   'rsa-oaep-2048',
 ].map(name => `webcrypto-${name}`);
 const WEBCRYPTO_COMMON = ['webcrypto-state-of-the-engine', 'webcrypto-random-values-and-uuid'];
-const WEBCRYPTO_ALLOWED_CHECKS = [...WEBCRYPTO_COMMON, ...WEBCRYPTO_ALGORITHMS];
+const WEBCRYPTO_ALLOWED_CHECKS = [...WEBCRYPTO_COMMON, 'webcrypto-the-rsa-timing-wrapper-is-sealed', 'webcrypto-digest-sha-256-sub-100ms', ...WEBCRYPTO_ALGORITHMS];
 // In substituted modes the page still reports ok for every algorithm: it asserts the rejection of the
 // stand-in instead of a result, and checks that the stand-in is sealed.
 const WEBCRYPTO_SUBSTITUTED_CHECKS = [

@@ -469,7 +469,11 @@ fn small_and_binary_calls_never_meet_a_full_parser() {
         let fx = fixture_with_parse(config(Limits::default()), parse);
         let token = session_token(&fx).await;
         let big = send(&fx, call("test.echo", &token, &big_args())).await;
-        assert_eq!(error_code(&big), "BUSY", "a large JSON body needs the parser");
+        assert_eq!(
+            error_code(&big),
+            "BUSY",
+            "a large JSON body needs the parser"
+        );
         let small = send(&fx, call("test.echo", &token, &json!({"n": 1}))).await;
         assert_eq!(small.status, 200, "a small JSON body is parsed in place");
         assert_eq!(body_json(&small), json!({"n": 1}));

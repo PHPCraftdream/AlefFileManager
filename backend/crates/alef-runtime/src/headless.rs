@@ -126,14 +126,12 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         .event_loop_waker(Box::new(waker.clone()))
         .build();
     servo.setup_logging();
-    // Substituted WebCrypto: a user script per document realm when the right was not granted.
-    let webcrypto = bridge.webcrypto_substitute().then(|| {
-        let manager = UserContentManager::new(&servo);
-        manager.add_script(Rc::new(
-            crate::bridge::assets::origin::SUBTITUTE_SCRIPT.into(),
-        ));
-        Rc::new(manager)
-    });
+    // Per-document WebCrypto policy: substitution or RSA timing mitigation.
+    let manager = UserContentManager::new(&servo);
+    manager.add_script(Rc::new(
+        crate::bridge::assets::origin::webcrypto_script(bridge.webcrypto_substitute()).into(),
+    ));
+    let webcrypto = Rc::new(manager);
     let delegate = Rc::new(Delegate {
         entry_url: bridge.entry_url.clone(),
         handle: handle.clone(),
@@ -143,11 +141,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
     let webview = WebViewBuilder::new(&servo, rendering.clone())
         .url(bridge.entry_url.clone())
         .delegate(delegate);
-    let webview = match &webcrypto {
-        Some(manager) => webview.user_content_manager(manager.clone()),
-        None => webview,
-    }
-    .build();
+    let webview = webview.user_content_manager(webcrypto).build();
     // The transport tells documents apart by the webview: this is window 1 of a process without a window.
     let ids = bridge.windows();
     ids.bind(webview.id(), ids.allocate());
