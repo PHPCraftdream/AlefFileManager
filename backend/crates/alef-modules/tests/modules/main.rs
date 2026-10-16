@@ -20,7 +20,11 @@ async fn the_command_surface_is_exactly_the_documented_one() {
         fixture.registry.command_names(),
         [
             "ai.chat",
+            "ai.request",
             "ai.roles",
+            "ai.session.close",
+            "ai.session.open",
+            "ai.session.send",
             "ai.tools.handle",
             "ai.tools.result",
             "ai.tools.unhandle",

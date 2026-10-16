@@ -47,7 +47,7 @@ permissions: {
         builtin: [
             {
                 name: fs.read
-                scopes: ["$TEMP/ai-e2e/**"]
+                scopes: [ $TEMP/ai-e2e/** ]
             }
         ]
         tools: [

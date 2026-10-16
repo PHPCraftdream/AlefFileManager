@@ -860,7 +860,8 @@ async fn builtin_fs_read_is_scoped_and_never_emits_an_app_tool_call() {
     std::fs::write(&sentinel, "builtin sentinel").unwrap();
     let outside = scratch.path().join("outside.txt");
     std::fs::write(&outside, "outside").unwrap();
-    let scope = serde_json::to_string(&format!("{}/*", allowed.display())).unwrap();
+    // Ktav values are unquoted: quotes would become part of the pattern.
+    let scope = format!("{}/*", allowed.display());
     let manifest = BASE_MANIFEST.replace(
         "    app: {",
         &format!(
