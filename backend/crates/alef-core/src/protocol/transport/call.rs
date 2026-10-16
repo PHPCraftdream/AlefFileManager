@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Unary calls (`POST call/<command>`) and the `runtime.hello` handshake.
 //!
-//! The poll only does cheap checks (hello, session, name, call slot); body parsing runs on the
-//! bounded parse executor (still under the route watchdog kind) and the handler runs in its own
-//! task guarded by `CallGuard`.
+//! The poll only does cheap checks (hello, session, name, call slot) and cheap parses; a large
+//! JSON body is parsed on the bounded parse executor (still under the route watchdog kind) and the
+//! handler runs in its own task guarded by `CallGuard`.
 use super::{
     auth,
     http::{self, TransportRequest, TransportResponse},
@@ -73,6 +73,15 @@ fn unary_args(
     Ok((args, Some(body)))
 }
 
+/// JSON bodies above this size are parsed on the parse executor; smaller ones take microseconds.
+pub(super) const INLINE_JSON_BODY: usize = 16 * 1024;
+
+/// Whether the body is worth the parse executor: only a large JSON body costs real time.
+fn parse_off_poll(content_type: &str, body: &Bytes) -> bool {
+    let media = content_type.split(';').next().unwrap_or("").trim();
+    media == "application/json" && body.len() > INLINE_JSON_BODY
+}
+
 /// A running handler task: dropping it (client abort) cancels the call cooperatively and aborts the task.
 struct CallGuard {
     task: JoinHandle<Result<Reply, AlefError>>,
@@ -102,18 +111,27 @@ impl Transport {
         let args_header = request.header("x-alef-args").map(str::to_owned);
         let body = request.body.clone();
         let limits = self.config.limits;
-        // Parsing runs on a bounded executor, off the poll and off the runtime workers, still under
-        // the route watchdog: the await is inside the watched future. A full parser refuses with
-        // `Busy`; dropping the call skips a queued parse and abandons a running one (BlockingJob).
-        let (args, body) = match self
-            .parse
-            .submit(move || unary_args(&media, args_header.as_deref(), body, &limits))
-        {
-            Ok(job) => match job.result().await {
-                Ok(Ok(parsed)) => parsed,
-                Ok(Err(error)) => return http::error(&error),
-                Err(error) => return http::error(&error),
-            },
+        // A large JSON body is parsed on a bounded executor, off the poll and off the runtime
+        // workers, still under the route watchdog: the await is inside the watched future. A full
+        // parser refuses with `Busy`; dropping the call skips a queued parse and abandons a running
+        // one (BlockingJob). Everything else (a binary body only splits off the args header) is
+        // cheap and parsed in place, so ordinary calls and stream credit never meet `Busy`.
+        let parsed = if parse_off_poll(&media, &body) {
+            match self
+                .parse
+                .submit(move || unary_args(&media, args_header.as_deref(), body, &limits))
+            {
+                Ok(job) => match job.result().await {
+                    Ok(parsed) => parsed,
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            }
+        } else {
+            unary_args(&media, args_header.as_deref(), body, &limits)
+        };
+        let (args, body) = match parsed {
+            Ok(parsed) => parsed,
             Err(error) => return http::error(&error),
         };
         if name == "runtime.stream.write"
