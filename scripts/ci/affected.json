@@ -227,6 +227,18 @@
       ]
     },
     {
+      "glob": "packages/api/package.json",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
+      "glob": "packages/api/build.mjs",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
       "glob": "packages/api/test/modules/desktop/dialog-shell-clipboard.test.mjs",
       "scenarios": [
         "desktop"

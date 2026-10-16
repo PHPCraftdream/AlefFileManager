@@ -1,4 +1,4 @@
-import { app } from '@alef-runtime/api';
+import { app } from '@alef-runtime/api/app';
 import { permissionExample } from './permissions.js';
 
 const info = document.querySelector('#app-info');

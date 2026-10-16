@@ -112,7 +112,7 @@ packages/api/src/
 
 Соглашения:
 
-- импорт по модулю: `import { fs, window } from '@alef-runtime/api'`;
+- импорт по модулю: `import { fs } from '@alef-runtime/api/fs'`, `import { window } from '@alef-runtime/api/window'`;
 - **всё асинхронное, без исключений:** каждая функция возвращает `Promise`, поток или `AsyncIterable`; синхронных геттеров нет даже для «статичных» данных (`os.platform()`, `app.args()`) — всё идёт через транспорт. Rust-обработчики — `async`, блокирующий I/O только в `spawn_blocking`, UI-операции — через асинхронный `UiDispatcher`. Проверяется автоматически: тест `@alef-runtime/api` обходит все экспортируемые функции модулей и требует `Promise`/`AsyncIterable`;
 - последний аргумент — `{ signal?: AbortSignal }`;
 - потоки — стандартные `ReadableStream`/`WritableStream` и `AsyncIterable`;
@@ -124,7 +124,10 @@ packages/api/src/
 Пример целевого API:
 
 ```ts
-import { dialog, fs, http, window } from '@alef-runtime/api';
+import { dialog } from '@alef-runtime/api/dialog';
+import { fs } from '@alef-runtime/api/fs';
+import { http } from '@alef-runtime/api/http';
+import { window } from '@alef-runtime/api/window';
 
 const [path] = await dialog.open({ filters: [{ name: 'Text', extensions: ['txt'] }] });
 const text = await fs.readText(path);                 // путь выдан диалогом → грант
