@@ -415,8 +415,19 @@ fn serve(load: WebResourceLoad, url: Url, site: Arc<Site>) {
     }
 }
 
+pub(crate) const RSA_TIMING_SCRIPT: &str = include_str!("rsa_timing.js");
+
+pub(crate) fn webcrypto_script(substitute: bool) -> &'static str {
+    if substitute {
+        SUBTITUTE_SCRIPT
+    } else {
+        RSA_TIMING_SCRIPT
+    }
+}
+
 /// WebCrypto substitution: when the `webcrypto` right is not granted, every document gets a
 /// `crypto.subtle` whose methods reject, while `getRandomValues`/`randomUUID` stay real.
+/// When allowed, private-key outcomes are delayed to coarse page-observable deadlines.
 
 /// Per-realm substitution: every function of `SubtleCrypto.prototype` (enumerated at install
 /// time, so encapsulate/decapsulate and future methods are covered) is replaced by a sealed stub

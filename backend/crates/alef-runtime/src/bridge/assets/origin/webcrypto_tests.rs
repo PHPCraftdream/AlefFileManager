@@ -1,4 +1,4 @@
-use super::{substitutes, SUBTITUTE_SCRIPT};
+use super::{substitutes, webcrypto_script, RSA_TIMING_SCRIPT, SUBTITUTE_SCRIPT};
 use alef_core::security::consent::{Consent, Decision, Right};
 use alef_core::security::manifest::{
     AppPermissions, CliPermissions, ClipboardPermissions, FsPermissions, NetPermissions,
@@ -54,7 +54,7 @@ fn policy(webcrypto: bool) -> PermissionSet {
 
 #[test]
 fn the_script_seals_every_prototype_method_with_a_rejecting_stub() {
-    // Methods come from the prototype, not the instance: WebIDL methods are inherited.
+    // WebIDL methods are inherited from the prototype.
     assert!(SUBTITUTE_SCRIPT.contains("SubtleCrypto.prototype"));
     assert!(SUBTITUTE_SCRIPT.contains("Object.getOwnPropertyNames(proto)"));
     assert!(SUBTITUTE_SCRIPT.contains("Object.defineProperty(proto, name"));
@@ -65,6 +65,12 @@ fn the_script_seals_every_prototype_method_with_a_rejecting_stub() {
     assert!(SUBTITUTE_SCRIPT.contains("substituted by Alef"));
     assert!(SUBTITUTE_SCRIPT.contains("console.error("));
     assert!(!SUBTITUTE_SCRIPT.contains("[\"encrypt\", \"decrypt\""));
+}
+
+#[test]
+fn webcrypto_script_selection_matches_substitution_mode() {
+    assert_eq!(webcrypto_script(true), SUBTITUTE_SCRIPT);
+    assert_eq!(webcrypto_script(false), RSA_TIMING_SCRIPT);
 }
 
 #[test]
