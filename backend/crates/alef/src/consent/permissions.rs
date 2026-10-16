@@ -4,7 +4,7 @@
 use std::{fmt::Write as _, path::Path, sync::Arc};
 
 use alef_core::security::{
-    consent::{Consent, ConsentStore, Identity, Right},
+    consent::{Consent, ConsentStore, Identity, Right, RiskLevel},
     permissions::PermissionSet,
 };
 
@@ -82,6 +82,9 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
                     _ => "undecided",
                 };
                 let _ = write!(out, "  {word}\t{right}");
+                if right.level() == RiskLevel::Red {
+                    out.push_str("\tRED");
+                }
                 if let Some(detail) = permissions.describe(right) {
                     let _ = write!(out, "\t{detail}");
                 }
@@ -342,6 +345,33 @@ mod tests {
                 signer: Some(format!("pkg-signed:{fingerprint}")),
             }
         );
+    }
+
+    #[test]
+    fn builtin_execution_is_listed_as_red_but_other_builtin_rights_are_not() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = FileConsentStore::new(scratch.path().join("store"));
+        let folder = app(scratch.path(), "org.example.builtin");
+        let file = folder.join(crate::plan::MANIFEST_FILE);
+        let text = std::fs::read_to_string(&file).unwrap().replace(
+            "    app: {",
+            "    ai: {\n        roles: [smart]\n        tools: []\n        builtin: [\n            {\n                name: exec\n            }\n        ]\n    }\n    app: {",
+        );
+        std::fs::write(file, text).unwrap();
+
+        let listed = run(&PermissionsCommand::List { app: Some(folder) }, &store).unwrap();
+        assert!(
+            listed.contains("  undecided\tai.builtin.exec\tRED\n"),
+            "{listed}"
+        );
+        assert!(listed
+            .lines()
+            .filter(|line| line.contains("ai.builtin.exec"))
+            .all(|line| line.ends_with("\tRED")));
+        assert!(!listed
+            .lines()
+            .filter(|line| !line.contains("ai.builtin.exec"))
+            .any(|line| line.ends_with("\tRED")));
     }
 
     #[test]

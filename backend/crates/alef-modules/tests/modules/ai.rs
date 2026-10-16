@@ -54,6 +54,23 @@ fn consent(tool: Decision) -> Consent {
 /// A fixture whose application key is its own: the per-application budgets of the `ai` module
 /// never couple two tests that run side by side.
 async fn ai_fixture(app: &'static str, consent: Consent) -> Fixture {
+    ai_fixture_with_manifest(app, consent, false).await
+}
+
+/// Fixture that can explicitly declare execution builtins for consent-path tests.
+async fn ai_fixture_with_manifest(
+    app: &'static str,
+    consent: Consent,
+    declare_exec: bool,
+) -> Fixture {
+    let manifest = if declare_exec {
+        BASE_MANIFEST.replace(
+            "    app: {",
+            "    ai: {\n        roles: [smart, fast]\n        tools: []\n        builtin: [\n            {\n                name: exec\n            }\n        ]\n    }\n    app: {",
+        )
+    } else {
+        ai_manifest()
+    };
     let root = std::env::current_exe()
         .unwrap()
         .parent()
@@ -61,7 +78,7 @@ async fn ai_fixture(app: &'static str, consent: Consent) -> Fixture {
         .join("alef-modules-paths");
     Fixture::new_sharing_authority(
         &root,
-        Some(&ai_manifest()),
+        Some(&manifest),
         std::sync::Arc::new(alef_modules::MemorySecrets::default()),
         alef_core::security::authority::Authority::SignedPackage {
             fingerprint: app.to_owned(),
@@ -112,6 +129,39 @@ async fn start_chat(fixture: &Fixture, options: Value) -> (u64, u64, StreamReade
         .reader(StreamId(stream))
         .expect("an outgoing stream");
     (chat, stream, reader)
+}
+
+/// Starts a command-backed stream and returns its id and reader.
+async fn start_mode(fixture: &Fixture, command: &str, options: Value) -> (u64, StreamReader) {
+    let reply = fixture
+        .call(command, options)
+        .await
+        .expect("the mode starts");
+    let stream = reply["stream"].as_u64().expect("a stream id");
+    let reader = fixture
+        .session()
+        .streams()
+        .reader(StreamId(stream))
+        .expect("an outgoing stream");
+    (stream, reader)
+}
+
+/// Drains a stream to its terminal frame, collecting text; provider errors fail the test.
+async fn drain_text(reader: &mut StreamReader) -> String {
+    let mut text = String::new();
+    for _ in 0..32 {
+        match frame(reader).await {
+            Frame::Json(value) if value["type"] == "text" => {
+                text.push_str(value["text"].as_str().expect("text payload"));
+            }
+            Frame::Json(value) if value["type"] == "error" => panic!("provider error: {value}"),
+            Frame::Binary(bytes) => panic!("unexpected binary frame: {} bytes", bytes.len()),
+            Frame::Error(error) => panic!("transport error: {error}"),
+            Frame::End => return text,
+            other => {}
+        }
+    }
+    panic!("stream exceeded the frame bound");
 }
 
 fn chat_options(tools: &[&str]) -> Value {
@@ -685,4 +735,244 @@ async fn a_result_of_null_is_a_valid_value() {
     let _ = fixture
         .call("ai.tools.unhandle", json!({"registration": registration}))
         .await;
+}
+
+#[tokio::test]
+async fn session_history_is_owned_by_runtime_and_close_forgets_the_session() {
+    let fixture = ai_fixture("session-history", Consent::allow_all()).await;
+    let opened = fixture
+        .call("ai.session.open", json!({"role":"smart"}))
+        .await
+        .unwrap();
+    let conversation = opened["conversation"].as_u64().unwrap();
+    let send = |content: &str| json!({"conversation":conversation,"messages":[{"role":"user","content":content}],"tools":[]});
+    let (_, mut first) = start_mode(&fixture, "ai.session.send", send("alpha")).await;
+    let first_text = drain_text(&mut first).await;
+    let (_, mut second) = start_mode(&fixture, "ai.session.send", send("beta")).await;
+    let history_text = drain_text(&mut second).await;
+    let history_prefix = history_text
+        .strip_prefix("History ")
+        .expect("serialized history");
+    let history: Value = serde_json::from_str(history_prefix).expect("history JSON");
+    let messages = history.as_array().expect("history array");
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["content"], "alpha");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"], first_text);
+    assert_eq!(messages[2]["role"], "user");
+    assert_eq!(messages[2]["content"], "beta");
+    fixture
+        .call("ai.session.close", json!({"conversation":conversation}))
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .call("ai.session.send", send("after close"))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Closed
+    );
+}
+
+#[tokio::test]
+async fn one_session_rejects_a_second_active_send() {
+    let fixture = ai_fixture("session-busy", Consent::allow_all()).await;
+    let opened = fixture
+        .call("ai.session.open", json!({"role":"smart"}))
+        .await
+        .unwrap();
+    let conversation = opened["conversation"].as_u64().unwrap();
+    let options = json!({"conversation":conversation,"messages":[{"role":"user","content":"alpha"}],"tools":[]});
+    let gate = fixture.ai.hold_next_chat();
+    let (_, mut reader) = start_mode(&fixture, "ai.session.send", options.clone()).await;
+    assert_eq!(
+        fixture
+            .call("ai.session.send", options)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Busy
+    );
+    gate.release();
+    drain_text(&mut reader).await;
+    fixture
+        .call("ai.session.close", json!({"conversation":conversation}))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_session_without_tools_does_not_dispatch_registered_app_tools() {
+    let fixture = ai_fixture("session-no-tools", Consent::allow_all()).await;
+    let registered = fixture
+        .call("ai.tools.handle", json!({"name":"summarizeSelection"}))
+        .await
+        .unwrap();
+    let opened = fixture
+        .call("ai.session.open", json!({"role":"smart"}))
+        .await
+        .unwrap();
+    let conversation = opened["conversation"].as_u64().unwrap();
+    let (_, mut reader) = start_mode(&fixture, "ai.session.send", json!({"conversation":conversation,"messages":[{"role":"user","content":"alpha"}],"tools":[]})).await;
+    let mut tool_call = false;
+    for _ in 0..32 {
+        match frame(&mut reader).await {
+            Frame::Json(value) => {
+                assert_ne!(value["type"], json!("tool_call"));
+                tool_call |= value["type"] == "tool_call";
+            }
+            Frame::End => break,
+            Frame::Binary(bytes) => panic!(
+                "unexpected binary frame in no-tools test: {} bytes",
+                bytes.len()
+            ),
+            Frame::Error(error) => panic!("unexpected stream error in no-tools test: {error}"),
+        }
+    }
+    assert!(!tool_call);
+    assert!(fixture
+        .host
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|(_, name, _)| name != "ai.tool_call"));
+    fixture
+        .call("ai.session.close", json!({"conversation":conversation}))
+        .await
+        .unwrap();
+    fixture
+        .call(
+            "ai.tools.unhandle",
+            json!({"registration":registered["registration"]}),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn builtin_fs_read_is_scoped_and_never_emits_an_app_tool_call() {
+    let scratch = tempfile::tempdir().unwrap();
+    let allowed = scratch.path().join("allowed");
+    std::fs::create_dir(&allowed).unwrap();
+    let sentinel = allowed.join("sentinel.txt");
+    std::fs::write(&sentinel, "builtin sentinel").unwrap();
+    let outside = scratch.path().join("outside.txt");
+    std::fs::write(&outside, "outside").unwrap();
+    // Ktav values are unquoted (quotes would become part of the pattern) and a backslash is an
+    // escape there, so the scope is written with forward slashes on every platform.
+    let scope = format!("{}/*", allowed.display()).replace('\\', "/");
+    let manifest = BASE_MANIFEST.replace(
+        "    app: {",
+        &format!(
+            "    ai: {{\n        roles: [smart, fast]\n        tools: []\n        builtin: [\n            {{\n                name: fs.read\n                scopes: [{scope}]\n            }}\n        ]\n    }}\n    app: {{"
+        ),
+    );
+    let root = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("alef-modules-paths");
+    let fixture = Fixture::new_sharing_authority(
+        &root,
+        Some(&manifest),
+        std::sync::Arc::new(alef_modules::MemorySecrets::default()),
+        alef_core::security::authority::Authority::SignedPackage {
+            fingerprint: "builtin-fs-read".to_owned(),
+        },
+    )
+    .await
+    .with_consent(Consent::allow_all());
+
+    let (_, mut reader) = start_mode(
+        &fixture,
+        "ai.request",
+        json!({
+            "role": "smart",
+            "messages": [{"role": "user", "content": format!("{{\"path\":{}}}", serde_json::to_string(&sentinel.to_string_lossy()).unwrap())}],
+            "builtin": ["fs.read"],
+        }),
+    )
+    .await;
+    assert_eq!(
+        frame(&mut reader).await,
+        Frame::Json(json!({"type":"text","text":"Thinking"}))
+    );
+    let response = drain_text(&mut reader).await;
+    assert!(response.starts_with("Saw 1 tool result(s):"));
+    assert!(response.contains("builtin sentinel"));
+    assert!(fixture
+        .host
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|(_, name, _)| name != "ai.tool_call"));
+
+    let options = json!({
+        "role": "smart",
+        "messages": [{"role":"user", "content": format!("{{\"path\":{}}}", serde_json::to_string(&outside.to_string_lossy()).unwrap())}],
+        "builtin": ["fs.read"],
+    });
+    let (_, mut reader) = start_mode(&fixture, "ai.request", options).await;
+    assert_eq!(
+        frame(&mut reader).await,
+        Frame::Json(json!({"type":"text","text":"Thinking"}))
+    );
+    assert!(
+        matches!(frame(&mut reader).await, Frame::Error(error) if error.code == ErrorCode::PermissionDenied)
+    );
+    assert!(fixture
+        .host
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|(_, name, _)| name != "ai.tool_call"));
+}
+
+#[tokio::test]
+async fn denied_or_undeclared_execution_builtin_is_rejected_before_provider_start() {
+    let mut denied = Consent::allow_all();
+    denied.set(Right::plain("ai.builtin.exec"), Decision::Deny);
+    let fixture = ai_fixture_with_manifest("builtin-exec-denied", denied, true).await;
+    let before = fixture.ai.chats_started();
+    let error = fixture
+        .call(
+            "ai.request",
+            json!({
+                "role": "smart",
+                "messages": [{"role":"user", "content":"hello"}],
+                "builtin": ["exec"],
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(fixture.ai.chats_started(), before);
+
+    let fixture =
+        ai_fixture_with_manifest("builtin-exec-undeclared", Consent::allow_all(), false).await;
+    let before = fixture.ai.chats_started();
+    let error = fixture
+        .call(
+            "ai.request",
+            json!({
+                "role": "smart",
+                "messages": [{"role":"user", "content":"hello"}],
+                "builtin": ["exec"],
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(fixture.ai.chats_started(), before);
+}
+
+#[tokio::test]
+async fn stateless_request_starts_and_drains_a_response() {
+    let fixture = ai_fixture("stateless-request", Consent::allow_all()).await;
+    let (_, mut reader) = start_mode(&fixture, "ai.request", chat_options(&[])).await;
+    assert_eq!(drain_text(&mut reader).await, "Thinking");
 }

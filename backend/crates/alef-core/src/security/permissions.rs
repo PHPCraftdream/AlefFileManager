@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Runtime authorization: the manifest's permission policy, the decisions of the user and the
 //! per-session grants.
+#[path = "given/builtin.rs"]
+mod builtin;
+
 use super::{
     consent::{Consent, Decision, Right},
-    manifest::{validate_ai, AiPermissions, AiTool, Permissions},
+    manifest::{validate_ai, AiBuiltin, AiPermissions, AiTool, Permissions},
     scope::{
         canonical, canonical_entry,
         command::{parse_cli, DeclaredCommand},
@@ -197,6 +200,7 @@ pub struct PermissionSet {
     window: bool,
     /// The validated `ai` section of the manifest: the roles and tools that may be asked for.
     ai: Option<AiPermissions>,
+    builtin: Vec<builtin::BuiltinScope>,
     /// Shared by the clones of the set: narrowing it narrows the rights of every holder.
     consent: Arc<RwLock<Consent>>,
     /// Folders no right reaches, whatever the manifest lists or the user picked.
@@ -328,6 +332,7 @@ impl PermissionSet {
             autostart: policy.app.autostart,
             window: policy.window.as_ref().is_some_and(|window| window.create),
             ai: policy.ai.clone(),
+            builtin: builtin::parse(policy.ai.as_ref(), vars)?,
             consent: Arc::new(RwLock::new(Consent::allow_all())),
             protected: Vec::new(),
         })
@@ -428,6 +433,7 @@ impl PermissionSet {
                             .map(|tool| Right::scoped("ai.tool", &tool.name)),
                     )
             }))
+            .chain(builtin::rights(self.ai.as_ref(), &self.builtin))
             .collect();
         for (asked, name) in [
             (self.clipboard, "clipboard.read"),
@@ -483,6 +489,48 @@ impl PermissionSet {
             Some(ai) => &ai.roles,
             None => &[],
         }
+    }
+
+    /// Names and declared filesystem scopes of AI builtin capabilities.
+    pub fn ai_builtins(&self) -> &[AiBuiltin] {
+        self.ai.as_ref().map_or(&[], |ai| ai.builtin.as_slice())
+    }
+
+    /// Checks exact builtin declaration and its consent right. Filesystem builtins require a
+    /// declared scope; execution builtins have no scope.
+    pub fn check_ai_builtin(&self, name: &str, scope: Option<&str>) -> Result<Decision, AlefError> {
+        builtin::check(
+            self.ai.as_ref(),
+            &self.builtin,
+            &self.decided_by_user(),
+            name,
+            scope,
+        )
+    }
+
+    /// Authorizes a builtin filesystem path with no session grants. Protected paths remain denied;
+    /// callers must handle `Substitute` rather than operating on the real path.
+    pub fn authorize_ai_builtin_path(
+        &self,
+        name: &str,
+        target: &str,
+    ) -> Result<Authorized, AlefError> {
+        builtin::authorize_path(self, name, target)
+    }
+
+    /// Canonicalizes and authorizes a builtin path on the blocking executor.
+    pub async fn authorize_ai_builtin_path_on(
+        self: Arc<Self>,
+        executor: &crate::session::BlockingExecutor,
+        name: &str,
+        target: &str,
+    ) -> Result<Authorized, AlefError> {
+        let name = name.to_owned();
+        let target = target.to_owned();
+        executor
+            .submit(move || self.authorize_ai_builtin_path(&name, &target))?
+            .result()
+            .await?
     }
 
     /// The declared tool called `name`; whether it may be registered is [`Self::check`] with
@@ -630,7 +678,7 @@ impl PermissionSet {
                 return Err(AlefError::new(
                     ErrorCode::InvalidArgument,
                     "not a filesystem permission",
-                ))
+                ));
             }
         };
         let resolved = target

@@ -132,6 +132,12 @@ const CLI_COMMAND_CHECKS = [
 const AI_ALLOWED_CHECKS = [
   'ai-roles-list-the-allowed-role',
   'ai-chat-streams-to-a-completed-end',
+  'ai-request-api-streams-to-a-completed-end',
+  'ai-session-history-is-carried-between-sends',
+  'ai-session-without-tools-streams',
+  'ai-builtin-inside-scope-returns-sentinel-content',
+  'ai-builtin-outside-scope-is-denied',
+  'ai-red-absent-and-exec-denied',
   'ai-tool-round-trip-uses-the-handler-result',
   'ai-cancel-by-break-closes-the-chat',
 ];
@@ -317,22 +323,36 @@ export function moduleScenarios({ drive, exe, verbose }) {
     // The chat with the Rush roles: the FakeProvider answers deterministically, and each consent
     // mode decides what the page may ask for. The page reports one check per answer of the user.
     async ai() {
-      const runs = [];
-      const problems = [];
-      for (const [mode, expected] of Object.entries(AI_MODE_CHECKS)) {
-        const decision = mode === 'allowed' ? '*=allow'
-          : mode === 'role-denied' ? 'ai.role:smart=deny;*=allow'
-          : mode === 'role-substituted' ? 'ai.role:smart=substitute;*=allow'
-          : 'ai.tool:summarizeSelection=deny;*=allow';
-        const result = await drive({
-          name: `ai-${mode}`, app: 'modules/system/ai', targets: { mode },
-          env: { ALEF_E2E_CONSENT: decision },
-          expectedChecks: expected,
-        });
-        runs.push(...result.lines);
-        problems.push(...result.problems.map(problem => `${mode}: ${problem}`));
+      const aiDirectory = mkdtempSync(join(scratch, 'ai-'));
+      try {
+        const insideDirectory = join(aiDirectory, 'ai-e2e');
+        const outsideDirectory = join(aiDirectory, 'outside');
+        mkdirSync(insideDirectory, { recursive: true });
+        mkdirSync(outsideDirectory, { recursive: true });
+        const aiInside = join(insideDirectory, 'sentinel.txt');
+        const aiOutside = join(outsideDirectory, 'sentinel.txt');
+        const aiSentinel = 'ai-scope-sentinel-content';
+        writeFileSync(aiInside, aiSentinel);
+        writeFileSync(aiOutside, 'outside-sentinel-content');
+        const runs = [];
+        const problems = [];
+        for (const [mode, expected] of Object.entries(AI_MODE_CHECKS)) {
+          const decision = mode === 'allowed' ? '*=allow'
+            : mode === 'role-denied' ? 'ai.role:smart=deny;*=allow'
+            : mode === 'role-substituted' ? 'ai.role:smart=substitute;*=allow'
+            : 'ai.tool:summarizeSelection=deny;*=allow';
+          const result = await drive({
+            name: `ai-${mode}`, app: 'modules/system/ai', targets: { mode, aiInside, aiOutside, aiSentinel },
+            env: { ALEF_E2E_CONSENT: decision, TEMP: aiDirectory, TMP: aiDirectory, TMPDIR: aiDirectory },
+            expectedChecks: expected,
+          });
+          runs.push(...result.lines);
+          problems.push(...result.problems.map(problem => `${mode}: ${problem}`));
+        }
+        return { problems, lines: runs };
+      } finally {
+        rmSync(aiDirectory, { recursive: true, force: true });
       }
-      return { problems, lines: runs };
     },
     app: () => drive({
       name: 'app', app: 'modules/app/basic', targets: { cwd: process.cwd() },

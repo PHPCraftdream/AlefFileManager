@@ -44,6 +44,12 @@ permissions: {
     secrets: false
     ai: {
         roles: [smart]
+        builtin: [
+            {
+                name: fs.read
+                scopes: [ $TEMP/ai-e2e/** ]
+            }
+        ]
         tools: [
             {
                 name: summarizeSelection

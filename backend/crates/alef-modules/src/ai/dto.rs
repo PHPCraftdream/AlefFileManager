@@ -67,4 +67,6 @@ pub struct ChatOptions {
     pub messages: Vec<ChatMessage>,
     #[serde(default)]
     pub tools: Vec<String>,
+    #[serde(default)]
+    pub builtin: Vec<String>,
 }
