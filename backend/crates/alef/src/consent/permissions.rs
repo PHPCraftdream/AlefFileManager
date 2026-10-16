@@ -355,7 +355,7 @@ mod tests {
         let file = folder.join(crate::plan::MANIFEST_FILE);
         let text = std::fs::read_to_string(&file).unwrap().replace(
             "    app: {",
-            "    ai: {\n        builtin: [\n            {\n                name: exec\n            }\n        ]\n    }\n    app: {",
+            "    ai: {\n        roles: [smart]\n        tools: []\n        builtin: [\n            {\n                name: exec\n            }\n        ]\n    }\n    app: {",
         );
         std::fs::write(file, text).unwrap();
 
