@@ -100,6 +100,7 @@ jobs:
         with:
           toolchain: 1.99.0
           targets: ${{ matrix.target }}
+          components: rustfmt
 
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -171,6 +172,7 @@ jobs:
           npm run lint
           npm run lint:structure
           npm run test:structure
+          node scripts/cargo.mjs fmt -- --check
 
       - name: Mutation harness tests
         run: npm run test:mutate
@@ -180,6 +182,7 @@ jobs:
         run: |
           npm run test:ci
           npm run test:release
+          npm run test:assets
 
       - name: Rust tests
         if: needs.plan.outputs.crates_all == 'true'

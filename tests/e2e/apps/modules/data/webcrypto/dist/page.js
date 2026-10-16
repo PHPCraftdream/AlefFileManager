@@ -10,6 +10,17 @@ const hex = bytes => [...new Uint8Array(bytes)].map(byte => byte.toString(16).pa
 const unhex = text => new Uint8Array(text.match(/../g).map(pair => parseInt(pair, 16)));
 const encode = text => new TextEncoder().encode(text);
 const same = (left, right) => hex(left) === hex(right);
+const timed = async operation => {
+  const started = performance.now();
+  const value = await operation();
+  return { value, elapsed: performance.now() - started };
+};
+const bounded = async (promise, label, timeoutMs = 10000) => {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs} ms`)), timeoutMs); })]);
+  } finally { clearTimeout(timer); }
+};
 
 const expect = (what, actual, wanted) => {
   if (actual !== wanted) throw new Error(`${what}: ${actual}, expected ${wanted}`);
@@ -34,11 +45,13 @@ async function probe(check, mode, name, body) {
 
 /** Sign, verify and fail to verify a tampered message. */
 async function signature(algorithm, usages = ['sign', 'verify'], signing = algorithm) {
-  const pair = await crypto.subtle.generateKey(algorithm, true, usages);
+  const pair = await bounded(crypto.subtle.generateKey(algorithm, true, usages), 'signature key generation');
   const message = encode('a message to sign');
-  const proof = await crypto.subtle.sign(signing, pair.privateKey, message);
-  if (!await crypto.subtle.verify(signing, pair.publicKey, proof, message)) throw new Error('a good signature did not verify');
-  if (await crypto.subtle.verify(signing, pair.publicKey, proof, encode('another message'))) throw new Error('a tampered message verified');
+  const measured = await timed(() => bounded(crypto.subtle.sign(signing, pair.privateKey, message), 'signature'));
+  const proof = measured.value;
+  if (signing.name === 'RSA-PSS' && measured.elapsed < 100) throw new Error(`RSA-PSS signing took ${measured.elapsed.toFixed(2)} ms, expected at least 100 ms`);
+  if (!await bounded(crypto.subtle.verify(signing, pair.publicKey, proof, message), 'signature verification')) throw new Error('a good signature did not verify');
+  if (await bounded(crypto.subtle.verify(signing, pair.publicKey, proof, encode('another message')), 'tampered signature verification')) throw new Error('a tampered message verified');
   return `${proof.byteLength}-byte signature`;
 }
 
@@ -91,6 +104,18 @@ async function main() {
     });
   }
 
+  if (mode === 'allowed') {
+    await probe(check, mode, 'digest-sha-256-sub-100ms', async () => {
+      const samples = [];
+      for (let index = 0; index < 3; index += 1) {
+        const measured = await timed(() => bounded(crypto.subtle.digest('SHA-256', encode('abc')), 'SHA-256 digest'));
+        expect('SHA-256', hex(measured.value), digests['SHA-256']);
+        samples.push(measured.elapsed);
+      }
+      if (!samples.some(elapsed => elapsed < 100)) throw new Error(`all SHA-256 digest operations took at least 100 ms: ${samples.map(value => value.toFixed(2)).join(', ')} ms`);
+      return `per-operation ${samples.map(value => value.toFixed(2)).join(', ')} ms`;
+    });
+  }
   const hmac = async hash => {
     const key = await crypto.subtle.importKey('raw', encode('key'), { name: 'HMAC', hash }, false, ['sign', 'verify']);
     const proof = await crypto.subtle.sign('HMAC', key, encode('The quick brown fox jumps over the lazy dog'));
@@ -124,6 +149,15 @@ async function main() {
     const sealed = new Uint8Array(await crypto.subtle.encrypt(parameters, key, plain));
     if (sealed.length !== plain.length + 16) throw new Error(`${sealed.length} bytes, expected ${plain.length + 16}`);
     if (!same(await crypto.subtle.decrypt(parameters, key, sealed), plain)) throw new Error('round trip');
+    if (mode === 'allowed') {
+      const samples = [];
+      for (let index = 0; index < 3; index += 1) {
+        const measured = await timed(() => bounded(crypto.subtle.decrypt(parameters, key, sealed), 'AES-GCM decrypt timing'));
+        if (!same(measured.value, plain)) throw new Error('timed decrypt round trip');
+        samples.push(measured.elapsed);
+      }
+      if (!samples.some(elapsed => elapsed < 100)) throw new Error(`all AES-GCM decrypts took at least 100 ms: ${samples.map(value => value.toFixed(2)).join(', ')} ms`);
+    }
     const tampered = sealed.slice();
     tampered[0] ^= 1;
     let refused = false;
@@ -178,11 +212,42 @@ async function main() {
   await probe(check, mode, 'rsassa-pkcs1-v1_5-2048', async () => `${await signature({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, ['sign', 'verify'], { name: 'RSASSA-PKCS1-v1_5' })}, ${rsaTime()}`);
   await probe(check, mode, 'rsa-pss-2048', async () => `${await signature({ name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, ['sign', 'verify'], { name: 'RSA-PSS', saltLength: 32 })}, ${rsaTime()}`);
   await probe(check, mode, 'rsa-oaep-2048', async () => {
-    const pair = await crypto.subtle.generateKey({ name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['encrypt', 'decrypt']);
-    const sealed = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pair.publicKey, encode('short secret'));
-    if (new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, pair.privateKey, sealed)) !== 'short secret') throw new Error('round trip');
-    return rsaTime();
+    const pair = await bounded(crypto.subtle.generateKey({ name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['encrypt', 'decrypt']), 'RSA-OAEP key generation');
+    const plain = encode('short secret');
+    const sealed = await bounded(crypto.subtle.encrypt({ name: 'RSA-OAEP' }, pair.publicKey, plain), 'RSA-OAEP encryption');
+    const measured = await timed(() => bounded(crypto.subtle.decrypt({ name: 'RSA-OAEP' }, pair.privateKey, sealed), 'RSA-OAEP decryption'));
+    if (!same(measured.value, plain)) throw new Error('round trip');
+    if (measured.elapsed < 100) throw new Error(`RSA-OAEP decryption took ${measured.elapsed.toFixed(2)} ms, expected at least 100 ms`);
+    const invalid = new Uint8Array(sealed); invalid[0] ^= 1;
+    const invalidTiming = await timed(async () => {
+      try { await bounded(crypto.subtle.decrypt({ name: 'RSA-OAEP' }, pair.privateKey, invalid), 'invalid RSA-OAEP decryption'); }
+      catch (error) { if (error?.message?.includes('timed out')) throw error; return error; }
+      throw new Error('invalid RSA-OAEP ciphertext decrypted');
+    });
+    if (invalidTiming.elapsed < 100) throw new Error(`invalid RSA-OAEP rejection took ${invalidTiming.elapsed.toFixed(2)} ms, expected at least 100 ms`);
+    return `decrypt ${measured.elapsed.toFixed(2)} ms; invalid ${invalidTiming.elapsed.toFixed(2)} ms`;
   });
+
+  if (mode === 'allowed') {
+    await check('webcrypto-the-rsa-timing-wrapper-is-sealed', async () => {
+      const names = ['decrypt', 'sign', 'unwrapKey', 'deriveBits', 'deriveKey'];
+      const instance = crypto.subtle;
+      const proto = SubtleCrypto.prototype;
+      for (const target of [proto, instance]) {
+        for (const name of names) {
+          const descriptor = Object.getOwnPropertyDescriptor(target, name);
+          expect(`${name} is not configurable`, descriptor?.configurable, false);
+          expect(`${name} is not writable`, descriptor?.writable, false);
+          expect(`${name} cannot be deleted`, Reflect.deleteProperty(target, name), false);
+          expect(`${name} cannot be redefined`, Reflect.defineProperty(target, name, { value() {} }), false);
+        }
+      }
+      const getter = Object.getOwnPropertyDescriptor(Crypto.prototype, 'subtle').get;
+      expect('getter returns same subtle instance', getter.call(crypto), instance);
+      for (const name of names) expect(`${name} getter returns wrapped function`, getter.call(crypto)[name], instance[name]);
+      return 'RSA methods are sealed on prototype and instance';
+    });
+  }
 
   // The substitution is sealed on SubtleCrypto.prototype itself: a page can neither delete nor
   // redefine a stub, and the native object reached through the prototype getter rejects too.

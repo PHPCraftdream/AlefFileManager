@@ -221,23 +221,17 @@ impl App {
             frame_ready: frame_ready.clone(),
             content_frame: content_frame.clone(),
         });
-        // Substituted WebCrypto: a user script per document realm when the right was not granted.
-        let webcrypto = self.webcrypto_substitute.then(|| {
-            let manager = UserContentManager::new(&servo);
-            manager.add_script(Rc::new(
-                crate::bridge::assets::origin::SUBTITUTE_SCRIPT.into(),
-            ));
-            Rc::new(manager)
-        });
+        // Per-document WebCrypto policy: substitution or RSA timing mitigation.
+        let manager = UserContentManager::new(&servo);
+        manager.add_script(Rc::new(
+            crate::bridge::assets::origin::webcrypto_script(self.webcrypto_substitute).into(),
+        ));
+        let webcrypto = Rc::new(manager);
         let webview = WebViewBuilder::new(&servo, rendering.clone())
             .url(url)
             .hidpi_scale_factor(Scale::new(window.scale_factor() as f32))
             .delegate(delegate);
-        let webview = match &webcrypto {
-            Some(manager) => webview.user_content_manager(manager.clone()),
-            None => webview,
-        }
-        .build();
+        let webview = webview.user_content_manager(webcrypto).build();
         self.ids.bind(webview.id(), window_id);
         webview.show();
         webview.focus();

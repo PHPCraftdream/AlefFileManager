@@ -15,7 +15,7 @@ ignore = [
     { id = "RUSTSEC-2025-0080", reason = "unic-common, via Servo (servo-script)" },
     { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident, via Servo (servo-script)" },
     { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version, via Servo (servo-script)" },
-    { id = "RUSTSEC-2023-0071", reason = "rsa (Marvin timing side channel, no patch upstream), via Servo WebCrypto; reachable only when the webcrypto right is allowed; documented in docs/stages/m3-data.md" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa (Marvin timing side channel, no patch upstream), via Servo WebCrypto; reachable only when webcrypto right is allowed; private-key operations receive 100ms floor/10ms bins; all real private keys are classified only by captured native CryptoKey.type with no algorithm-name inspection; this does not prove constant time or eliminate boundary/cache/CPU leakage; documented in docs/stages/m3-data.md" },
 ]
 
 [licenses]
