@@ -22,7 +22,7 @@ export type ChatMessage = { "role": "user", content: string, } | { "role": "assi
 /**
  * What the page asks of `ai.chat`.
  */
-export type ChatOptions = { role: string, messages: Array<ChatMessage>, tools: Array<string>, };
+export type ChatOptions = { role: string, messages: Array<ChatMessage>, tools: Array<string>, builtin: Array<string>, };
 
 /**
  * One part of a chat as it streams to the page (`ai.chat` iterator).

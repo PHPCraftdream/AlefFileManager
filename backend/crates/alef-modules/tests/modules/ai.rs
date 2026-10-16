@@ -860,8 +860,9 @@ async fn builtin_fs_read_is_scoped_and_never_emits_an_app_tool_call() {
     std::fs::write(&sentinel, "builtin sentinel").unwrap();
     let outside = scratch.path().join("outside.txt");
     std::fs::write(&outside, "outside").unwrap();
-    // Ktav values are unquoted: quotes would become part of the pattern.
-    let scope = format!("{}/*", allowed.display());
+    // Ktav values are unquoted (quotes would become part of the pattern) and a backslash is an
+    // escape there, so the scope is written with forward slashes on every platform.
+    let scope = format!("{}/*", allowed.display()).replace('\\', "/");
     let manifest = BASE_MANIFEST.replace(
         "    app: {",
         &format!(

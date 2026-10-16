@@ -149,6 +149,8 @@ export type Right = {
    */
   scope?: string, };
 
+export type RiskLevel = "normal" | "risky" | "red";
+
 /**
  * Options of `dialog.save`.
  */
