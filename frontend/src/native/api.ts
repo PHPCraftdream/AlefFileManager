@@ -1,5 +1,10 @@
 import type { Language } from '../i18n';
-import { AlefError, app, fs, path, store, type AppInfo, type DirEntry } from '@alef-runtime/api';
+import { AlefError } from '@alef-runtime/api/core';
+import { app } from '@alef-runtime/api/app';
+import { fs } from '@alef-runtime/api/fs';
+import { path } from '@alef-runtime/api/path';
+import { store } from '@alef-runtime/api/store';
+import type { AppInfo, DirEntry } from '@alef-runtime/api/types';
 
 export type { AppInfo };
 

@@ -136,7 +136,7 @@ pub(super) async fn install_on(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{install, install_on, UpdateApplier};
+    use super::{install_on, UpdateApplier};
     use crate::net::updater::{
         document, register_updater,
         tests::{
@@ -219,7 +219,12 @@ pub(crate) mod tests {
         state: Arc<State>,
         gate: Arc<Semaphore>,
     ) -> Result<Reply, AlefError> {
-        tokio::time::timeout(WAIT, install(config, state, gate))
+        // Each call owns its job budget: the process-wide one is shared by the tests running in
+        // parallel and refused with BUSY on a slow runner.
+        let executor = alef_core::session::BlockingExecutor::new(
+            std::num::NonZeroUsize::new(2).expect("non-zero test budget"),
+        );
+        tokio::time::timeout(WAIT, install_on(&executor, config, state, gate))
             .await
             .expect("install timed out")
     }

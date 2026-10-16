@@ -21,7 +21,9 @@ export function copyInto(dir, staging, manifest) {
     for (const entry of files) {
       const source = path.join(dir, entry);
       const target = path.join(staging, entry);
-      if (!existsSync(source)) continue;
+      // dist/ of packages/api is a build artifact: staging a manifest without its implementation
+      // would publish a package that resolves to nothing, so a missing entry is an error, not a skip.
+      if (!existsSync(source)) throw new Error(`${manifest.name}: "files" entry "${entry}" is missing (build the package first)`);
       // a `files` entry is either a single file or a directory copied wholesale
       if (statSync(source).isDirectory()) {
         cpSync(source, target, { recursive: true });
@@ -34,6 +36,28 @@ export function copyInto(dir, staging, manifest) {
   // staging is fresh (rmSync above); skip the workspace noise npm would skip anyway
   const sourceRoot = path.resolve(dir);
   cpSync(sourceRoot, staging, { recursive: true, filter: src => !/(^|[\\/])(node_modules|\.git)([\\/]|$)/.test(src) });
+}
+
+// npm runs these from the staging directory; when only the built `files` were staged, the sources
+// they build from are not there, so a staged package carries none of them.
+const BUILD_LIFECYCLE = ['prepare', 'prepack', 'prepublish', 'prepublishOnly', 'postpack'];
+
+// The manifest written into staging: the release version, never `private`, the runtime placeholder
+// resolved, and no build lifecycle when the staged tree is the built `files` only.
+export function stagedManifest(manifest, version) {
+  const staged = structuredClone(manifest);
+  staged.version = version;
+  delete staged.private;
+  // The generator emits platform packages at this version; the placeholder in the meta
+  // package resolves to it at release time.
+  for (const [name, value] of Object.entries(staged.optionalDependencies ?? {})) {
+    if (value === 'workspace-version-placeholder') staged.optionalDependencies[name] = version;
+  }
+  if (filesToCopy(manifest) && staged.scripts) {
+    for (const hook of BUILD_LIFECYCLE) delete staged.scripts[hook];
+    if (Object.keys(staged.scripts).length === 0) delete staged.scripts;
+  }
+  return staged;
 }
 
 function run(args) {
@@ -51,17 +75,8 @@ function run(args) {
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
   copyInto(dir, staging, manifest);
-  // The private workspace copy is never published; npm refuses private packages, so the
-  // staging manifest drops `private`.
-  const manifest2 = structuredClone(manifest);
-  manifest2.version = version;
-  delete manifest2.private;
-  // The generator emits platform packages at this version; the placeholder in the meta
-  // package resolves to it at release time.
-  for (const [name, value] of Object.entries(manifest2.optionalDependencies ?? {})) {
-    if (value === 'workspace-version-placeholder') manifest2.optionalDependencies[name] = version;
-  }
-  writeFileSync(path.join(staging, 'package.json'), `${JSON.stringify(manifest2, null, 2)}\n`);
+  // npm refuses private packages: the private workspace copy is published through the staged manifest.
+  writeFileSync(path.join(staging, 'package.json'), `${JSON.stringify(stagedManifest(manifest, version), null, 2)}\n`);
   const npmArgs = dry
     ? ['publish', '--dry-run', '--access', 'public']
     : ['publish', '--access', 'public', '--provenance'];

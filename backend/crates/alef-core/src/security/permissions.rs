@@ -3,7 +3,7 @@
 //! per-session grants.
 use super::{
     consent::{Consent, Decision, Right},
-    manifest::Permissions,
+    manifest::{validate_ai, AiPermissions, AiTool, Permissions},
     scope::{
         canonical, canonical_entry,
         command::{parse_cli, DeclaredCommand},
@@ -62,6 +62,10 @@ pub enum Permission {
     AppDeepLinks,
     /// Create windows at runtime (`permissions.window.create` in the manifest, or the embedder).
     WindowCreate,
+    /// Use an AI role listed in `ai.roles` (`ai.role`); the target is its id.
+    AiRole,
+    /// Register a tool declared in `ai.tools` (`ai.tool`); the target is its name.
+    AiTool,
 }
 
 impl Permission {
@@ -86,6 +90,8 @@ impl Permission {
             Self::AppDeepLinks => "app.deepLinks",
             Self::AppAutostart => "app.autostart",
             Self::WindowCreate => "window.create",
+            Self::AiRole => "ai.role",
+            Self::AiTool => "ai.tool",
         }
     }
 }
@@ -189,6 +195,8 @@ pub struct PermissionSet {
     deep_links: Vec<String>,
     autostart: bool,
     window: bool,
+    /// The validated `ai` section of the manifest: the roles and tools that may be asked for.
+    ai: Option<AiPermissions>,
     /// Shared by the clones of the set: narrowing it narrows the rights of every holder.
     consent: Arc<RwLock<Consent>>,
     /// Folders no right reaches, whatever the manifest lists or the user picked.
@@ -297,6 +305,9 @@ impl PermissionSet {
             })
             .collect::<Result<_, _>>()?;
         let commands = parse_cli(&policy.cli)?;
+        if let Some(ai) = &policy.ai {
+            validate_ai(ai).map_err(|error| invalid(error.to_string()))?;
+        }
         Ok(Self {
             read: scoped(&policy.fs.read, |p| path_pattern(p, vars))?,
             write: scoped(&policy.fs.write, |p| path_pattern(p, vars))?,
@@ -316,6 +327,7 @@ impl PermissionSet {
             deep_links: Vec::new(),
             autostart: policy.app.autostart,
             window: policy.window.as_ref().is_some_and(|window| window.create),
+            ai: policy.ai.clone(),
             consent: Arc::new(RwLock::new(Consent::allow_all())),
             protected: Vec::new(),
         })
@@ -406,6 +418,16 @@ impl PermissionSet {
                     .map(|scheme| Right::scoped("app.deepLinks", scheme)),
             )
             .chain(self.env.iter().map(|name| Right::scoped("app.env", name)))
+            .chain(self.ai.iter().flat_map(|ai| {
+                ai.roles
+                    .iter()
+                    .map(|role| Right::scoped("ai.role", role))
+                    .chain(
+                        ai.tools
+                            .iter()
+                            .map(|tool| Right::scoped("ai.tool", &tool.name)),
+                    )
+            }))
             .collect();
         for (asked, name) in [
             (self.clipboard, "clipboard.read"),
@@ -455,6 +477,24 @@ impl PermissionSet {
         self
     }
 
+    /// The role ids declared under `permissions.ai.roles`, in manifest order.
+    pub fn ai_roles(&self) -> &[String] {
+        match &self.ai {
+            Some(ai) => &ai.roles,
+            None => &[],
+        }
+    }
+
+    /// The declared tool called `name`; whether it may be registered is [`Self::check`] with
+    /// `Permission::AiTool`.
+    pub fn ai_tool(&self, name: &str) -> Option<&AiTool> {
+        self.ai
+            .as_ref()?
+            .tools
+            .iter()
+            .find(|tool| tool.name == name)
+    }
+
     /// Checks `permission` for `target` and says what the user gave for it. A scoped permission
     /// denies a missing target; whatever the manifest does not list, or the user denied, is a
     /// uniform `PERMISSION_DENIED` naming only the permission. `Decision::Substitute` means the
@@ -484,6 +524,22 @@ impl PermissionSet {
                 }),
             Permission::AppAutostart => flag(self.autostart, "app.autostart"),
             Permission::WindowCreate => flag(self.window, "window.create"),
+            Permission::AiRole => target
+                .filter(|id| {
+                    self.ai
+                        .as_ref()
+                        .is_some_and(|ai| ai.roles.iter().any(|role| role == *id))
+                })
+                .map(|id| {
+                    self.decided_by_user()
+                        .decision(&Right::scoped("ai.role", id))
+                }),
+            Permission::AiTool => target
+                .filter(|name| self.ai_tool(name).is_some())
+                .map(|name| {
+                    self.decided_by_user()
+                        .decision(&Right::scoped("ai.tool", name))
+                }),
             Permission::AppEnv => target.filter(|name| self.env.contains(*name)).map(|name| {
                 self.decided_by_user()
                     .decision(&Right::scoped("app.env", name))

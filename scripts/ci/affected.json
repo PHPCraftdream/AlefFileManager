@@ -1,13 +1,51 @@
 {
-  "runners_all": ["windows-latest", "macos-14", "macos-15-intel", "ubuntu-24.04"],
-  "runners_linux": ["ubuntu-24.04"],
-  "platforms": [
-    { "os": "windows-latest", "name": "windows-x64", "target": "x86_64-pc-windows-msvc", "bin": "alef.exe" },
-    { "os": "macos-14", "name": "macos-arm64", "target": "aarch64-apple-darwin", "bin": "alef" },
-    { "os": "macos-15-intel", "name": "macos-x64", "target": "x86_64-apple-darwin", "bin": "alef" },
-    { "os": "ubuntu-24.04", "name": "linux-x64", "target": "x86_64-unknown-linux-gnu", "bin": "alef" }
+  "runners_all": [
+    "windows-latest",
+    "macos-14",
+    "macos-15-intel",
+    "ubuntu-24.04"
   ],
-  "full_triggers": [".github/**", "scripts/ci/**", "scripts/cargo.mjs", "backend/Cargo.lock", "backend/Cargo.toml", "package.json", "package-lock.json", "rust-toolchain*", "scripts/release/**", ".oxlintrc.json"],
+  "runners_linux": [
+    "ubuntu-24.04"
+  ],
+  "platforms": [
+    {
+      "os": "windows-latest",
+      "name": "windows-x64",
+      "target": "x86_64-pc-windows-msvc",
+      "bin": "alef.exe"
+    },
+    {
+      "os": "macos-14",
+      "name": "macos-arm64",
+      "target": "aarch64-apple-darwin",
+      "bin": "alef"
+    },
+    {
+      "os": "macos-15-intel",
+      "name": "macos-x64",
+      "target": "x86_64-apple-darwin",
+      "bin": "alef"
+    },
+    {
+      "os": "ubuntu-24.04",
+      "name": "linux-x64",
+      "target": "x86_64-unknown-linux-gnu",
+      "bin": "alef"
+    }
+  ],
+  "full_triggers": [
+    ".github/**",
+    "scripts/ci/**",
+    "scripts/cargo.mjs",
+    "backend/Cargo.lock",
+    "backend/Cargo.toml",
+    "package.json",
+    "package-lock.json",
+    "rust-toolchain*",
+    "scripts/release/**",
+    ".oxlintrc.json"
+  ],
   "platform_sensitive": [
     "backend/crates/alef-modules/src/system/**",
     "backend/crates/alef-modules/src/desktop/**",
@@ -21,38 +59,289 @@
     "**/*macos*",
     "tests/e2e/**"
   ],
-  "package_app": ["frontend/**", "packages/tools/**"],
-  "e2e_smoke": ["core", "manifest", "permissions", "csp"],
+  "package_app": [
+    "frontend/**",
+    "packages/tools/**"
+  ],
+  "e2e_smoke": [
+    "core",
+    "manifest",
+    "permissions",
+    "csp"
+  ],
   "e2e_rules": [
-    { "glob": "tests/e2e/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
-    { "glob": "tests/e2e/scenarios/consent.mjs", "scenarios": ["consent","narrowing","ask","cancel","decisions"] },
-    { "glob": "tests/e2e/scenarios/data.mjs", "scenarios": ["fs","sqlite","store","crypto","webcrypto","secrets"] },
-    { "glob": "tests/e2e/scenarios/manifests.mjs", "scenarios": ["manifest"] },
-    { "glob": "tests/e2e/scenarios/mcp.mjs", "scenarios": ["mcp","mcp-stdio"] },
-    { "glob": "tests/e2e/scenarios/net.mjs", "scenarios": ["http","socket","websocket","serve"] },
-    { "glob": "tests/e2e/scenarios/startup.mjs", "scenarios": ["startup"] },
-    { "glob": "tests/e2e/scenarios/app/**", "scenarios": ["app", "console", "arguments", "startup", "autostart", "deeplink", "service", "launch-modes", "package", "fm-package", "updater"] },
-    { "glob": "tests/e2e/scenarios/app/devflow.mjs", "scenarios": ["devflow"] },
-    { "glob": "backend/crates/alef-core/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
-    { "glob": "backend/crates/alef-runtime/src/bridge/**", "scenarios": ["core", "manifest", "permissions", "csp"] },
-    { "glob": "backend/crates/alef/src/consent/**", "scenarios": ["consent", "narrowing", "ask", "cancel", "decisions", "permissions"] },
-    { "glob": "backend/crates/alef/src/relaunch/**", "scenarios": ["relaunch", "quit"] },
-    { "glob": "backend/crates/alef-runtime/src/window/**", "scenarios": ["window", "instance", "restore"] },
-    { "glob": "backend/crates/alef-modules/src/system/**", "scenarios": ["system", "autostart", "startup"] },
-    { "glob": "backend/crates/alef-modules/src/desktop/shell/context_menu/**", "scenarios": ["context-menu"] },
-    { "glob": "backend/crates/alef-modules/src/desktop/**", "scenarios": ["desktop", "menu", "context-menu", "tray", "shortcut"] },
-    { "glob": "packages/api/src/desktop/shell.ts", "scenarios": ["desktop", "context-menu"] },
-    { "glob": "packages/api/test/modules/desktop/dialog-shell-clipboard.test.mjs", "scenarios": ["desktop"] },
-    { "glob": "tests/e2e/apps/modules/desktop/dist/page.js", "scenarios": ["desktop"] },
-    { "glob": "tests/e2e/apps/modules/desktop/alef.ktav", "scenarios": ["desktop"] },
-    { "glob": "tests/e2e/scenarios/app/modules.mjs", "scenarios": ["desktop"] },
-    { "glob": "backend/crates/alef-modules/src/net/**", "scenarios": ["http", "socket", "websocket", "serve", "updater"] },
-    { "glob": "backend/crates/alef-modules/src/data/**", "scenarios": ["fs", "sqlite", "store", "crypto", "webcrypto", "secrets"] },
-    { "glob": "packages/mcp/**", "scenarios": ["mcp", "mcp-stdio"] },
-    { "glob": "packages/create-alef-runtime/**", "scenarios": ["devflow"] },
-    { "glob": "packages/tools/**", "scenarios": ["devflow"] },
-    { "glob": "packages/runtime/**", "scenarios": ["devflow"] },
-    { "glob": "backend/crates/alef/src/args.rs", "scenarios": ["cli", "cli-commands", "arguments"] },
-    { "glob": "frontend/**", "scenarios": ["app", "console", "fm-package"] }
+    {
+      "glob": "tests/e2e/**",
+      "scenarios": [
+        "core",
+        "manifest",
+        "permissions",
+        "csp"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/consent.mjs",
+      "scenarios": [
+        "consent",
+        "narrowing",
+        "ask",
+        "cancel",
+        "decisions"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/data.mjs",
+      "scenarios": [
+        "fs",
+        "sqlite",
+        "store",
+        "crypto",
+        "webcrypto",
+        "secrets"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/manifests.mjs",
+      "scenarios": [
+        "manifest"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/mcp.mjs",
+      "scenarios": [
+        "mcp",
+        "mcp-stdio"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/net.mjs",
+      "scenarios": [
+        "http",
+        "socket",
+        "websocket",
+        "serve"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/startup.mjs",
+      "scenarios": [
+        "startup"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/app/**",
+      "scenarios": [
+        "app",
+        "console",
+        "arguments",
+        "startup",
+        "autostart",
+        "deeplink",
+        "service",
+        "launch-modes",
+        "package",
+        "fm-package",
+        "updater"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/app/devflow.mjs",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-core/**",
+      "scenarios": [
+        "core",
+        "manifest",
+        "permissions",
+        "csp",
+        "ai"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-runtime/src/bridge/**",
+      "scenarios": [
+        "core",
+        "manifest",
+        "permissions",
+        "csp"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef/src/consent/**",
+      "scenarios": [
+        "consent",
+        "narrowing",
+        "ask",
+        "cancel",
+        "decisions",
+        "permissions"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef/src/relaunch/**",
+      "scenarios": [
+        "relaunch",
+        "quit"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-runtime/src/window/**",
+      "scenarios": [
+        "window",
+        "instance",
+        "restore"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-modules/src/system/**",
+      "scenarios": [
+        "system",
+        "autostart",
+        "startup"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-modules/src/desktop/shell/context_menu/**",
+      "scenarios": [
+        "context-menu"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-modules/src/desktop/**",
+      "scenarios": [
+        "desktop",
+        "menu",
+        "context-menu",
+        "tray",
+        "shortcut"
+      ]
+    },
+    {
+      "glob": "packages/api/src/desktop/shell.ts",
+      "scenarios": [
+        "desktop",
+        "context-menu"
+      ]
+    },
+    {
+      "glob": "packages/api/package.json",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
+      "glob": "packages/api/build.mjs",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
+      "glob": "packages/api/test/modules/desktop/dialog-shell-clipboard.test.mjs",
+      "scenarios": [
+        "desktop"
+      ]
+    },
+    {
+      "glob": "tests/e2e/apps/modules/desktop/dist/page.js",
+      "scenarios": [
+        "desktop"
+      ]
+    },
+    {
+      "glob": "tests/e2e/apps/modules/desktop/alef.ktav",
+      "scenarios": [
+        "desktop"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/app/modules.mjs",
+      "scenarios": [
+        "desktop",
+        "ai"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-modules/src/net/**",
+      "scenarios": [
+        "http",
+        "socket",
+        "websocket",
+        "serve",
+        "updater"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-modules/src/data/**",
+      "scenarios": [
+        "fs",
+        "sqlite",
+        "store",
+        "crypto",
+        "webcrypto",
+        "secrets"
+      ]
+    },
+    {
+      "glob": "packages/mcp/**",
+      "scenarios": [
+        "mcp",
+        "mcp-stdio"
+      ]
+    },
+    {
+      "glob": "packages/create-alef-runtime/**",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
+      "glob": "packages/tools/**",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
+      "glob": "packages/runtime/**",
+      "scenarios": [
+        "devflow"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef/src/args.rs",
+      "scenarios": [
+        "cli",
+        "cli-commands",
+        "arguments"
+      ]
+    },
+    {
+      "glob": "frontend/**",
+      "scenarios": [
+        "app",
+        "console",
+        "fm-package"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-modules/src/ai/**",
+      "scenarios": [
+        "ai"
+      ]
+    },
+    {
+      "glob": "packages/api/src/system/ai.ts",
+      "scenarios": [
+        "ai"
+      ]
+    },
+    {
+      "glob": "tests/e2e/apps/modules/system/ai/**",
+      "scenarios": [
+        "ai"
+      ]
+    }
   ]
 }

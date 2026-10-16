@@ -79,6 +79,8 @@ impl Right {
         }
         let scope = self.scope.as_deref()?;
         match self.permission.as_str() {
+            "ai.role" => Some("sends the application's messages to an AI model and can cost money"),
+            "ai.tool" => Some("lets an AI model call a tool of the application, with side effects"),
             "cli.exec" if scope == "*" => Some("runs any program on this computer"),
             "cli.exec" if runs_other_programs(scope) => {
                 Some("runs a shell or an interpreter, which runs any program on this computer")
@@ -409,6 +411,19 @@ mod tests {
     fn the_context_menu_right_is_risky_whatever_its_shape() {
         assert!(Right::plain("shell.contextMenu").risk().is_some());
         assert!(Right::plain("tray").risk().is_none());
+    }
+
+    #[test]
+    fn every_ai_role_and_tool_right_is_risky_and_an_unrelated_one_is_not() {
+        assert_eq!(
+            right("ai.role", "smart").risk(),
+            Some("sends the application's messages to an AI model and can cost money")
+        );
+        assert_eq!(
+            right("ai.tool", "summarizeSelection").risk(),
+            Some("lets an AI model call a tool of the application, with side effects")
+        );
+        assert!(right("fs.read", "$DOCUMENTS/**").risk().is_none());
     }
 
     #[test]

@@ -24,8 +24,9 @@ use alef_core::{
     AlefError,
 };
 use alef_modules::{
-    desktop::args, register_all, AppInfo, Backends, Console, MemoryAutostart, MemoryClipboard,
-    MemoryDeepLinks, MemorySecrets, ModuleContext, PretendNotifications, PretendShell, Termination,
+    desktop::args, register_all, AppInfo, Backends, Console, FakeProvider, MemoryAutostart,
+    MemoryClipboard, MemoryDeepLinks, MemorySecrets, ModuleContext, PretendNotifications,
+    PretendShell, Termination,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -93,6 +94,8 @@ pub struct Fixture {
     pub notifications: Arc<PretendNotifications>,
     /// The secrets behind the module: in memory.
     pub secrets: Arc<MemorySecrets>,
+    /// The deterministic AI provider behind the `ai` module.
+    pub ai: Arc<FakeProvider>,
     pub context: ModuleContext,
     manager: SessionManager,
     session: Arc<Session>,
@@ -244,6 +247,7 @@ impl Fixture {
         let clipboard = Arc::new(MemoryClipboard::default());
         let shell = Arc::new(PretendShell::default());
         let notifications = Arc::new(PretendNotifications::default());
+        let fake = Arc::new(FakeProvider::default());
         let (application_args, startup_urls) =
             args::extract_deep_links(&manifest.deep_links, &raw).expect("deep-link arguments");
         let args = match args::parse(
@@ -284,6 +288,7 @@ impl Fixture {
                 shell: shell.clone(),
                 notification: notifications.clone(),
                 secrets: secrets.clone(),
+                ai: fake.clone(),
             },
             // Its own for every fixture: tests run side by side.
             shadow: root.join(format!(
@@ -330,6 +335,7 @@ impl Fixture {
             shell,
             notifications,
             secrets,
+            ai: fake,
             context,
             manager,
             session,

@@ -112,7 +112,7 @@ packages/api/src/
 
 Соглашения:
 
-- импорт по модулю: `import { fs, window } from '@alef-runtime/api'`;
+- импорт по модулю: `import { fs } from '@alef-runtime/api/fs'`, `import { window } from '@alef-runtime/api/window'`;
 - **всё асинхронное, без исключений:** каждая функция возвращает `Promise`, поток или `AsyncIterable`; синхронных геттеров нет даже для «статичных» данных (`os.platform()`, `app.args()`) — всё идёт через транспорт. Rust-обработчики — `async`, блокирующий I/O только в `spawn_blocking`, UI-операции — через асинхронный `UiDispatcher`. Проверяется автоматически: тест `@alef-runtime/api` обходит все экспортируемые функции модулей и требует `Promise`/`AsyncIterable`;
 - последний аргумент — `{ signal?: AbortSignal }`;
 - потоки — стандартные `ReadableStream`/`WritableStream` и `AsyncIterable`;
@@ -124,7 +124,10 @@ packages/api/src/
 Пример целевого API:
 
 ```ts
-import { dialog, fs, http, window } from '@alef-runtime/api';
+import { dialog } from '@alef-runtime/api/dialog';
+import { fs } from '@alef-runtime/api/fs';
+import { http } from '@alef-runtime/api/http';
+import { window } from '@alef-runtime/api/window';
 
 const [path] = await dialog.open({ filters: [{ name: 'Text', extensions: ['txt'] }] });
 const text = await fs.readText(path);                 // путь выдан диалогом → грант
@@ -388,7 +391,7 @@ permissions: {
 | M5 | `stages/m5-integration.md` | `menu`, `tray`, `shortcut`, автозапуск, deep links | M2 |
 | M6 | `stages/m6-media.md` | медиа — **отложено**, вне MVP | — |
 | M7 | `stages/m7-distribution.md` | M7a runtime и лаунчер (установщики, версии рядом), M7b пакеты `.alef` (подпись, `alef install`, `@alef-runtime/tools`, `updater`), M7c единая сборка (опция) | M3, M2b, M0.4 |
-| M9 | [stages/m9-ai.md](stages/m9-ai.md) | Безопасный мост недоверенного приложения к пользовательским AI-ролям Rush: манифест и согласие, инструменты приложения и журнал (проектный контракт, не реализация) | M3, M2b, M4, M7a.1; интеграция Rush; BlockingExecutor (TARGET) |
+| M9 | [stages/m9-ai.md](stages/m9-ai.md) | Безопасный мост недоверенного приложения к пользовательским AI-ролям Rush; M9.2: манифест `permissions.ai`, `ai.roles`/`ai.chat`/`ai.tools.*`, сегмент `api/ai`, заглушечный `AiProvider` (реализация без транспорта); остаются согласие-UI, квоты, журнал, OS-изоляция, транспорт Rush (#165–#167) | M3, M2b, M4, M7a.1; интеграция Rush; BlockingExecutor (TARGET) |
 
 ## 9. Тестирование
 

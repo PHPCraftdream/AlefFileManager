@@ -2,15 +2,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { rewriteDeclarationSpecifiers } from '../../build.mjs';
 
 const pkgDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const pkgUrl = pkgDir.replaceAll('\\', '/');
 const manifest = JSON.parse(readFileSync(resolve(pkgDir, 'package.json'), 'utf8'));
 const exportsMap = manifest.exports;
+// Sources live in the "alef-sources" manifest field (monorepo-only; npm ignores it and nothing
+// resolves through it). The guards above keep checking the sources, the ones below the dist.
+const sources = manifest['alef-sources'];
 const rel = p => p.replaceAll('\\', '/').slice(pkgUrl.length + 1);
 const under = (file, dir) => file.startsWith(`${pkgUrl}/${dir}/`);
 
@@ -40,7 +44,7 @@ function isAllowed(from, to) {
   if (under(to, 'types')) return true;
   if (under(to, 'src/core')) return true;
   if (under(from, 'src/core') && dirname(from) === dirname(to)) return true;
-  if (from === `${pkgUrl}/src/index.ts` || from === `${pkgUrl}/src/core.ts`) return true;
+  if (from === `${pkgUrl}/src/index.ts`) return true;
   return EDGES.some(edge => from === `${pkgUrl}/${edge.from}` && to === `${pkgUrl}/${edge.to}`);
 }
 
@@ -86,23 +90,23 @@ function checkEntry(entryFile) {
 // Type entries: normalized path of "<subpath>/types" target -> normalized path of the code entry target.
 // Keyed in the same representation isAllowed()/checkEntry() use, not as file URLs.
 const typeEntries = new Map(
-  Object.entries(exportsMap)
-    .filter(([subpath]) => subpath.endsWith('/types') && subpath !== './types')
-    .map(([subpath, target]) => [
-      resolve(pkgDir, target).replaceAll('\\', '/'),
-      resolve(pkgDir, exportsMap[subpath.slice(0, -'/types'.length)]).replaceAll('\\', '/'),
+  Object.keys(exportsMap)
+    .filter(subpath => subpath.endsWith('/types') && subpath !== './types')
+    .map(subpath => [
+      resolve(pkgDir, sources[subpath]).replaceAll('\\', '/'),
+      resolve(pkgDir, sources[subpath.slice(0, -'/types'.length)]).replaceAll('\\', '/'),
     ]),
 );
 
 // A runtime entry must not be imported through `./types`: the test checks that directory statically.
-const runtimeEntries = Object.entries(exportsMap).filter(([, target]) => !under(resolve(pkgDir, target).replaceAll('\\', '/'), 'types'));
+const runtimeEntries = Object.keys(exportsMap).filter(subpath => !under(resolve(pkgDir, sources[subpath]).replaceAll('\\', '/'), 'types'));
 
 test('every subpath export of @alef-runtime/api points at an existing source file', () => {
   const keys = Object.keys(exportsMap);
   assert.ok(keys.length >= 25, `expected at least 25 subpath exports, got ${keys.length}`);
   for (const [subpath, target] of Object.entries(exportsMap)) {
-    const file = resolve(pkgDir, target);
-    assert.ok(readFileSync(file), `export "${subpath}" points at missing file ${target}`);
+    const file = resolve(pkgDir, sources[subpath]);
+    assert.ok(readFileSync(file), `export "${subpath}" points at missing source ${target}`);
   }
 });
 
@@ -134,6 +138,11 @@ function topLevelStatements(masked) {
       if (ch === '}' && depth === 0 && head !== '' && bracedDeclarationHead(head)) {
         let j = i + 1; // consume whitespace and an optional trailing `;` (e.g. left by a stripped `as const`)
         while (masked[j] === ' ') j++;
+        // A binding goes on after its object when an operator follows: `type A = { .. } | { .. }`.
+        if (bindingHead(head) && /^(?:[|&.[,?]|as\b|satisfies\b)/.test(masked.slice(j))) {
+          i++;
+          continue;
+        }
         if (masked[j] === ';') i = j;
         end(i + 1);
         i++;
@@ -161,8 +170,12 @@ function topLevelStatements(masked) {
 function bracedDeclarationHead(head) {
   const h = head.trim();
   if (/^(?:export\s+|declare\s+|default\s+|async\s+)*(?:function|class|interface|enum|namespace)\b/.test(h)) return true;
-  // object-typed binding: `const|let|var X = {`, `export ... = {`, `type X = {`
-  return /^(?:export\s+)?(?:const|let|var|type)\b[^=]*=\s*$/.test(h);
+  return bindingHead(head);
+}
+
+// Object-typed binding: `const|let|var X = {`, `export ... = {`, `type X = {`.
+function bindingHead(head) {
+  return /^(?:export\s+)?(?:const|let|var|type)\b[^=]*=\s*$/.test(head.trim());
 }
 
 // A line keeps the statement going only with an explicit operator tail; when unsure, split.
@@ -219,8 +232,8 @@ test('the import parser reads import and export statements that span several lin
 
 test('the import graph of every subpath stays inside core, its own module and the listed edges', () => {
   const all = [];
-  for (const [, target] of runtimeEntries) {
-    all.push(...checkEntry(resolve(pkgDir, target)));
+  for (const subpath of runtimeEntries) {
+    all.push(...checkEntry(resolve(pkgDir, sources[subpath])));
   }
   assert.deepEqual(all, [], 'import graph violations:\n' + all.join('\n'));
 });
@@ -257,13 +270,13 @@ test('importing any subpath entry issues no runtime call', { timeout: 300000 }, 
     await import(process.env.ALEF_ENTRY);
     console.log(JSON.stringify({ requests: runtime.requests.length, listeners, timers }));
   `;
-  for (const [subpath, target] of runtimeEntries) {
+  for (const subpath of runtimeEntries) {
     const run = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', childScript], {
       timeout: 20000,
       encoding: 'utf8',
       env: {
         ...process.env,
-        ALEF_ENTRY: pathToFileURL(resolve(pkgDir, target)).href,
+        ALEF_ENTRY: pathToFileURL(resolve(pkgDir, sources[subpath])).href,
         ALEF_HELPER: pathToFileURL(resolve(pkgDir, 'test/fake-runtime.mjs')).href,
       },
     });
@@ -277,7 +290,7 @@ test('importing any subpath entry issues no runtime call', { timeout: 300000 }, 
 
 test('every code subpath has exactly one uniform type entry under type_entries', () => {
   const codeEntries = Object.entries(exportsMap).filter(([subpath]) => subpath !== '.' && subpath !== './types' && !subpath.endsWith('/types'));
-  assert.equal(codeEntries.length, 23, `expected 23 code subpaths, got ${codeEntries.length}`);
+  assert.equal(codeEntries.length, 24, `expected 24 code subpaths, got ${codeEntries.length}`);
   const violations = [];
   for (const [subpath] of codeEntries) {
     const typesSubpath = `${subpath}/types`;
@@ -286,8 +299,8 @@ test('every code subpath has exactly one uniform type entry under type_entries',
       violations.push(`export "${subpath}" has no "${typesSubpath}" entry`);
       continue;
     }
-    const file = resolve(pkgDir, typesTarget).replaceAll('\\', '/');
-    if (!under(file, 'type-entries')) violations.push(`"${typesSubpath}" must point into type-entries/, got ${typesTarget}`);
+    const file = resolve(pkgDir, sources[typesSubpath]).replaceAll('\\', '/');
+    if (!under(file, 'type-entries')) violations.push(`"${typesSubpath}" must point into type-entries/, got ${sources[typesSubpath]}`);
     violations.push(...typeStatementViolations(file, typesSubpath));
   }
   assert.deepEqual(violations, [], violations.join('\n'));
@@ -588,7 +601,7 @@ test('importing a type entry evaluates no module of the package and exports no v
   const pkgFileUrl = pathToFileURL(pkgDir).href;
   for (const [entryFile, codeFile] of typeEntries) {
     const entryUrl = pathToFileURL(entryFile).href;
-    const subpath = Object.entries(exportsMap).find(([, target]) => resolve(pkgDir, target).replaceAll('\\', '/') === entryFile)[0];
+    const subpath = Object.keys(sources).find(sp => resolve(pkgDir, sources[sp]).replaceAll('\\', '/') === entryFile);
     const run = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', childScript], {
       timeout: 20000,
       encoding: 'utf8',
@@ -613,15 +626,15 @@ test('importing a type entry evaluates no module of the package and exports no v
 });
 
 test('a type entry is a clean leaf of the import graph and imports no foreign module', () => {
-  const fsTypeEntry = resolve(pkgDir, exportsMap['./fs/types']).replaceAll('\\', '/');
+  const fsTypeEntry = resolve(pkgDir, sources['./fs/types']).replaceAll('\\', '/');
   assert.ok(fsTypeEntry);
-  assert.deepEqual(checkEntry(resolve(pkgDir, exportsMap['./fs/types'])), []);
-  assert.deepEqual(checkEntry(resolve(pkgDir, exportsMap['./menu/types'])), []);
+  assert.deepEqual(checkEntry(resolve(pkgDir, sources['./fs/types'])), []);
+  assert.deepEqual(checkEntry(resolve(pkgDir, sources['./menu/types'])), []);
   // menu carries the type-only edge to window; the walk stays clean through menu.ts and window.ts
 });
 
 test('a type entry must not import a foreign module outside its own code entry', () => {
-  const fsTypeEntry = resolve(pkgDir, exportsMap['./fs/types']).replaceAll('\\', '/');
+  const fsTypeEntry = resolve(pkgDir, sources['./fs/types']).replaceAll('\\', '/');
   assert.equal(isAllowed(fsTypeEntry, resolve(pkgDir, 'src/desktop/window.ts').replaceAll('\\', '/')), false);
   assert.equal(isAllowed(fsTypeEntry, resolve(pkgDir, 'src/net/http.ts').replaceAll('\\', '/')), false);
   // the typeEntries branch itself must allow the edge to the code entry of the same subpath
@@ -706,7 +719,94 @@ test('the type statement scanner accepts type statements and generated re-export
   assert.deepEqual(typeStatementTextViolations('t', "import type { A } from './b.ts';\nexport type * from './a.ts';"), []);
   assert.deepEqual(typeStatementTextViolations('t', "export { type A, type B } from './x.ts';"), []);
   assert.deepEqual(typeStatementTextViolations('t', 'interface A {\n  b: string;\n}\ntype C = number;'), []);
+  // a union of object types is one statement (ts-rs emits tagged enums this way)
+  assert.deepEqual(typeStatementTextViolations('t', 'export type U = { "k": "a", n: string, } | { "k": "b", };'), []);
+  assert.equal(typeStatementTextViolations('t', 'export type U = { a: string } | { b: string }\nglobalThis.__probe = true;').length, 1);
   // `export * from` is allowed only in the generated types directory
   assert.equal(typeStatementTextViolations('t', "export * from './x.ts';").length, 1);
   assert.deepEqual(typeStatementTextViolations('t', "export * from './x.ts';", true), []);
+});
+
+// The publishable build (API-4): dist/ mirrors the exports map of the package, whose every condition target it must ship.
+let dist;
+function buildDist() {
+  if (dist === undefined) {
+    const run = spawnSync(process.execPath, [resolve(pkgDir, 'build.mjs')], { timeout: 240000, encoding: 'utf8' });
+    assert.equal(run.status, 0, `the build of @alef-runtime/api failed:\n${run.stdout}\n${run.stderr}`);
+    dist = resolve(pkgDir, 'dist');
+  }
+  return dist;
+}
+
+test('the_build_starts_from_a_clean_dist', () => {
+  const stale = resolve(pkgDir, 'dist', 'stale');
+  mkdirSync(stale, { recursive: true });
+  writeFileSync(resolve(stale, 'junk.js'), 'export const stale = true;\n');
+  buildDist();
+  assert.ok(!existsSync(stale), 'files of an earlier build must not survive into the tarball');
+});
+
+test('after_the_build_every_exported_subpath_has_its_dist_files', () => {
+  buildDist();
+  for (const [subpath, value] of Object.entries(exportsMap)) {
+    assert.ok(existsSync(resolve(pkgDir, value['types'])), `subpath "${subpath}" has no ${value['types']}`);
+    if (subpath === './types' || subpath.endsWith('/types')) {
+      assert.equal(value['import'], undefined, `type-only subpath "${subpath}" must not be importable at runtime`);
+      assert.equal(value['default'], undefined, `type-only subpath "${subpath}" must not be importable at runtime`);
+    } else {
+      assert.ok(existsSync(resolve(pkgDir, value['import'])), `subpath "${subpath}" has no ${value['import']}`);
+      assert.equal(value['default'], value['import'], `subpath "${subpath}" must resolve "default" to the same module as "import"`);
+    }
+  }
+});
+
+test('type_only_subpaths_leave_no_js_stub_in_dist', () => {
+  const out = buildDist();
+  const stubs = readdirSync(out, { recursive: true }).map(String).map(name => name.replaceAll('\\', '/'))
+    .filter(name => name.endsWith('.js') && (name.startsWith('types/') || name.startsWith('type-entries/')));
+  assert.deepEqual(stubs, [], 'type-only entries must not ship a runtime stub');
+});
+
+test('the_built_modules_load_in_node_with_rewritten_specifiers', async () => {
+  buildDist();
+  const root = await import(pathToFileURL(resolve(pkgDir, 'dist/src/index.js')).href);
+  assert.equal(typeof root.fs.readDir, 'function');
+  const core = await import(pathToFileURL(resolve(pkgDir, 'dist/src/core/index.js')).href);
+  assert.equal(typeof core.call, 'function');
+  assert.equal(core.AlefError.name, 'AlefError');
+});
+
+test('no_declaration_in_dist_names_a_ts_source', () => {
+  const out = buildDist();
+  const files = readdirSync(out, { recursive: true }).map(String).filter(name => name.endsWith('.d.ts'));
+  assert.ok(files.length >= 48, `expected a declaration per subpath, got ${files.length}`);
+  const offenders = files.filter(name => /from\s*['"]\.\.?\/[^'"]*\.ts['"]/.test(readFileSync(resolve(out, name), 'utf8')));
+  assert.deepEqual(offenders, [], `declarations still name .ts sources: ${offenders.join(', ')}`);
+});
+
+test('the_declaration_cleanup_rewrites_relative_ts_specifiers_and_nothing_else', () => {
+  assert.equal(rewriteDeclarationSpecifiers("export type * from '../../src/data/fs.ts';"), "export type * from '../../src/data/fs.js';");
+  assert.equal(rewriteDeclarationSpecifiers("import type { A } from './b.ts';\nexport type { C } from './d.js';"), "import type { A } from './b.js';\nexport type { C } from './d.js';");
+  assert.equal(rewriteDeclarationSpecifiers("export { type A } from '@alef-runtime/api';"), "export { type A } from '@alef-runtime/api';");
+  assert.equal(rewriteDeclarationSpecifiers("type B = import('./x.ts').C;"), "type B = import('./x.js').C;");
+});
+
+test('npm_pack_ships_every_advertised_file_and_nothing_else', { timeout: 120000 }, () => {
+  buildDist();
+  const run = spawnSync('npm', ['pack', '--dry-run', '--json'], {
+    cwd: pkgDir, timeout: 90000, encoding: 'utf8', shell: process.platform === 'win32',
+  });
+  assert.equal(run.status, 0, `npm pack failed: ${run.stderr}`);
+  // newer npm reports the dry-run paths without the "package/" prefix: normalize
+  const listed = new Set(JSON.parse(run.stdout)[0].files.map(file => file.path.replace(/^package\//, '')));
+  assert.ok(listed.has('dist/src/index.js'), `no dist in the tarball: ${[...listed].join(', ')}`);
+  for (const [subpath, value] of Object.entries(exportsMap)) {
+    for (const target of [value['types'], value['import'], value['default']]) {
+      if (typeof target !== 'string') continue;
+      assert.ok(listed.has(target.slice(2)), `the tarball has no ${target} advertised by "${subpath}"`);
+    }
+    assert.ok(!listed.has(sources[subpath].slice(2)), `the tarball must not ship the unadvertised source ${sources[subpath]}`);
+  }
+  const strangers = [...listed].filter(entry => entry !== 'package.json' && !entry.startsWith('dist/'));
+  assert.deepEqual(strangers, [], `the tarball ships files outside dist: ${strangers.join(', ')}`);
 });

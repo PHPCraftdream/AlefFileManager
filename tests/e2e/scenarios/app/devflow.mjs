@@ -93,7 +93,7 @@ const collect = (args, { cwd, env = {}, verbose = false }) => {
 const PAGE_TAIL = `
 // e2e (devflow): fail when the generated page itself failed, report the serving origin
 // (dev server vs package origin) and exit, like tests/e2e/harness.js does.
-import { call } from '@alef-runtime/api';
+import { call } from '@alef-runtime/api/core';
 try {
   await app.info();
 } catch (error) {
@@ -145,6 +145,9 @@ export function devflowScenarios({ exe, verbose, timeoutMs }) {
 
         // (b) pack the unpublished workspace packages and point the project at the tarballs
         mkdirSync(tarballs, { recursive: true });
+        // The api tarball ships dist/ (API-4): build the package before it is packed.
+        const apiBuild = run(process.execPath, [join(root, 'packages', 'api', 'build.mjs')], { cwd: dir, timeoutMs: 240000 });
+        expect('the @alef-runtime/api package builds its dist', apiBuild.code === 0, `${apiBuild.code}: ${apiBuild.err.slice(-400)}`);
         const packed = {};
         for (const name of ['api', 'tools']) {
           const result = npm(['pack', '--pack-destination', tarballs, join(root, 'packages', name)], { cwd: dir, timeoutMs: 120000 });

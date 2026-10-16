@@ -122,6 +122,12 @@ async function main(mode) {
   if (mode === '--check') {
     const differences = await compareDirectories(directory, committedDir);
     if (differences.length > 0) {
+      // The generated text in the log lets a CI-only change bring the committed files up to date.
+      for (const difference of differences) {
+        const name = difference.slice(0, difference.indexOf(':'));
+        const text = await read(path.join(directory, name));
+        if (text !== null) console.error(`----- generated ${name} -----\n${text}----- end ${name} -----`);
+      }
       throw new Error(`Generated types are out of date (run npm run gen:types):\n  ${differences.join('\n  ')}`);
     }
     return;

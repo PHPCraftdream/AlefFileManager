@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The commands of `app`, `path` and `os` through the registry, as the transport calls them.
+#[path = "../common/mod.rs"]
 mod common;
 
 use alef_core::{registry::host::Theme, ErrorCode};
 use common::{path_vars, Fixture};
 use serde_json::{json, Value};
 
-const BASE_MANIFEST: &str = include_str!("fixtures/app.ktav");
+const BASE_MANIFEST: &str = include_str!("../fixtures/app.ktav");
 
 fn without_env(manifest: &str) -> String {
     manifest.replace("env: [ PATH, ALEF_MODULES_TEST_UNSET ]", "env: []")
@@ -18,6 +19,11 @@ async fn the_command_surface_is_exactly_the_documented_one() {
     assert_eq!(
         fixture.registry.command_names(),
         [
+            "ai.chat",
+            "ai.roles",
+            "ai.tools.handle",
+            "ai.tools.result",
+            "ai.tools.unhandle",
             "app.args",
             "app.autostart.disable",
             "app.autostart.enable",
@@ -393,3 +399,5 @@ async fn os_reports_facts_and_the_theme_of_the_host() {
         json!("dark")
     );
 }
+
+mod ai;

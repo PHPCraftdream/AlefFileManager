@@ -1,0 +1,67 @@
+id: org.alef.e2e.modules.ai
+name: Alef e2e ai
+version:: 1.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 800
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: []
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: false
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    ai: {
+        roles: [smart]
+        tools: [
+            {
+                name: summarizeSelection
+                description: Summarize the selected text
+                schema: {
+                    type: object
+                    properties: {
+                        text: {
+                            type: string
+                        }
+                    }
+                    required: [text]
+                    additionalProperties: false
+                }
+            }
+        ]
+    }
+    app: {
+        env: []
+    }
+}
