@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Authorization for capabilities delegated to AI builtins.
-use super::{
-    super::manifest::{AiBuiltin, AiPermissions},
-    *,
-};
+use super::{super::manifest::AiPermissions, *};
 
 #[derive(Debug, Clone)]
 pub(super) struct BuiltinScope {

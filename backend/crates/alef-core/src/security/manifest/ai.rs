@@ -363,7 +363,7 @@ fn validate_schema(schema: &Value, path: &str, depth: usize) -> Result<(), (Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_ai, AiPermissions, AiTool, MAX_SCHEMA_BYTES};
+    use super::{specific_scope, validate_ai, AiPermissions, AiTool, MAX_SCHEMA_BYTES};
     use crate::security::{
         consent::{Consent, Decision, Right},
         grants::Grants,

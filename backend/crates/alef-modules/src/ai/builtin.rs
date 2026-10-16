@@ -127,7 +127,7 @@ pub async fn execute(
             }
             match name.as_str() {
                 "fs.read" => {
-                    let mut file = std::fs::File::open(&authorization.path).map_err(|e| {
+                    let file = std::fs::File::open(&authorization.path).map_err(|_| {
                         AlefError::new(
                             ErrorCode::Internal,
                             "authorized filesystem operation failed",
@@ -136,7 +136,7 @@ pub async fn execute(
                     let mut bytes = Vec::with_capacity(MAX_BYTES);
                     file.take((MAX_BYTES + 1) as u64)
                         .read_to_end(&mut bytes)
-                        .map_err(|e| {
+                        .map_err(|_| {
                             AlefError::new(
                                 ErrorCode::Internal,
                                 "authorized filesystem operation failed",
@@ -157,7 +157,7 @@ pub async fn execute(
                     if content.len() > MAX_BYTES {
                         return Err(invalid("content exceeds 64 KiB"));
                     }
-                    std::fs::write(&authorization.path, content).map_err(|e| {
+                    std::fs::write(&authorization.path, content).map_err(|_| {
                         AlefError::new(
                             ErrorCode::Internal,
                             "authorized filesystem operation failed",
@@ -173,7 +173,7 @@ pub async fn execute(
                         if names.len() == MAX_ENTRIES {
                             break;
                         }
-                        let entry = entry.map_err(|e| {
+                        let entry = entry.map_err(|_| {
                             AlefError::new(
                                 ErrorCode::Internal,
                                 "authorized filesystem operation failed",
