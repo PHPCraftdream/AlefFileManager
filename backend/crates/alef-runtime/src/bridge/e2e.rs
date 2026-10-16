@@ -211,12 +211,19 @@ pub(super) fn register(
         .handler(move |ctx, args| async move {
             let body = ctx.body().cloned();
             Ok(match body {
+                // The echo is zero-copy: copying a 16 MiB body on the poll stalls the bus.
+                Some(body) if !broken || body.is_empty() => Reply::Bytes(body),
                 Some(body) => {
-                    let mut bytes = body.to_vec();
-                    if broken && !bytes.is_empty() {
+                    let corrupted = tokio::task::spawn_blocking(move || {
+                        let mut bytes = body.to_vec();
                         bytes[0] ^= 0xff;
-                    }
-                    Reply::Bytes(Bytes::from(bytes))
+                        Bytes::from(bytes)
+                    })
+                    .await
+                    .map_err(|_| {
+                        AlefError::new(alef_core::ErrorCode::Internal, "corrupting failed")
+                    })?;
+                    Reply::Bytes(corrupted)
                 }
                 None => Reply::Json(args),
             })
