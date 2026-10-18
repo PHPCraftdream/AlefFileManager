@@ -149,6 +149,22 @@ const AI_MODE_CHECKS = {
   'tool-denied': ['ai-denied-tool-registration-is-permission-denied'],
 };
 
+// The threat-model scenario (docs/stages/m9-ai.md §4, §7): the seeded Rush root, the provider
+// knobs, the red right and the single-use tool results, seen from the page.
+const AI_THREAT_CHECKS = [
+  'ai-threat-roles-list-only-the-declared-role',
+  'ai-threat-provider-knobs-are-refused-before-any-chat',
+  'ai-threat-fs-read-inside-scope-returns-control-content',
+  'ai-threat-fs-read-into-the-seeded-rush-root-is-denied',
+  'ai-threat-fs-read-of-a-dot-rush-folder-is-denied',
+  'ai-threat-builtin-inside-scope-returns-control-content',
+  'ai-threat-builtin-into-the-seeded-rush-root-is-denied',
+  'ai-threat-link-into-the-seeded-rush-root-is-denied',
+  'ai-threat-cli-exec-without-the-red-right-is-denied',
+  'ai-threat-replayed-and-foreign-tool-results-are-closed',
+  'ai-threat-refusals-carry-no-sentinel-and-no-path',
+];
+
 const MENU_VALIDATION_CHECKS = [
   'menu-malformed-trees-are-rejected', 'menu-duplicate-ids-across-the-tree-are-rejected',
   'menu-invalid-accelerators-are-rejected', 'menu-roles-with-custom-ids-are-rejected',
@@ -519,6 +535,78 @@ export function moduleScenarios({ drive, exe, verbose }) {
         return { problems, lines: runs };
       } finally {
         rmSync(aiDirectory, { recursive: true, force: true });
+      }
+    },
+    // The threat model of the AI bridge (docs/stages/m9-ai.md §4, §7): a seeded Rush root (the
+    // documented `RUSH_GLOBAL_CONFIG` override) stays closed through every route from the page,
+    // provider knobs and replayed tool results are refused at the boundary, and the manifest that
+    // names the seeded root is refused before the runtime starts.
+    async 'ai-threat'() {
+      const directory = mkdtempSync(join(scratch, 'ai-threat-'));
+      try {
+        const allowedDirectory = join(directory, 'ai-threat', 'allowed');
+        mkdirSync(join(allowedDirectory, 'project', '.rush'), { recursive: true });
+        const rushRoot = join(directory, 'rush-config');
+        mkdirSync(rushRoot, { recursive: true });
+        const rushFile = join(rushRoot, 'keys.db');
+        const rushSentinel = 'rush-secret-sentinel';
+        writeFileSync(rushFile, rushSentinel);
+        const allowedFile = join(allowedDirectory, 'normal.txt');
+        const allowedSentinel = 'allowed-control-content';
+        writeFileSync(allowedFile, allowedSentinel);
+        const dotRushFile = join(allowedDirectory, 'project', '.rush', 'db.json');
+        writeFileSync(dotRushFile, 'dotrush-sentinel');
+        const projectFile = join(allowedDirectory, 'project', 'src.txt');
+        writeFileSync(projectFile, 'project-source-content');
+        let linkCreated = false;
+        try {
+          symlinkSync(rushRoot, join(allowedDirectory, 'alias'),
+            process.platform === 'win32' ? 'junction' : 'dir');
+          linkCreated = true;
+        } catch {
+          // A rare runner without the right to link: the page check fails loudly, never silently.
+        }
+        const result = await drive({
+          name: 'ai-threat', app: 'modules/system/ai-threat',
+          targets: {
+            rushRoot, rushFile, rushSentinel, allowedFile, allowedSentinel, dotRushFile, projectFile,
+            linkFile: linkCreated ? join(allowedDirectory, 'alias', 'keys.db') : 'LINK-CREATION-FAILED',
+          },
+          env: {
+            RUSH_GLOBAL_CONFIG: rushRoot, ALEF_HOME: join(directory, 'home'),
+            TEMP: directory, TMP: directory, TMPDIR: directory,
+          },
+          expectedChecks: AI_THREAT_CHECKS,
+        });
+        // The manifest route: a scope whose base is inside the seeded root refuses the runtime.
+        const site = prepareSite('ai-threat-manifest', 'modules/system/ai-threat', { targets: {} });
+        const manifest = join(site, 'alef.ktav');
+        const text = readFileSync(manifest, 'utf8');
+        const stolen = text.replaceAll('$TEMP/ai-threat/allowed/**', `${rushRoot.replaceAll('\\', '/')}/steal/**`);
+        if (stolen === text) throw new Error('the site manifest lost its scope');
+        writeFileSync(manifest, stolen);
+        const running = startApp({
+          exe, args: ['--app', site], verbose,
+          env: { RUSH_GLOBAL_CONFIG: rushRoot, ALEF_HOME: join(directory, 'home-manifest') },
+        });
+        const problems = [...result.problems];
+        try {
+          const exit = await running.waitForExit(30000);
+          const log = running.lines.join('\n');
+          if (exit?.code !== 2) problems.push(`the manifest run exited ${exit?.code}, expected 2`);
+          for (const needle of ['MANIFEST_INVALID', 'Rush']) {
+            if (!log.includes(needle)) problems.push(`the manifest refusal does not mention "${needle}"`);
+          }
+          if (log.includes('ALEF_READY')) problems.push('the runtime started although the scope reached the Rush root');
+        } catch (error) {
+          problems.push(error.message);
+        } finally {
+          running.stop();
+          if (!(await running.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
+        }
+        return { problems, lines: running.lines };
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
       }
     },
     app: () => drive({

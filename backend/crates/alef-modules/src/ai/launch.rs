@@ -120,13 +120,15 @@ pub(super) async fn start_chat(
         {
             return Err(busy("too many chats for this application".to_owned()));
         }
-        let events = provider.chat(
-            request,
-            ChatControl {
-                cancel: cancelled.clone(),
-                results: result_receiver,
-            },
-        )?;
+        let events = provider
+            .chat(
+                request,
+                ChatControl {
+                    cancel: cancelled.clone(),
+                    results: result_receiver,
+                },
+            )
+            .map_err(cleanse)?;
         let (writer, stream_id) = ctx.streams().open_outgoing();
         let state = Arc::new(ChatState::new());
         let resource = ctx.resources().insert(Box::new(ChatHandle {

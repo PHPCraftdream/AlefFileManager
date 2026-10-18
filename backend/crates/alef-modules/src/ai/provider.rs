@@ -37,7 +37,7 @@ pub struct ChatUsage {
 
 /// A tool the model may call: what it is called, what it is told it does, and the shape of its
 /// arguments.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
@@ -45,7 +45,7 @@ pub struct ToolDef {
 }
 
 /// What one chat asks of the provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
     pub role: String,
     pub messages: Vec<ChatMessage>,
@@ -106,6 +106,8 @@ const PACE: std::time::Duration = std::time::Duration::from_millis(10);
 const RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The token upper bound the fake names for every chat.
 const FAKE_TOKEN_BOUND: u64 = 4096;
+/// The request log of the tests keeps the most recent requests only.
+const SEEN_CAP: usize = 256;
 
 /// A deterministic provider for tests and end-to-end runs: it thinks, calls the tools the request
 /// listed (in order, with fixed arguments), waits for one result per call, reports what it saw
@@ -116,6 +118,12 @@ const FAKE_TOKEN_BOUND: u64 = 4096;
 pub struct FakeProvider {
     started: AtomicUsize,
     next_chat_gate: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+    /// Test seam: the failure `roles` answers with until it is cleared again.
+    roles_failure: std::sync::Mutex<Option<String>>,
+    /// Test seam: the failure the next `chat` start answers with until it is cleared again.
+    chat_failure: std::sync::Mutex<Option<String>>,
+    /// Test seam: every request the chats handed over, oldest first.
+    seen: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
 /// Opens a single fake chat's producer gate. Dropping the guard also releases it.
@@ -150,10 +158,38 @@ impl FakeProvider {
     pub fn chats_started(&self) -> usize {
         self.started.load(Ordering::SeqCst)
     }
+
+    /// Seeds the failure `roles` answers with; `None` clears it. The message stands in for the
+    /// raw text of a real provider — credentials included — and is echoed into the details.
+    pub fn seed_roles_failure(&self, message: Option<String>) {
+        *self.roles_failure.lock().expect("fake roles failure lock") = message;
+    }
+
+    /// Seeds the failure the next `chat` start answers with; `None` clears it. The message stands
+    /// in for the raw text of a real provider — credentials included — and is echoed into the
+    /// details.
+    pub fn seed_chat_failure(&self, message: Option<String>) {
+        *self.chat_failure.lock().expect("fake chat failure lock") = message;
+    }
+
+    /// The most recent requests this provider received, oldest first: the boundary observer of
+    /// the tests. The log is capped so a long test cannot grow it without bound.
+    pub fn requests(&self) -> Vec<ChatRequest> {
+        self.seen.lock().expect("fake request log lock").clone()
+    }
 }
 
 impl AiProvider for FakeProvider {
     fn roles(&self) -> Result<Vec<Role>, AlefError> {
+        if let Some(message) = self
+            .roles_failure
+            .lock()
+            .expect("fake roles failure lock")
+            .clone()
+        {
+            return Err(AlefError::new(ErrorCode::Internal, message.clone())
+                .with_details(serde_json::json!({ "provider": message })));
+        }
         Ok(vec![
             Role {
                 id: "smart".to_owned(),
@@ -179,7 +215,24 @@ impl AiProvider for FakeProvider {
         request: ChatRequest,
         control: ChatControl,
     ) -> Result<mpsc::Receiver<ChatEvent>, AlefError> {
+        if let Some(message) = self
+            .chat_failure
+            .lock()
+            .expect("fake chat failure lock")
+            .clone()
+        {
+            return Err(AlefError::new(ErrorCode::Internal, message.clone())
+                .with_details(serde_json::json!({ "provider": message })));
+        }
         self.started.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut seen = self.seen.lock().expect("fake request log lock");
+            seen.push(request.clone());
+            if seen.len() > SEEN_CAP {
+                let excess = seen.len() - SEEN_CAP;
+                seen.drain(0..excess);
+            }
+        }
         let (sender, receiver) = mpsc::channel(16);
         let gate = self
             .next_chat_gate

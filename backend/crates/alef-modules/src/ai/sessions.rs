@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bounded conversation history for one AI role.
 use super::{
+    cleanse,
     launch::{start_chat, Usage},
     provider, relay, ChatArgs, Delivery,
 };
@@ -64,7 +65,12 @@ pub(super) fn register(
                         ));
                     }
                 }
-                if !provider.roles()?.iter().any(|r| r.id == args.role) {
+                if !provider
+                    .roles()
+                    .map_err(cleanse)?
+                    .iter()
+                    .any(|r| r.id == args.role)
+                {
                     return Err(AlefError::new(
                         ErrorCode::NotAvailable,
                         "the role is not available",
