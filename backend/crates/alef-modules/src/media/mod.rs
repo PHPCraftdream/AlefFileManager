@@ -68,7 +68,17 @@ pub(crate) async fn relay<T: StreamItem + Sync>(
 ) {
     let queue = stream.queue();
     let mut canceled = false;
-    while let Some(item) = queue.pop().await {
+    loop {
+        // The cancel side wins over an empty queue too: a close between frames returns at once
+        // instead of waiting for the next tick of the producer.
+        let item = tokio::select! {
+            biased;
+            _ = relay_canceled(&mut cancel) => { canceled = true; break; }
+            item = queue.pop() => match item {
+                Some(item) => item,
+                None => break,
+            },
+        };
         let send = async {
             writer.send_json(item.header()).await?;
             writer.send_binary(item.payload()).await
@@ -118,10 +128,14 @@ impl RelayHandle {
         }
     }
 
-    /// Cancels the relay and waits for its end; the relay itself stops the producer and ends the
-    /// stream. Idempotent: the task is joined once.
-    pub(crate) async fn shutdown(&self) {
+    /// Cancels the relay, stops the producer and waits for the relay's end; the relay itself ends
+    /// the stream. Idempotent: the task is joined once. Stopping the producer here wakes a relay
+    /// parked on an empty queue at once, so a producer parked between ticks cannot hold the
+    /// cleanup.
+    pub(crate) async fn shutdown<T: StreamItem + Sync>(&self, stream: &DeviceStream<T>) {
         let _ = self.cancel.send(true);
+        // Ends `pop` (queue closed) and wakes the parked producer at once.
+        stream.stop();
         let task = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(task) = task {
             let _ = task.await;

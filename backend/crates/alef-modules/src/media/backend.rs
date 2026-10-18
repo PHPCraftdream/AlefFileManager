@@ -152,11 +152,20 @@ impl<T: StreamItem> DeviceStream<T> {
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
+/// A test-only hook called at the start of every `write`, so a test can hold the fold while
+/// chunks are already queued. Never set outside the unit tests.
+#[cfg(test)]
+type WriteGate = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// A count of the samples a page played and a checksum over their bytes; enough to compare what
 /// two runs heard without keeping the audio.
 #[derive(Clone)]
 pub struct AudioSink {
     state: Arc<Mutex<SinkState>>,
+    /// Test-only gate; never set outside the unit tests. The gate is shared by every clone of
+    /// the sink, so gating any clone — including the fold's — blocks every write of the sink.
+    #[cfg(test)]
+    gate: std::sync::Arc<Mutex<Option<WriteGate>>>,
 }
 
 struct SinkState {
@@ -179,11 +188,26 @@ impl AudioSink {
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(SinkState::default())),
+            #[cfg(test)]
+            gate: std::sync::Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Installs the test-only write gate; see [`WriteGate`].
+    #[cfg(test)]
+    pub fn set_write_gate(&self, gate: WriteGate) {
+        *self.gate.lock().unwrap_or_else(|e| e.into_inner()) = Some(gate);
     }
 
     /// Accepts whole `f32` samples, folding them into the checksum; answers the cumulative count.
     pub fn write(&self, bytes: &[u8]) -> Result<u64, AlefError> {
+        #[cfg(test)]
+        {
+            let gate = self.gate.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(gate) = gate {
+                gate();
+            }
+        }
         if !bytes.len().is_multiple_of(4) {
             return Err(AlefError::new(
                 ErrorCode::InvalidArgument,

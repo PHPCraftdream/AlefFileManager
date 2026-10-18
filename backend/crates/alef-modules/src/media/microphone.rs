@@ -31,7 +31,7 @@ struct MicrophoneHandle {
 impl Resource for MicrophoneHandle {
     fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async move {
-            self.relay.shutdown().await;
+            self.relay.shutdown(&self.stream).await;
             if let Some(job) = self.stream.take_job() {
                 let _ = job.result().await;
             }

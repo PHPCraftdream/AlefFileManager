@@ -29,7 +29,7 @@ struct CameraHandle {
 impl Resource for CameraHandle {
     fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async move {
-            self.relay.shutdown().await;
+            self.relay.shutdown(&self.stream).await;
             if let Some(job) = self.stream.take_job() {
                 let _ = job.result().await;
             }
@@ -414,6 +414,76 @@ mod tests {
             .unwrap();
         assert!(matches!(end, Frame::End));
         active_streams(&camera, 0).await;
+    }
+
+    #[tokio::test]
+    async fn a_camera_close_between_frames_does_not_wait_for_the_next_frame() {
+        let camera = Arc::new(VirtualCamera::default());
+        let mut registry = Registry::default();
+        register(&mut registry, camera.clone()).unwrap();
+        let ctx = context_with(Some((true, true)), true).await;
+        let reply = registry
+            .dispatch(
+                "media.camera.open",
+                ctx.clone(),
+                json!({"id": "virtual-0", "fps": 1}),
+            )
+            .await
+            .expect("the open must succeed");
+        let Reply::Json(reply) = reply else {
+            panic!("expected a JSON reply");
+        };
+        let mut reader: StreamReader = ctx
+            .streams()
+            .reader(StreamId(reply["stream"].as_u64().unwrap()))
+            .unwrap();
+        let header = tokio::time::timeout(WAIT, reader.next_frame())
+            .await
+            .unwrap()
+            .unwrap();
+        let Frame::Json(header) = header else {
+            panic!("expected a JSON header first");
+        };
+        let byte_length = header["byteLength"].as_u64().unwrap();
+        let mut assembled = Vec::new();
+        while assembled.len() != byte_length as usize {
+            let frame = tokio::time::timeout(WAIT, reader.next_frame())
+                .await
+                .unwrap()
+                .unwrap();
+            match frame {
+                Frame::Binary(piece) => {
+                    ctx.streams()
+                        .ack(StreamId(reply["stream"].as_u64().unwrap()), piece.len())
+                        .unwrap();
+                    assembled.extend_from_slice(&piece);
+                }
+                Frame::Json(_) => panic!("a new header arrived inside a payload"),
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+        // The producer now sleeps for about a second, so the close lands between frames; a close
+        // that waited for the next frame would take over a second.
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            registry.dispatch(
+                "media.camera.close",
+                ctx.clone(),
+                json!({"camera": reply["camera"]}),
+            ),
+        )
+        .await
+        .expect("the close must return between frames")
+        .expect("the close must succeed");
+        let end = tokio::time::timeout(WAIT, reader.next_frame())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(end, Frame::End));
+        active_streams(&camera, 0).await;
+        tokio::time::timeout(WAIT, ctx.session.close())
+            .await
+            .expect("the session must close in time");
     }
 
     #[tokio::test]

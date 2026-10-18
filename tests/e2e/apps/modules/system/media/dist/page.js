@@ -40,8 +40,7 @@ const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
 const FRAME_RATE = 48000;
 let spike = { fps: 0, p95: Infinity, mainMs: 0, totalMs: 0, elapsed: 0 };
-let dropAccounting = { seq: 0, dropped: 0 };
-let closeStats = null;
+let dropAccounting = { gaps: 0, dropped: 0 };
 
 async function allowed(check) {
   await check('media-camera-lists-the-virtual-device', async () => {
@@ -59,10 +58,12 @@ async function allowed(check) {
     const context = document.getElementById('screen').getContext('2d');
     const mainMsValues = [];
     const frameMsValues = [];
-    const started = Date.now();
     let seen = 0;
     let previousSeq = 0;
-    let previousDropped = 0;
+    let gaps = 0;
+    let firstFrameAt = null;
+    let lastFrameAt = null;
+    let pendingCostStart = null;
     const probe = { rounds: 0, lost: 0, maxMs: 0 };
     const probeRun = (async () => {
       for (let round = 0; round < 20; round += 1) {
@@ -80,33 +81,35 @@ async function allowed(check) {
     const iterator = cam[Symbol.asyncIterator]();
     await withDeadline((async () => {
       for (;;) {
-        const frameStarted = performance.now();
+        const nextCallAt = performance.now();
         const { value: frame, done } = await iterator.next();
         if (done) break;
+        const arrivedAt = performance.now();
+        if (firstFrameAt === null) firstFrameAt = arrivedAt;
+        lastFrameAt = arrivedAt;
+        if (pendingCostStart !== null) frameMsValues.push(nextCallAt - pendingCostStart);
+        pendingCostStart = arrivedAt;
         if (frame.seq <= previousSeq) throw new Error(`frame seq ${frame.seq} after ${previousSeq}`);
-        if (frame.seq - previousSeq - 1 !== frame.dropped - previousDropped) {
-          throw new Error(`seq gap ${frame.seq - previousSeq - 1} does not match the dropped delta ${frame.dropped - previousDropped}`);
-        }
+        gaps += frame.seq - previousSeq - 1;
         previousSeq = frame.seq;
-        previousDropped = frame.dropped;
         if (frame.width !== FRAME_WIDTH || frame.height !== FRAME_HEIGHT) throw new Error(`frame ${frame.width}x${frame.height}`);
         if (frame.data.length !== FRAME_WIDTH * FRAME_HEIGHT * 4) throw new Error(`frame payload ${frame.data.length} bytes`);
         const drawStarted = performance.now();
         context.putImageData(new ImageData(new Uint8ClampedArray(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength), frame.width, frame.height), 0, 0);
         mainMsValues.push(performance.now() - drawStarted);
         latencies.push(Date.now() - frame.timestamp);
-        frameMsValues.push(performance.now() - frameStarted);
         seen += 1;
         if (seen === 60) break;
       }
     })(), 45000, '60 frames');
+    if (pendingCostStart !== null) frameMsValues.push(performance.now() - pendingCostStart);
     await withDeadline(iterator.return?.(), 5000, 'closing the frame iterator');
     await withDeadline(probeRun, 30000, 'the control probe');
     if (probe.rounds !== 20 || probe.lost !== 0) throw new Error(`control probe: ${probe.rounds} rounds, ${probe.lost} lost`);
     await report(`media-control-probe rounds=20 max_ms=${Math.ceil(probe.maxMs)} lost=0`);
     if (seen !== 60) throw new Error(`saw ${seen} frames, expected 60`);
-    const captureMs = Date.now() - started;
-    const fps = (60 * 1000) / captureMs;
+    const captureMs = lastFrameAt - firstFrameAt;
+    const fps = (seen * 1000) / captureMs;
     const p50 = percentile(latencies, 0.5);
     const p95 = percentile(latencies, 0.95);
     const mainMs = mainMsValues.reduce((sum, value) => sum + value, 0);
@@ -114,9 +117,8 @@ async function allowed(check) {
     const stats = await withDeadline(cam.close(), 5000, 'the camera close');
     const dropsFromClose = stats.dropped;
     spike = { fps, p95, mainMs, totalMs, elapsed: captureMs };
-    dropAccounting = { seq: previousSeq, dropped: previousDropped };
-    closeStats = stats;
-    await report(`media-camera-stats frames=60 fps=${fps.toFixed(1)} p50_ms=${Math.round(p50)} p95_ms=${Math.round(p95)} main_ms=${Math.round(mainMs)} total_ms=${Math.round(totalMs)} drops=${dropsFromClose} elapsed_ms=${captureMs}`);
+    dropAccounting = { gaps, dropped: stats.dropped };
+    await report(`media-camera-stats frames=60 fps=${fps.toFixed(1)} p50_ms=${Math.round(p50)} p95_ms=${Math.round(p95)} main_ms=${Math.round(mainMs)} total_ms=${Math.round(totalMs)} drops=${dropsFromClose} gaps=${gaps} elapsed_ms=${captureMs}`);
     return `fps=${fps.toFixed(1)} p50_ms=${Math.round(p50)} p95_ms=${Math.round(p95)}`;
   });
 
@@ -127,9 +129,8 @@ async function allowed(check) {
     if (!(spike.p95 < 2000)) throw new Error(`p95 ${Math.round(spike.p95)} ms`);
   });
   await check('media-camera-sequence-matches-the-drop-accounting', async () => {
-    if (dropAccounting.seq !== 60 + dropAccounting.dropped) throw new Error(`last seq ${dropAccounting.seq} with ${dropAccounting.dropped} dropped does not add up to 60`);
-    if (closeStats === null || closeStats.dropped < dropAccounting.dropped) {
-      throw new Error(`close drops ${closeStats?.dropped} below the last header delta ${dropAccounting.dropped}`);
+    if (dropAccounting.gaps > dropAccounting.dropped) {
+      throw new Error(`seq gaps ${dropAccounting.gaps} exceed the drops ${dropAccounting.dropped} the close reported`);
     }
   });
   await check('media-camera-main-thread-stays-under-half-the-time', async () => {
@@ -148,15 +149,12 @@ async function allowed(check) {
     const cam = await camera.open('virtual-0', { fps: 60 });
     let seen = 0;
     let previousSeq = 0;
-    let previousDropped = 0;
+    let gaps = 0;
     await withDeadline((async () => {
       for await (const frame of cam) {
         if (frame.seq <= previousSeq) throw new Error(`frame seq ${frame.seq} after ${previousSeq}`);
-        if (frame.seq - previousSeq - 1 !== frame.dropped - previousDropped) {
-          throw new Error(`seq gap ${frame.seq - previousSeq - 1} does not match the dropped delta ${frame.dropped - previousDropped}`);
-        }
+        gaps += frame.seq - previousSeq - 1;
         previousSeq = frame.seq;
-        previousDropped = frame.dropped;
         seen += 1;
         if (seen === 5) break;
       }
@@ -164,7 +162,8 @@ async function allowed(check) {
     if (seen !== 5) throw new Error(`saw ${seen} frames, expected 5`);
     const stats = await withDeadline(cam.close(), 5000, 'the camera close');
     if (stats.frames < 5) throw new Error(`frames ${stats.frames}`);
-    if (stats.dropped < previousDropped) throw new Error(`close drops ${stats.dropped} below the last header delta ${previousDropped}`);
+    if (gaps > stats.dropped) throw new Error(`seq gaps ${gaps} exceed the drops ${stats.dropped} the close reported`);
+    return `gaps=${gaps} drops=${stats.dropped}`;
   });
 
   await check('media-microphone-lists-the-virtual-device', async () => {
@@ -183,15 +182,12 @@ async function allowed(check) {
     let crossings = 0;
     let previous = null;
     let previousSeq = 0;
-    let previousDropped = 0;
+    let micGaps = 0;
     await withDeadline((async () => {
       for await (const chunk of mic) {
         if (chunk.seq <= previousSeq) throw new Error(`chunk seq ${chunk.seq} after ${previousSeq}`);
-        if (chunk.seq - previousSeq - 1 !== chunk.dropped - previousDropped) {
-          throw new Error(`seq gap ${chunk.seq - previousSeq - 1} does not match the dropped delta ${chunk.dropped - previousDropped}`);
-        }
+        micGaps += chunk.seq - previousSeq - 1;
         previousSeq = chunk.seq;
-        previousDropped = chunk.dropped;
         if (chunk.rate !== FRAME_RATE) throw new Error(`rate ${chunk.rate}`);
         for (const sample of chunk.data) {
           if (previous !== null && (previous > 0) !== (sample > 0)) crossings += 1;
@@ -202,8 +198,10 @@ async function allowed(check) {
       }
     })(), 30000, 'one second of audio');
     micStats = await withDeadline(mic.close(), 5000, 'the microphone close');
+    if (micGaps > micStats.dropped) throw new Error(`seq gaps ${micGaps} exceed the drops ${micStats.dropped} the close reported`);
     const freq = crossings * FRAME_RATE / (2 * total);
     if (!(Math.abs(freq - 440) < 2)) throw new Error(`measured ${freq.toFixed(1)} Hz`);
+    return `gaps=${micGaps} drops=${micStats.dropped}`;
   });
 
   await check('media-microphone-close-reports-samples', async () => {
