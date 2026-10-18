@@ -31,6 +31,7 @@ fn authority_endpoint_uses_full_package_tokens_and_pins_directory_names() {
         process_args: Vec::new(),
         backends: Backends::pretending(None, None),
         shadow: at("shadow"),
+        ai_home: at("ai-home"),
         console: None,
         launch: LaunchState::new(vec![Mode::Window], Some(Mode::Window), crate::LAUNCH_LIMIT)
             .unwrap(),

@@ -102,6 +102,12 @@ pub fn shadow_folder(identity: &Identity) -> PathBuf {
     runtime_home().join("shadow").join(identity.key())
 }
 
+/// Where the user keeps the AI usage of the application: the daily limits, the counters and the
+/// journal.
+pub fn ai_folder(identity: &Identity) -> PathBuf {
+    runtime_home().join("ai").join(identity.key())
+}
+
 /// The decisions of the users, one file per application.
 pub fn store() -> FileConsentStore {
     FileConsentStore::new(runtime_home().join("consent"))

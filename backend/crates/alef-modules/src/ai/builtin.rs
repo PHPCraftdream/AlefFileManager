@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 const MAX_BYTES: usize = 64 * 1024;
 const MAX_ENTRIES: usize = 256;
 
-fn executor() -> &'static BlockingExecutor {
+pub(super) fn executor() -> &'static BlockingExecutor {
     static EXECUTOR: OnceLock<BlockingExecutor> = OnceLock::new();
     EXECUTOR.get_or_init(|| BlockingExecutor::new(NonZeroUsize::new(8).expect("eight workers")))
 }

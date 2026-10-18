@@ -18,7 +18,7 @@ use alef_core::{
     ids::ResourceId,
     registry::{
         command::Reply,
-        context::{CallContext, CancelHandle, CancelSender},
+        context::{CallContext, CancelSender},
         dispatch::Registry,
         host::Host,
     },
@@ -26,7 +26,7 @@ use alef_core::{
         consent::Decision,
         permissions::{Grants, Permission, PermissionSet},
     },
-    session::{resources::Resource, session::Session, streams::StreamWriter},
+    session::{resources::Resource, session::Session, streams::StreamWriter, usage},
     AlefError, ErrorCode,
 };
 use serde::{Deserialize, Serialize};
@@ -35,9 +35,10 @@ use tokio::sync::mpsc;
 
 use crate::{json, ModuleContext};
 use dto::{ChatMessage, Role};
-use launch::start_chat;
+use launch::{start_chat, Usage};
 mod launch;
-use provider::{ChatControl, ChatEvent, ChatRequest, ToolDef};
+use provider::ToolDef;
+use usage::{Event, Kind};
 
 pub mod builtin;
 pub mod dto;
@@ -112,6 +113,8 @@ struct PendingCall {
     /// The registration generation the call was dispatched against; a result after a
     /// re-registration of the same name is refused (a new id no longer satisfies it).
     registration: u64,
+    /// The role of the running chat, for the journal.
+    role: String,
 }
 
 /// The state of one chat: its pending tool calls, dead once the chat is over.
@@ -320,344 +323,6 @@ fn allowed_tools(
     }
     Ok(offered)
 }
-
-/// What the producer does about the event it woke for: the stream broke, a deadline won, the
-/// provider ended without completing, or there is an event to relay.
-enum Step {
-    Closed,
-    TimedOut,
-    Deadline,
-    Ended,
-    Event(ChatEvent),
-}
-
-/// Relays the events of the provider to the stream of the page until one of them ends the chat:
-/// the page closes the iterator, a deadline of docs/stages/m9-ai.md §6 wins, or the provider
-/// completes. Exactly one terminal outcome per chat, and nothing after it. A pending tool call
-/// whose handler is too slow is left alone: the provider's own wait on the result fails the chat
-/// with `Timeout`, and the deadlines above bound it all the same.
-async fn produce(
-    writer: StreamWriter,
-    mut events: mpsc::Receiver<ChatEvent>,
-    state: Arc<ChatState>,
-    control: CancelHandle,
-    cancel: CancelSender,
-    session: Arc<Session>,
-    resource: ResourceId,
-    host: Arc<dyn Host>,
-    window: u64,
-    chat: u64,
-    app_key: String,
-    session_key: u64,
-    offered: HashMap<String, u64>,
-    builtins: HashSet<String>,
-    builtin_results: mpsc::Sender<Result<Value, AlefError>>,
-    permissions: Arc<PermissionSet>,
-    grants: Arc<Grants>,
-    mut turn: Option<sessions::Turn>,
-) {
-    let mut assistant = String::new();
-    let overall = tokio::time::Instant::now() + limits::CHAT_TIME;
-    let mut stage = tokio::time::Instant::now() + limits::FIRST_EVENT_TIME;
-    // Notifies the page that the chat is over, then cancels the provider, deadens the pending
-    // calls and forgets the resource. The event comes first: it has to reach the page even when
-    // no iterator frame ever will.
-    let abandon = |state: &ChatState| {
-        host.emit(Some(window), "ai.chat_closed", json!({"chat": chat}));
-        cancel.cancel();
-        state.fail();
-        let _ = session.resources().remove(resource);
-        forget_chat(&app_key, session_key, chat);
-    };
-    loop {
-        let step = {
-            let closed = writer.closed();
-            tokio::pin!(closed);
-            tokio::select! {
-                _ = &mut closed => Step::Closed,
-                _ = control.cancelled() => Step::Closed,
-                _ = async {
-                    // The same earliest-deadline bound as every relay; without a pending call it
-                    // waits forever (the stage and the overall deadlines bound the rest).
-                    if state.pending().is_empty() {
-                        std::future::pending::<()>().await;
-                    } else {
-                        tokio::time::sleep_until(earliest(overall, stage, &state)).await;
-                    }
-                } => Step::Deadline,
-                waited = tokio::time::timeout_at(stage.min(overall), events.recv()) => match waited {
-                    Err(_) => Step::TimedOut,
-                    Ok(None) => Step::Ended,
-                    Ok(Some(event)) => Step::Event(event),
-                },
-            }
-        };
-        match step {
-            // The page broke the iterator, or the session closed: nothing is written any more.
-            Step::Closed => {
-                abandon(&state);
-                writer.error(AlefError::new(ErrorCode::Closed, "the chat is closed"));
-                return;
-            }
-            Step::TimedOut => {
-                abandon(&state);
-                writer.error(timeout_of("the chat took too long"));
-                return;
-            }
-            Step::Deadline => {
-                // A result may have landed between the fire and here; only a real expiry fails.
-                let expired = state
-                    .pending()
-                    .values()
-                    .any(|call| call_expired(call.deadline, Instant::now()));
-                if !expired {
-                    continue;
-                }
-                abandon(&state);
-                writer.error(timeout_of("a tool handler took too long"));
-                return;
-            }
-            Step::Ended => {
-                abandon(&state);
-                writer.error(internal("the provider ended without completing"));
-                return;
-            }
-            Step::Event(event) => {
-                stage = tokio::time::Instant::now() + limits::STREAM_IDLE_TIME;
-                match event {
-                    ChatEvent::Text(text) => {
-                        if let Some(turn) = &turn {
-                            if turn.closed() {
-                                abandon(&state);
-                                return;
-                            }
-                        }
-                        if turn.is_some()
-                            && assistant.len().saturating_add(text.len())
-                                > limits::MAX_MESSAGE_BYTES
-                        {
-                            abandon(&state);
-                            writer.error(invalid("assistant response exceeds 256 KiB".to_owned()));
-                            return;
-                        }
-                        if turn.is_some() {
-                            assistant.push_str(&text);
-                        }
-                        let frame = json!({"type": "text", "text": text});
-                        if oversized(&frame) {
-                            abandon(&state);
-                            writer.error(internal("the provider sent a part that is too large"));
-                            return;
-                        }
-                        // A gone page is already terminal; a slow one fails the whole chat.
-                        let at = earliest(overall, stage, &state);
-                        match relay(&writer, frame, at).await {
-                            Delivery::Sent => {}
-                            Delivery::Closed => {
-                                abandon(&state);
-                                return;
-                            }
-                            Delivery::Slow => {
-                                abandon(&state);
-                                writer
-                                    .error(timeout_of("the chat could not keep up with the page"));
-                                return;
-                            }
-                        }
-                    }
-                    ChatEvent::ToolCall {
-                        call_id,
-                        name,
-                        arguments,
-                    } => {
-                        if serde_json::to_vec(&arguments)
-                            .map_or(true, |bytes| bytes.len() > 64 * 1024)
-                        {
-                            abandon(&state);
-                            writer.error(invalid("tool arguments exceed 64 KiB".to_owned()));
-                            return;
-                        }
-                        if builtins.contains(&name) {
-                            let deadline = earliest(overall, stage, &state);
-                            let result = {
-                                let closed = writer.closed();
-                                tokio::pin!(closed);
-                                tokio::select! {
-                                    biased;
-                                    _ = control.cancelled() => Err(AlefError::new(ErrorCode::Closed, "the chat is closed")),
-                                    _ = &mut closed => Err(AlefError::new(ErrorCode::Closed, "the chat is closed")),
-                                    _ = tokio::time::sleep_until(deadline) => Err(timeout_of("a tool handler took too long")),
-                                    result = builtin::execute(
-                                        permissions.clone(),
-                                        name.clone(),
-                                        arguments,
-                                        control.clone(),
-                                    ) => result,
-                                }
-                            };
-                            let value = match result {
-                                Ok(value) => value,
-                                Err(error) => {
-                                    abandon(&state);
-                                    writer.error(error);
-                                    return;
-                                }
-                            };
-                            match tokio::time::timeout_at(
-                                earliest(overall, stage, &state),
-                                builtin_results.send(Ok(value)),
-                            )
-                            .await
-                            {
-                                Ok(Ok(())) => {}
-                                _ => {
-                                    abandon(&state);
-                                    writer.error(timeout_of("a tool handler took too long"));
-                                    return;
-                                }
-                            }
-                            continue;
-                        }
-                        let frame = json!({
-                            "type": "tool_call",
-                            "id": call_id,
-                            "name": name,
-                            "arguments": arguments,
-                        });
-                        if oversized(&frame) {
-                            abandon(&state);
-                            writer.error(internal("the provider sent a part that is too large"));
-                            return;
-                        }
-                        // The binding of the chat start is re-checked at dispatch: a tool whose
-                        // registration is gone or re-registered since the offer, or that no longer
-                        // has the permission, is never admitted — a stale call of the provider
-                        // cannot revive it.
-                        let Some(&registration) = offered.get(&name) else {
-                            abandon(&state);
-                            writer.error(internal(
-                                "a tool call arrived for a tool that is no longer offered",
-                            ));
-                            return;
-                        };
-                        let bound = tools().get(&(app_key.clone(), session_key, name.clone()))
-                            == Some(&(registration, false))
-                            && permissions.check(Permission::AiTool, Some(&name), &grants)
-                                == Ok(Decision::Allow);
-                        if !bound {
-                            abandon(&state);
-                            writer.error(internal(
-                                "a tool call arrived for a tool that is no longer offered",
-                            ));
-                            return;
-                        }
-                        // The pending budget of the whole application across every document, and
-                        // the admission of the call, happen in one critical section without an
-                        // await (the lock order CHATS before `state.pending` is the one
-                        // `ai.tools.unhandle` uses too).
-                        let over = {
-                            let mut all = chats();
-                            let pending_calls = all
-                                .keys()
-                                .filter(|(who, _, _)| who == &app_key)
-                                .map(|key| all[key].pending().len())
-                                .sum::<usize>();
-                            if pending_calls >= limits::MAX_PENDING_CALLS {
-                                true
-                            } else {
-                                if let Some(chat_state) =
-                                    all.get_mut(&(app_key.clone(), session_key, chat))
-                                {
-                                    chat_state.pending().insert(
-                                        call_id.clone(),
-                                        PendingCall {
-                                            deadline: Instant::now() + limits::HANDLER_TIME,
-                                            name: name.clone(),
-                                            registration,
-                                        },
-                                    );
-                                }
-                                false
-                            }
-                        };
-                        if over {
-                            abandon(&state);
-                            writer.error(internal("too many pending tool calls"));
-                            return;
-                        }
-                        // A newly inserted handler deadline bounds its own dispatch relay too.
-                        let at = earliest(overall, stage, &state);
-                        match relay(&writer, frame, at).await {
-                            Delivery::Sent => {}
-                            Delivery::Closed => {
-                                abandon(&state);
-                                return;
-                            }
-                            Delivery::Slow => {
-                                abandon(&state);
-                                writer
-                                    .error(timeout_of("the chat could not keep up with the page"));
-                                return;
-                            }
-                        }
-                        // The event drives the page handler independently of the iterator.
-                        host.emit(
-                            Some(window),
-                            "ai.tool_call",
-                            json!({
-                                "chat": chat,
-                                "callId": call_id,
-                                "name": name,
-                                "arguments": arguments,
-                            }),
-                        );
-                    }
-                    ChatEvent::Usage(usage) => {
-                        let frame = json!({
-                            "type": "usage",
-                            "inputTokens": usage.input_tokens,
-                            "outputTokens": usage.output_tokens,
-                            "cacheReadTokens": usage.cache_read_tokens,
-                            "cacheCreationTokens": usage.cache_creation_tokens,
-                            "estimated": usage.estimated,
-                            "complete": usage.complete,
-                        });
-                        let at = earliest(overall, stage, &state);
-                        match relay(&writer, frame, at).await {
-                            Delivery::Sent => {}
-                            Delivery::Closed => {
-                                abandon(&state);
-                                return;
-                            }
-                            Delivery::Slow => {
-                                abandon(&state);
-                                writer
-                                    .error(timeout_of("the chat could not keep up with the page"));
-                                return;
-                            }
-                        }
-                    }
-                    ChatEvent::Completed => {
-                        // Exactly one end (docs/stages/m9-ai.md §2): the frame, then the transport end.
-                        let at = earliest(overall, stage, &state);
-                        if let Err(error) =
-                            sessions::finish_turn(&writer, turn.take(), assistant, at).await
-                        {
-                            abandon(&state);
-                            writer.error(error);
-                            return;
-                        }
-                        // The chat is over: notify, cancel, deaden, forget.
-                        abandon(&state);
-                        writer.end();
-                        return;
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Whether a JSON field was present at all: absent is the default, an explicit `null` is
 /// `Some(Value::Null)`.
 fn deserialize_some<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
@@ -715,6 +380,7 @@ pub(crate) fn register(
         .authority
         .package_token(&context.app.id)
         .unwrap_or_else(|| context.app.id.clone());
+    let usage = Arc::new(Usage::new(&context.ai_home, context.app.id.clone()));
 
     // No permission on the wrapper: the handler publishes only the roles the user allowed; a
     // substituted role is not published (docs/stages/m9-ai.md §2).
@@ -749,12 +415,19 @@ pub(crate) fn register(
             }
         })?;
 
-    sessions::register(registry, provider.clone(), host.clone(), app_key.clone())?;
+    sessions::register(
+        registry,
+        provider.clone(),
+        host.clone(),
+        app_key.clone(),
+        usage.clone(),
+    )?;
 
     for name in ["ai.chat", "ai.request"] {
         let chat_app_key = app_key.clone();
         let chat_provider = provider.clone();
         let chat_host = host.clone();
+        let chat_usage = usage.clone();
         registry
             .command::<ChatArgs>(name)?
             .permission(Permission::AiRole, |args| Some(args.role.clone()))
@@ -764,7 +437,8 @@ pub(crate) fn register(
                 let provider = chat_provider.clone();
                 let host = chat_host.clone();
                 let app_key = chat_app_key.clone();
-                async move { start_chat(ctx, args, provider, host, app_key, None).await }
+                let usage = chat_usage.clone();
+                async move { start_chat(ctx, args, provider, host, app_key, usage, None).await }
             })?;
     }
 
@@ -838,10 +512,12 @@ pub(crate) fn register(
         })?;
 
     let result_app_key = app_key.clone();
+    let result_usage = usage.clone();
     registry
         .command::<ResultArgs>("ai.tools.result")?
         .handler(move |ctx, args| {
             let app_key = result_app_key.clone();
+            let usage = result_usage.clone();
             async move {
                 // Exactly one of the value and the failure.
                 match (&args.result, &args.error) {
@@ -886,12 +562,14 @@ pub(crate) fn register(
                 }
                 // Binding and consumption in one guard scope: a mismatched name, a stale
                 // registration generation, an expired deadline or an unknown call never burns the
-                // single-use claim; taking the entry is the claim.
-                {
+                // single-use claim; taking the entry is the claim. The scope ends before the
+                // journal write: the pending mutex is never held across the journal's disk I/O.
+                let (pending_role, outcome) = {
                     let mut pending = state.pending();
                     let Some(call) = pending.get(&args.call_id) else {
                         return Err(closed_call());
                     };
+                    let pending_role = call.role.clone();
                     if args.name != call.name {
                         return Err(closed_call());
                     }
@@ -917,7 +595,21 @@ pub(crate) fn register(
                     if pending.remove(&args.call_id).is_none() {
                         return Err(closed_call());
                     }
-                }
+                    (
+                        pending_role,
+                        if args.result.is_some() { "ok" } else { "error" },
+                    )
+                };
+                // The claimed call ends on the journal, best effort.
+                let _ = usage
+                    .record(
+                        &pending_role,
+                        Kind::Tool,
+                        &args.name,
+                        Event::End,
+                        Some(outcome),
+                    )
+                    .await;
                 let payload = match (args.result, args.error) {
                     (Some(value), _) => Ok(value),
                     (None, Some(message)) => Err(AlefError::new(

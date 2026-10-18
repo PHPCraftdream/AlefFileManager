@@ -27,53 +27,6 @@ pub(super) fn reaches_everything(scope: &str) -> bool {
     }
 }
 
-/// A shell or an interpreter: allowing it allows whatever it is told to run.
-pub(super) fn runs_other_programs(scope: &str) -> bool {
-    const NAMES: &[&str] = &[
-        "sh",
-        "bash",
-        "zsh",
-        "fish",
-        "dash",
-        "ksh",
-        "csh",
-        "tcsh",
-        "cmd",
-        "powershell",
-        "pwsh",
-        "wsl",
-        "python",
-        "py",
-        "pyw",
-        "node",
-        "nodejs",
-        "deno",
-        "bun",
-        "perl",
-        "ruby",
-        "php",
-        "lua",
-        "java",
-        "wscript",
-        "cscript",
-        "mshta",
-        "osascript",
-        "env",
-        "xargs",
-        "sudo",
-        "start",
-    ];
-    let scope = scope.replace('\\', "/").to_ascii_lowercase();
-    let name = scope.rsplit('/').next().unwrap_or_default();
-    let name = name.strip_prefix("sidecar:").unwrap_or(name);
-    let stem = ["exe", "cmd", "bat", "com"]
-        .iter()
-        .find_map(|extension| name.strip_suffix(&format!(".{extension}")))
-        .unwrap_or(name);
-    // `python3` and `python3.12` are `python`.
-    NAMES.contains(&stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.'))
-}
-
 /// A URL scope whose host is a wildcard.
 pub(super) fn any_address(scope: &str) -> bool {
     let Some((_, rest)) = scope.split_once("://") else {

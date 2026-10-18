@@ -4,6 +4,7 @@ pub mod executor;
 pub mod resources;
 pub mod session;
 pub mod streams;
+pub mod usage;
 #[cfg(any(test, feature = "e2e"))]
 pub mod watchdog;
 

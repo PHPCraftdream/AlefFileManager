@@ -351,6 +351,7 @@ mod tests {
         assert_eq!(request.rights[0].risk, None);
         let page = include_str!("../../assets/consent/consent.js");
         assert!(page.contains("['tray', 'Tray icon']"));
+        assert!(page.contains("['ai', 'AI']"));
         for decision in [Decision::Allow, Decision::Substitute, Decision::Deny] {
             let answered = answer(&[(&right, decision, false)]);
             assert_eq!(validate(&request, &answered).unwrap().0[&right], decision);
@@ -372,7 +373,7 @@ mod tests {
             .risk
             .as_deref()
             .unwrap()
-            .contains("bypasses every protection"));
+            .contains("bypasses all protections, including the AI model keys"));
 
         let missing_confirmation = answer(&[(&right, Decision::Allow, false)]);
         assert!(validate(&request, &missing_confirmation)

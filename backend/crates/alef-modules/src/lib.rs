@@ -234,6 +234,9 @@ pub struct ModuleContext {
     /// Where the stand-ins of this application keep their content: a folder of the runtime, outside
     /// every scope of every application.
     pub shadow: PathBuf,
+    /// The folder of the runtime where the user keeps the AI usage of this application: limits,
+    /// counters, journal.
+    pub ai_home: PathBuf,
     /// The standard streams of a console utility (`console: true`); `None` for every other application.
     pub console: Option<Console>,
     /// Process-wide launch selection, shared by every document and registration.

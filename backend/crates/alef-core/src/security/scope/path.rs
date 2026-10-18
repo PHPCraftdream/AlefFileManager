@@ -159,6 +159,11 @@ impl PathPattern {
         })
     }
 
+    /// The canonical components of the literal base of the pattern.
+    pub(crate) fn base(&self) -> &[String] {
+        &self.base
+    }
+
     /// The components of a path this scope matches that come after its literal base: where the
     /// path lies inside the scope.
     pub(crate) fn inside(&self, candidate: &[String]) -> std::path::PathBuf {
