@@ -461,6 +461,8 @@ mod tests {
             tray: false,
             secrets: false,
             webcrypto: false,
+            audio: false,
+            media: None,
             app: AppPermissions {
                 env: Vec::new(),
                 autostart: false,

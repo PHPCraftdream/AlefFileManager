@@ -112,6 +112,24 @@ export { clipboard } from './system/clipboard.ts';
 export { notification, type NotificationOptions } from './system/notification.ts';
 export { path } from './system/path.ts';
 export { os, type OsEvent } from './system/os.ts';
+export {
+  AudioSink,
+  Camera,
+  Microphone,
+  audio,
+  camera,
+  microphone,
+  type AudioOpenOptions,
+  type AudioSinkStats,
+  type CameraFrame,
+  type CameraInfo,
+  type CameraOpenOptions,
+  type CameraStats,
+  type MicrophoneInfo,
+  type MicrophoneOpenOptions,
+  type MicrophoneStats,
+  type PcmChunk,
+} from './system/media.ts';
 // The DTO `AlefError` of the generated types is the shape of the `AlefError` class above.
 export type {
   AppInfo,

@@ -148,6 +148,29 @@ const AI_MODE_CHECKS = {
   'tool-denied': ['ai-denied-tool-registration-is-permission-denied'],
 };
 
+// The media module (docs/stages/m6-media.md) on the virtual devices: the allowed run measures the
+// spike (60 frames of 1280x720@30 into a canvas, a 440 Hz sine, a checksummed sink); the denied and
+// substituted runs answer PERMISSION_DENIED and NOT_AVAILABLE without touching a device.
+const MEDIA_ALLOWED_CHECKS = [
+  'media-camera-lists-the-virtual-device',
+  'media-camera-streams-60-frames-into-a-canvas',
+  'media-camera-sustains-at-least-5-fps',
+  'media-camera-p95-latency-stays-under-2000-ms',
+  'media-camera-drops-nothing-while-the-page-keeps-up',
+  'media-camera-main-thread-stays-under-half-the-time',
+  'media-camera-second-close-is-refused-without-touching-the-device',
+  'media-camera-close-reports-frames-and-no-drops',
+  'media-microphone-lists-the-virtual-device',
+  'media-microphone-chunks-carry-a-440hz-sine',
+  'media-microphone-close-reports-samples',
+  'media-audio-sink-checksum-matches',
+];
+const MEDIA_MODE_CHECKS = {
+  allowed: MEDIA_ALLOWED_CHECKS,
+  denied: ['media-denied-camera-is-permission-denied'],
+  substituted: ['media-substituted-camera-is-not-available'],
+};
+
 const MENU_VALIDATION_CHECKS = [
   'menu-malformed-trees-are-rejected', 'menu-duplicate-ids-across-the-tree-are-rejected',
   'menu-invalid-accelerators-are-rejected', 'menu-roles-with-custom-ids-are-rejected',
@@ -353,6 +376,33 @@ export function moduleScenarios({ drive, exe, verbose }) {
       } finally {
         rmSync(aiDirectory, { recursive: true, force: true });
       }
+    },
+
+    // The virtual camera, microphone and audio sink: the judge keeps the measured spike of the
+    // allowed run in the CI log (the `media-camera-stats` line the page reports).
+    async media() {
+      const runs = [];
+      const problems = [];
+      for (const [mode, expected] of Object.entries(MEDIA_MODE_CHECKS)) {
+        const decision = mode === 'allowed' ? '*=allow'
+          : mode === 'denied' ? 'media.camera=deny;media.microphone=deny;audio=deny;*=allow'
+          : 'media.camera=substitute;media.microphone=substitute;audio=substitute;*=allow';
+        const result = await drive({
+          name: `media-${mode}`, app: 'modules/system/media', replacements: { ID: `org.alef.e2e.modules.media.${mode}` },
+          targets: { mode },
+          env: { ALEF_E2E_CONSENT: decision },
+          expectedChecks: expected,
+          judge: async lines => {
+            for (const line of lines.filter(candidate => candidate.includes('media-camera-stats'))) {
+              console.log(`    ${line}`);
+            }
+            return [];
+          },
+        });
+        runs.push(...result.lines);
+        problems.push(...result.problems.map(problem => `${mode}: ${problem}`));
+      }
+      return { problems, lines: runs };
     },
     app: () => drive({
       name: 'app', app: 'modules/app/basic', targets: { cwd: process.cwd() },

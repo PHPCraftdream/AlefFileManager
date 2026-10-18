@@ -30,6 +30,7 @@
 | `./notification` | `src/system/notification.ts` | `notification`: уведомления |
 | `./os` | `src/system/os.ts` | `os`: информация о системе, события темы |
 | `./path` | `src/system/path.ts` | `path`: пути (данные, конфиг, кэш) |
+| `./media` | `src/system/media.ts` | `camera`, `microphone`, `audio` и классы `Camera`, `Microphone`, `AudioSink`: кадры камеры в `<canvas>`, f32-чанки микрофона, checksum-приёмник |
 
 У каждого модульного сабпута есть парный сабпут `<модуль>/types`
 (например `./fs/types`). Его файл лежит в `packages/api/type-entries/**`

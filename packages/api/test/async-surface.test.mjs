@@ -160,6 +160,11 @@ const ARGS = {
   'ai.request': [{ role: 'smart', messages: [{ role: 'user', content: 'hi' }] }],
   'ai.session': [{ role: 'smart' }],
   'ai.tools.handle': ['toolName', async () => null],
+  'camera.list': [],
+  'camera.open': ['virtual-0'],
+  'microphone.list': [],
+  'microphone.open': ['virtual-0'],
+  'audio.open': [],
   'store.get': ['k'],
   'store.set': ['k', 1],
   'store.delete': ['k'],
@@ -196,6 +201,12 @@ installRuntime({
     if (request.url === 'native://call/ai.tools.handle') return { json: { registration: 81, inert: false } };
     if (request.url === 'native://call/ai.tools.unhandle') return { json: null };
     if (request.url === 'native://call/ai.tools.result') return { json: null };
+    if (request.url === 'native://call/media.camera.list') return { json: { devices: [] } };
+    if (request.url === 'native://call/media.camera.open') return { json: { camera: 1, stream: 81 } };
+    if (request.url === 'native://call/media.microphone.list') return { json: { devices: [] } };
+    if (request.url === 'native://call/media.microphone.open') return { json: { microphone: 2, stream: 82 } };
+    if (request.url === 'native://call/audio.open') return { json: { sink: 3, stream: 83 } };
+    if (request.url === 'native://stream/81' || request.url === 'native://stream/82' || request.url === 'native://stream/83') return { chunks: [endFrame()] };
     if (request.url === 'native://call/updater.install') return { json: null };
     if (request.url === 'native://stream/61') return { chunks: [jsonFrame({ received: 1, total: 1, done: true }), endFrame()] };
     if (request.url === 'native://call/http.serve') return { json: { server: 6, requests: 51, address: { host: '127.0.0.1', port: 5 }, secure: false } };
@@ -246,5 +257,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'ai', 'app', 'call', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'updater', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'AudioSink', 'Camera', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Microphone', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'ai', 'app', 'audio', 'call', 'camera', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'microphone', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'updater', 'websocket', 'window']);
 });

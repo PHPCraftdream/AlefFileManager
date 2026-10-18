@@ -60,7 +60,9 @@
     "./os": { "types": "./dist/src/system/os.d.ts", "import": "./dist/src/system/os.js", "default": "./dist/src/system/os.js" },
     "./os/types": { "types": "./dist/type-entries/system/os.d.ts" },
     "./path": { "types": "./dist/src/system/path.d.ts", "import": "./dist/src/system/path.js", "default": "./dist/src/system/path.js" },
-    "./path/types": { "types": "./dist/type-entries/system/path.d.ts" }
+    "./path/types": { "types": "./dist/type-entries/system/path.d.ts" },
+    "./media": { "types": "./dist/src/system/media.d.ts", "import": "./dist/src/system/media.js", "default": "./dist/src/system/media.js" },
+    "./media/types": { "types": "./dist/type-entries/system/media.d.ts" }
   },
   "alef-sources": {
     ".": "./src/index.ts",
@@ -112,7 +114,9 @@
     "./os": "./src/system/os.ts",
     "./os/types": "./type-entries/system/os.ts",
     "./path": "./src/system/path.ts",
-    "./path/types": "./type-entries/system/path.ts"
+    "./path/types": "./type-entries/system/path.ts",
+    "./media": "./src/system/media.ts",
+    "./media/types": "./type-entries/system/media.ts"
   },
   "files": [
     "dist"
