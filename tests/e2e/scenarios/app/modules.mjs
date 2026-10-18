@@ -154,8 +154,8 @@ const AI_MODE_CHECKS = {
 const MEDIA_ALLOWED_CHECKS = [
   'media-camera-lists-the-virtual-device',
   'media-camera-streams-60-frames-into-a-canvas',
-  'media-camera-sustains-at-least-5-fps',
-  'media-camera-p95-latency-stays-under-2000-ms',
+  'media-camera-sustains-the-platform-fps-floor',
+  'media-camera-p95-latency-stays-under-the-platform-limit',
   'media-camera-sequence-matches-the-drop-accounting',
   'media-camera-main-thread-stays-under-half-the-time',
   'media-camera-second-close-is-refused-without-touching-the-device',
