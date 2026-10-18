@@ -18,7 +18,9 @@ use alef_launch::{
         window as trust_window,
     },
     args::{parse_args, Command, Launch, USAGE},
-    consent::{identity_of, runtime_home, shadow_folder, store, watch, Asker, WATCH_EVERY},
+    consent::{
+        ai_folder, identity_of, runtime_home, shadow_folder, store, watch, Asker, WATCH_EVERY,
+    },
     permissions,
     plan::{
         application_base_dirs, launch_timeout_from_environment, load_manifest, make_package_plan,
@@ -263,6 +265,10 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
                 "{}",
                 permissions::run(&command, &store()).map_err(Failure::Usage)?
             );
+            return Ok(0);
+        }
+        Command::Ai(command) => {
+            print!("{}", permissions::run_ai(&command).map_err(Failure::Usage)?);
             return Ok(0);
         }
         Command::Runtime(command) => {
@@ -674,6 +680,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         _ => None,
     };
     let shadow = shadow_folder(&identity);
+    let ai_home = ai_folder(&identity);
     // The user may take a right back while the application runs.
     let _following = watch(granted.clone(), store(), identity, WATCH_EVERY);
     // Where the windows that ask for it (`restore: true`) are written down between runs.
@@ -714,6 +721,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         process_args: process_args.clone(),
         backends: Backends::from_environment(&plan.manifest.name),
         shadow,
+        ai_home,
         console: (plan.manifest.console || !plan.manifest.modes.is_empty()).then(Console::process),
         termination: termination.clone(),
         launch: launch_state.clone(),

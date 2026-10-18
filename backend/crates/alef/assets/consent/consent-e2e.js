@@ -35,6 +35,13 @@ export async function automate(steps, call) {
         return `${row.dataset.right}=${radio ? radio.value : 'none'}`;
       });
       await report(`consent-ui rows=${rows.length} risky=${JSON.stringify(risky)} start=${start.disabled ? 'disabled' : 'enabled'} picked=${JSON.stringify(picked)}`);
+      const red = rows.filter(row => row.classList.contains('red')).map(row => row.dataset.right);
+      await report(`consent-ui-red red=${JSON.stringify(red)}`);
+      const details = rows.map(row => ({
+        right: row.dataset.right,
+        detail: row.querySelector('.detail')?.textContent ?? null,
+      }));
+      await report(`consent-ui-details details=${JSON.stringify(details)}`);
     } else if (step.submit) {
       document.getElementById('start').click();
     } else if (step.cancel) {

@@ -8,6 +8,8 @@
   --accent: #2257d6;
   --warn: #b25a00;
   --warn-bg: #fff3e0;
+  --red: #b3261e;
+  --red-bg: #fce8e6;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -20,6 +22,8 @@
     --accent: #7aa2ff;
     --warn: #ffb259;
     --warn-bg: #3a2a14;
+    --red: #f2b8b5;
+    --red-bg: #3a1412;
   }
 }
 
@@ -52,6 +56,8 @@ section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04e
 
 .right { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); align-items: center; }
 .right:last-child { border-bottom: 0; }
+.right.red { background: var(--red-bg); }
+.right.red .what { color: var(--red); font-weight: 600; }
 .what { word-break: break-all; font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 13px; }
 .what small { display: block; font-family: system-ui, sans-serif; color: var(--muted); font-size: 12px; }
 
@@ -60,6 +66,7 @@ fieldset label { display: flex; gap: 4px; align-items: center; cursor: pointer; 
 
 .detail { grid-column: 1 / -1; color: var(--muted); font-size: 12px; word-break: break-word; }
 .risk { grid-column: 1 / -1; background: var(--warn-bg); color: var(--warn); border-radius: 6px; padding: 6px 10px; display: flex; gap: 8px; align-items: center; }
+.right.red .risk { background: var(--red-bg); color: var(--red); }
 
 footer {
   position: fixed; inset: auto 0 0 0; background: var(--card); border-top: 1px solid var(--line);

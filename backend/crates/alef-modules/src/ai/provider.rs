@@ -71,6 +71,12 @@ pub trait AiProvider: Send + Sync + std::fmt::Debug {
         request: ChatRequest,
         control: ChatControl,
     ) -> Result<mpsc::Receiver<ChatEvent>, AlefError>;
+    /// The tokens this chat will at most use, when the provider can name a bound; `None` is
+    /// unknown, and a user's token limit together with `None` refuses the attempt
+    /// (docs/stages/m9-ai.md §6).
+    fn token_bound(&self, _request: &ChatRequest) -> Option<u64> {
+        None
+    }
 }
 
 fn missing() -> AlefError {
@@ -98,6 +104,8 @@ impl AiProvider for MissingProvider {
 const PACE: std::time::Duration = std::time::Duration::from_millis(10);
 /// How long the fake waits for one tool result before it gives the chat up.
 const RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// The token upper bound the fake names for every chat.
+const FAKE_TOKEN_BOUND: u64 = 4096;
 
 /// A deterministic provider for tests and end-to-end runs: it thinks, calls the tools the request
 /// listed (in order, with fixed arguments), waits for one result per call, reports what it saw
@@ -180,6 +188,9 @@ impl AiProvider for FakeProvider {
             .take();
         tokio::spawn(produce(request, control, sender, gate));
         Ok(receiver)
+    }
+    fn token_bound(&self, _request: &ChatRequest) -> Option<u64> {
+        Some(FAKE_TOKEN_BOUND)
     }
 }
 

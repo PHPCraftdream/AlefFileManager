@@ -2,7 +2,7 @@
 //! What the user decided about the rights an application asks for. The manifest says what may be
 //! asked; the decision says what is given: the real thing, a stand-in that the application cannot
 //! tell from the real thing, or nothing.
-use super::risk::{any_address, reaches_everything, runs_other_programs};
+use super::risk::{any_address, reaches_everything};
 use std::{
     collections::BTreeMap,
     fmt, fs, io,
@@ -11,6 +11,9 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+
+/// What a red right does, in words for the consent window.
+const RED_RISK: &str = "bypasses all protections, including the AI model keys";
 
 /// What the user gives for a right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
@@ -80,13 +83,18 @@ impl Right {
         }
     }
 
+    /// Why the right is red: it runs whatever it is told, so allowing it bypasses every other
+    /// protection, including the folder of Rush and the model keys it holds.
+    fn is_red(&self) -> bool {
+        match (&self.scope, self.permission.as_str()) {
+            (None, "ai.builtin.exec" | "ai.builtin.bash") => true,
+            (Some(_), "cli.exec") => true,
+            _ => false,
+        }
+    }
+
     pub fn level(&self) -> RiskLevel {
-        if self.scope.is_none()
-            && matches!(
-                self.permission.as_str(),
-                "ai.builtin.exec" | "ai.builtin.bash"
-            )
-        {
+        if self.is_red() {
             RiskLevel::Red
         } else if self.risk().is_some() {
             RiskLevel::Risky
@@ -99,13 +107,8 @@ impl Right {
     /// `None` for a right that reaches no further than it says. Allowing a risky right takes a
     /// confirmation of its own.
     pub fn risk(&self) -> Option<&'static str> {
-        if self.scope.is_none()
-            && matches!(
-                self.permission.as_str(),
-                "ai.builtin.exec" | "ai.builtin.bash"
-            )
-        {
-            return Some("bypasses every protection, including model keys");
+        if self.is_red() {
+            return Some(RED_RISK);
         }
         if self.permission == "shell.contextMenu" {
             return Some("the system menu of a file can run any program of the computer");
@@ -114,10 +117,6 @@ impl Right {
         match self.permission.as_str() {
             "ai.role" => Some("sends the application's messages to an AI model and can cost money"),
             "ai.tool" => Some("lets an AI model call a tool of the application, with side effects"),
-            "cli.exec" if scope == "*" => Some("runs any program on this computer"),
-            "cli.exec" if runs_other_programs(scope) => {
-                Some("runs a shell or an interpreter, which runs any program on this computer")
-            }
             "fs.read" if reaches_everything(scope) => {
                 Some("reads anything in the home folder or on the whole disk")
             }
@@ -441,13 +440,31 @@ mod tests {
     }
 
     #[test]
+    fn raw_cli_and_sidecar_rights_are_red_while_declared_commands_and_links_are_not() {
+        for right in [
+            Right::scoped("cli.exec", "*"),
+            Right::scoped("cli.exec", "sidecar:node"),
+        ] {
+            assert_eq!(right.level(), RiskLevel::Red);
+            assert_eq!(right.risk(), Some(RED_RISK));
+        }
+        for right in [
+            Right::scoped("cli.command", "status"),
+            Right::scoped("shell.openExternal", "https://example.com/*"),
+            Right::plain("secrets"),
+        ] {
+            assert_eq!(right.level(), RiskLevel::Normal, "{right}");
+        }
+    }
+
+    #[test]
     fn builtin_exec_and_bash_are_red_and_warn_about_model_keys() {
         for permission in ["ai.builtin.exec", "ai.builtin.bash"] {
             let right = Right::plain(permission);
             assert_eq!(right.level(), RiskLevel::Red);
             assert_eq!(
                 right.risk(),
-                Some("bypasses every protection, including model keys")
+                Some("bypasses all protections, including the AI model keys")
             );
         }
     }
@@ -583,6 +600,26 @@ mod tests {
     }
 
     #[test]
+    fn every_cli_exec_scope_is_red_whatever_it_names() {
+        for scope in [
+            "git",
+            "/usr/bin/git",
+            "sidecar:ffmpeg",
+            "node-gyp",
+            "pythonista",
+            "ssh",
+            "*",
+            "powershell",
+        ] {
+            assert_eq!(
+                right("cli.exec", scope).level(),
+                RiskLevel::Red,
+                "cli.exec:{scope}"
+            );
+        }
+    }
+
+    #[test]
     fn a_right_that_reaches_everything_is_risky_and_one_that_says_what_it_reaches_is_not() {
         for risky in [
             ("cli.exec", "*"),
@@ -627,25 +664,19 @@ mod tests {
             );
         }
         for plain in [
-            ("cli.exec", "git"),
             ("fs.read", "$DOCUMENTS/**"),
             ("fs.read", "$HOME/notes/**"),
             ("fs.write", "$APPDATA/**"),
             ("net.http", "https://example.com/*"),
             ("net.http", "https://*.example.com/*"),
-            ("app.env", "*"),
             ("shell.openExternal", "https://*/*"),
+            ("cli.command", "status"),
+            ("app.env", "*"),
             ("fs.read", "$HOME/.config/app/**"),
             ("fs.write", "$HOME/notes/*.txt"),
             ("fs.read", "/var/log/app/**"),
             ("fs.read", "C:/Projects/app/**"),
             ("fs.read", "$DOCUMENTS/./notes/**"),
-            ("cli.exec", "git"),
-            ("cli.exec", "/usr/bin/git"),
-            ("cli.exec", "sidecar:ffmpeg"),
-            ("cli.exec", "node-gyp"),
-            ("cli.exec", "pythonista"),
-            ("cli.exec", "ssh"),
             ("fs.read", "/opt"),
         ] {
             assert!(

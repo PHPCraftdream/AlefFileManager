@@ -4,6 +4,7 @@ pub mod command;
 pub(crate) mod exec;
 pub(crate) mod net;
 pub(crate) mod path;
+pub(crate) mod rush;
 pub mod sidecar;
 
 use crate::{AlefError, ErrorCode};

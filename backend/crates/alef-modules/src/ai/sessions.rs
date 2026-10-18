@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Bounded conversation history for one AI role.
-use super::{launch::start_chat, provider, relay, ChatArgs, Delivery};
+use super::{
+    launch::{start_chat, Usage},
+    provider, relay, ChatArgs, Delivery,
+};
 use alef_core::{
     ids::ResourceId,
     registry::{command::Reply, dispatch::Registry},
@@ -36,6 +39,7 @@ pub(super) fn register(
     provider: Arc<dyn provider::AiProvider>,
     host: Arc<dyn alef_core::registry::host::Host>,
     app_key: String,
+    usage: std::sync::Arc<Usage>,
 ) -> Result<(), AlefError> {
     registry.command::<OpenArgs>("ai.session.open")?.handler({
         let provider = provider.clone();
@@ -79,10 +83,12 @@ pub(super) fn register(
         .handler({
             let provider = provider.clone();
             let host = host.clone();
+            let usage = usage.clone();
             move |ctx, args| {
                 let provider = provider.clone();
                 let host = host.clone();
                 let app_key = app_key.clone();
+                let usage = usage.clone();
                 async move {
                     let id = ResourceId(args.conversation);
                     let conversation = ctx
@@ -107,7 +113,7 @@ pub(super) fn register(
                         tools: args.tools,
                         builtin: args.builtin,
                     };
-                    start_chat(ctx, chat, provider, host, app_key, Some(turn)).await
+                    start_chat(ctx, chat, provider, host, app_key, usage, Some(turn)).await
                 }
             }
         })?;

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Scenarios of the framework modules (docs/stages/m2-desktop.md, "Приёмка"): `app` (+ `quit`, `relaunch`,
 // the generated usage text, `instance`), the system modules `path` and `os`, `window` and `desktop` (`dialog`, `shell`, `clipboard`).
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import { join } from 'node:path';
@@ -137,7 +138,7 @@ const AI_ALLOWED_CHECKS = [
   'ai-session-without-tools-streams',
   'ai-builtin-inside-scope-returns-sentinel-content',
   'ai-builtin-outside-scope-is-denied',
-  'ai-red-absent-and-exec-denied',
+  'ai-declared-exec-builtin-stays-unavailable',
   'ai-tool-round-trip-uses-the-handler-result',
   'ai-cancel-by-break-closes-the-chat',
 ];
@@ -348,6 +349,172 @@ export function moduleScenarios({ drive, exe, verbose }) {
           });
           runs.push(...result.lines);
           problems.push(...result.problems.map(problem => `${mode}: ${problem}`));
+        }
+
+        // Four more answers of the runtime: a daily quota, the protected Rush roots, a decision made in
+        // the consent window and the user journal. Each run gets its own `ALEF_HOME`, shared with the CLI.
+        const homeOf = name => join(aiDirectory, `${name}-home`);
+        const appEnvOf = name => ({ ALEF_HOME: homeOf(name), TEMP: aiDirectory, TMP: aiDirectory, TMPDIR: aiDirectory });
+        /** A page run without `drive`: the scenario prepares the site, starts the runtime and judges. */
+        const runPage = async ({ name, targets, env = {}, expectedChecks, before, judge }) => {
+          const site = prepareSite(name, 'modules/system/ai', { targets });
+          try {
+            before?.(site);
+          } catch (error) {
+            return { problems: [error.message], lines: [] };
+          }
+          const running = startApp({ exe, args: ['--app', site], env: { ...appEnvOf(name), ...env }, verbose });
+          const local = [];
+          try {
+            await running.waitFor(line => line.includes('ALEF_E2E RESULT'), 120000, `the verdict of ${name}`);
+            const result = verdictOf(running.lines);
+            if (result?.[1] !== 'PASS') local.push(`verdict ${result?.[1]}: ${result?.[2]}`);
+            const done = new Set(running.lines.map(line => / check (\S+) ok /.exec(line)?.[1]));
+            const absent = expectedChecks.filter(check => !done.has(check));
+            if (absent.length > 0) local.push(`checks without an ok line: ${absent}`);
+            local.push(...(await judge?.(running.lines) ?? []));
+          } catch (error) {
+            local.push(error.message);
+          } finally {
+            running.stop();
+            if (!(await running.waitForClosed(5000))) local.push('runtime log pipe did not close within 5000ms');
+          }
+          return { problems: local, lines: running.lines };
+        };
+
+        // The CLI sets the daily quota of the application before the runtime starts.
+        const quota = await runPage({
+          name: 'ai-quota', targets: { mode: 'quota' }, expectedChecks: ['ai-quota-exceeded-stops-the-second-request'],
+          before: site => {
+            const limits = spawnSync(exe, ['ai', 'limits', site, '--requests', '1'], {
+              env: { ...process.env, ALEF_HOME: homeOf('ai-quota') }, encoding: 'utf8', timeout: 60000,
+            });
+            if (limits.status !== 0) throw new Error(`ai limits: ${limits.stderr || limits.stdout || `exit ${limits.status}`}`);
+          },
+        });
+
+        // A `.rush` folder inside the granted scope (`$TEMP/ai-e2e/**` with TEMP = aiDirectory), so
+        // only the Rush guard can refuse it, and a link that leads into it.
+        const rushFile = join(aiDirectory, 'ai-e2e', 'project', '.rush', 'secret.txt');
+        mkdirSync(join(aiDirectory, 'ai-e2e', 'project', '.rush'), { recursive: true });
+        writeFileSync(rushFile, 'rush-secret-content');
+        let linkCreated = false;
+        try {
+          symlinkSync(join(aiDirectory, 'ai-e2e', 'project', '.rush'), join(aiDirectory, 'ai-e2e', 'alias'),
+            process.platform === 'win32' ? 'junction' : 'dir');
+          linkCreated = true;
+        } catch {
+          // A rare runner without the right to link: the sentinel value makes the page check fail, never a silent pass.
+        }
+        const guarded = await runPage({
+          name: 'ai-protected',
+          targets: { mode: 'protected', aiRush: rushFile, aiLink: linkCreated ? join(aiDirectory, 'ai-e2e', 'alias', 'secret.txt') : 'LINK-CREATION-FAILED' },
+          expectedChecks: [
+            'ai-builtin-into-a-dot-rush-folder-is-denied',
+            'ai-builtin-through-a-link-into-a-dot-rush-folder-is-denied',
+          ],
+        });
+
+        // The user decides in the window: the role, the tool and the file scope allowed, exec allowed
+        // but red and left unconfirmed (so start stays disabled), then exec denied.
+        const schema = JSON.stringify({ type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false });
+        const aiDetails = {
+          'ai.role:smart': null,
+          'ai.tool:summarizeSelection': `summarizeSelection — Summarize the selected text (arguments: ${schema})`,
+          'ai.builtin.fs.read:$TEMP/ai-e2e/**': null,
+          'ai.builtin.exec': null,
+        };
+        const steps = [
+          { report: true },
+          { choose: 'ai.role:smart', decision: 'allow' },
+          { confirm: 'ai.role:smart' },
+          { choose: 'ai.tool:summarizeSelection', decision: 'allow' },
+          { confirm: 'ai.tool:summarizeSelection' },
+          { choose: 'ai.builtin.fs.read:$TEMP/ai-e2e/**', decision: 'allow' },
+          { choose: 'ai.builtin.exec', decision: 'allow' }, // red, deliberately NOT confirmed
+          { report: true }, // start must still be disabled: the refusal is precisely the unconfirmed red allow
+          { choose: 'ai.builtin.exec', decision: 'deny' },
+          { report: true }, // start enabled now
+          { submit: true },
+        ];
+        const fromWindow = await runPage({
+          name: 'ai-window', targets: { mode: 'window-consent', aiDetails },
+          env: {
+            ALEF_E2E_CONSENT: undefined, ALEF_E2E_CONSENT_UI: JSON.stringify(steps),
+            ALEF_E2E_CONSENT_HOLD_MS: '3000',
+          },
+          expectedChecks: ['ai-window-roles-list-the-allowed-role', 'ai-window-denied-exec-is-permission-denied', 'ai-window-detail-shows-the-escaped-description-and-schema'],
+          judge: lines => {
+            const local = [];
+            const reports = lines
+              .map(line => /^ALEF_E2E consent-ui rows=(\d+) risky=(\[.*?\]) start=(\w+) picked=(\[.*\])$/.exec(line))
+              .filter(Boolean)
+              .map(([, rows, , start, picked]) => ({ rows: Number(rows), start, picked: JSON.parse(picked) }));
+            if (reports.length !== 3) return [`the window reported ${reports.length} times, expected 3`];
+            const [opened, unconfirmed, decided] = reports;
+            if (opened.rows !== 4) local.push(`the window shows ${opened.rows} rights, expected 4`);
+            if (opened.start !== 'disabled' || !opened.picked.every(item => item.endsWith('=none'))) {
+              local.push('the window let the application start before anything was decided');
+            }
+            if (unconfirmed.start !== 'disabled' || !unconfirmed.picked.includes('ai.builtin.exec=allow')) {
+              local.push(`the unconfirmed red allow must keep start disabled: ${JSON.stringify(unconfirmed)}`);
+            }
+            if (decided.start !== 'enabled') local.push('the window did not let the application start after every right was decided');
+            const red = lines
+              .map(line => /^ALEF_E2E consent-ui-red red=(\[.*\])$/.exec(line))
+              .filter(Boolean)
+              .map(([, list]) => JSON.parse(list));
+            if (red.length !== 3 || red.some(list => JSON.stringify(list) !== JSON.stringify(['ai.builtin.exec']))) {
+              local.push(`red rights flagged: ${JSON.stringify(red)}`);
+            }
+            const saved = existsSync(join(homeOf('ai-window'), 'consent')) ? readdirSync(join(homeOf('ai-window'), 'consent')) : [];
+            if (saved.length !== 1) local.push(`the decisions were not kept in one file: ${JSON.stringify(saved)}`);
+            else {
+              const kept = JSON.parse(readFileSync(join(homeOf('ai-window'), 'consent', saved[0]), 'utf8')).decisions
+                .map(({ permission, scope, decision }) => `${scope === undefined ? permission : `${permission}:${scope}`}=${decision}`);
+              if (!kept.includes('ai.builtin.exec=deny')) local.push(`the store holds ${JSON.stringify(kept)}`);
+            }
+            return local;
+          },
+        });
+
+        // The full allowed run once more: the journal must describe every tool and builtin it used.
+        const journalled = await drive({
+          name: 'ai-journal', app: 'modules/system/ai',
+          targets: { mode: 'allowed', aiInside, aiOutside, aiSentinel },
+          env: appEnvOf('ai-journal'),
+          expectedChecks: AI_ALLOWED_CHECKS,
+          judge: () => {
+            const folder = join(homeOf('ai-journal'), 'ai');
+            const identities = existsSync(folder) ? readdirSync(folder) : [];
+            if (identities.length !== 1) return [`the ai folder holds ${JSON.stringify(identities)}, expected one identity`];
+            const file = join(folder, identities[0], 'journal.log');
+            if (!existsSync(file)) return ['the journal.log is missing'];
+            const entries = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+            const local = [];
+            for (const entry of entries) {
+              if (entry.app !== 'org.alef.e2e.modules.ai') local.push(`a journal entry of ${entry.app}`);
+              if (typeof entry.at !== 'number') local.push(`a journal entry without a time: ${JSON.stringify(entry)}`);
+              if (JSON.stringify(entry).includes(aiSentinel) || JSON.stringify(entry).includes('hello')) {
+                local.push('the journal carries contents');
+              }
+            }
+            const tool = entries.filter(entry => entry.name === 'summarizeSelection');
+            if (!tool.some(entry => entry.kind === 'tool' && entry.role === 'smart' && entry.event === 'start')
+              || !tool.some(entry => entry.kind === 'tool' && entry.event === 'end' && entry.outcome === 'ok')) {
+              local.push(`no tool start and ok end in the journal: ${JSON.stringify(tool)}`);
+            }
+            const read = entries.filter(entry => entry.name === 'fs.read');
+            if (!read.some(entry => entry.kind === 'builtin' && entry.event === 'start')
+              || !read.some(entry => entry.kind === 'builtin' && entry.event === 'end')) {
+              local.push(`no builtin fs.read start and end in the journal: ${JSON.stringify(read)}`);
+            }
+            return local;
+          },
+        });
+        for (const [name, result] of [['ai-quota', quota], ['ai-protected', guarded], ['ai-window', fromWindow], ['ai-journal', journalled]]) {
+          runs.push(...result.lines);
+          problems.push(...result.problems.map(problem => `${name}: ${problem}`));
         }
         return { problems, lines: runs };
       } finally {

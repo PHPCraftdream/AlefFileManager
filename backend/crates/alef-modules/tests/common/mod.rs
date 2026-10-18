@@ -97,6 +97,8 @@ pub struct Fixture {
     /// The deterministic AI provider behind the `ai` module.
     pub ai: Arc<FakeProvider>,
     pub context: ModuleContext,
+    /// The AI usage folder, owned: dropped with the fixture.
+    _ai_home: tempfile::TempDir,
     manager: SessionManager,
     session: Arc<Session>,
     permissions: Arc<PermissionSet>,
@@ -268,6 +270,8 @@ impl Fixture {
         } else {
             alef_core::security::manifest::Mode::Window
         };
+        // Its own for every fixture: a fresh tempdir, dropped with the fixture.
+        let ai_home_temp = tempfile::tempdir().expect("ai home");
         let context = ModuleContext {
             authority,
             app: AppInfo {
@@ -295,6 +299,7 @@ impl Fixture {
                 "shadow-{}",
                 SHADOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )),
+            ai_home: ai_home_temp.path().to_path_buf(),
             console,
             termination: Termination::default(),
             launch: if manifest.modes.is_empty() {
@@ -337,6 +342,7 @@ impl Fixture {
             secrets,
             ai: fake,
             context,
+            _ai_home: ai_home_temp,
             manager,
             session,
             permissions,
