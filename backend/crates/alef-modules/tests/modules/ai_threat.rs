@@ -3,7 +3,10 @@
 //! every test pins one guarantee of the boundary with an observable oracle at the provider or the
 //! journal, and its first comment names the one line of production code whose removal must fail
 //! it. The filesystem routes and the red rights live in `ai_threat_roots`.
+use std::time::Duration;
+
 use alef_core::{
+    ids::StreamId,
     security::{
         authority::Authority,
         consent::{Consent, Decision, Right},
@@ -11,6 +14,7 @@ use alef_core::{
     session::usage,
     ErrorCode,
 };
+use alef_modules::ai;
 use serde_json::{json, Value};
 
 use super::ai::{
@@ -134,6 +138,10 @@ async fn chat_rejects_forbidden_messages_and_provider_knobs() {
     let fixture = ai_fixture("threat-knobs", Consent::allow_all()).await;
     for knob in [
         "endpoint",
+        "url",
+        "baseUrl",
+        "redirect",
+        "recipient",
         "headers",
         "apiKey",
         "model",
@@ -184,6 +192,11 @@ async fn chat_rejects_forbidden_messages_and_provider_knobs() {
     let requests = fixture.ai.requests();
     assert_eq!(requests.len(), 1);
     let seen = serde_json::to_string(&requests[0]).unwrap();
+    // No value of the refused fields may appear anywhere in the observed request either.
+    assert!(
+        !seen.contains("evil.example"),
+        "the injected destination crossed the boundary: {seen}"
+    );
     for field in ["endpoint", "headers", "apiKey", "sessionId", "maxTokens"] {
         assert!(
             !seen.contains(field),
@@ -242,24 +255,19 @@ async fn credential_sentinel_never_crosses_the_rush_boundary() {
     assert!(!error.message.contains(sentinel), "{}", error.message);
     assert!(error.details.is_none(), "{:?}", error.details);
     assert_eq!(fixture.ai.chats_started(), 0, "the refused chat started");
-    // No event and no file of the user ever carried the sentinel.
-    for (_, name, payload) in fixture.host.events.lock().unwrap().iter() {
-        assert!(
-            !payload.to_string().contains(sentinel),
-            "the event {name} carries the sentinel"
-        );
-    }
-    let folder = fixture.context.ai_home.clone();
-    for name in ["journal.log", "usage.json", "limits.json"] {
-        if let Ok(bytes) = std::fs::read(folder.join(name)) {
-            assert!(
-                !String::from_utf8_lossy(&bytes).contains(sentinel),
-                "{name} carries the sentinel"
-            );
-        }
-    }
-    // The control: with the seeding cleared the same calls work, so the refusals above really
-    // came from the provider boundary.
+    // The third crossing: `ai.session.open` asks the provider for its roles too.
+    let error = fixture
+        .call("ai.session.open", json!({ "role": "smart" }))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Internal);
+    assert!(!error.message.contains(sentinel), "{}", error.message);
+    assert!(error.details.is_none(), "{:?}", error.details);
+    assert!(fixture.ai.requests().is_empty());
+
+    // The control, and the proof that the sinks are observable at all: with the seeding cleared
+    // the calls work, the allowed tool run leaves an event AND a journal entry, and the files of
+    // the user exist — so the empty-sink checks above could not pass vacuously.
     fixture.ai.seed_roles_failure(None);
     fixture.ai.seed_chat_failure(None);
     let roles = fixture.call("ai.roles", Value::Null).await.unwrap();
@@ -267,13 +275,50 @@ async fn credential_sentinel_never_crosses_the_rush_boundary() {
     let (_chat, _stream, mut reader) = start_chat(&fixture, chat_options(&[])).await;
     drain_text(&mut reader).await;
     assert_eq!(fixture.ai.chats_started(), 1);
+    run_tool_chat(&fixture, "summarizeSelection", "allowed marker").await;
+    assert!(
+        fixture
+            .host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, name, _)| name == "ai.tool_call"),
+        "the allowed run left no event: the sink sweep was vacuous"
+    );
+    assert!(
+        journal_of(&fixture.context.ai_home)
+            .iter()
+            .any(|entry| entry.outcome.as_deref() == Some("ok")),
+        "the allowed run left no journal entry: the file sweep was vacuous"
+    );
+    let folder = fixture.context.ai_home.clone();
+    let journal_bytes = std::fs::read(folder.join("journal.log"))
+        .expect("the journal exists after the control run");
+    assert!(
+        !String::from_utf8_lossy(&journal_bytes).contains(sentinel),
+        "the journal carries the sentinel"
+    );
+    let usage_bytes = std::fs::read(folder.join("usage.json"))
+        .expect("the usage counters exist after the control chat");
+    assert!(
+        !String::from_utf8_lossy(&usage_bytes).contains(sentinel),
+        "the usage counters carry the sentinel"
+    );
+    if let Ok(bytes) = std::fs::read(folder.join("limits.json")) {
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(sentinel),
+            "the limits file carries the sentinel"
+        );
+    }
 }
 
 /// Mutation guard: `ChatRequest` is assembled only from the validated role, messages, tools and
-/// builtins (src/ai/launch.rs `start_chat`); a routing field accepted from the page would appear
-/// in the observer's log, and a redirected role as an extra request.
+/// builtins (src/ai/launch.rs `start_chat`); an extra field in the request or a redirected role
+/// (an extra request for another role) shows in the observer's log. Routing fields sent by the
+/// page are refused in `chat_rejects_forbidden_messages_and_provider_knobs`, not here.
 #[tokio::test]
-async fn provider_observer_rejects_endpoint_and_redirect_injection() {
+async fn provider_observer_sees_only_the_fixed_request_shape() {
     let manifest = threat_manifest("smart, fast", None, None);
     let mut denied = Consent::allow_all();
     denied.set(Right::scoped("ai.role", "fast"), Decision::Deny);
@@ -317,9 +362,11 @@ async fn provider_observer_rejects_endpoint_and_redirect_injection() {
 
 /// Mutation guard: the usage state of the module lives in the folder the host gave for ONE
 /// authority (src/ai/mod.rs, `Usage::new(&context.ai_home, ...)`); keying that state by the
-/// public app id instead of the authority couples the two fixtures here, which share the id.
+/// public app id instead of the folder couples the two fixtures here, which share the id. The
+/// launcher's own Authority-to-folder derivation lives in the `alef` crate and is out of reach
+/// for these tests (docs/stages/m9-ai.md §7).
 #[tokio::test]
-async fn same_app_id_with_different_signer_or_digest_isolated() {
+async fn separate_identity_folders_are_isolated() {
     for (first, second) in [
         (
             Authority::SignedPackage {
@@ -403,6 +450,99 @@ async fn same_app_id_with_different_signer_or_digest_isolated() {
             .chain(&entries_b)
             .all(|entry| entry.app == "org.example.modules"));
     }
+
+    // The control: the SAME authority on the SAME identity folder shares its day and its journal.
+    let shared = tempfile::tempdir().unwrap();
+    let shared_home = shared.path().join("identity-shared");
+    let dir_a = shared.path().join("a");
+    let dir_b = shared.path().join("b");
+    let a = Fixture::new_authority_with_ai_home(
+        &dir_a,
+        Some(&threat_manifest("smart", Some("toolOfFirstShared"), None)),
+        Authority::SignedPackage {
+            fingerprint: "signer-shared".to_owned(),
+        },
+        &shared_home,
+    )
+    .await
+    .with_consent(Consent::allow_all());
+    let b = Fixture::new_authority_with_ai_home(
+        &dir_b,
+        Some(&threat_manifest("smart", Some("toolOfSecondShared"), None)),
+        Authority::SignedPackage {
+            fingerprint: "signer-shared".to_owned(),
+        },
+        &shared_home,
+    )
+    .await
+    .with_consent(Consent::allow_all());
+    usage::Store::new(&shared_home)
+        .set_limits(&usage::Limits {
+            requests: Some(1),
+            tokens: None,
+        })
+        .unwrap();
+    run_tool_chat(&a, "toolOfFirstShared", "mine").await;
+    let error = b
+        .call(
+            "ai.chat",
+            json!({"role": "smart", "messages": [{"role": "user", "content": "hello"}]}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code,
+        ErrorCode::QuotaExceeded,
+        "the same authority did not share the day"
+    );
+    let shared_entries = journal_of(&shared_home);
+    assert!(
+        shared_entries
+            .iter()
+            .any(|entry| entry.name == "toolOfFirstShared"),
+        "the run of the first fixture left no journal entry in the shared folder"
+    );
+}
+
+/// Mutation guard: the quota reserve is atomic under an exclusive file lock
+/// (alef-core session/usage.rs, `lock_exclusive` in `reserve_at`); removing the lock can let
+/// concurrent attempts race past the daily limit. A barrier starts all attempts together, but the
+/// interleaving is up to the scheduler, so the test is probabilistic against that mutation.
+#[tokio::test]
+async fn concurrent_quota_reservations_never_exceed_the_daily_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = usage::Store::new(dir.path());
+    store
+        .set_limits(&usage::Limits {
+            requests: Some(3),
+            tokens: None,
+        })
+        .unwrap();
+    let mut attempts = Vec::new();
+    let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+    for _ in 0..8 {
+        let store = store.clone();
+        let start = start.clone();
+        attempts.push(tokio::task::spawn_blocking(move || {
+            start.wait();
+            store.reserve(None)
+        }));
+    }
+    let mut ok = 0;
+    for attempt in attempts {
+        let reserved = tokio::time::timeout(Duration::from_secs(10), attempt)
+            .await
+            .expect("the reserve finished in time")
+            .expect("the reserve task joined");
+        match reserved {
+            Ok(_) => ok += 1,
+            Err(usage::Quota::Exceeded) => {}
+            Err(usage::Quota::Io(error)) => panic!("the quota store failed: {error}"),
+        }
+    }
+    assert_eq!(ok, 3, "more than the daily limit reserved a request");
+    // The persisted state agrees with what was handed out: the next attempt is refused too.
+    assert!(matches!(store.reserve(None), Err(usage::Quota::Exceeded)));
 }
 
 /// Mutation guard: every journal entry is stamped with its application and written to the folder
@@ -537,6 +677,40 @@ async fn tool_call_dispatch_and_result_are_single_use() {
             .unwrap_err()
             .code,
         ErrorCode::Closed
+    );
+    // A result after the chat was cancelled is refused alike, and never runs anything twice.
+    let (second, second_stream, mut second_reader) =
+        start_chat(&fixture, chat_options(&["summarizeSelection"])).await;
+    frame(&mut second_reader).await;
+    frame(&mut second_reader).await;
+    fixture
+        .session()
+        .streams()
+        .close(StreamId(second_stream))
+        .expect("the stream closes");
+    let mut gone = false;
+    for _ in 0..250 {
+        if !ai::chat_is_pending(&fixture.session(), second) {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(gone, "the cancelled chat was never torn down");
+    let after_cancel = json!({
+        "chat": second,
+        "callId": "call-0",
+        "name": "summarizeSelection",
+        "result": {"summary": "after cancel"},
+    });
+    assert_eq!(
+        fixture
+            .call("ai.tools.result", after_cancel)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Closed,
+        "a cancelled call accepted a result"
     );
     // The buffered frames answer the round exactly once.
     let text = drain_text(&mut reader).await;

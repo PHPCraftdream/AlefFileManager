@@ -544,7 +544,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
     async 'ai-threat'() {
       const directory = mkdtempSync(join(scratch, 'ai-threat-'));
       try {
-        const allowedDirectory = join(directory, 'allowed');
+        const allowedDirectory = join(directory, 'ai-threat', 'allowed');
         mkdirSync(join(allowedDirectory, 'project', '.rush'), { recursive: true });
         const rushRoot = join(directory, 'rush-config');
         mkdirSync(rushRoot, { recursive: true });

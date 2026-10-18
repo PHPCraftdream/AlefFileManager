@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use alef_core::{
     ids::StreamId,
+    protocol::call::Limits,
     protocol::frame::Frame,
     registry::command::Reply,
     security::{
         authority::Authority,
-        consent::{Consent, Decision, Right},
+        consent::{Consent, Decision, Right, RiskLevel},
     },
     session::usage,
     AlefError, ErrorCode,
@@ -40,22 +41,50 @@ async fn read_file(fixture: &Fixture, path: &std::path::Path) -> Result<Vec<u8>,
     }
 }
 
-/// Creates `link` leading to `target`: a symlink on Unix, a junction on Windows. `false` when the
-/// machine refuses links: the route stays untested instead of silently passing.
+/// Creates `link` leading to `target`: a symlink on Unix, a junction on Windows. `false` on
+/// failure; the caller turns that into a test failure — the link route is part of the
+/// guarantee, it never skips.
 fn create_link(link: &std::path::Path, target: &std::path::Path) -> bool {
     #[cfg(unix)]
     return std::os::unix::fs::symlink(target, link).is_ok();
+
     #[cfg(windows)]
-    return std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(link)
-        .arg(target)
-        .output()
-        .is_ok_and(|output| output.status.success());
+    return create_junction(link, target);
+
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (link, target);
         false
+    }
+}
+
+/// Windows junction through `mklink`, with a bounded wait: the child is killed at the deadline
+/// and the failure is reported instead of hanging the test.
+#[cfg(windows)]
+fn create_junction(link: &std::path::Path, target: &std::path::Path) -> bool {
+    let mut child = match std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() > deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(_) => return false,
+        }
     }
 }
 
@@ -188,17 +217,55 @@ async fn tool_consent_change_and_journal_gate_are_enforced() {
         !after.contains("builtin sentinel"),
         "the gated builtin still read the file: {after}"
     );
+    // The journal path is a directory: it cannot be read as a journal, and it must stay untouched.
+    assert!(
+        fixture.context.ai_home.join("journal.log").is_dir(),
+        "the refused builtin run replaced the blocked journal"
+    );
+
+    // The same gate for an application tool: no journal entry, no tool_call event, no effect.
+    let fixture = ai_fixture("threat-journal-tool", Consent::allow_all()).await;
+    std::fs::create_dir_all(&fixture.context.ai_home).unwrap();
+    std::fs::create_dir(fixture.context.ai_home.join("journal.log")).unwrap();
+    fixture
+        .call("ai.tools.handle", json!({"name": "summarizeSelection"}))
+        .await
+        .unwrap();
+    let (_, _stream, mut reader) =
+        start_chat(&fixture, chat_options(&["summarizeSelection"])).await;
+    frame(&mut reader).await;
+    assert!(
+        matches!(frame(&mut reader).await, Frame::Error(error) if error.code == ErrorCode::Internal),
+        "the chat did not fail on the journal gate"
+    );
+    assert_eq!(
+        fixture
+            .host
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, name, _)| name == "ai.tool_call")
+            .count(),
+        0,
+        "the tool call was announced before the journal entry"
+    );
+    assert!(
+        fixture.context.ai_home.join("journal.log").is_dir(),
+        "the broken journal was replaced by a recorded entry"
+    );
 }
 
 /// Mutation guard: every terminal outcome goes through the single `abandon` and the one
-/// `writer.error` or one `finish_turn` of the producer loop (src/ai/launch.rs `produce`);
-/// removing the closed-stream branch or the return after it leaves the chat pending or emits a
-/// second outcome.
+/// `writer.error` or one `finish_turn` of the producer loop (src/ai/launch.rs `produce`), and
+/// `StreamHub::close` terminates the reader with exactly one error frame (session/streams);
+/// removing the closed-stream branch, the return after it, or double-terminating the writer is
+/// caught here. The §6 deadlines themselves are NOT proven: no seam shortens them.
 #[tokio::test]
-async fn credit_deadlines_cancel_and_terminal_events_are_bounded() {
+async fn credit_cancel_and_terminal_events_are_bounded() {
     let fixture = ai_fixture("threat-terminal", Consent::allow_all()).await;
     // A chat held at the provider gate is cancelled with its stream: the teardown is bounded and
-    // the stream slot is freed.
+    // the reader sees exactly one error of code Closed, then silence forever.
     let gate = fixture.ai.hold_next_chat();
     let (chat, stream, mut reader) = start_chat(&fixture, chat_options(&[])).await;
     assert_eq!(fixture.ai.chats_started(), 1);
@@ -217,29 +284,227 @@ async fn credit_deadlines_cancel_and_terminal_events_are_bounded() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(gone, "the gated chat was never torn down");
+    let terminal = tokio::time::timeout(Duration::from_millis(500), reader.next_frame())
+        .await
+        .expect("the wait ends");
+    assert!(
+        matches!(&terminal, Some(Frame::Error(error)) if error.code == ErrorCode::Closed),
+        "the closed stream did not answer with exactly one Closed error: {terminal:?}"
+    );
     for _ in 0..2 {
         let next = tokio::time::timeout(Duration::from_millis(300), reader.next_frame())
             .await
             .expect("the wait ends");
-        assert_eq!(next, None, "a dead chat produced a frame");
+        assert_eq!(next, None, "a dead chat produced another frame");
     }
-    // The control: the gate released, the chat completes exactly once and then stays quiet.
-    let gate = fixture.ai.hold_next_chat();
+
+    // The control: the gate released, the chat ends with exactly ONE terminal outcome (the end
+    // part) and nothing follows it.
     let (_chat, _stream, mut reader) = start_chat(&fixture, chat_options(&[])).await;
-    gate.release();
-    assert_eq!(drain_text(&mut reader).await, "Thinking");
-    let next = tokio::time::timeout(Duration::from_millis(300), reader.next_frame())
+    let (mut texts, mut usages, mut ends) = (0, 0, 0);
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), reader.next_frame())
+            .await
+            .expect("a frame in time")
+        {
+            Some(Frame::Json(value)) => match value["type"].as_str() {
+                Some("text") => texts += 1,
+                Some("usage") => usages += 1,
+                Some("end") => ends += 1,
+                other => panic!("unexpected part {other:?}: {value}"),
+            },
+            Some(Frame::End) => break,
+            Some(Frame::Error(error)) => panic!("unexpected stream error: {error:?}"),
+            Some(Frame::Binary(bytes)) => panic!("unexpected binary frame: {} bytes", bytes.len()),
+            None => panic!("the stream ended without its End frame"),
+        }
+    }
+    assert_eq!((texts, usages, ends), (1, 1, 1));
+    for _ in 0..2 {
+        let next = tokio::time::timeout(Duration::from_millis(300), reader.next_frame())
+            .await
+            .expect("the wait ends");
+        assert_eq!(next, None, "nothing follows the end");
+    }
+}
+
+/// An 8-tool manifest (the pending-call budget is eight, and the fake raises every call before it
+/// waits for results): the chat produces more frame bytes than the small window of the fixture
+/// below carries.
+fn eight_tools_manifest() -> String {
+    let tools = (0..8)
+        .map(|index| {
+            format!(
+                "            {{\n                name: tool{index:02}\n                description: Tool {index:02}\n                schema: {{\n                    type: object\n                    properties: {{\n                        text: {{\n                            type: string\n                        }}\n                    }}\n                    required: [text]\n                    additionalProperties: false\n                }}\n            }}\n"
+            )
+        })
+        .collect::<String>();
+    BASE_MANIFEST.replace(
+        "    app: {",
+        &format!("    ai: {{\n        roles: [smart]\n        tools: [\n{tools}        ]\n    }}\n    app: {{"),
+    )
+}
+
+/// Mutation guard: the outgoing stream runs on credit (`CreditGate`, alef-core session/streams;
+/// the session window comes from `Limits.stream_window`): without acks the producer stops at the
+/// window, acking resumes it. Removing the gate or the ack granting floods the reader instead.
+#[tokio::test]
+async fn the_stream_credit_window_stops_and_resumes_the_producer() {
+    let limits = Limits {
+        stream_window: 4096,
+        ..Limits::default()
+    };
+    let manifest = eight_tools_manifest();
+    let fixture = Fixture::new_limited(Some(&manifest), limits).await;
+    for index in 0..8 {
+        fixture
+            .call(
+                "ai.tools.handle",
+                json!({ "name": format!("tool{index:02}") }),
+            )
+            .await
+            .unwrap();
+    }
+    let names: Vec<String> = (0..8).map(|index| format!("tool{index:02}")).collect();
+    // Every tool call carries about a kilobyte of arguments: at most three fit into the window.
+    let arguments = json!({ "input": "x".repeat(1024) }).to_string();
+    let (chat, stream, mut reader) = start_chat(
+        &fixture,
+        json!({
+            "role": "smart",
+            "messages": [{"role": "user", "content": arguments}],
+            "tools": names,
+        }),
+    )
+    .await;
+    // No acks: the producer stalls inside the window. The reader must not see more frames than
+    // fit, and the outstanding bytes never exceed the window.
+    let mut received = 0;
+    let mut calls = 0;
+    let mut texts = String::new();
+    loop {
+        match tokio::time::timeout(Duration::from_millis(700), reader.next_frame()).await {
+            Err(_) => break,
+            Ok(Some(Frame::Json(value))) => {
+                match value["type"].as_str() {
+                    Some("text") => texts.push_str(value["text"].as_str().expect("text payload")),
+                    Some("tool_call") => calls += 1,
+                    other => panic!("unexpected early part {other:?}: {value}"),
+                }
+                received += 1;
+            }
+            Ok(other) => panic!("the chat moved without credit: {other:?}"),
+        }
+    }
+    // The text and eight calls of about a kilobyte each do not fit into 4096 bytes: a producer
+    // that ignored the window would have delivered all nine frames.
+    assert!(
+        (1..=5).contains(&received),
+        "the producer delivered {received} frames without acks: the window did not stop it"
+    );
+    let outstanding = fixture
+        .session()
+        .streams()
+        .outstanding(StreamId(stream))
+        .expect("outstanding");
+    assert!(
+        outstanding <= 4096,
+        "the window was exceeded: {outstanding}"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after_pause = fixture
+        .session()
+        .streams()
+        .outstanding(StreamId(stream))
+        .expect("outstanding");
+    assert_eq!(
+        outstanding, after_pause,
+        "the producer did not stay stopped"
+    );
+    // Acking resumes the producer: the page acks what it consumed, and every call arrives.
+    fixture
+        .session()
+        .streams()
+        .ack(StreamId(stream), 1 << 20)
+        .expect("the ack");
+    while calls < 8 {
+        match tokio::time::timeout(Duration::from_secs(5), reader.next_frame())
+            .await
+            .expect("a frame in time")
+        {
+            Some(Frame::Json(value)) => match value["type"].as_str() {
+                Some("tool_call") => calls += 1,
+                Some("text") => texts.push_str(value["text"].as_str().expect("text payload")),
+                Some("usage") | Some("end") => {}
+                other => panic!("unexpected part {other:?}: {value}"),
+            },
+            Some(Frame::End) => break,
+            Some(Frame::Error(error)) => panic!("unexpected stream error: {error:?}"),
+            Some(Frame::Binary(bytes)) => panic!("unexpected binary frame: {} bytes", bytes.len()),
+            None => panic!("the stream ended without its End frame"),
+        }
+        fixture
+            .session()
+            .streams()
+            .ack(StreamId(stream), 1 << 20)
+            .expect("the ack");
+    }
+    assert_eq!(calls, 8, "not every call arrived after the ack");
+    for index in 0..8 {
+        fixture
+            .call(
+                "ai.tools.result",
+                json!({
+                    "chat": chat,
+                    "callId": format!("call-{index}"),
+                    "name": format!("tool{index:02}"),
+                    "result": {"summary": "ok"},
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    // The remainder: the fake reports what it saw and completes exactly once.
+    let mut ends = 0;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), reader.next_frame())
+            .await
+            .expect("a frame in time")
+        {
+            Some(Frame::Json(value)) => match value["type"].as_str() {
+                Some("text") => texts.push_str(value["text"].as_str().expect("text payload")),
+                Some("usage") => {}
+                Some("end") => ends += 1,
+                other => panic!("unexpected part {other:?}: {value}"),
+            },
+            Some(Frame::End) => break,
+            Some(Frame::Error(error)) => panic!("unexpected stream error: {error:?}"),
+            Some(Frame::Binary(bytes)) => panic!("unexpected binary frame: {} bytes", bytes.len()),
+            None => panic!("the stream ended without its End frame"),
+        }
+        fixture
+            .session()
+            .streams()
+            .ack(StreamId(stream), 1 << 20)
+            .expect("the ack");
+    }
+    assert!(texts.contains("Saw 8 tool result(s)"), "{texts}");
+    assert_eq!(ends, 1, "exactly one end outcome");
+    let after = tokio::time::timeout(Duration::from_millis(300), reader.next_frame())
         .await
         .expect("the wait ends");
-    assert_eq!(next, None, "nothing follows the end");
+    assert_eq!(after, None, "nothing follows the end");
 }
 
 /// Mutation guard: `PermissionSet::authorize_at` refuses every canonical path whose components
 /// reach a protected root (src/security/permissions.rs, the `is_protected` check), and
 /// `authorize_ai_builtin_path` does the same for AI builtins (src/security/given/builtin.rs);
-/// deleting either check lets a scope that names a broad parent read the seeded root.
+/// deleting either check lets the granted scope read the seeded root — the scope below
+/// CONTAINS the protected root, so without the protection the probes are plain scope matches
+/// and would pass. A granted `cli.exec` of a same-user reader bypasses this boundary by design
+/// (the red right): that residual risk is documented, not tested here, hence the name.
 #[tokio::test]
-async fn app_cannot_read_rush_files_through_fs_cli_shell_or_builtin() {
+async fn app_cannot_read_rush_files_through_fs_or_builtin_rights() {
     let scratch = tempfile::tempdir().unwrap();
     let rush_root = scratch.path().join("rush-config");
     std::fs::create_dir_all(rush_root.join("keys")).unwrap();
@@ -255,11 +520,12 @@ async fn app_cannot_read_rush_files_through_fs_cli_shell_or_builtin() {
     )
     .unwrap();
 
-    let scope = format!("{}/**", allowed.display()).replace('\\', "/");
+    // The grant CONTAINS the protected root: a denial of the root can only come from the
+    // protection, never from the scope.
+    let scope = format!("{}/**", scratch.path().display()).replace('\\', "/");
     let manifest = BASE_MANIFEST
         .replace('\r', "")
         .replace("        read: []", &format!("        read: [ {scope} ]"))
-        .replace("        exec: []", "        exec: [ node ]")
         .replace(
             "    app: {",
             &format!(
@@ -283,7 +549,8 @@ async fn app_cannot_read_rush_files_through_fs_cli_shell_or_builtin() {
     .with_consent(Consent::allow_all())
     .with_protected_folder(&rush_root);
 
-    // The fs right: inside the seeded root refused, the sibling normal file allowed (the control).
+    // The fs right: inside the seeded root refused although the scope grants it; the neighbour
+    // normal file is allowed (the control that the fixture reaches the route at all).
     let error = read_file(&fixture, &rush_file).await.unwrap_err();
     assert_eq!(error.code, ErrorCode::PermissionDenied);
     assert_eq!(
@@ -292,7 +559,7 @@ async fn app_cannot_read_rush_files_through_fs_cli_shell_or_builtin() {
             .unwrap(),
         b"normal-content"
     );
-    // A `.rush` folder inside the granted scope is refused by name; its sibling is allowed.
+    // A `.rush` folder inside the grant is refused by name; its sibling is allowed.
     let error = read_file(
         &fixture,
         &allowed.join("project").join(".rush").join("db.json"),
@@ -329,41 +596,31 @@ async fn app_cannot_read_rush_files_through_fs_cli_shell_or_builtin() {
     frame(&mut reader).await;
     assert!(drain_text(&mut reader).await.contains("normal-content"));
 
-    // A link inside the scope that leads into the seeded root is followed into the refusal.
-    if create_link(&allowed.join("alias"), &rush_root) {
-        let error = read_file(
-            &fixture,
-            &allowed.join("alias").join("keys").join("db.json"),
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.code, ErrorCode::PermissionDenied);
-        let (_, mut reader) =
-            builtin_read(&allowed.join("alias").join("keys").join("db.json")).await;
-        frame(&mut reader).await;
-        assert!(
-            matches!(frame(&mut reader).await, Frame::Error(error) if error.code == ErrorCode::PermissionDenied)
-        );
-    } else {
-        println!("link creation unavailable: the link route is untested on this machine");
-    }
-
-    // cli.exec of a file reader without the red right: the reader never runs.
-    let bare = Fixture::new_sharing_authority(
-        &root,
-        Some(BASE_MANIFEST),
-        std::sync::Arc::new(alef_modules::MemorySecrets::default()),
-        Authority::SignedPackage {
-            fingerprint: "threat-roots-bare".to_owned(),
-        },
+    // A link inside the grant that leads into the seeded root is followed into the refusal. The
+    // link must be creatable: the route is part of the guarantee, it never skips.
+    assert!(
+        create_link(&allowed.join("alias"), &rush_root),
+        "the junction/symlink into the rush root could not be created"
+    );
+    let error = read_file(
+        &fixture,
+        &allowed.join("alias").join("keys").join("db.json"),
     )
     .await
-    .with_consent(Consent::allow_all());
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    let (_, mut reader) = builtin_read(&allowed.join("alias").join("keys").join("db.json")).await;
+    frame(&mut reader).await;
+    assert!(
+        matches!(frame(&mut reader).await, Frame::Error(error) if error.code == ErrorCode::PermissionDenied)
+    );
+
+    // cli.exec of a file reader is refused without the red right (the manifest declares none).
     let reader = format!(
         r#"node -e "process.stdout.write(require('fs').readFileSync(process.argv[1],'utf8'))" "{}""#,
         rush_file.display().to_string().replace('\\', "/")
     );
-    let error = bare
+    let error = fixture
         .call("cli.exec", json!({"commandLine": reader}))
         .await
         .unwrap_err();
@@ -372,20 +629,6 @@ async fn app_cannot_read_rush_files_through_fs_cli_shell_or_builtin() {
         ErrorCode::PermissionDenied,
         "the reader ran without the red right"
     );
-    // The control: the same reader with `node` declared reads the normal file.
-    let control = format!(
-        r#"node -e "process.stdout.write(require('fs').readFileSync(process.argv[1],'utf8'))" "{}""#,
-        allowed
-            .join("normal.txt")
-            .display()
-            .to_string()
-            .replace('\\', "/")
-    );
-    let reply = fixture
-        .call("cli.exec", json!({"commandLine": control}))
-        .await
-        .unwrap();
-    assert_eq!(reply["stdout"], "normal-content");
 }
 
 /// Mutation guard: the execution builtins never run — `builtin::offered` offers only what the
@@ -394,6 +637,17 @@ async fn app_cannot_read_rush_files_through_fs_cli_shell_or_builtin() {
 /// the model a command execution.
 #[tokio::test]
 async fn a_red_right_is_the_only_way_to_run_commands() {
+    // The risk model asks for the execution rights as red: the window shows them as red and
+    // keeps the start disabled until they are confirmed. The window flow itself is covered by
+    // the `ai` scenario's window-consent mode; the runtime cannot tell confirmed from not.
+    assert_eq!(Right::plain("ai.builtin.exec").level(), RiskLevel::Red);
+    assert_eq!(Right::plain("ai.builtin.bash").level(), RiskLevel::Red);
+    assert_eq!(Right::scoped("cli.exec", "node").level(), RiskLevel::Red);
+    assert_eq!(
+        Right::scoped("fs.read", "$TEMP/**").level(),
+        RiskLevel::Normal
+    );
+
     // Declared and allowed: the offer reaches the provider (the control that the path is live),
     // and the runtime alone refuses to run it; the user's journal records the attempt.
     let fixture = ai_fixture_with_manifest("threat-red-allowed", Consent::allow_all(), true).await;

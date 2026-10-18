@@ -120,6 +120,33 @@ pub fn path_vars(root: &std::path::Path) -> PathVars {
     }
 }
 
+/// The arguments of the private [`Fixture::build`] in one place.
+struct FixtureOptions {
+    root: std::path::PathBuf,
+    manifest: Option<String>,
+    command_line: Vec<String>,
+    secrets: Arc<MemorySecrets>,
+    console: Option<Console>,
+    limits: Limits,
+    authority: alef_core::security::authority::Authority,
+    ai_home: Option<std::path::PathBuf>,
+}
+
+impl FixtureOptions {
+    fn new(root: &std::path::Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            manifest: None,
+            command_line: Vec::new(),
+            secrets: Arc::new(MemorySecrets::default()),
+            console: None,
+            limits: Limits::default(),
+            authority: alef_core::security::authority::Authority::Directory,
+            ai_home: None,
+        }
+    }
+}
+
 impl Fixture {
     /// `manifest` replaces the fixture manifest when given; `command_line` is parsed by its schema.
     pub async fn new(manifest: Option<&str>, command_line: &[&str]) -> Self {
@@ -154,16 +181,12 @@ impl Fixture {
         command_line: &[&str],
         secrets: Arc<MemorySecrets>,
     ) -> Self {
-        Self::build(
-            root,
-            manifest,
-            command_line,
+        Self::build(FixtureOptions {
+            manifest: manifest.map(str::to_owned),
+            command_line: command_line.iter().map(|item| (*item).to_owned()).collect(),
             secrets,
-            None,
-            Limits::default(),
-            alef_core::security::authority::Authority::Directory,
-            None,
-        )
+            ..FixtureOptions::new(root)
+        })
         .await
     }
 
@@ -174,16 +197,11 @@ impl Fixture {
             .parent()
             .unwrap()
             .join("alef-modules-paths");
-        Self::build(
-            &root,
-            manifest,
-            &[],
-            Arc::new(MemorySecrets::default()),
-            None,
+        Self::build(FixtureOptions {
+            manifest: manifest.map(str::to_owned),
             limits,
-            alef_core::security::authority::Authority::Directory,
-            None,
-        )
+            ..FixtureOptions::new(&root)
+        })
         .await
     }
 
@@ -194,16 +212,11 @@ impl Fixture {
             .parent()
             .unwrap()
             .join("alef-modules-paths");
-        Self::build(
-            &root,
-            manifest,
-            &[],
-            Arc::new(MemorySecrets::default()),
-            Some(console),
-            Limits::default(),
-            alef_core::security::authority::Authority::Directory,
-            None,
-        )
+        Self::build(FixtureOptions {
+            manifest: manifest.map(str::to_owned),
+            console: Some(console),
+            ..FixtureOptions::new(&root)
+        })
         .await
     }
 
@@ -214,16 +227,12 @@ impl Fixture {
         secrets: Arc<MemorySecrets>,
         authority: alef_core::security::authority::Authority,
     ) -> Self {
-        Self::build(
-            root,
-            manifest,
-            &[],
+        Self::build(FixtureOptions {
+            manifest: manifest.map(str::to_owned),
             secrets,
-            None,
-            Limits::default(),
             authority,
-            None,
-        )
+            ..FixtureOptions::new(root)
+        })
         .await
     }
 
@@ -235,41 +244,40 @@ impl Fixture {
         authority: alef_core::security::authority::Authority,
         ai_home: &std::path::Path,
     ) -> Self {
-        Self::build(
-            root,
-            manifest,
-            &[],
-            Arc::new(MemorySecrets::default()),
-            None,
-            Limits::default(),
+        Self::build(FixtureOptions {
+            manifest: manifest.map(str::to_owned),
+            secrets: Arc::new(MemorySecrets::default()),
             authority,
-            Some(ai_home),
-        )
+            ai_home: Some(ai_home.to_path_buf()),
+            ..FixtureOptions::new(root)
+        })
         .await
     }
 
-    async fn build(
-        root: &std::path::Path,
-        manifest: Option<&str>,
-        command_line: &[&str],
-        secrets: Arc<MemorySecrets>,
-        console: Option<Console>,
-        limits: Limits,
-        authority: alef_core::security::authority::Authority,
-        ai_home: Option<&std::path::Path>,
-    ) -> Self {
-        let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
+    async fn build(options: FixtureOptions) -> Self {
+        let text = options
+            .manifest
+            .as_deref()
+            .unwrap_or(MANIFEST)
+            .replace('\r', "");
         let manifest = Manifest::from_ktav_str(&text).expect("manifest");
-        let root = root.to_path_buf();
+        let root = options.root.clone();
         let mut vars = path_vars(&root);
-        alef_modules::namespace_paths(&mut vars, &root, &root, &root, &manifest.id, &authority);
+        alef_modules::namespace_paths(
+            &mut vars,
+            &root,
+            &root,
+            &root,
+            &manifest.id,
+            &options.authority,
+        );
         let permissions = Arc::new(
             PermissionSet::from_manifest(&manifest.permissions, &vars)
                 .expect("permissions")
                 .with_deep_links(&manifest.deep_links)
                 .expect("deep links"),
         );
-        let raw: Vec<OsString> = command_line.iter().map(OsString::from).collect();
+        let raw: Vec<OsString> = options.command_line.iter().map(OsString::from).collect();
         let deep_links = Arc::new(MemoryDeepLinks::default());
         let autostart = Arc::new(MemoryAutostart::default());
         let clipboard = Arc::new(MemoryClipboard::default());
@@ -289,7 +297,7 @@ impl Fixture {
             args::Parsed::Run(parsed) => parsed,
             other => panic!("expected a run, got {other:?}"),
         };
-        let initial = if console.is_some() {
+        let initial = if options.console.is_some() {
             alef_core::security::manifest::Mode::Cli
         } else if manifest.windows.is_empty() {
             alef_core::security::manifest::Mode::Foreground
@@ -298,14 +306,16 @@ impl Fixture {
         };
         // Its own for every fixture: a fresh tempdir, dropped with the fixture; a test that
         // needs the folder of one authority points the fixture at it explicitly.
-        let owned_home =
-            ai_home.map_or_else(|| Some(tempfile::tempdir().expect("ai home")), |_| None);
-        let ai_home = match ai_home {
+        let owned_home = options
+            .ai_home
+            .as_deref()
+            .map_or_else(|| Some(tempfile::tempdir().expect("ai home")), |_| None);
+        let ai_home = match options.ai_home.as_deref() {
             Some(path) => path.to_path_buf(),
             None => owned_home.as_ref().expect("ai home").path().to_path_buf(),
         };
         let context = ModuleContext {
-            authority,
+            authority: options.authority,
             app: AppInfo {
                 id: manifest.id.clone(),
                 name: manifest.name.clone(),
@@ -323,7 +333,7 @@ impl Fixture {
                 clipboard: clipboard.clone(),
                 shell: shell.clone(),
                 notification: notifications.clone(),
-                secrets: secrets.clone(),
+                secrets: options.secrets.clone(),
                 ai: fake.clone(),
             },
             // Its own for every fixture: tests run side by side.
@@ -332,7 +342,7 @@ impl Fixture {
                 SHADOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )),
             ai_home,
-            console,
+            console: options.console,
             termination: Termination::default(),
             launch: if manifest.modes.is_empty() {
                 alef_modules::LaunchState::new(
@@ -361,7 +371,7 @@ impl Fixture {
         let mut registry = Registry::default();
         register_all(&mut registry, host.clone(), &context).expect("register");
         let tokens: TokenSource = Arc::new(|| "token".to_owned());
-        let manager = SessionManager::new(tokens, limits);
+        let manager = SessionManager::new(tokens, options.limits);
         let session = manager.begin_document(1).await;
         Self {
             deep_links,
@@ -371,7 +381,7 @@ impl Fixture {
             clipboard,
             shell,
             notifications,
-            secrets,
+            secrets: options.secrets,
             ai: fake,
             context,
             _ai_home: owned_home,
