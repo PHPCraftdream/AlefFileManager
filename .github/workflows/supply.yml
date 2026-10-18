@@ -52,8 +52,9 @@ jobs:
         run: cargo deny --manifest-path backend/Cargo.toml check
 
   # The declared lower bound of the compiler is only a claim until something builds with it. The
-  # crates that do not need Servo are checked on their own bound (alef-core 1.88; alef-modules 1.90
-  # because of fjall); alef-runtime and alef follow Servo and are built with the pinned compiler in ci.yml.
+  # crates that do not need Servo are checked on their own bound (alef-core 1.89 because of
+  # `File::lock`, the cross-process quota lock; alef-modules 1.90 because of fjall); alef-runtime and
+  # alef follow Servo and are built with the pinned compiler in ci.yml.
   msrv:
     name: msrv ${{ matrix.package }} ${{ matrix.toolchain }}
     runs-on: ubuntu-24.04
@@ -63,7 +64,7 @@ jobs:
       matrix:
         include:
           - package: alef-core
-            toolchain: 1.88.0
+            toolchain: 1.89.0
           - package: alef-modules
             toolchain: 1.90.0
     steps:
