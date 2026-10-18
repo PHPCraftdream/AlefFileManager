@@ -142,6 +142,25 @@ async fn outgoing_orders_chunks_and_terminates() {
 }
 
 #[tokio::test]
+async fn a_terminal_that_discards_pending_hides_the_frames_queued_before_it() {
+    let h = StreamHub::new(1024, 256);
+    let (w, id) = h.open_outgoing();
+    let mut r = h.reader(id).expect("reader");
+    bounded(w.send_json(serde_json::json!({"x": 1})))
+        .await
+        .expect("json");
+    bounded(w.send_binary(Bytes::from_static(b"a")))
+        .await
+        .expect("binary");
+    bounded(w.send_binary(Bytes::from_static(b"b")))
+        .await
+        .expect("binary");
+    w.end_discarding_pending();
+    assert_eq!(frame(&mut r).await, Some(Frame::End));
+    assert_eq!(frame(&mut r).await, None);
+}
+
+#[tokio::test]
 async fn credit_blocks_writer_until_ack() {
     let h = Arc::new(StreamHub::new(512, 256));
     let (w, id) = h.open_outgoing();

@@ -19,19 +19,20 @@ use super::{
     substituted,
 };
 
-/// A microphone the page opened; closing it (explicitly, or at the teardown of the session) stops
-/// the producer and waits for its thread. The rate is kept for the statistics of the close.
+/// A microphone the page opened; closing it (explicitly, or at the teardown of the session) cancels
+/// the relay, waits for its end and for the producer's blocking job. The rate is kept for the
+/// statistics of the close.
 struct MicrophoneHandle {
     stream: Arc<DeviceStream<PcmChunk>>,
     rate: u32,
+    relay: super::RelayHandle,
 }
 
 impl Resource for MicrophoneHandle {
     fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let stream = self.stream;
         Box::pin(async move {
-            stream.stop();
-            if let Some(job) = stream.take_job() {
+            self.relay.shutdown().await;
+            if let Some(job) = self.stream.take_job() {
                 let _ = job.result().await;
             }
         })
@@ -99,9 +100,11 @@ pub(crate) fn register(
                     .result()
                     .await??;
                 let (writer, stream_id) = ctx.streams().open_outgoing();
+                let relay = super::RelayHandle::spawn(writer, stream.clone());
                 let microphone = match ctx.resources().insert(Box::new(MicrophoneHandle {
                     stream: stream.clone(),
                     rate,
+                    relay,
                 })) {
                     Ok(microphone) => microphone,
                     // Without the resource nobody would ever stop the producer.
@@ -110,7 +113,6 @@ pub(crate) fn register(
                         return Err(error);
                     }
                 };
-                tokio::spawn(super::relay(writer, stream));
                 json(&json!({ "microphone": microphone.0, "stream": stream_id.0 }))
             }
         })?;
@@ -158,6 +160,8 @@ mod tests {
     };
 
     const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    use std::time::Duration;
 
     async fn session() -> Arc<Session> {
         SessionManager::new(Arc::new(|| "test-token".to_owned()), Limits::default())
@@ -340,6 +344,64 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while microphone.active_streams() != 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the streams must settle in time");
+    }
+
+    #[tokio::test]
+    async fn a_microphone_close_while_the_relay_is_stalled_on_credit_ends_the_stream() {
+        let microphone = Arc::new(VirtualMicrophone::default());
+        let registry = registry_with(microphone.clone());
+        let ctx = CallContext::new(session().await, permissions(Some((true, true)), true));
+        let reply = registry
+            .dispatch(
+                "media.microphone.open",
+                ctx.clone(),
+                json!({"id": "virtual-0", "frequency": 440, "rate": 192000}),
+            )
+            .await
+            .expect("the open must succeed");
+        let Reply::Json(reply) = reply else {
+            panic!("expected a JSON reply");
+        };
+        let stream_id = StreamId(reply["stream"].as_u64().unwrap());
+        let mut reader = ctx.streams().reader(stream_id).unwrap();
+        let header = tokio::time::timeout(WAIT, reader.next_frame())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(header, Frame::Json(_)));
+        // No acks: the relay blocks on credit until the close wakes it.
+        let window = alef_core::protocol::credit::DEFAULT_STREAM_WINDOW;
+        let chunk_bytes = 15_360usize;
+        tokio::time::timeout(WAIT, async {
+            while ctx.streams().outstanding(stream_id).unwrap_or(0) <= window - chunk_bytes {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the relay must fill the window in time");
+        tokio::time::timeout(
+            WAIT,
+            registry.dispatch(
+                "media.microphone.close",
+                ctx.clone(),
+                json!({"microphone": reply["microphone"]}),
+            ),
+        )
+        .await
+        .expect("the close must not hang")
+        .expect("the close must succeed");
+        let end = tokio::time::timeout(WAIT, reader.next_frame())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(end, Frame::End));
+        tokio::time::timeout(WAIT, async {
+            while microphone.active_streams() != 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await

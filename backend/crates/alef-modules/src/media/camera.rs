@@ -19,18 +19,18 @@ use super::{
     substituted,
 };
 
-/// A camera the page opened; closing it (explicitly, or at the teardown of the session) stops the
-/// producer and waits for its blocking job.
+/// A camera the page opened; closing it (explicitly, or at the teardown of the session) cancels the
+/// relay, waits for its end and for the producer's blocking job.
 struct CameraHandle {
     stream: Arc<DeviceStream<CameraFrame>>,
+    relay: super::RelayHandle,
 }
 
 impl Resource for CameraHandle {
     fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let stream = self.stream;
         Box::pin(async move {
-            stream.stop();
-            if let Some(job) = stream.take_job() {
+            self.relay.shutdown().await;
+            if let Some(job) = self.stream.take_job() {
                 let _ = job.result().await;
             }
         })
@@ -90,8 +90,10 @@ pub(crate) fn register(
                     .result()
                     .await??;
                 let (writer, stream_id) = ctx.streams().open_outgoing();
+                let relay = super::RelayHandle::spawn(writer, stream.clone());
                 let camera = match ctx.resources().insert(Box::new(CameraHandle {
                     stream: stream.clone(),
+                    relay,
                 })) {
                     Ok(camera) => camera,
                     // Without the resource nobody would ever stop the producer.
@@ -100,7 +102,6 @@ pub(crate) fn register(
                         return Err(error);
                     }
                 };
-                tokio::spawn(super::relay(writer, stream));
                 json(&json!({ "camera": camera.0, "stream": stream_id.0 }))
             }
         })?;
@@ -360,14 +361,53 @@ mod tests {
             .unwrap();
         assert!(matches!(header, Frame::Json(_)));
         // No acks: the relay blocks on credit until the close wakes it.
-        registry
-            .dispatch(
+        tokio::time::timeout(
+            WAIT,
+            registry.dispatch(
                 "media.camera.close",
                 ctx.clone(),
                 json!({"camera": reply["camera"]}),
-            )
+            ),
+        )
+        .await
+        .expect("the close must not hang")
+        .expect("the close must succeed");
+        let end = tokio::time::timeout(WAIT, reader.next_frame())
             .await
-            .expect("the close must succeed");
+            .unwrap()
+            .unwrap();
+        assert!(matches!(end, Frame::End));
+        active_streams(&camera, 0).await;
+    }
+
+    #[tokio::test]
+    async fn an_opened_camera_that_was_never_iterated_closes_cleanly() {
+        let camera = Arc::new(VirtualCamera::default());
+        let mut registry = Registry::default();
+        register(&mut registry, camera.clone()).unwrap();
+        let ctx = context_with(Some((true, true)), true).await;
+        let reply = registry
+            .dispatch("media.camera.open", ctx.clone(), json!({"id": "virtual-0"}))
+            .await
+            .expect("the open must succeed");
+        let Reply::Json(reply) = reply else {
+            panic!("expected a JSON reply");
+        };
+        let mut reader: StreamReader = ctx
+            .streams()
+            .reader(StreamId(reply["stream"].as_u64().unwrap()))
+            .unwrap();
+        tokio::time::timeout(
+            WAIT,
+            registry.dispatch(
+                "media.camera.close",
+                ctx.clone(),
+                json!({"camera": reply["camera"]}),
+            ),
+        )
+        .await
+        .expect("the close must not hang")
+        .expect("the close must succeed");
         let end = tokio::time::timeout(WAIT, reader.next_frame())
             .await
             .unwrap()

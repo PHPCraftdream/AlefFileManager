@@ -3,6 +3,7 @@
 //! permission; the samples arrive as the body of `audio.write` and are only counted, never kept.
 use std::{future::Future, pin::Pin, sync::Arc, sync::Mutex};
 
+use alef_core::session::{BlockingExecutor, BlockingJob};
 use alef_core::{
     ids::{ResourceId, StreamId},
     registry::dispatch::Registry,
@@ -10,6 +11,7 @@ use alef_core::{
     session::resources::Resource,
     AlefError, ErrorCode,
 };
+use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -17,19 +19,31 @@ use crate::{json, media::invalid};
 
 use super::{backend::AudioBackend, substituted};
 
-/// A sink the page opened; closing it (explicitly, or at the teardown of the session) terminates
-/// the incoming stream first, drains what is already queued, then closes the sink, so a later
-/// write answers `Closed`.
+/// A sink the page opened. The checksum runs in an admitted blocking job (the fold) that owns
+/// the sink writes for the stream's lifetime; closing it (explicitly, or at the teardown of the
+/// session) terminates the input, drains everything the consumer accepted, then closes the sink,
+/// so a later write answers `Closed`. The `closing` lock serializes closes: a concurrent close
+/// waits on the same completion instead of bypassing it.
 struct AudioSinkHandle {
     sink: super::backend::AudioSink,
     stream_id: StreamId,
-    done_rx: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// The admitted fold job; `None` once a closer (or the teardown) took it over.
+    job: Mutex<Option<BlockingJob<()>>>,
+    closing: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Resource for AudioSinkHandle {
     fn close(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        self.sink.close();
-        Box::pin(async {})
+        Box::pin(async move {
+            // Teardown joins the consumer like an explicit close: the input is already terminated
+            // by the session teardown, so the fold finishes over the queued chunks.
+            let _guard = self.closing.lock().await;
+            let job = self.job.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(job) = job {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), job.result()).await;
+            }
+            self.sink.close();
+        })
     }
 }
 
@@ -49,6 +63,16 @@ pub(crate) fn register(
     registry: &mut Registry,
     backend: Arc<dyn AudioBackend>,
 ) -> Result<(), AlefError> {
+    register_on(registry, backend, crate::media::executor())
+}
+
+/// The same commands on an explicit budget; the tests use an isolated one.
+pub(crate) fn register_on(
+    registry: &mut Registry,
+    backend: Arc<dyn AudioBackend>,
+    executor: &BlockingExecutor,
+) -> Result<(), AlefError> {
+    let executor = executor.clone();
     let open = backend.clone();
     registry
         .command::<()>("audio.open")?
@@ -56,26 +80,52 @@ pub(crate) fn register(
         .substitutes()
         .handler(move |ctx, ()| {
             let backend = open.clone();
+            let executor = executor.clone();
             async move {
                 substituted(&ctx, "audio")?;
-                let sink = backend.open()?;
+                // The sink opens on the budget, and the fold job is admitted before the consumer
+                // exists, so a full budget refuses with `Busy` and nothing is created.
+                let sink = executor.submit(move || backend.open())?.result().await??;
                 let (mut reader, stream_id) = ctx.streams().open_incoming_reader();
-                let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-                let sink_id = ctx.resources().insert(Box::new(AudioSinkHandle {
-                    sink: sink.clone(),
-                    stream_id,
-                    done_rx: Mutex::new(Some(done_rx)),
-                }))?;
-                // The page writes into the incoming stream; the sink takes every chunk until the
-                // stream is over or the sink refuses, and it never stays blocked after a close,
-                // because close terminates the stream.
-                tokio::spawn(async move {
-                    while let Some(Ok(chunk)) = reader.recv().await {
-                        if sink.write(&chunk).is_err() {
+                let (chunks_tx, mut chunks_rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+                let folding = sink.clone();
+                let fold = match executor.submit(move || {
+                    // The fold owns the checksum for the stream's lifetime: every accepted chunk
+                    // is written here, off the Tokio worker, until the input ends or the sink
+                    // refuses.
+                    while let Some(chunk) = chunks_rx.blocking_recv() {
+                        if folding.write(&chunk).is_err() {
                             break;
                         }
                     }
-                    let _ = done_tx.send(());
+                }) {
+                    Ok(fold) => fold,
+                    Err(error) => {
+                        let _ = ctx.streams().close(stream_id);
+                        return Err(error);
+                    }
+                };
+                let sink_id = match ctx.resources().insert(Box::new(AudioSinkHandle {
+                    sink: sink.clone(),
+                    stream_id,
+                    job: Mutex::new(Some(fold)),
+                    closing: Arc::new(tokio::sync::Mutex::new(())),
+                })) {
+                    Ok(sink_id) => sink_id,
+                    Err(error) => {
+                        let _ = ctx.streams().close(stream_id);
+                        return Err(error);
+                    }
+                };
+                // The page writes into the incoming stream; the consumer forwards every chunk to
+                // the fold and ends with the stream. The fold job completing IS the drain signal,
+                // so there is no separate done channel.
+                tokio::spawn(async move {
+                    while let Some(Ok(chunk)) = reader.recv().await {
+                        if chunks_tx.send(chunk).is_err() {
+                            break;
+                        }
+                    }
                 });
                 json(&json!({ "sink": sink_id.0, "stream": stream_id.0 }))
             }
@@ -105,26 +155,51 @@ pub(crate) fn register(
             let id = ResourceId(args.sink);
             // Close drains the queued writes first and refuses unknown or foreign ids with
             // NOT_FOUND, leaving the resource alone.
-            let (sink, stream_id, done) =
+            let (sink, stream_id, closing) =
                 ctx.resources()
                     .with_as::<AudioSinkHandle, _>(id, |handle| {
                         (
                             handle.sink.clone(),
                             handle.stream_id,
-                            handle
-                                .done_rx
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .take(),
+                            handle.closing.clone(),
                         )
                     })?;
-            // Terminate the input; queued chunks stay readable, so the consumer drains them.
+            // One closer at a time: a concurrent close waits here and reports the same final
+            // statistics instead of bypassing the drain.
+            let _guard = closing.lock().await;
+            // Under the guard: take the fold job, or find it already taken by the closer we
+            // waited for.
+            let job = ctx
+                .resources()
+                .with_as::<AudioSinkHandle, _>(id, |handle| {
+                    handle.job.lock().unwrap_or_else(|e| e.into_inner()).take()
+                })
+                .ok()
+                .flatten();
+            // Terminate the input; the reader drains what is queued, so the fold sees every
+            // accepted chunk before it ends.
             ctx.streams().close(stream_id)?;
-            if let Some(done) = done {
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), done).await;
+            if let Some(job) = job {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), job.result()).await {
+                    // Nobody drains in time: the job is consumed, but the fold is detached and
+                    // keeps draining to completion, so answer TIMEOUT instead of discarding the
+                    // failure silently.
+                    Err(_elapsed) => {
+                        return Err(AlefError::new(
+                            ErrorCode::Timeout,
+                            "the audio sink did not drain in time",
+                        ));
+                    }
+                    // A receiver error is never swallowed: a canceled or panicked fold is a real
+                    // error.
+                    Ok(Err(error)) => return Err(error),
+                    Ok(Ok(())) => {}
+                }
             }
+            // The drain above did the teardown work; drop the resource without closing it again
+            // (its close would wait on the same `closing` lock).
             if let Ok(resource) = ctx.resources().take(id) {
-                resource.close().await;
+                drop(resource);
             }
             let (samples, checksum) = sink.close();
             // The checksum goes out as hex: a u64 does not survive a JSON number exactly.
@@ -376,5 +451,125 @@ mod tests {
         tokio::time::timeout(WAIT, ctx.session.close())
             .await
             .expect("the session must close in time");
+    }
+
+    async fn reply_of(
+        registry: &Registry,
+        ctx: &CallContext,
+        command: &str,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        let reply = registry
+            .dispatch(command, ctx.clone(), args)
+            .await
+            .expect("the command must succeed");
+        let Reply::Json(reply) = reply else {
+            panic!("expected a JSON reply");
+        };
+        reply
+    }
+
+    #[tokio::test]
+    async fn concurrent_closes_both_observe_the_final_statistics() {
+        let (registry, ctx, _sink) = opened().await;
+        let reply = reply_of(&registry, &ctx, "audio.open", serde_json::Value::Null).await;
+        let id = reply["sink"].as_u64().unwrap();
+        let stream = reply["stream"].as_u64().unwrap();
+        let writer = ctx
+            .streams()
+            .incoming_writer(StreamId(stream))
+            .expect("the stream must be there");
+        let mut queued = Vec::new();
+        for first in 0u8..8 {
+            let chunk = vec![
+                first,
+                first.wrapping_add(1),
+                first.wrapping_add(2),
+                first.wrapping_add(3),
+            ];
+            queued.extend_from_slice(&chunk);
+            tokio::time::timeout(WAIT, writer.write(Bytes::from(chunk)))
+                .await
+                .expect("the write must go through in time")
+                .expect("the write must succeed");
+        }
+        let (first, second) = tokio::join!(
+            registry.dispatch("audio.close", ctx.clone(), json!({"sink": id})),
+            registry.dispatch("audio.close", ctx.clone(), json!({"sink": id})),
+        );
+        let Reply::Json(first) = first.expect("the first close must succeed") else {
+            panic!("expected a JSON close reply");
+        };
+        let Reply::Json(second) = second.expect("the second close must succeed") else {
+            panic!("expected a JSON close reply");
+        };
+        let expected = crate::media::backend::AudioSink::checksum_hex(fnv(&queued));
+        for reply in [&first, &second] {
+            assert_eq!(reply["samples"], 8);
+            assert_eq!(reply["checksum"].as_str().unwrap(), expected);
+        }
+        tokio::time::timeout(WAIT, ctx.session.close())
+            .await
+            .expect("the session must close in time");
+    }
+
+    #[tokio::test]
+    async fn a_full_audio_budget_refuses_audio_open_with_busy() {
+        let executor =
+            BlockingExecutor::new(std::num::NonZeroUsize::new(1).expect("non-zero test limit"));
+        let mut registry = Registry::default();
+        register_on(&mut registry, Arc::new(VirtualAudio), &executor).unwrap();
+        let ctx = CallContext::new(session().await, permissions(true));
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let blocker = executor
+            .submit(move || {
+                let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+            })
+            .expect("the blocker must be admitted");
+        let error = registry
+            .dispatch("audio.open", ctx.clone(), serde_json::Value::Null)
+            .await
+            .expect_err("a full budget must refuse the open");
+        assert_eq!(error.code, ErrorCode::Busy);
+        release_tx.send(()).expect("the blocker must be waiting");
+        tokio::time::timeout(WAIT, blocker.result())
+            .await
+            .expect("the blocker must finish in time")
+            .expect("the blocker must succeed");
+        tokio::time::timeout(WAIT, ctx.session.close())
+            .await
+            .expect("the session must close in time");
+    }
+
+    #[tokio::test]
+    async fn teardown_joins_a_consumer_with_queued_writes() {
+        let (registry, ctx, _sink) = opened().await;
+        let reply = registry
+            .dispatch("audio.open", ctx.clone(), serde_json::Value::Null)
+            .await
+            .expect("the second open must succeed");
+        let Reply::Json(reply) = reply else {
+            panic!("expected a JSON reply");
+        };
+        let stream = reply["stream"].as_u64().unwrap();
+        let writer = ctx
+            .streams()
+            .incoming_writer(StreamId(stream))
+            .expect("the stream must be there");
+        for first in 0u8..8 {
+            let chunk = vec![
+                first,
+                first.wrapping_add(1),
+                first.wrapping_add(2),
+                first.wrapping_add(3),
+            ];
+            tokio::time::timeout(WAIT, writer.write(Bytes::from(chunk)))
+                .await
+                .expect("the write must go through in time")
+                .expect("the write must succeed");
+        }
+        tokio::time::timeout(WAIT, ctx.session.close())
+            .await
+            .expect("the teardown must join the consumer in time");
     }
 }

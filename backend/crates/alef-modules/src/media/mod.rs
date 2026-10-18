@@ -19,7 +19,7 @@ pub use backend::{
 pub use queue::{CameraFrame, MediaQueue, PcmChunk, StreamItem};
 pub use virtuals::{VirtualAudio, VirtualCamera, VirtualMicrophone};
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use alef_core::session::streams::StreamWriter;
 use alef_core::{
@@ -59,18 +59,74 @@ pub(crate) fn substituted(ctx: &CallContext, command: &str) -> Result<(), AlefEr
 }
 
 /// A device stream relay: headers and payloads go out in order; the producer is stopped when the
-/// stream is gone.
-pub(crate) async fn relay<T: StreamItem>(writer: StreamWriter, stream: Arc<DeviceStream<T>>) {
+/// stream is gone. A canceled relay (the resource was closed) drops the frame it was mid-way
+/// through and ends the stream, instead of staying suspended on the credit of a full window.
+pub(crate) async fn relay<T: StreamItem + Sync>(
+    writer: StreamWriter,
+    stream: Arc<DeviceStream<T>>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) {
     let queue = stream.queue();
+    let mut canceled = false;
     while let Some(item) = queue.pop().await {
-        if writer.send_json(item.header()).await.is_err()
-            || writer.send_binary(item.payload()).await.is_err()
-        {
-            break;
+        let send = async {
+            writer.send_json(item.header()).await?;
+            writer.send_binary(item.payload()).await
+        };
+        tokio::select! {
+            biased;
+            _ = relay_canceled(&mut cancel) => { canceled = true; break; }
+            sent = send => { if sent.is_err() { break; } }
         }
     }
     stream.stop();
-    writer.end();
+    if canceled {
+        writer.end_discarding_pending();
+    } else {
+        writer.end();
+    }
+}
+
+/// Resolves once the relay is canceled; a dropped cancel side (the resource is gone without a
+/// close) ends the relay too.
+async fn relay_canceled(cancel: &mut tokio::sync::watch::Receiver<bool>) {
+    while !*cancel.borrow_and_update() {
+        if cancel.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// A device relay under the control of its resource: closing flips the cancel flag and joins the
+/// task, so the close of the resource returns only after the relay ended the stream.
+pub(crate) struct RelayHandle {
+    cancel: tokio::sync::watch::Sender<bool>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl RelayHandle {
+    /// Spawns the relay of an opened device stream; the resource owns the handle.
+    pub(crate) fn spawn<T: StreamItem + Sync>(
+        writer: StreamWriter,
+        stream: Arc<DeviceStream<T>>,
+    ) -> Self {
+        let (cancel, canceled) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(relay(writer, stream, canceled));
+        Self {
+            cancel,
+            task: Mutex::new(Some(task)),
+        }
+    }
+
+    /// Cancels the relay and waits for its end; the relay itself stops the producer and ends the
+    /// stream. Idempotent: the task is joined once.
+    pub(crate) async fn shutdown(&self) {
+        let _ = self.cancel.send(true);
+        let task = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(task) = task {
+            let _ = task.await;
+        }
+    }
 }
 
 pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Result<(), AlefError> {

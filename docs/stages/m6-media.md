@@ -9,7 +9,7 @@
 - Команды: `media.camera.list/open/close`, `media.microphone.list/open/close`, `audio.open/write/close`. Открывание устройства возвращает `{ camera|microphone|sink, stream }` (страница читает поток `openReadable`).
 - Права: раздел `permissions.media` манифеста (`camera`, `microphone`, bool; раздел необязателен, по умолчанию закрыт) и `permissions.audio` (bool, по умолчанию false). Подмена — `NOT_AVAILABLE` без открытия устройства; отказ и необъявленное право — `PERMISSION_DENIED`. `media.camera` и `media.microphone` — risky-права («sees through the camera…» / «hears through the microphone…»), показываются в окне согласия и `alef permissions` наравне с остальными.
 - JS: субпуть `@alef-runtime/api/media` (`./media` + `./media/types`): объекты `camera` (`list`, `open`), `microphone` (`list`, `open`), `audio` (`open`); классы `Camera`/`Microphone` — async-iterable пар «заголовок+нагрузка» с `close()`, возвращающим статистику; `AudioSink` — `write(Float32Array|Uint8Array)` и `close()` со статистикой и checksum-hex; повторный `close()` отвечает `NOT_FOUND`.
-- e2e: сценарий `media` (приложение `tests/e2e/apps/modules/system/media`, режимы allowed / denied / substituted), SOFT-пороги (цель — измерение на медленных раннерах): ≥ 5 fps, p95 задержки < 2000 мс на 1280×720@30; страница печатает строку `media-camera-stats frames= fps= p50_ms= p95_ms= main_ms= elapsed_ms=`.
+- e2e: сценарий `media` (приложение `tests/e2e/apps/modules/system/media`, режимы allowed / denied / substituted), SOFT-пороги (цель — измерение на медленных раннерах): ≥ 5 fps, p95 задержки < 2000 мс на 1280×720@30; страница печатает строку `media-camera-stats frames= fps= p50_ms= p95_ms= main_ms= total_ms= drops= elapsed_ms=`; вытеснение кадров политикой drop-oldest легально: seq строго растёт, разрывы seq сходятся с дельтой `dropped`.
 
 ## Контракт кадров и чанков
 
@@ -17,7 +17,7 @@
 
 ## Исполнение (BUS)
 
-Продюсер — допущенное blocking-задание медиа-модуля (бюджет 8; насыщение даёт `BUSY` до старта продюсера): первый кадр сразу, дальше по тикам; остановка прерывает ожидание мгновенно, закрытие ждёт завершения задания. Между продюсером и relay — ограниченная очередь с политикой drop-oldest (камера 3 кадра, микрофон 8 чанков; счётчики pushed/dropped, вытесняются только целые кадры). Relay ждёт кредит вне BUS и пишет JSON-заголовок и binary-чанки попарно. Пути остановки — close ресурса, teardown сессии, разрыв потока; остановка идемпотентна.
+Продюсер — допущенное blocking-задание медиа-модуля (бюджет 8; насыщение даёт `BUSY` до старта продюсера): первый кадр сразу, дальше по тикам; остановка прерывает ожидание мгновенно, закрытие ждёт завершения задания. Между продюсером и relay — ограниченная очередь с политикой drop-oldest (камера 3 кадра, микрофон 8 чанков; счётчики pushed/dropped, вытесняются только целые кадры). Relay ждёт кредит вне BUS и пишет JSON-заголовок и binary-чанки попарно. Пути остановки — close ресурса, teardown сессии, разрыв потока; остановка идемпотентна. Закрытие устройства отменяет relay по watch-сигналу и дожидается его: незаконченный кадр отбрасывается, читатель видит `End`.
 
 ## Права
 
@@ -35,7 +35,7 @@ permissions: {
 
 ## Измерения спайка (заполняется по CI)
 
-<!-- M6.1-SPIKE-MEASUREMENTS: after the first green `media` scenario in CI, paste the `media-camera-stats` lines here (fps, p50/p95, main_ms) with the runner OS. Until then only the SOFT thresholds hold: >= 20 fps, p95 < 500 ms. -->
+<!-- M6.1-SPIKE-MEASUREMENTS: after the first green `media` scenario in CI, paste the `media-camera-stats` lines here (fps, p50/p95, main_ms) with the runner OS. Until then only the SOFT thresholds hold: >= 5 fps, p95 < 2000 ms. -->
 
 ## Дальше (после M6.1)
 
