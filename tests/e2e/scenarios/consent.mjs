@@ -147,7 +147,6 @@ export function consentScenarios({ drive, exe, verbose }) {
         }),
         { report: true },
         { confirm: risky },
-        { confirm: 'shell.openExternal:https://allowed.example/*' },
         { report: true },
         { submit: true },
       ];
@@ -183,7 +182,7 @@ export function consentScenarios({ drive, exe, verbose }) {
             if (reports.length !== 3) return [...problems, `the window reported ${reports.length} times, expected 3`];
             const [opened, unconfirmed, confirmed] = reports;
             if (opened.rows !== ANSWERS.length) problems.push(`the window shows ${opened.rows} rights, the manifest asks for ${ANSWERS.length}`);
-            if (JSON.stringify(opened.flagged) !== JSON.stringify([risky, 'shell.openExternal:https://allowed.example/*'])) problems.push(`risky rights flagged: ${JSON.stringify(opened.flagged)}`);
+            if (JSON.stringify(opened.flagged) !== JSON.stringify([risky])) problems.push(`risky rights flagged: ${JSON.stringify(opened.flagged)}`);
             if (opened.start !== 'disabled' || !opened.picked.every(item => item.endsWith('=none'))) problems.push('the window lets the application start before anything is decided');
             if (unconfirmed.start !== 'disabled') problems.push('a risky right allowed without its confirmation lets the application start');
             if (confirmed.start !== 'enabled') problems.push('everything is decided and confirmed, yet the application cannot start');

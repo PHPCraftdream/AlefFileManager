@@ -566,27 +566,30 @@ mod tests {
         let store = Store::new(dir.path());
         store
             .set_limits(&Limits {
-                requests: Some(1),
-                tokens: None,
+                requests: None,
+                tokens: Some(100),
             })
             .unwrap();
-        assert!(store.reserve_at(None, JAN2_NOON).is_ok());
-        // A later day rolls and spends the limit.
-        assert!(store.reserve_at(None, JAN4_MORNING).is_ok());
-        // Jan5 rolls to zero in memory, is rejected before spending, and stamps Jan5.
+        // Jan3 spends the whole token limit of its day.
+        assert!(store.reserve_at(Some(100), JAN3_MORNING).is_ok());
+        // Jan5 rolls to a fresh day, but an unknown token bound fails closed: the attempt is
+        // rejected before spending, and the rejection still stamps Jan5.
         match store.reserve_at(None, JAN5_MORNING) {
             Err(Quota::Exceeded) => {}
             other => panic!("expected Exceeded, got {other:?}"),
         }
-        // The clock back to Jan3 sees now < stamp(Jan5): no roll, still refused.
-        match store.reserve_at(None, JAN3_MORNING) {
+        // The clock goes back to Jan4: now < stamp(Jan5), so no roll — the attempt is charged to
+        // the quota of Jan5 and Jan4 does not get a fresh one.
+        assert!(store.reserve_at(Some(100), JAN4_MORNING).is_ok());
+        // So Jan5 itself has nothing left. Without the stamp of the rejection Jan4 would have
+        // rolled a day of its own and Jan5 would have been handed out a second time.
+        match store.reserve_at(Some(100), JAN5_MORNING) {
             Err(Quota::Exceeded) => {}
             other => panic!("expected Exceeded, got {other:?}"),
         }
-        // The Jan5 refusal persisted the rolled, stamped state: requests 0, stamp Jan5.
         let text = std::fs::read_to_string(dir.path().join("usage.json")).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(saved["requests"], 0);
+        assert_eq!(saved["tokens"], 100);
         assert_eq!(saved["stamp"], JAN5_MORNING);
     }
 

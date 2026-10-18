@@ -88,7 +88,7 @@ impl Right {
     fn is_red(&self) -> bool {
         match (&self.scope, self.permission.as_str()) {
             (None, "ai.builtin.exec" | "ai.builtin.bash") => true,
-            (Some(_), "cli.exec" | "shell.openExternal") => true,
+            (Some(_), "cli.exec") => true,
             _ => false,
         }
     }
@@ -117,9 +117,6 @@ impl Right {
         match self.permission.as_str() {
             "ai.role" => Some("sends the application's messages to an AI model and can cost money"),
             "ai.tool" => Some("lets an AI model call a tool of the application, with side effects"),
-            "cli.command" => {
-                Some("runs the program and arguments the manifest fixed, chosen by the application")
-            }
             "fs.read" if reaches_everything(scope) => {
                 Some("reads anything in the home folder or on the whole disk")
             }
@@ -443,20 +440,21 @@ mod tests {
     }
 
     #[test]
-    fn raw_cli_sidecar_and_shell_rights_are_red_and_declared_commands_are_not() {
+    fn raw_cli_and_sidecar_rights_are_red_while_declared_commands_and_links_are_not() {
         for right in [
             Right::scoped("cli.exec", "*"),
             Right::scoped("cli.exec", "sidecar:node"),
-            Right::scoped("shell.openExternal", "https://example.com/*"),
         ] {
             assert_eq!(right.level(), RiskLevel::Red);
             assert_eq!(right.risk(), Some(RED_RISK));
         }
-        assert_eq!(
-            Right::scoped("cli.command", "status").level(),
-            RiskLevel::Risky
-        );
-        assert_eq!(Right::plain("secrets").level(), RiskLevel::Normal);
+        for right in [
+            Right::scoped("cli.command", "status"),
+            Right::scoped("shell.openExternal", "https://example.com/*"),
+            Right::plain("secrets"),
+        ] {
+            assert_eq!(right.level(), RiskLevel::Normal, "{right}");
+        }
     }
 
     #[test]
@@ -602,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn every_cli_exec_and_shell_open_external_scope_is_red_whatever_it_names() {
+    fn every_cli_exec_scope_is_red_whatever_it_names() {
         for scope in [
             "git",
             "/usr/bin/git",
@@ -617,13 +615,6 @@ mod tests {
                 right("cli.exec", scope).level(),
                 RiskLevel::Red,
                 "cli.exec:{scope}"
-            );
-        }
-        for scope in ["https://example.com/*", "https://*/*"] {
-            assert_eq!(
-                right("shell.openExternal", scope).level(),
-                RiskLevel::Red,
-                "shell.openExternal:{scope}"
             );
         }
     }
@@ -678,6 +669,8 @@ mod tests {
             ("fs.write", "$APPDATA/**"),
             ("net.http", "https://example.com/*"),
             ("net.http", "https://*.example.com/*"),
+            ("shell.openExternal", "https://*/*"),
+            ("cli.command", "status"),
             ("app.env", "*"),
             ("fs.read", "$HOME/.config/app/**"),
             ("fs.write", "$HOME/notes/*.txt"),

@@ -247,7 +247,7 @@ M9.1 включает этот проектный документ и одну �
 **Защита ключей Rush, квоты и журнал (задача #165):**
 
 - **Защищённые корни Rush** (`scope/rush.rs`): таблица корней по ОС с `RUSH_GLOBAL_CONFIG`/`RUSH_GLOBAL_DATA`/`RUSH_CACHE_DIR`, XDG и системный `/etc/rush`, плюс `.rush` по имени; база скоупа внутри корня отвергается на манифесте, паттерны, лишь заходящие в корень, отсекаются runtime на каждой операции; проверка в `path_pattern` и `is_protected`.
-- **Красный уровень**: `cli.exec` со всеми скоупами (включая `sidecar:<имя>`), `shell.openExternal`, `ai.builtin.exec`/`ai.builtin.bash`; текст «bypasses all protections, including the AI model keys»; разрешение требует отдельного подтверждения.
+- **Красный уровень**: `cli.exec` со всеми скоупами (включая `sidecar:<имя>`), `ai.builtin.exec`/`ai.builtin.bash`; текст «bypasses all protections, including the AI model keys»; разрешение требует отдельного подтверждения.
 - **Окно согласия**: группа AI, детали инструмента со схемой через `textContent`, красные строки, отчёт e2e `consent-ui-red`.
 - **Квоты** (`usage.rs`): `Limits`/`Counters`/резерв, `QUOTA_EXCEEDED` в `ErrorCode`, token_bound провайдера, `FakeProvider` 4096.
 - **Журнал**: `Journal`/`Entry`, ротация 256 КиБ, команды `alef ai limits|log`.
