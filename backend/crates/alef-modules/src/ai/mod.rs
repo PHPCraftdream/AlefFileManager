@@ -104,6 +104,13 @@ fn timeout_of(message: &str) -> AlefError {
     AlefError::new(ErrorCode::Timeout, message.to_owned())
 }
 
+/// The provider is untrusted: what it answers crosses to the page as its code and none of its
+/// words, so credentials, headers and raw provider text stay behind the boundary
+/// (docs/stages/m9-ai.md §4).
+fn cleanse(error: AlefError) -> AlefError {
+    AlefError::new(error.code, "the ai provider refused the operation")
+}
+
 /// One tool call of the chat the page has not answered yet; dropped unanswered when the chat dies.
 struct PendingCall {
     /// When the handler has waited long enough; the producer races this.
@@ -406,7 +413,8 @@ pub(crate) fn register(
                 let listed =
                     tokio::time::timeout(limits::ROLE_LIST_TIME, async move { provider.roles() })
                         .await
-                        .map_err(|_| timeout_of("listing the roles took too long"))??;
+                        .map_err(|_| timeout_of("listing the roles took too long"))?
+                        .map_err(cleanse)?;
                 let roles: Vec<Role> = listed
                     .into_iter()
                     .filter(|role| allowed.contains(&role.id))

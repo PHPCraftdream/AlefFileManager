@@ -206,7 +206,7 @@ trait RushAiProvider {
 
 ## 7. Приёмка и ограничения доказательств
 
-Все тесты ниже — **будущие, пока не существующие**. Использовать bounded waits по virtual clock/barrier, детерминированный fake adapter, не облако, и независимый observable oracle. Fake alone не доказывает OS-изоляцию. Где тест проверяет блокировку, положительный sentinel/control должен доказать достижимость fixture, а sink — увидеть намеренную разрешённую инъекцию. Все тесты без эффектов вне scratch; cleanup в finally и проверка очистки при следующем старте.
+Тесты таблицы были будущими до M9.4 (задача #166); их текущее состояние зафиксировано после таблицы. Использовать bounded waits по virtual clock/barrier, детерминированный fake adapter, не облако, и независимый observable oracle. Fake alone не доказывает OS-изоляцию. Где тест проверяет блокировку, положительный sentinel/control должен доказать достижимость fixture, а sink — увидеть намеренную разрешённую инъекцию. Все тесты без эффектов вне scratch; cleanup в finally и проверка очистки при следующем старте.
 
 | Будущий тест | Явное воздействие/мутация | Независимый observable oracle |
 |---|---|---|
@@ -222,6 +222,27 @@ trait RushAiProvider {
 | `credit_deadlines_cancel_and_terminal_events_are_bounded` | Убрать лимит буфера/дедлайн или проверку закрытой сессии перед публикацией. | Virtual clock и bounded buffer observer показывают дедлайн/кредит, одну ошибку `CLOSED` или успех `end(completed)`, ноль событий после исхода и успешный контрольный stream. |
 
 Отдельная adversarial-проверка OS на Windows, macOS и Linux должна попытаться прочитать env/config/data из дочернего процесса, обойти пути/symlink, запустить sidecar/shell, осмотреть соседний процесс, отправить сетью секрет и прочитать чужой журнал. Зафиксировать механизм и пределы; fake adapter, unit-тест и скрин согласия изоляцию не доказывают. Неподдерживаемая граница означает отказ в запуске на этой платформе.
+
+**Состояние доказательств (M9.4, задача #166).** Каждый тест — интеграционный Rust-тест с независимым оракулом на границе (наблюдатель fake-провайдера, журнал, файлы квоты) и положительным контролем; имя → файл:
+
+| Тест §7 | Где |
+|---|---|
+| `roles_return_only_permitted_available_roles` | `backend/crates/alef-modules/tests/modules/ai_threat.rs` |
+| `chat_rejects_forbidden_messages_and_provider_knobs` | там же |
+| `credential_sentinel_never_crosses_the_rush_boundary` | там же; вскрыл дыру — сырые ошибки провайдера доходили до страницы; исправлено минимально: `cleanse` в `backend/crates/alef-modules/src/ai/mod.rs`, применён в `ai.roles`, при старте чата (`launch.rs`) и в `ai.session.open` (`sessions.rs`): код ошибки сохраняется, слова и details отбрасываются |
+| `provider_observer_rejects_endpoint_and_redirect_injection` | там же |
+| `same_app_id_with_different_signer_or_digest_isolated` | там же |
+| `per_app_quota_and_journal_do_not_cross_packages` | там же |
+| `tool_call_dispatch_and_result_are_single_use` | там же |
+| `rush_session_has_no_builtin_or_personal_authority` | там же |
+| `tool_consent_change_and_journal_gate_are_enforced` | `backend/crates/alef-modules/tests/modules/ai_threat_roots.rs` |
+| `credit_deadlines_cancel_and_terminal_events_are_bounded` | там же |
+| `app_cannot_read_rush_files_through_fs_cli_shell_or_builtin` | там же (засеянный корень — `PermissionSet::with_protected`, тот же механизм, что у ALEF_HOME; плюс `.rush` по имени и ссылка/junction в корень) |
+| `a_red_right_is_the_only_way_to_run_commands` | там же |
+
+Со стороны страницы то же самое проверяет e2e-сценарий `ai-threat` (`tests/e2e/scenarios/app/modules.mjs`, приложение `tests/e2e/apps/modules/system/ai-threat`): фильтр ролей, отказ provider-knobs и system/tool-сообщений до старта провайдера, закрытость засеянного через `RUSH_GLOBAL_CONFIG` корня Rush для fs и builtin (включая папку `.rush` и ссылку/junction в корень), отказ `cli.exec` без красного права, одноразовость результата инструмента и чистота текстов отказов (ни сентинела, ни защищённого пути); отдельный запуск с манифестом, чьи скоупы лежат в засеянном корне, обязан завершиться `MANIFEST_INVALID` со словом «Rush» до `ALEF_READY`.
+
+Честные пределы — фейковая граница НЕ доказывает: OS-изоляцию и соседние процессы того же пользователя (raw CLI/sidecar читает корни Rush как хозяин: уже работающий `cli.exec` с правом читает любой файл пользователя); реальный транспорт Rush с взаимной аутентификацией и credit на границе (#167) — у fake ключей нет вообще, «ключи только в Rush» здесь структурный факт, а не измерение; полноту очистки ошибок настоящего провайдера (sentinel сеется только в fake); раздачу папок `$ALEF_HOME/ai/<identity>` по authority в лаунчере (тесты ключуют переданной папкой; код раздачи — вне `alef-modules`); гонку canonical→open (residual risk §4); подтверждение красного согласия окном (в runtime «разрешено» = «подтверждено»; окно покрывает сценарий `ai` в режиме `window-consent`). Открыто для #167 и задачи OS-изоляции.
 
 ## 8. Объём и открытые вопросы
 
@@ -255,7 +276,7 @@ M9.1 включает этот проектный документ и одну �
 
 **Сознательно не сделано в M9.2:**
 
-- #166: threat-model e2e (OS-изоляция, sentinel-credentials).
+- #166: тесты §7 и сценарий `ai-threat` сделаны в M9.4; OS-изоляция и sentinel на реальном провайдере остаются открытыми.
 - #167: реальный транспорт Rush (`RushAiProvider`), аутентификация, credit-контроль на границе — пока заглушечный `AiProvider`.
 - OS-изоляция (вариант (a) — позже).
 - `QUOTA_EXCEEDED` в сгенерированных типах берётся из CI (типы не перегенерировались в этой ветке).

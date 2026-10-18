@@ -37,7 +37,7 @@ pub struct ChatUsage {
 
 /// A tool the model may call: what it is called, what it is told it does, and the shape of its
 /// arguments.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
@@ -45,7 +45,7 @@ pub struct ToolDef {
 }
 
 /// What one chat asks of the provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
     pub role: String,
     pub messages: Vec<ChatMessage>,
@@ -116,6 +116,12 @@ const FAKE_TOKEN_BOUND: u64 = 4096;
 pub struct FakeProvider {
     started: AtomicUsize,
     next_chat_gate: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
+    /// Test seam: the failure `roles` answers with until it is cleared again.
+    roles_failure: std::sync::Mutex<Option<String>>,
+    /// Test seam: the failure the next `chat` start answers with until it is cleared again.
+    chat_failure: std::sync::Mutex<Option<String>>,
+    /// Test seam: every request the chats handed over, oldest first.
+    seen: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
 /// Opens a single fake chat's producer gate. Dropping the guard also releases it.
@@ -150,10 +156,34 @@ impl FakeProvider {
     pub fn chats_started(&self) -> usize {
         self.started.load(Ordering::SeqCst)
     }
+
+    /// Seeds the failure `roles` answers with; `None` clears it. The message stands in for the
+    /// raw text of a real provider, credentials included.
+    pub fn seed_roles_failure(&self, message: Option<String>) {
+        *self.roles_failure.lock().expect("fake roles failure lock") = message;
+    }
+
+    /// Seeds the failure the next `chat` start answers with; `None` clears it.
+    pub fn seed_chat_failure(&self, message: Option<String>) {
+        *self.chat_failure.lock().expect("fake chat failure lock") = message;
+    }
+
+    /// The requests this provider received, oldest first: the boundary observer of the tests.
+    pub fn requests(&self) -> Vec<ChatRequest> {
+        self.seen.lock().expect("fake request log lock").clone()
+    }
 }
 
 impl AiProvider for FakeProvider {
     fn roles(&self) -> Result<Vec<Role>, AlefError> {
+        if let Some(message) = self
+            .roles_failure
+            .lock()
+            .expect("fake roles failure lock")
+            .clone()
+        {
+            return Err(AlefError::new(ErrorCode::Internal, message));
+        }
         Ok(vec![
             Role {
                 id: "smart".to_owned(),
@@ -179,7 +209,19 @@ impl AiProvider for FakeProvider {
         request: ChatRequest,
         control: ChatControl,
     ) -> Result<mpsc::Receiver<ChatEvent>, AlefError> {
+        if let Some(message) = self
+            .chat_failure
+            .lock()
+            .expect("fake chat failure lock")
+            .clone()
+        {
+            return Err(AlefError::new(ErrorCode::Internal, message));
+        }
         self.started.fetch_add(1, Ordering::SeqCst);
+        self.seen
+            .lock()
+            .expect("fake request log lock")
+            .push(request.clone());
         let (sender, receiver) = mpsc::channel(16);
         let gate = self
             .next_chat_gate

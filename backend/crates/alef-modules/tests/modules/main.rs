@@ -406,3 +406,5 @@ async fn os_reports_facts_and_the_theme_of_the_host() {
 
 mod ai;
 mod ai_quota;
+mod ai_threat;
+mod ai_threat_roots;

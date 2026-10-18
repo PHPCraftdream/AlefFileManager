@@ -97,7 +97,7 @@ pub(crate) async fn frame(reader: &mut StreamReader) -> Frame {
 }
 
 /// The payload of the first event of `name` the host was given, within a bounded wait.
-async fn event(fixture: &Fixture, name: &str) -> Value {
+pub(crate) async fn event(fixture: &Fixture, name: &str) -> Value {
     for _ in 0..250 {
         let found = fixture
             .host

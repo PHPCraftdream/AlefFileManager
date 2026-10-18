@@ -97,8 +97,8 @@ pub struct Fixture {
     /// The deterministic AI provider behind the `ai` module.
     pub ai: Arc<FakeProvider>,
     pub context: ModuleContext,
-    /// The AI usage folder, owned: dropped with the fixture.
-    _ai_home: tempfile::TempDir,
+    /// The AI usage folder, owned: dropped with the fixture unless the test named one.
+    _ai_home: Option<tempfile::TempDir>,
     manager: SessionManager,
     session: Arc<Session>,
     permissions: Arc<PermissionSet>,
@@ -162,6 +162,7 @@ impl Fixture {
             None,
             Limits::default(),
             alef_core::security::authority::Authority::Directory,
+            None,
         )
         .await
     }
@@ -181,6 +182,7 @@ impl Fixture {
             None,
             limits,
             alef_core::security::authority::Authority::Directory,
+            None,
         )
         .await
     }
@@ -200,6 +202,7 @@ impl Fixture {
             Some(console),
             Limits::default(),
             alef_core::security::authority::Authority::Directory,
+            None,
         )
         .await
     }
@@ -219,6 +222,28 @@ impl Fixture {
             None,
             Limits::default(),
             authority,
+            None,
+        )
+        .await
+    }
+
+    /// As `new_sharing_authority`, with the folder of the AI usage given: a test that proves two
+    /// authorities never share quota or journal state points every fixture at its own folder.
+    pub async fn new_authority_with_ai_home(
+        root: &std::path::Path,
+        manifest: Option<&str>,
+        authority: alef_core::security::authority::Authority,
+        ai_home: &std::path::Path,
+    ) -> Self {
+        Self::build(
+            root,
+            manifest,
+            &[],
+            Arc::new(MemorySecrets::default()),
+            None,
+            Limits::default(),
+            authority,
+            Some(ai_home),
         )
         .await
     }
@@ -231,6 +256,7 @@ impl Fixture {
         console: Option<Console>,
         limits: Limits,
         authority: alef_core::security::authority::Authority,
+        ai_home: Option<&std::path::Path>,
     ) -> Self {
         let text = manifest.unwrap_or(MANIFEST).replace('\r', "");
         let manifest = Manifest::from_ktav_str(&text).expect("manifest");
@@ -270,8 +296,14 @@ impl Fixture {
         } else {
             alef_core::security::manifest::Mode::Window
         };
-        // Its own for every fixture: a fresh tempdir, dropped with the fixture.
-        let ai_home_temp = tempfile::tempdir().expect("ai home");
+        // Its own for every fixture: a fresh tempdir, dropped with the fixture; a test that
+        // needs the folder of one authority points the fixture at it explicitly.
+        let owned_home =
+            ai_home.map_or_else(|| Some(tempfile::tempdir().expect("ai home")), |_| None);
+        let ai_home = match ai_home {
+            Some(path) => path.to_path_buf(),
+            None => owned_home.as_ref().expect("ai home").path().to_path_buf(),
+        };
         let context = ModuleContext {
             authority,
             app: AppInfo {
@@ -299,7 +331,7 @@ impl Fixture {
                 "shadow-{}",
                 SHADOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             )),
-            ai_home: ai_home_temp.path().to_path_buf(),
+            ai_home,
             console,
             termination: Termination::default(),
             launch: if manifest.modes.is_empty() {
@@ -342,7 +374,7 @@ impl Fixture {
             secrets,
             ai: fake,
             context,
-            _ai_home: ai_home_temp,
+            _ai_home: owned_home,
             manager,
             session,
             permissions,
@@ -371,6 +403,13 @@ impl Fixture {
     /// The user decided: the rights of the manifest are given as `consent` says.
     pub fn with_consent(mut self, consent: alef_core::security::consent::Consent) -> Self {
         self.permissions = Arc::new((*self.permissions).clone().with_consent(consent));
+        self
+    }
+
+    /// Puts `folder` out of reach of every filesystem right, as the runtime does for its own
+    /// state: the stand-in of a seeded protected root in tests (security/scope/rush.rs).
+    pub fn with_protected_folder(mut self, folder: &std::path::Path) -> Self {
+        self.permissions = Arc::new((*self.permissions).clone().with_protected(folder));
         self
     }
 
