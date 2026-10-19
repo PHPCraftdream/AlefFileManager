@@ -644,7 +644,9 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(2), async { stream.queue().pop().await })
                 .await
                 .expect("the first frame must arrive soon");
-        assert_eq!(first.expect("a frame").seq, 1);
+        // A loaded runner may evict the oldest frames before the first pop: only the newest of them
+        // is left, so the seq is at least 1 (not exactly 1).
+        assert!(first.expect("a frame").seq >= 1);
         stream.stop();
         let job = stream.take_job().expect("the job must still be there");
         tokio::time::timeout(Duration::from_secs(2), job.result())

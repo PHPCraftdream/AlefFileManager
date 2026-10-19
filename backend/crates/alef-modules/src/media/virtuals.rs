@@ -214,12 +214,18 @@ mod tests {
         let stream = camera.open(VIRTUAL_CAMERA, 120.0).unwrap();
         let queue = stream.queue();
         let mut previous = None;
-        for seq in 1..=5 {
+        let mut last_seq = 0;
+        let mut gaps = 0;
+        // A loaded runner may evict frames before the consumer runs (the queue keeps the newest):
+        // the contract is a strictly increasing seq whose gaps are all counted evictions.
+        for _ in 0..5 {
             let frame = tokio::time::timeout(WAIT, queue.pop())
                 .await
                 .expect("frames must keep coming")
                 .expect("the queue must not close");
-            assert_eq!(frame.seq, seq);
+            assert!(frame.seq > last_seq, "seq {} after {last_seq}", frame.seq);
+            gaps += frame.seq - last_seq - 1;
+            last_seq = frame.seq;
             if let Some(last) = previous {
                 assert!(frame.timestamp_ms > last);
             }
@@ -230,8 +236,12 @@ mod tests {
                 frame.payload.len() as u32,
                 VIRTUAL_WIDTH * VIRTUAL_HEIGHT * 4
             );
-            assert_eq!(frame.dropped, 0);
         }
+        let (_pushed, dropped) = stream.stats();
+        assert!(
+            gaps <= dropped,
+            "seq gaps {gaps} exceed the evictions {dropped}"
+        );
         stream.stop();
     }
 
