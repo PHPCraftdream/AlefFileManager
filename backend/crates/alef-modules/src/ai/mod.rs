@@ -756,10 +756,6 @@ pub(crate) fn session_id(task: &ChatTask) -> (String, Option<String>) {
     let Some(conversation) = task.request.conversation.clone() else {
         return (rush::fresh_session_id(), None);
     };
-    let data_root = task.data_root.path.get().map(|(_, data)| data.clone());
-    let Some(_data_root) = data_root else {
-        return (rush::fresh_session_id(), None);
-    };
     let (id, evicted) = {
         let mut sessions = task.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(id) = sessions.get(&conversation) {

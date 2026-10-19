@@ -152,7 +152,8 @@ pub(crate) async fn run_probe(command: &RushCommand, data_root: &Path) -> ProbeO
     };
     let command = command.clone();
     let scratch_spawn = scratch.clone();
-    let argv = vec!["models".into(), "show".into(), "--json".into()];
+    let mut argv = command.prefix.clone();
+    argv.extend(["models".to_owned(), "show".to_owned(), "--json".to_owned()]);
     let spawn_job = match crate::ai::builtin::executor()
         .submit(move || spawn_child(&command, &resolved, &argv, &scratch_spawn))
     {

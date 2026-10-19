@@ -84,16 +84,24 @@ impl ProviderRoot {
                 let job = builtin::executor()
                     .submit(move || {
                         let mut current = PathBuf::new();
-                        for component in parent.components() {
+                        let mut components = parent.components().peekable();
+                        while let Some(component) = components.next() {
                             current.push(component);
+                            let named = components.peek().is_none();
                             match std::fs::symlink_metadata(&current) {
                                 Ok(meta)
-                                    if meta.file_type().is_symlink() || is_reparse_point(&meta) =>
+                                    if named
+                                        && (meta.file_type().is_symlink()
+                                            || is_reparse_point(&meta)) =>
                                 {
                                     return Err(());
                                 }
-                                Ok(meta) if !meta.is_dir() => return Err(()),
-                                Ok(_) => (),
+                                // Links above the named directory are the system's (macOS /var).
+                                Ok(_) => {
+                                    if !std::fs::metadata(&current).is_ok_and(|meta| meta.is_dir()) {
+                                        return Err(());
+                                    }
+                                }
                                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                                     std::fs::create_dir(&current).map_err(|_| ())?
                                 }
