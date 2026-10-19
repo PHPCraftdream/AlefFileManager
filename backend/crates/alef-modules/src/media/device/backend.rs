@@ -4,6 +4,7 @@
 //! module forwards them to the page.
 use std::{
     fmt::Debug,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{mpsc::RecvTimeoutError, Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -27,13 +28,15 @@ pub trait CameraBackend: Send + Sync + Debug {
 pub trait MicrophoneBackend: Send + Sync + Debug {
     /// The microphones the user has.
     fn list(&self) -> Result<Vec<MicrophoneInfo>, AlefError>;
-    /// Opens a microphone; the returned stream runs until it is stopped.
+    /// Opens a microphone; the returned stream runs until it is stopped, and the second value is
+    /// the rate the chunks will actually carry — the device's own, which need not equal the
+    /// requested one.
     fn open(
         &self,
         id: &str,
         frequency: f64,
         rate: u32,
-    ) -> Result<Arc<DeviceStream<PcmChunk>>, AlefError>;
+    ) -> Result<(Arc<DeviceStream<PcmChunk>>, u32), AlefError>;
 }
 
 /// Where the page sends the audio it plays.
@@ -66,8 +69,8 @@ pub struct MicrophoneInfo {
 /// producer with `Busy`.
 pub struct DeviceStream<T: StreamItem> {
     queue: Arc<MediaQueue<T>>,
-    stop: std::sync::mpsc::Sender<()>,
     job: Mutex<Option<BlockingJob<()>>>,
+    stop: std::sync::mpsc::Sender<()>,
 }
 
 impl<T: StreamItem> std::fmt::Debug for DeviceStream<T> {
@@ -75,6 +78,23 @@ impl<T: StreamItem> std::fmt::Debug for DeviceStream<T> {
         formatter
             .debug_struct("DeviceStream")
             .finish_non_exhaustive()
+    }
+}
+
+/// Runs producer cleanup once on normal exit, cancellation, or unwind.
+struct ExitCleanup(Option<Box<dyn FnOnce() + Send>>);
+impl Drop for ExitCleanup {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.0.take() {
+            let _ = catch_unwind(AssertUnwindSafe(cleanup));
+        }
+    }
+}
+
+impl<T: StreamItem> Drop for DeviceStream<T> {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        self.queue.close();
     }
 }
 
@@ -86,7 +106,13 @@ impl<T: StreamItem> DeviceStream<T> {
         on_exit: impl FnOnce() + Send + 'static,
         produce: impl FnMut(u64, &MediaQueue<T>) -> T + Send + 'static,
     ) -> Result<Arc<Self>, AlefError> {
-        Self::start_on(super::executor(), capacity, interval, on_exit, produce)
+        Self::start_on(
+            super::super::executor(),
+            capacity,
+            interval,
+            on_exit,
+            produce,
+        )
     }
 
     /// Starts a producer that calls `produce` once per `interval` (the first at once) and queues
@@ -103,12 +129,20 @@ impl<T: StreamItem> DeviceStream<T> {
         let queue = Arc::new(MediaQueue::new(capacity));
         let (stop, receiver) = std::sync::mpsc::channel();
         let queue_for_job = queue.clone();
+        let cleanup = ExitCleanup(Some(Box::new(on_exit)));
         let job = executor.submit(move || {
+            let _cleanup = cleanup;
             let mut seq = 0u64;
             let mut next = Instant::now() + interval;
             loop {
+                if queue_for_job.is_closed() {
+                    break;
+                }
                 seq += 1;
                 let item = produce(seq, &queue_for_job);
+                if queue_for_job.is_closed() {
+                    break;
+                }
                 queue_for_job.push(item);
                 let now = Instant::now();
                 let wait = next.saturating_duration_since(now);
@@ -118,7 +152,6 @@ impl<T: StreamItem> DeviceStream<T> {
                     Err(RecvTimeoutError::Timeout) => {}
                 }
             }
-            on_exit();
         })?;
         Ok(Arc::new(Self {
             queue,
@@ -149,6 +182,8 @@ impl<T: StreamItem> DeviceStream<T> {
     }
 }
 
+use super::state::{DeviceKind, Failure};
+
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -172,6 +207,9 @@ struct SinkState {
     samples: u64,
     checksum: u64,
     closed: bool,
+    output: Mutex<Option<Arc<super::super::system::samples::PcmRing>>>,
+    halt: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    failure: Mutex<Option<(Arc<Failure>, DeviceKind)>>,
 }
 
 impl Default for SinkState {
@@ -180,6 +218,22 @@ impl Default for SinkState {
             samples: 0,
             checksum: FNV_OFFSET,
             closed: false,
+            output: Mutex::new(None),
+            halt: Mutex::new(None),
+            failure: Mutex::new(None),
+        }
+    }
+}
+
+impl Drop for SinkState {
+    fn drop(&mut self) {
+        if let Some(halt) = self
+            .halt
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            halt();
         }
     }
 }
@@ -191,6 +245,51 @@ impl AudioSink {
             #[cfg(test)]
             gate: std::sync::Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Associates callback failure status with this sink.
+    pub fn attach_failure(&self, failure: Arc<Failure>, kind: DeviceKind) {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((failure, kind));
+    }
+
+    /// Attaches an output ring; every written chunk is also pushed into it.
+    pub fn attach_output(&self, ring: std::sync::Arc<super::super::system::samples::PcmRing>) {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(ring);
+    }
+
+    /// The attached output ring, if any; the system backend polls it instead of being driven.
+    pub fn output(&self) -> Option<std::sync::Arc<super::super::system::samples::PcmRing>> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Attaches a hook that `close` runs once, after it marked the sink closed; the system audio
+    /// backend takes its operating system stream down through it.
+    pub fn attach_halt(&self, halt: Box<dyn FnOnce() + Send>) {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .halt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(halt);
     }
 
     /// Installs the test-only write gate; see [`WriteGate`].
@@ -208,13 +307,23 @@ impl AudioSink {
                 gate();
             }
         }
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((failure, kind)) = state
+            .failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if let Some(error) = failure.error(*kind) {
+                return Err(error);
+            }
+        }
         if !bytes.len().is_multiple_of(4) {
             return Err(AlefError::new(
                 ErrorCode::InvalidArgument,
                 "the samples are not whole f32 values",
             ));
         }
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.closed {
             return Err(AlefError::new(
                 ErrorCode::Closed,
@@ -226,14 +335,53 @@ impl AudioSink {
             state.checksum = state.checksum.wrapping_mul(FNV_PRIME);
         }
         state.samples += (bytes.len() / 4) as u64;
+        if let Some(ring) = state
+            .output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            let samples: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("whole f32")))
+                .collect();
+            ring.write(&samples);
+        }
         Ok(state.samples)
     }
 
-    /// Closes the sink and answers (samples, checksum).
+    /// Closes the sink and answers (samples, checksum). The attached halt hook, if any, runs once
+    /// here, off the state lock.
     pub fn close(&self) -> (u64, u64) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.closed = true;
-        (state.samples, state.checksum)
+        self.try_close().unwrap_or_else(|_| self.stats())
+    }
+
+    /// Closes, runs the nonblocking halt hook, then returns a stored device failure if present.
+    pub fn try_close(&self) -> Result<(u64, u64), AlefError> {
+        let halt = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.closed = true;
+            let halt = state.halt.lock().unwrap_or_else(|e| e.into_inner()).take();
+            (state.samples, state.checksum, halt)
+        };
+        if let Some(halt) = halt.2 {
+            halt();
+        }
+        let result = (halt.0, halt.1);
+        if let Some((failure, kind)) = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if let Some(error) = failure.error(*kind) {
+                return Err(error);
+            }
+        }
+        Ok(result)
     }
 
     /// The (samples, checksum) so far.
@@ -297,7 +445,7 @@ impl MicrophoneBackend for MissingMicrophone {
         _id: &str,
         _frequency: f64,
         _rate: u32,
-    ) -> Result<Arc<DeviceStream<PcmChunk>>, AlefError> {
+    ) -> Result<(Arc<DeviceStream<PcmChunk>>, u32), AlefError> {
         Err(AlefError::new(
             ErrorCode::NotAvailable,
             "no microphone in this build",
@@ -323,7 +471,7 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::num::NonZeroUsize;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn tiny_frame(seq: u64) -> CameraFrame {
         CameraFrame {
@@ -357,6 +505,71 @@ mod tests {
     }
 
     #[test]
+    fn the_attached_halt_runs_once_on_close_and_never_on_write() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&runs);
+        let sink = AudioSink::new();
+        sink.attach_halt(Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(sink.write(&[1, 2, 3, 4]).unwrap(), 1);
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+        sink.close();
+        sink.close();
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn sink_failure_is_sticky_for_write_and_close_and_halt_runs_once() {
+        let sink = AudioSink::new();
+        let failure = Arc::new(Failure::default());
+        sink.attach_failure(failure.clone(), DeviceKind::Audio);
+        let halts = Arc::new(AtomicUsize::new(0));
+        let count = halts.clone();
+        sink.attach_halt(Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert!(failure.set(super::super::state::DeviceFailure::Internal));
+        for error in [
+            sink.write(&[0; 4]).unwrap_err(),
+            sink.try_close().unwrap_err(),
+        ] {
+            assert_eq!(error.code, ErrorCode::Internal);
+            assert_eq!(error.message, "audio device failed");
+        }
+        assert_eq!(halts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn sink_drop_halts_once_and_failure_precedes_closed() {
+        let halts = Arc::new(AtomicUsize::new(0));
+        {
+            let sink = AudioSink::new();
+            let failure = Arc::new(Failure::default());
+            sink.attach_failure(failure.clone(), DeviceKind::Audio);
+            let count = halts.clone();
+            sink.attach_halt(Box::new(move || {
+                count.fetch_add(1, Ordering::SeqCst);
+            }));
+            sink.close();
+            failure.set(super::super::state::DeviceFailure::Internal);
+            assert_eq!(sink.write(&[0; 4]).unwrap_err().code, ErrorCode::Internal);
+        }
+        assert_eq!(halts.load(Ordering::SeqCst), 1);
+        let drops = Arc::new(AtomicUsize::new(0));
+        let count = drops.clone();
+        let sink = AudioSink::new();
+        sink.attach_halt(Box::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let clone = sink.clone();
+        drop(sink);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(clone);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn the_audio_sink_counts_samples_and_checksums_its_bytes() {
         let sink = AudioSink::new();
         assert_eq!(sink.stats(), (0, FNV_OFFSET));
@@ -376,6 +589,39 @@ mod tests {
             .expect_err("a closed sink must refuse");
         assert_eq!(error.code, ErrorCode::Closed);
         assert_eq!(sink.close(), (2, checksum));
+    }
+
+    #[test]
+    fn the_sink_feeds_an_attached_ring_and_counts_the_overrun() {
+        let ring = Arc::new(super::super::super::system::samples::PcmRing::new(2));
+        let sink = AudioSink::new();
+        sink.attach_output(ring.clone());
+        let bytes: Vec<u8> = [1.0f32, 2.0, 3.0]
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        assert_eq!(sink.write(&bytes).unwrap(), 3);
+        // Only the tail of the write fits: the last two samples survive, the first is the overrun.
+        let mut heard = [0.0f32; 2];
+        ring.read(&mut heard);
+        assert_eq!(heard, [2.0, 3.0]);
+        assert_eq!(ring.overruns(), 1);
+        // The sink's own accounting is untouched by the ring: 3 samples, unchanged FNV fold.
+        let mut checksum = FNV_OFFSET;
+        for byte in bytes.iter() {
+            checksum ^= u64::from(*byte);
+            checksum = checksum.wrapping_mul(FNV_PRIME);
+        }
+        assert_eq!(sink.stats(), (3, checksum));
+        // A sink without an attached ring is unaffected by writes.
+        let bare = AudioSink::new();
+        assert_eq!(bare.write(&bytes).unwrap(), 3);
+        let mut checksum_bare = FNV_OFFSET;
+        for byte in bytes.iter() {
+            checksum_bare ^= u64::from(*byte);
+            checksum_bare = checksum_bare.wrapping_mul(FNV_PRIME);
+        }
+        assert_eq!(bare.stats(), (3, checksum_bare));
     }
 
     #[tokio::test]
@@ -436,6 +682,56 @@ mod tests {
         .await
         .expect("the job must stop soon")
         .ok();
+    }
+
+    #[test]
+    fn busy_producer_refusal_cleans_up_and_dropped_stream_stops_job() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let executor = BlockingExecutor::new(NonZeroUsize::new(1).unwrap());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let exit = Arc::new(std::sync::Mutex::new(Some(exit_tx)));
+        let first = DeviceStream::start_on(
+            &executor,
+            1,
+            Duration::from_secs(5),
+            move || {
+                if let Some(sender) = exit.lock().unwrap().take() {
+                    let _ = sender.send(());
+                }
+            },
+            move |seq, _| {
+                let _ = started_tx.send(());
+                tiny_frame(seq)
+            },
+        )
+        .unwrap();
+        started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("producer starts");
+        let refused_cleanup = Arc::new(AtomicUsize::new(0));
+        let refused_cleanup_count = Arc::clone(&refused_cleanup);
+        let err = DeviceStream::start_on(
+            &executor,
+            1,
+            Duration::from_secs(1),
+            move || {
+                refused_cleanup_count.fetch_add(1, Ordering::SeqCst);
+            },
+            |seq, _| tiny_frame(seq),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::Busy);
+        assert_eq!(refused_cleanup.load(Ordering::SeqCst), 1);
+        drop(first);
+        exit_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("drop cleanup runs");
     }
 
     #[tokio::test]

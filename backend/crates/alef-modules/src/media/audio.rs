@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::{json, media::invalid};
 
-use super::{backend::AudioBackend, substituted};
+use super::{device::backend::AudioBackend, substituted};
 
 /// The fold's outcome, published exactly once by the publisher task: `Ok(())` after the input
 /// drained, or the error the fold ended with (a refused chunk, a panic, a canceled job). Closers
@@ -105,7 +105,7 @@ async fn tear_down(ctx: &CallContext, id: ResourceId) {
 /// outcome and joins both tasks, so a later write answers `Closed`. Closes serialize on
 /// `closing`: a concurrent close waits on the same completion instead of bypassing it.
 struct AudioSinkHandle {
-    sink: super::backend::AudioSink,
+    sink: super::device::backend::AudioSink,
     stream_id: StreamId,
     /// The fold's shared completion; closers wait on it and never take it away.
     done: Arc<DoneState>,
@@ -154,7 +154,7 @@ impl Resource for AudioSinkHandle {
                     publisher.abort();
                 }
             }
-            self.sink.close();
+            let _ = self.sink.try_close();
         })
     }
 }
@@ -321,12 +321,12 @@ pub(crate) fn register_on(
             // The drain above did the teardown work; drop the resource without closing it again
             // (its close would wait on the same `closing` lock).
             tear_down(&ctx, id).await;
-            let (samples, checksum) = sink.close();
+            let (samples, checksum) = sink.try_close()?;
             // The checksum goes out as hex: a u64 does not survive a JSON number exactly.
             json(&json!({
                 "sink": args.sink,
                 "samples": samples,
-                "checksum": super::backend::AudioSink::checksum_hex(checksum),
+                "checksum": super::device::backend::AudioSink::checksum_hex(checksum),
             }))
         })?;
     Ok(())
@@ -409,12 +409,12 @@ mod tests {
     /// write gate on the very sink the fold owns.
     #[derive(Debug, Default)]
     struct GatedAudio {
-        created: Mutex<Option<crate::media::backend::AudioSink>>,
+        created: Mutex<Option<crate::media::device::backend::AudioSink>>,
     }
 
     impl AudioBackend for GatedAudio {
-        fn open(&self) -> Result<crate::media::backend::AudioSink, AlefError> {
-            let sink = crate::media::backend::AudioSink::new();
+        fn open(&self) -> Result<crate::media::device::backend::AudioSink, AlefError> {
+            let sink = crate::media::device::backend::AudioSink::new();
             *self.created.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink.clone());
             Ok(sink)
         }
@@ -541,7 +541,7 @@ mod tests {
         };
         assert_eq!(
             reply["checksum"].as_str().unwrap(),
-            crate::media::backend::AudioSink::checksum_hex(fnv(&heard))
+            crate::media::device::backend::AudioSink::checksum_hex(fnv(&heard))
         );
         let error = registry
             .dispatch(
@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(reply["samples"], 8);
         assert_eq!(
             reply["checksum"].as_str().unwrap(),
-            crate::media::backend::AudioSink::checksum_hex(fnv(&queued))
+            crate::media::device::backend::AudioSink::checksum_hex(fnv(&queued))
         );
         tokio::time::timeout(WAIT, ctx.session.close())
             .await
@@ -720,7 +720,7 @@ mod tests {
         let Reply::Json(second) = second.expect("the second close must succeed") else {
             panic!("expected a JSON close reply");
         };
-        let expected = crate::media::backend::AudioSink::checksum_hex(fnv(&queued));
+        let expected = crate::media::device::backend::AudioSink::checksum_hex(fnv(&queued));
         for reply in [&first, &second] {
             assert_eq!(reply["samples"], 8);
             assert_eq!(reply["checksum"].as_str().unwrap(), expected);
@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(reply["samples"], 8);
         assert_eq!(
             reply["checksum"].as_str().unwrap(),
-            crate::media::backend::AudioSink::checksum_hex(fnv(&queued))
+            crate::media::device::backend::AudioSink::checksum_hex(fnv(&queued))
         );
         tokio::time::timeout(WAIT, ctx.session.close())
             .await

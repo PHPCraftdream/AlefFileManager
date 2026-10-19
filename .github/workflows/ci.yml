@@ -192,6 +192,23 @@ jobs:
         if: needs.plan.outputs.crates_all != 'true'
         run: node scripts/ci/test-crates.mjs "${{ needs.plan.outputs.crates }}"
 
+      # Шаг ставит то, что фиче media-system нужно сверх Servo: заголовки ALSA для cpal;
+      # путь v4l у nokhwa работает на чистых Rust-ioctl и системных пакетов не требует.
+      # pkg-config уже ставится шагом предпосылок Servo, но повтор здесь безвреден и делает
+      # шаг самодостаточным.
+      - name: Media system prerequisites (Linux)
+        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+
+      # M6.2: настоящие бэкенды камеры, микрофона и звука спрятаны за фичей; шаг собирает
+      # фичу на каждой ОС матрицы. Юнит-тесты чистых частей идут обычным путём
+      # `npm run test:rust` сборки по умолчанию — они компилируются без фичи.
+      - name: Media system feature check
+        if: needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none'
+        run: node scripts/cargo.mjs check --locked -p alef-modules --features media-system
+
       # The system clipboard and trash against the real desktop of the clean runner. They change what
       # a user has, so the tests run only on request (ALEF_TEST_DESKTOP=1); Linux needs a display.
       # The default shell stays: Git Bash on Windows puts its own link.exe before the MSVC one.

@@ -15,10 +15,10 @@ use alef_core::{AlefError, ErrorCode};
 use bytes::Bytes;
 
 use super::{
-    backend::{
+    device::backend::{
         AudioBackend, AudioSink, CameraBackend, CameraInfo, DeviceStream, MicrophoneBackend,
     },
-    queue::{CameraFrame, PcmChunk},
+    device::queue::{CameraFrame, PcmChunk},
 };
 
 pub const VIRTUAL_CAMERA: &str = "virtual-0";
@@ -28,8 +28,8 @@ pub const VIRTUAL_HEIGHT: u32 = 720;
 pub const VIRTUAL_RATE: u32 = 48000;
 /// The length of one microphone chunk.
 pub const CHUNK_MS: u64 = 20;
-const FRAME_QUEUE: usize = 3;
-const CHUNK_QUEUE: usize = 8;
+pub const FRAME_QUEUE: usize = 3;
+pub const CHUNK_QUEUE: usize = 8;
 
 /// A camera that paints full HD frames of a moving pattern at the asked rate.
 #[derive(Debug, Default)]
@@ -68,9 +68,10 @@ impl CameraBackend for VirtualCamera {
             ));
         }
         let streams = self.streams.clone();
-        let admitted = self.streams.clone();
         streams.fetch_add(1, Ordering::SeqCst);
-        let started = DeviceStream::start(
+        // The exit callback runs on every path, a refused admission included (the dropped
+        // closure owns it): no rollback here, or the count would be taken back twice.
+        DeviceStream::start(
             FRAME_QUEUE,
             Duration::from_secs_f64(1.0 / fps),
             move || {
@@ -80,16 +81,11 @@ impl CameraBackend for VirtualCamera {
                 width: VIRTUAL_WIDTH,
                 height: VIRTUAL_HEIGHT,
                 seq,
-                timestamp_ms: super::queue::unix_ms(),
+                timestamp_ms: super::device::queue::unix_ms(),
                 dropped: queue.drops(),
                 payload: paint(VIRTUAL_WIDTH, VIRTUAL_HEIGHT, seq),
             },
-        );
-        // A refused admission never runs the exit callback: take the count back here.
-        if started.is_err() {
-            admitted.fetch_sub(1, Ordering::SeqCst);
-        }
-        started
+        )
     }
 }
 
@@ -133,8 +129,8 @@ impl VirtualMicrophone {
 }
 
 impl MicrophoneBackend for VirtualMicrophone {
-    fn list(&self) -> Result<Vec<super::backend::MicrophoneInfo>, AlefError> {
-        Ok(vec![super::backend::MicrophoneInfo {
+    fn list(&self) -> Result<Vec<super::device::backend::MicrophoneInfo>, AlefError> {
+        Ok(vec![super::device::backend::MicrophoneInfo {
             id: VIRTUAL_MICROPHONE.to_owned(),
             label: "Alef virtual microphone".to_owned(),
             rate: VIRTUAL_RATE,
@@ -147,7 +143,7 @@ impl MicrophoneBackend for VirtualMicrophone {
         id: &str,
         frequency: f64,
         rate: u32,
-    ) -> Result<Arc<DeviceStream<PcmChunk>>, AlefError> {
+    ) -> Result<(Arc<DeviceStream<PcmChunk>>, u32), AlefError> {
         if id != VIRTUAL_MICROPHONE {
             return Err(AlefError::new(
                 ErrorCode::NotFound,
@@ -164,8 +160,8 @@ impl MicrophoneBackend for VirtualMicrophone {
         }
         let samples = rate as usize * CHUNK_MS as usize / 1000;
         let streams = self.streams.clone();
-        let admitted = self.streams.clone();
         streams.fetch_add(1, Ordering::SeqCst);
+        // The exit callback runs on every path, a refused admission included (see the camera).
         let started = DeviceStream::start(
             CHUNK_QUEUE,
             Duration::from_millis(CHUNK_MS),
@@ -183,7 +179,7 @@ impl MicrophoneBackend for VirtualMicrophone {
                 }
                 PcmChunk {
                     seq,
-                    timestamp_ms: super::queue::unix_ms(),
+                    timestamp_ms: super::device::queue::unix_ms(),
                     dropped: queue.drops(),
                     rate,
                     samples,
@@ -191,10 +187,7 @@ impl MicrophoneBackend for VirtualMicrophone {
                 }
             },
         );
-        if started.is_err() {
-            admitted.fetch_sub(1, Ordering::SeqCst);
-        }
-        started
+        started.map(|stream| (stream, rate))
     }
 }
 
@@ -276,7 +269,8 @@ mod tests {
     #[tokio::test]
     async fn the_virtual_microphone_carries_a_sine_of_the_requested_frequency() {
         let microphone = VirtualMicrophone::default();
-        let stream = microphone.open(VIRTUAL_MICROPHONE, 440.0, 48000).unwrap();
+        let (stream, rate) = microphone.open(VIRTUAL_MICROPHONE, 440.0, 48000).unwrap();
+        assert_eq!(rate, VIRTUAL_RATE);
         let queue = stream.queue();
         let mut samples: Vec<f32> = Vec::new();
         while samples.len() < 48000 {

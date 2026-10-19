@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [features]
 e2e = ["alef-runtime/e2e", "alef-modules/e2e"]
+media-system = ["alef-modules/media-system"]
 spike-origin = ["alef-runtime/spike-origin"]
 angle = ["alef-runtime/angle"]
 
