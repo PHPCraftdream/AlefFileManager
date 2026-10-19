@@ -1,15 +1,86 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The provider interface of the `ai` module and its two implementations: none (a build without a
-//! bridge to Rush) and a deterministic fake (tests and end-to-end runs). A real one arrives with
-//! the Rush transport; everything behind the trait is untrusted from here on.
-use std::sync::atomic::{AtomicUsize, Ordering};
+//! The provider interface and child-process bridge plumbing.
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use alef_core::{registry::context::CancelHandle, AlefError, ErrorCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use super::dto::{ChatMessage, Role};
+#[path = "rush/process.rs"]
+pub(crate) mod rush_process;
+
+/// A Rush role the application may ask for (`ai.roles`), as the provider describes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export, export_to = "modules.ts")]
+pub struct Role {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    /// What the role can do (`text`, `tool_calls`, `usage`, `cancel`).
+    pub capabilities: Vec<String>,
+}
+
+/// One message of the history the application sends; only `user` and `assistant` are allowed.
+/// (A tagged enum buffers its content, so `deny_unknown_fields` says nothing here.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(tag = "role", rename_all = "lowercase")]
+#[ts(export, export_to = "modules.ts")]
+pub enum ChatMessage {
+    User { content: String },
+    Assistant { content: String },
+}
+
+/// One part of a chat as it streams to the page (`ai.chat` iterator).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export, export_to = "modules.ts")]
+pub enum ChatPart {
+    Text {
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        #[ts(type = "unknown")]
+        arguments: serde_json::Value,
+    },
+    #[serde(rename_all = "camelCase")]
+    Usage {
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_creation_tokens: Option<u64>,
+        estimated: bool,
+        complete: bool,
+    },
+    End {
+        #[serde(default = "completed")]
+        reason: String,
+    },
+}
+
+fn completed() -> String {
+    "completed".to_owned() // the stub backend's only end reason
+}
+
+/// What the page asks of `ai.chat`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "modules.ts")]
+pub struct ChatOptions {
+    pub role: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub builtin: Vec<String>,
+}
 
 /// One event of a chat, as the provider produces it and the module relays to the page.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,6 +93,11 @@ pub enum ChatEvent {
     },
     Usage(ChatUsage),
     Completed,
+    /// A coded failure of the provider itself; the module relays it as the chat error.
+    Failed {
+        code: ErrorCode,
+        message: String,
+    },
 }
 
 /// Cumulative token use of the chat so far; snapshots, never additions of snapshots.
@@ -52,10 +128,11 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
     pub builtin: Vec<ToolDef>,
     pub history: bool,
+    /// The Alef conversation this turn belongs to; `None` for a stateless chat.
+    pub conversation: Option<String>,
 }
 
-/// How the module drives a chat it has already handed to the provider: cancellation, and the
-/// results of the tool calls the model made.
+/// How the module drives a running chat: cancellation and the tool-call results.
 pub struct ChatControl {
     pub cancel: CancelHandle,
     pub results: mpsc::Receiver<Result<Value, AlefError>>,
@@ -65,19 +142,35 @@ pub struct ChatControl {
 pub trait AiProvider: Send + Sync + std::fmt::Debug {
     /// The roles this build can serve; the module publishes only the allowed ones of these.
     fn roles(&self) -> Result<Vec<Role>, AlefError>;
-    /// Starts a chat; the events come on the receiver, the results on `control`.
+    /// Async form of `roles` for handlers; the default just boxes the sync one.
+    fn roles_fut(&self) -> Pin<Box<dyn Future<Output = Result<Vec<Role>, AlefError>> + Send + '_>> {
+        Box::pin(async { self.roles() })
+    }
+    /// Starts a chat; streaming hands out handles; results arrive on `control`.
     fn chat(
         &self,
         request: ChatRequest,
         control: ChatControl,
     ) -> Result<mpsc::Receiver<ChatEvent>, AlefError>;
-    /// The tokens this chat will at most use, when the provider can name a bound; `None` is
-    /// unknown, and a user's token limit together with `None` refuses the attempt
+    /// The tokens this chat will at most use, when the provider can name a bound; `None` is unknown, and a user's token limit together with `None` refuses the attempt
     /// (docs/stages/m9-ai.md §6).
     fn token_bound(&self, _request: &ChatRequest) -> Option<u64> {
         None
     }
+    /// Asks the provider to drop any stored conversation state behind this request
+    /// (best effort; the fake and the missing provider keep nothing).
+    fn forget(&self, _request: &ChatRequest) {}
 }
+
+#[cfg(test)]
+pub(crate) use rush_process::BoundedReader;
+pub use rush_process::RushCommand;
+#[cfg(test)]
+pub(crate) use rush_process::{effective_of, filter_env};
+pub(crate) use rush_process::{
+    fail_after, run_probe, spawn_child, spawnable_program, sync, ProbeOutcome, SessionMap,
+    ALLOWED_PROVIDERS,
+};
 
 fn missing() -> AlefError {
     AlefError::new(ErrorCode::NotAvailable, "no ai provider in this build")
@@ -100,33 +193,30 @@ impl AiProvider for MissingProvider {
     }
 }
 
-/// The pause between the events of the fake, so that cancellation is observable mid-stream.
+/// Pause between fake events so cancellation is observable mid-stream.
 const PACE: std::time::Duration = std::time::Duration::from_millis(10);
-/// How long the fake waits for one tool result before it gives the chat up.
+/// How long the fake waits for one tool result.
 const RESULT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The token upper bound the fake names for every chat.
 const FAKE_TOKEN_BOUND: u64 = 4096;
-/// The request log of the tests keeps the most recent requests only.
 const SEEN_CAP: usize = 256;
 
-/// A deterministic provider for tests and end-to-end runs: it thinks, calls the tools the request
-/// listed (in order, with fixed arguments), waits for one result per call, reports what it saw
-/// (only when the request listed tools: a no-tool chat answers without a Saw text), accounts a
-/// round-based usage and completes. It knows nothing about registrations; the module
-/// decides which tools reach it.
+/// A deterministic provider for tests and e2e runs: fixed tool calls, one result wait, what it
+/// saw (with tools), round-based usage, one completion; registrations are the module's call.
 #[derive(Debug, Default)]
 pub struct FakeProvider {
     started: AtomicUsize,
     next_chat_gate: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
-    /// Test seam: the failure `roles` answers with until it is cleared again.
+    /// Test seam: the failure `roles` answers with until cleared.
     roles_failure: std::sync::Mutex<Option<String>>,
-    /// Test seam: the failure the next `chat` start answers with until it is cleared again.
+    /// Test seam: the failure the next `chat` start answers with until cleared.
     chat_failure: std::sync::Mutex<Option<String>>,
-    /// Test seam: every request the chats handed over, oldest first.
+    /// Test seam: the next chat emits a coded provider failure after starting.
+    async_failure: std::sync::Mutex<Option<(ErrorCode, String)>>,
     seen: std::sync::Mutex<Vec<ChatRequest>>,
 }
 
-/// Opens a single fake chat's producer gate. Dropping the guard also releases it.
+/// Opens one fake chat's producer gate; dropping the guard releases it.
 #[derive(Debug)]
 pub struct ChatGate(Option<oneshot::Sender<()>>);
 
@@ -159,17 +249,20 @@ impl FakeProvider {
         self.started.load(Ordering::SeqCst)
     }
 
-    /// Seeds the failure `roles` answers with; `None` clears it. The message stands in for the
-    /// raw text of a real provider — credentials included — and is echoed into the details.
+    /// Seeds the failure `roles` answers with; `None` clears it (a stand-in for raw provider
+    /// text — credentials included — echoed into the details).
     pub fn seed_roles_failure(&self, message: Option<String>) {
         *self.roles_failure.lock().expect("fake roles failure lock") = message;
     }
 
-    /// Seeds the failure the next `chat` start answers with; `None` clears it. The message stands
-    /// in for the raw text of a real provider — credentials included — and is echoed into the
-    /// details.
+    /// Seeds the failure the next `chat` start answers with; `None` clears it (see above).
     pub fn seed_chat_failure(&self, message: Option<String>) {
         *self.chat_failure.lock().expect("fake chat failure lock") = message;
+    }
+
+    /// Seeds a coded asynchronous failure for the next chat event.
+    pub fn seed_async_failure(&self, failure: Option<(ErrorCode, String)>) {
+        *self.async_failure.lock().expect("fake async failure lock") = failure;
     }
 
     /// The most recent requests this provider received, oldest first: the boundary observer of
@@ -239,7 +332,12 @@ impl AiProvider for FakeProvider {
             .lock()
             .expect("fake chat gate lock")
             .take();
-        tokio::spawn(produce(request, control, sender, gate));
+        let failure = self
+            .async_failure
+            .lock()
+            .expect("fake async failure lock")
+            .take();
+        tokio::spawn(produce(request, control, sender, gate, failure));
         Ok(receiver)
     }
     fn token_bound(&self, _request: &ChatRequest) -> Option<u64> {
@@ -274,12 +372,17 @@ async fn produce(
     mut control: ChatControl,
     sender: mpsc::Sender<ChatEvent>,
     gate: Option<oneshot::Receiver<()>>,
+    failure: Option<(ErrorCode, String)>,
 ) {
     if let Some(gate) = gate {
         tokio::select! {
             _ = control.cancel.cancelled() => return,
             _ = gate => {}
         }
+    }
+    if let Some((code, message)) = failure {
+        let _ = emit(&control, &sender, ChatEvent::Failed { code, message }).await;
+        return;
     }
     if request.history {
         let history = serde_json::to_string(&request.messages).unwrap_or_default();
@@ -385,9 +488,10 @@ async fn produce(
 
 #[cfg(test)]
 mod tests {
+    use super::rush_process::MAX_SESSIONS;
     use super::*;
-    use crate::ai::dto::ChatMessage;
     use alef_core::registry::context::CancelHandle;
+    use std::path::Path;
 
     fn unavailable(result: Result<(), AlefError>) {
         let error = result.unwrap_err();
@@ -412,6 +516,7 @@ mod tests {
                         tools: Vec::new(),
                         builtin: Vec::new(),
                         history: false,
+                        conversation: None,
                     },
                     ChatControl {
                         cancel: cancelled,
@@ -422,5 +527,39 @@ mod tests {
         );
         drop(cancel);
         drop(results);
+    }
+
+    #[test]
+    fn session_map_evicts_oldest_and_returns_all_live_ids_for_teardown() {
+        let mut sessions = SessionMap::default();
+        for index in 0..MAX_SESSIONS {
+            assert_eq!(
+                sessions.insert(format!("conv-{index}"), format!("alef-{index}")),
+                None
+            );
+        }
+        assert_eq!(sessions.len(), MAX_SESSIONS);
+        assert_eq!(
+            sessions.insert("next".into(), "alef-next".into()),
+            Some("alef-0".into())
+        );
+        let all = sessions.ids(usize::MAX);
+        assert_eq!(all.len(), MAX_SESSIONS);
+        assert!(!all.contains(&"alef-0".to_owned()));
+        assert!(all.contains(&"alef-next".to_owned()));
+    }
+
+    #[test]
+    fn only_spawnable_programs_are_accepted() {
+        assert!(spawnable_program(Path::new("rush.exe")));
+        assert!(spawnable_program(Path::new("RUSH.COM")));
+        #[cfg(windows)]
+        {
+            assert!(!spawnable_program(Path::new("rush.cmd")));
+            assert!(!spawnable_program(Path::new("rush.bat")));
+            assert!(!spawnable_program(Path::new("rush")));
+        }
+        #[cfg(not(windows))]
+        assert!(spawnable_program(Path::new("rush")));
     }
 }

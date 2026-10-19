@@ -8,7 +8,7 @@
 mod declared;
 pub(crate) mod exec;
 #[cfg(windows)]
-mod native;
+pub(crate) mod native;
 pub(crate) mod pty;
 pub(crate) mod spawn;
 pub(crate) mod tree;

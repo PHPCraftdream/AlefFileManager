@@ -314,7 +314,7 @@ pub(crate) async fn spawn_command(
     #[cfg(unix)]
     let (mut child, killer) = super::tree::spawn(&mut command).await?;
     #[cfg(windows)]
-    let (mut child, killer) = super::native::spawn(&program, &args, &cwd, &env, pipes)?;
+    let (mut child, killer) = super::native::spawn(&program, &args, &cwd, &env, &[], pipes)?;
     let mut tasks = tokio::task::JoinSet::new();
     let mut input = tokio::task::JoinSet::new();
     let (stdin, stdout, stderr) = (

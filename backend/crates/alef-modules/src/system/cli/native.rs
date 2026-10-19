@@ -194,6 +194,7 @@ pub(crate) fn spawn(
     args: &[String],
     cwd: &Path,
     env: &[(String, String)],
+    remove_prefixes: &[&str],
     pipes: Pipes,
 ) -> Result<(Child, Killer), AlefError> {
     let exe = wide(program.as_os_str())?;
@@ -212,6 +213,10 @@ pub(crate) fn spawn(
     let mut line = wide(OsStr::new(&line))?;
     let cwd = wide(cwd.as_os_str())?;
     let mut pairs: BTreeMap<String, (std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+        .filter(|(k, _)| {
+            let key = k.to_string_lossy().to_uppercase();
+            !remove_prefixes.iter().any(|prefix| key.starts_with(prefix))
+        })
         .map(|(k, v)| (k.to_string_lossy().to_uppercase(), (k, v)))
         .collect();
     for (k, v) in env {

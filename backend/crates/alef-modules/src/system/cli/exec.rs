@@ -250,6 +250,7 @@ pub(crate) async fn run(
                     &args,
                     &cwd,
                     &env,
+                    &[],
                     super::spawn::Pipes {
                         stdin: stdin_body.is_some(),
                         stdout: true,
@@ -265,6 +266,7 @@ pub(crate) async fn run(
                 &args,
                 &cwd,
                 &env,
+                &[],
                 super::spawn::Pipes {
                     stdin: stdin_body.is_some(),
                     stdout: true,

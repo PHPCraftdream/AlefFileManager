@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use alef_core::{
     ids::StreamId,
+    protocol::frame::Frame,
     security::{
         authority::Authority,
         consent::{Consent, Decision, Right},
@@ -311,6 +312,24 @@ async fn credential_sentinel_never_crosses_the_rush_boundary() {
             "the limits file carries the sentinel"
         );
     }
+    // Provider failures emitted after chat admission are cleansed at the stream boundary too: this
+    // case runs last, with the synchronous seeds cleared, so that the chat is really admitted.
+    fixture.ai.seed_async_failure(Some((
+        ErrorCode::Internal,
+        format!("provider stream failed: {sentinel}; /home/user/.rush/config"),
+    )));
+    let (_chat, _stream, mut reader) = start_chat(&fixture, chat_options(&[])).await;
+    let terminal = frame(&mut reader).await;
+    match terminal {
+        Frame::Error(error) => {
+            assert_eq!(error.code, ErrorCode::Internal);
+            assert!(!error.message.contains(sentinel), "{}", error.message);
+            assert!(!error.message.contains(".rush"), "{}", error.message);
+            assert!(error.details.is_none(), "{:?}", error.details);
+        }
+        other => panic!("expected a cleaned stream error, got {other:?}"),
+    }
+    fixture.ai.seed_async_failure(None);
 }
 
 /// Mutation guard: `ChatRequest` is assembled only from the validated role, messages, tools and
@@ -341,7 +360,7 @@ async fn provider_observer_sees_only_the_fixed_request_shape() {
         1,
         "the refused role became a request"
     );
-    // The request the provider received has the five boundary fields and nothing else.
+    // The request the provider received has the fixed boundary fields and nothing else.
     let request = serde_json::to_value(&fixture.ai.requests()[0]).unwrap();
     let mut keys: Vec<&str> = request
         .as_object()
@@ -350,7 +369,17 @@ async fn provider_observer_sees_only_the_fixed_request_shape() {
         .map(String::as_str)
         .collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["builtin", "history", "messages", "role", "tools"]);
+    assert_eq!(
+        keys,
+        [
+            "builtin",
+            "conversation",
+            "history",
+            "messages",
+            "role",
+            "tools"
+        ]
+    );
     let seen = serde_json::to_string(&request).unwrap();
     for field in ["endpoint", "redirect", "recipient", "apiKey"] {
         assert!(
