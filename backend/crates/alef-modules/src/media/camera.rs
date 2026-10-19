@@ -14,8 +14,8 @@ use serde_json::json;
 use crate::{json, media::invalid};
 
 use super::{
-    backend::{CameraBackend, DeviceStream},
-    queue::CameraFrame,
+    device::backend::{CameraBackend, DeviceStream},
+    device::queue::CameraFrame,
     substituted,
 };
 

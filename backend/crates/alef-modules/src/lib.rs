@@ -81,8 +81,17 @@ impl Backends {
             notification: Arc::new(SystemNotifications::new(application)),
             secrets: Arc::new(SystemSecrets::default()),
             ai: Arc::new(MissingProvider),
+            #[cfg(feature = "media-system")]
+            camera: Arc::new(media::system::SystemCamera),
+            #[cfg(feature = "media-system")]
+            microphone: Arc::new(media::system::SystemMicrophone),
+            #[cfg(feature = "media-system")]
+            audio: Arc::new(media::system::SystemAudio),
+            #[cfg(not(feature = "media-system"))]
             camera: Arc::new(MissingCamera),
+            #[cfg(not(feature = "media-system"))]
             microphone: Arc::new(MissingMicrophone),
+            #[cfg(not(feature = "media-system"))]
             audio: Arc::new(MissingAudio),
         }
     }
@@ -162,6 +171,13 @@ impl Backends {
 mod tests {
     use super::*;
 
+    /// The `media-system` build has the real devices behind `Backends::system`; the others keep
+    /// the Missing stand-ins.
+    #[cfg(feature = "media-system")]
+    const SYSTEM_MEDIA: [&str; 3] = ["SystemCamera", "SystemMicrophone", "SystemAudio"];
+    #[cfg(not(feature = "media-system"))]
+    const SYSTEM_MEDIA: [&str; 3] = ["MissingCamera", "MissingMicrophone", "MissingAudio"];
+
     fn kinds(backends: &Backends) -> [String; 9] {
         [
             format!("{:?}", backends.clipboard),
@@ -180,17 +196,17 @@ mod tests {
     #[test]
     fn from_environment_without_the_e2e_feature_uses_system_backends() {
         let kinds = kinds(&Backends::from_environment("app"));
-        for (kind, expected) in kinds.iter().zip([
+        let mut expected = [
             "SystemClipboard",
             "SystemShell",
             "SystemNotifications",
             "SystemSecrets",
             "SystemAutostart",
             "SystemDeepLinks",
-            "MissingCamera",
-            "MissingMicrophone",
-            "MissingAudio",
-        ]) {
+        ]
+        .to_vec();
+        expected.extend_from_slice(&SYSTEM_MEDIA);
+        for (kind, expected) in kinds.iter().zip(expected) {
             assert!(kind.contains(expected), "{kinds:?}");
         }
     }
@@ -206,10 +222,19 @@ mod tests {
             assert!(kinds[3].contains("SystemSecrets"), "{kinds:?}");
             assert!(kinds[4].contains("SystemAutostart"), "{kinds:?}");
             assert!(kinds[5].contains("SystemDeepLinks"), "{kinds:?}");
-            assert!(kinds[6].contains("MissingCamera"), "{kinds:?}");
-            assert!(kinds[7].contains("MissingMicrophone"), "{kinds:?}");
-            assert!(kinds[8].contains("MissingAudio"), "{kinds:?}");
+            for (kind, expected) in kinds[6..].iter().zip(SYSTEM_MEDIA) {
+                assert!(kind.contains(expected), "{kinds:?}");
+            }
         }
+    }
+
+    #[cfg(feature = "media-system")]
+    #[test]
+    fn the_system_backends_pick_the_system_media_devices() {
+        let kinds = kinds(&Backends::system("app"));
+        assert!(kinds[6].contains("SystemCamera"), "{kinds:?}");
+        assert!(kinds[7].contains("SystemMicrophone"), "{kinds:?}");
+        assert!(kinds[8].contains("SystemAudio"), "{kinds:?}");
     }
 
     #[test]

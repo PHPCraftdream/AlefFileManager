@@ -8,6 +8,7 @@ publish = false
 
 [features]
 e2e = []
+media-system = ["dep:cpal", "dep:nokhwa"]
 
 [dependencies]
 alef-core = { path = "../alef-core" }
@@ -43,6 +44,8 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws
 webpki-roots = "=1.0.9"
 async-tungstenite = { version = "=0.35.0", default-features = false, features = ["handshake", "tokio-runtime"] }
 futures-util = { version = "=0.3.34", default-features = false, features = ["std"] }
+cpal = { version = "=0.18.2", optional = true }
+nokhwa = { version = "=0.10.11", optional = true, default-features = false, features = ["input-v4l", "input-avfoundation", "input-msmf"] }
 url = "=2.5.8"
 
 [target.'cfg(windows)'.dependencies]

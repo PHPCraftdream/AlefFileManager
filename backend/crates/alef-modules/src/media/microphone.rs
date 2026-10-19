@@ -14,8 +14,8 @@ use serde_json::json;
 use crate::{json, media::invalid};
 
 use super::{
-    backend::{DeviceStream, MicrophoneBackend},
-    queue::PcmChunk,
+    device::backend::{DeviceStream, MicrophoneBackend},
+    device::queue::PcmChunk,
     substituted,
 };
 
@@ -95,7 +95,9 @@ pub(crate) fn register(
                     return Err(invalid("rate must be between 8000 and 192000".to_owned()));
                 }
                 let id = args.id.clone();
-                let stream = crate::media::executor()
+                // The rate the chunks actually carry comes back from the backend: the system
+                // microphone follows the device, the virtual one echoes the request.
+                let (stream, actual_rate) = crate::media::executor()
                     .submit(move || backend.open(&id, frequency, rate))?
                     .result()
                     .await??;
@@ -103,7 +105,7 @@ pub(crate) fn register(
                 let relay = super::RelayHandle::spawn(writer, stream.clone());
                 let microphone = match ctx.resources().insert(Box::new(MicrophoneHandle {
                     stream: stream.clone(),
-                    rate,
+                    rate: actual_rate,
                     relay,
                 })) {
                     Ok(microphone) => microphone,
@@ -113,7 +115,7 @@ pub(crate) fn register(
                         return Err(error);
                     }
                 };
-                json(&json!({ "microphone": microphone.0, "stream": stream_id.0 }))
+                json(&json!({ "microphone": microphone.0, "stream": stream_id.0, "rate": actual_rate }))
             }
         })?;
     registry
@@ -121,18 +123,19 @@ pub(crate) fn register(
         .handler(move |ctx, args| async move {
             let id = ResourceId(args.microphone);
             // An unknown or foreign id is NOT_FOUND and the resource is left alone.
-            let (rate, (pushed, dropped)) = ctx
+            let (_rate, stream) = ctx
                 .resources()
                 .with_as::<MicrophoneHandle, _>(id, |handle| {
-                    (handle.rate, handle.stream.stats())
+                    (handle.rate, handle.stream.clone())
                 })?;
             if let Ok(resource) = ctx.resources().take(id) {
                 resource.close().await;
             }
+            let (pushed, dropped) = stream.stats();
             json(&json!({
                 "microphone": args.microphone,
                 "chunks": pushed,
-                "samples": pushed * u64::from(rate) * 20 / 1000,
+                "samples": stream.queue().samples(),
                 "dropped": dropped,
             }))
         })?;

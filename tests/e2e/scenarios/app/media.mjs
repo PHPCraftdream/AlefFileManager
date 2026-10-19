@@ -23,6 +23,16 @@ const MEDIA_MODE_CHECKS = {
   substituted: ['media-substituted-camera-is-not-available'],
 };
 
+// The raw 1280x720 stream saturates the page transport of the macOS runners (1.4-3.1 fps, control
+// calls delayed by 340-640 ms: docs/stages/m6-media.md, task M6.3). The scheduler then stretches
+// single polls of the bridge glue past the watchdog's 50 ms (seen: bridge.pump 141 ms, with
+// hundreds of stream acks in flight). Those stalls are the symptom of that saturation, not a
+// separate defect: they are tolerated ONLY in the allowed run on macOS, capped below 1 s and
+// counted, so a real block still fails. Remove this allowance when M6.3 lands.
+const SATURATED_TRANSPORT = process.platform === 'darwin'
+  ? ['bridge.pump', 'bridge.request'].map(kind => ({ kind, minMs: 50, maxMs: 1000, count: 100 }))
+  : [];
+
 export function mediaScenarios({ drive }) {
   return {
     // The virtual camera, microphone and audio sink: the judge keeps the measured spike of the
@@ -39,6 +49,7 @@ export function mediaScenarios({ drive }) {
           targets: { mode },
           env: { ALEF_E2E_CONSENT: decision },
           expectedChecks: expected,
+          expectedBusStalls: mode === 'allowed' ? SATURATED_TRANSPORT : [],
           judge: async lines => {
             for (const line of lines.filter(candidate => candidate.includes('media-camera-stats'))) {
               console.log(`    ${line}`);

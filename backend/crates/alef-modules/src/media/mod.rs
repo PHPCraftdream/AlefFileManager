@@ -6,17 +6,19 @@
 //! producer, a bounded drop-oldest queue keeps the newest frames, and the relay forwards
 //! them off the bus.
 pub mod audio;
-pub mod backend;
 pub mod camera;
+pub mod device;
 pub mod microphone;
-pub mod queue;
+pub mod system;
 pub mod virtuals;
 
-pub use backend::{
+pub use device::backend::{
     AudioBackend, AudioSink, CameraBackend, CameraInfo, DeviceStream, MicrophoneBackend,
     MicrophoneInfo, MissingAudio, MissingCamera, MissingMicrophone,
 };
-pub use queue::{CameraFrame, MediaQueue, PcmChunk, StreamItem};
+pub use device::queue::{CameraFrame, MediaQueue, PcmChunk, StreamItem};
+#[cfg(feature = "media-system")]
+pub use system::{SystemAudio, SystemCamera, SystemMicrophone};
 pub use virtuals::{VirtualAudio, VirtualCamera, VirtualMicrophone};
 
 use std::sync::{Arc, Mutex};
@@ -86,11 +88,16 @@ pub(crate) async fn relay<T: StreamItem + Sync>(
         tokio::select! {
             biased;
             _ = relay_canceled(&mut cancel) => { canceled = true; break; }
+            _ = queue.failed() => break,
             sent = send => { if sent.is_err() { break; } }
         }
     }
     stream.stop();
-    if canceled {
+    if canceled && queue.error().is_none() {
+        writer.end_discarding_pending();
+    } else if let Some(error) = queue.error() {
+        writer.error(error);
+    } else if canceled {
         writer.end_discarding_pending();
     } else {
         writer.end();
@@ -139,6 +146,66 @@ impl RelayHandle {
         let task = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(task) = task {
             let _ = task.await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod relay_failure_tests {
+    use super::*;
+    use alef_core::{
+        protocol::{call::Limits, frame::Frame},
+        session::session::SessionManager,
+    };
+    use bytes::Bytes;
+    use std::{sync::Arc, time::Duration};
+
+    #[tokio::test]
+    async fn producer_failure_wakes_relay_while_waiting_for_credit() {
+        let session = SessionManager::new(Arc::new(|| "relay-test".into()), Limits::default())
+            .begin_document(1)
+            .await;
+        let (writer, id) = session.streams().open_outgoing();
+        let mut reader = session.streams().reader(id).expect("same session reader");
+        let stream = DeviceStream::start_on(
+            &alef_core::session::BlockingExecutor::new(std::num::NonZeroUsize::new(1).unwrap()),
+            1,
+            Duration::from_secs(5),
+            || {},
+            |_, queue| {
+                queue.fail(AlefError::new(
+                    ErrorCode::NotAvailable,
+                    "fixed camera failure",
+                ));
+                CameraFrame {
+                    width: 1,
+                    height: 1,
+                    seq: 1,
+                    timestamp_ms: 0,
+                    dropped: 0,
+                    payload: Bytes::new(),
+                }
+            },
+        )
+        .expect("producer admitted");
+        let (_cancel, cancel_rx) = tokio::sync::watch::channel(false);
+        let relay = tokio::spawn(relay(writer, stream.clone(), cancel_rx));
+        let result = tokio::time::timeout(Duration::from_secs(2), reader.next_frame())
+            .await
+            .expect("relay wakes bounded");
+        assert!(
+            matches!(result, Some(Frame::Error(error)) if error.message == "fixed camera failure")
+        );
+        tokio::time::timeout(Duration::from_secs(2), relay)
+            .await
+            .expect("relay stopped")
+            .unwrap();
+        stream.stop();
+        if let Some(job) = stream.take_job() {
+            tokio::time::timeout(Duration::from_secs(2), job.result())
+                .await
+                .expect("producer joined")
+                .unwrap();
         }
     }
 }
