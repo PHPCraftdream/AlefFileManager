@@ -77,6 +77,7 @@ class StreamReadable implements Readable {
   #frames: FrameDecoder;
   #controller: AbortController;
   #unacked = 0;
+  #inFlight: Promise<void> | null = null;
   #closed = false;
 
   constructor(id: number, frames: FrameDecoder, controller: AbortController) {
@@ -85,15 +86,19 @@ class StreamReadable implements Readable {
     this.#controller = controller;
   }
 
-  async #ack(force: boolean): Promise<void> {
-    if (this.#unacked === 0 || (!force && this.#unacked < ACK_BATCH)) return;
+  /** Acks without making the reader wait for the reply: one in flight, the rest accumulates. */
+  #ack(): void {
+    if (this.#closed || this.#inFlight || this.#unacked < ACK_BATCH) return;
     const bytes = this.#unacked;
     this.#unacked = 0;
-    try {
-      await call('runtime.stream.ack', { id: this.id, bytes });
-    } catch {
-      // the stream is already gone; the read below reports the reason
-    }
+    this.#inFlight = call('runtime.stream.ack', { id: this.id, bytes })
+      .catch(() => {
+        // the stream is already gone; the read reports the reason
+      })
+      .then(() => {
+        this.#inFlight = null;
+        this.#ack();
+      });
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<StreamFrame> {
@@ -108,7 +113,7 @@ class StreamReadable implements Readable {
           throw errorFromBody(JSON.parse(new TextDecoder().decode(frame.payload)));
         }
         this.#unacked += frame.payload.length;
-        await this.#ack(false);
+        this.#ack();
         if (frame.kind === KIND.json) {
           yield { kind: 'json', value: JSON.parse(new TextDecoder().decode(frame.payload)) };
         } else if (frame.kind === KIND.binary) {

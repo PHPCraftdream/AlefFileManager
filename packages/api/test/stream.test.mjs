@@ -9,9 +9,11 @@ import {
 // stream id -> reply; control calls are answered with {}.
 const streams = new Map();
 const callWaiters = new Set();
+let ackGate = null; // while set, acks stay unanswered
 const runtime = installRuntime({
-  handler(request) {
+  async handler(request) {
     for (const waiter of [...callWaiters]) waiter(request);
+    if (request.url === 'native://call/runtime.stream.ack' && ackGate) await ackGate;
     const match = /^native:\/\/stream\/(\d+)$/.exec(request.url);
     if (!match) return undefined;
     return streams.get(Number(match[1])) ?? { status: 404, json: { code: 'NOT_FOUND', message: 'stream not found' } };
@@ -36,6 +38,28 @@ async function closed(id, action) {
     clearTimeout(timer);
     resolve();
   }
+}
+
+// Resolves with the acks of stream `id` once there are `count` of them.
+async function acks(id, count) {
+  const seen = () => sent('runtime.stream.ack').filter(args => args.id === id);
+  if (seen().length >= count) return seen();
+  let waiter;
+  let timer;
+  const arrived = new Promise((resolve, reject) => {
+    waiter = request => {
+      if (request.url === 'native://call/runtime.stream.ack' && seen().length >= count) resolve();
+    };
+    timer = setTimeout(() => reject(new Error(`missing ack ${count} of stream ${id}`)), 2000);
+  });
+  callWaiters.add(waiter);
+  try {
+    await arrived;
+  } finally {
+    callWaiters.delete(waiter);
+    clearTimeout(timer);
+  }
+  return seen();
 }
 
 async function collect(readable) {
@@ -81,11 +105,35 @@ test('consumed bytes are acked in batches, json frames included', async () => {
   const note = { text: 'x'.repeat(50) };
   const noteBytes = JSON.stringify(note).length;
   streams.set(3, { chunks: [join(binaryFrame(piece), binaryFrame(piece), jsonFrame(note), binaryFrame(piece), endFrame())] });
-  const before = runtime.calls('runtime.stream.ack').length;
   await collect(await openReadable(3));
-  const acks = sent('runtime.stream.ack').slice(before);
   const total = 3 * piece.length + noteBytes;
-  assert.deepEqual(acks, [{ id: 3, bytes: total }], 'one ack once 256 KiB were consumed; it counts every payload byte');
+  assert.deepEqual(await acks(3, 1), [{ id: 3, bytes: total }], 'one ack once 256 KiB were consumed; it counts every payload byte');
+});
+
+test('the reader does not wait for an ack reply; one ack is in flight and the rest accumulates', async () => {
+  const piece = new Uint8Array(300 * 1024);
+  streams.set(9, { chunks: [join(binaryFrame(piece), binaryFrame(piece), binaryFrame(piece), endFrame())] });
+  let release;
+  ackGate = new Promise(resolve => { release = resolve; });
+  const iterator = (await openReadable(9))[Symbol.asyncIterator]();
+  try {
+    for (let index = 0; index < 3; index += 1) {
+      const item = await iterator.next();
+      assert.equal(item.done, false, `frame ${index + 1} is delivered while the first ack is unanswered`);
+    }
+    assert.deepEqual(await acks(9, 1), [{ id: 9, bytes: piece.length }], 'a single ack is in flight');
+    ackGate = null;
+    release();
+    assert.deepEqual(
+      await acks(9, 2),
+      [{ id: 9, bytes: piece.length }, { id: 9, bytes: 2 * piece.length }],
+      'the next ack carries everything consumed meanwhile',
+    );
+  } finally {
+    ackGate = null;
+    release();
+    await iterator.return();
+  }
 });
 
 test('a reader that stays under the batch size acks nothing yet', async () => {

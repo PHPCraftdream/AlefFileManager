@@ -39,10 +39,11 @@ function percentile(values, share) {
 const FRAME_WIDTH = 1280;
 const FRAME_HEIGHT = 720;
 const FRAME_RATE = 48000;
-// Floors of the spike (docs/stages/m6-media.md, "Измерения спайка"): the raw 1280x720 RGBA stream was
-// measured at 1.4-3.1 fps on the macOS runners, so those only have to stay alive.
+// Floors of the spike (docs/stages/m6-media.md, "Измерения спайка"). The shared macOS runners vary from
+// run to run (3.3-11.9 fps for the raw 1280x720 RGBA stream), so they get a lower floor than Linux and
+// Windows; the bus watchdog stays strict everywhere.
 const MAC = /mac/i.test(`${navigator.platform} ${navigator.userAgent}`);
-const FPS_FLOOR = MAC ? 0.5 : 5;
+const FPS_FLOOR = MAC ? 2 : 5;
 const P95_LIMIT_MS = MAC ? 5000 : 2000;
 let spike = { fps: 0, p95: Infinity, mainMs: 0, totalMs: 0, elapsed: 0 };
 let dropAccounting = { gaps: 0, dropped: 0 };
