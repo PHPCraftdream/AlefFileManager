@@ -227,7 +227,11 @@ export function devflowScenarios({ exe, verbose, timeoutMs }) {
         } catch (error) {
           devLines = dev.lines;
           const tail = verbose ? '' : `; last output: ${devLines.slice(-40).join(' | ')}`;
-          expect('alef-runtime dev serves the page through the runtime and shuts both down', false, `${error.message}${tail}`);
+          // Whether the dev server still answers tells a page that never loaded from a server that died.
+          const server = await fetch('http://127.0.0.1:3000/', { signal: AbortSignal.timeout(5000) }).then(
+            async response => `the dev server answers ${response.status} with ${(await response.text()).length} bytes`,
+            reason => `the dev server does not answer: ${reason.message}`);
+          expect('alef-runtime dev serves the page through the runtime and shuts both down', false, `${error.message}; ${server}${tail}`);
         } finally {
           await dev.stop();
         }

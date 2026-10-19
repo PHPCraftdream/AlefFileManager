@@ -56,6 +56,11 @@ impl WebViewDelegate for Delegate {
     }
 
     fn notify_load_status_changed(&self, _: WebView, status: LoadStatus) {
+        #[cfg(feature = "e2e")]
+        eprintln!(
+            "ALEF_E2E load-status complete={}",
+            status == LoadStatus::Complete
+        );
         // Sessions follow documents, not load statuses: Servo reports no `Started` for the first
         // load, and the embedder sees the status after the page may already be running.
         // `runtime.hello` creates the session of the calling document (see `SessionManager`).
@@ -77,6 +82,13 @@ impl WebViewDelegate for Delegate {
         } else {
             request.url.origin() == self.entry_url.origin()
         };
+        #[cfg(feature = "e2e")]
+        eprintln!(
+            "ALEF_E2E navigation allowed={allowed} scheme={} host={} port={:?}",
+            request.url.scheme(),
+            request.url.host_str().unwrap_or(""),
+            request.url.port()
+        );
         if allowed {
             request.allow();
         } else {
