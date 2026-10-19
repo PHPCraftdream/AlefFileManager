@@ -257,7 +257,7 @@ const SEPARATORS: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
 /// Turns a program text into a program: an absolute path is used as it is, a text with a separator
 /// is not a program at all, and a bare name is looked up along `path_var` — with the extensions of
 /// `pathext` tried after the plain name, on Windows only.
-pub(in crate::system) fn resolve(
+pub(crate) fn resolve(
     program: &str,
     path_var: Option<&OsStr>,
     pathext: Option<&OsStr>,

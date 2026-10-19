@@ -34,16 +34,18 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::{json, ModuleContext};
-use dto::{ChatMessage, Role};
 use launch::{start_chat, Usage};
+use std::time::Duration;
 mod launch;
-use provider::ToolDef;
+use provider::{
+    sync, ChatControl, ChatEvent, ChatMessage, ChatRequest, Role, ToolDef, ALLOWED_PROVIDERS,
+};
 use usage::{Event, Kind};
 
 pub mod builtin;
-pub mod dto;
 pub mod limits;
 pub mod provider;
+pub mod rush;
 mod sessions;
 
 /// A stable identity of one document session for the process-global maps: the address of its
@@ -410,11 +412,10 @@ pub(crate) fn register(
                     })
                     .cloned()
                     .collect();
-                let listed =
-                    tokio::time::timeout(limits::ROLE_LIST_TIME, async move { provider.roles() })
-                        .await
-                        .map_err(|_| timeout_of("listing the roles took too long"))?
-                        .map_err(cleanse)?;
+                let listed = tokio::time::timeout(limits::ROLE_LIST_TIME, provider.roles_fut())
+                    .await
+                    .map_err(|_| timeout_of("listing the roles took too long"))?
+                    .map_err(cleanse)?;
                 let roles: Vec<Role> = listed
                     .into_iter()
                     .filter(|role| allowed.contains(&role.id))
@@ -640,6 +641,85 @@ pub(crate) fn register(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::provider::BoundedReader;
+
+    fn effective(provider: &str) -> Value {
+        serde_json::json!({
+            "smart": { "provider": provider },
+            "fast": { "provider": provider },
+        })
+    }
+
+    #[test]
+    fn a_bounded_reader_keeps_a_huge_line_within_the_caps() {
+        // Ten times the line cap, with the trailing newline.
+        let mut data = vec![b'x'; 10 * 4096];
+        data.push(b'\n');
+        let input_len = data.len();
+        let mut reader = BoundedReader::new(std::io::Cursor::new(data), 4096, 1 << 20);
+        let mut line = Vec::new();
+        let read = reader.read_line(&mut line).expect("read");
+        assert!(line.len() <= 4096);
+        assert_eq!(read, line.len());
+        assert!(reader.overflowed());
+        let peak = reader.max_buffered();
+        assert!(peak <= 4096);
+        assert!(
+            peak < input_len / 2,
+            "peak allocation {peak}, input {input_len}"
+        );
+    }
+    #[test]
+    fn a_bounded_reader_returns_every_line_and_then_eof() {
+        let data = b"a\nbb\nccc".to_vec();
+        let mut reader = BoundedReader::new(std::io::Cursor::new(data), 4096, 1 << 20);
+        let mut line = Vec::new();
+        assert_eq!(reader.read_line(&mut line).unwrap(), 2);
+        assert_eq!(line, b"a\n");
+        line.clear();
+        assert_eq!(reader.read_line(&mut line).unwrap(), 3);
+        assert_eq!(line, b"bb\n");
+        line.clear();
+        // The final unterminated line is answered once, then EOF.
+        assert_eq!(reader.read_line(&mut line).unwrap(), 3);
+        assert_eq!(line, b"ccc");
+        line.clear();
+        assert_eq!(reader.read_line(&mut line).unwrap(), 0);
+        assert!(!reader.overflowed());
+        let peak = reader.max_buffered();
+        assert!(peak <= 4096 + CHUNK);
+    }
+    #[test]
+    fn a_bounded_reader_drains_a_total_cap_and_reports_the_overflow() {
+        let data = vec![b'x'; 10 * (1 << 20) / 10];
+        let input_len = data.len();
+        let mut reader = BoundedReader::new(std::io::Cursor::new(data), 4096, 4096);
+        let mut out = Vec::new();
+        reader.read_to_end_capped(&mut out).expect("read");
+        assert_eq!(out.len(), 4096);
+        assert!(reader.overflowed());
+        let peak = reader.max_buffered();
+        assert!(peak <= 4096);
+        assert!(peak < input_len / 2);
+    }
+
+    #[test]
+    fn the_slot_decision_follows_the_allowlist_and_the_reviewer() {
+        for provider in ["openai", "anthropic", "google"] {
+            assert_eq!(served_slots(&effective(provider)), ["smart", "fast"]);
+        }
+        // A wrapper of an internal CLI (openai-codex) and anything unknown: refused.
+        assert!(served_slots(&effective("openai-codex")).is_empty());
+        assert!(served_slots(&effective("not-a-provider")).is_empty());
+        assert!(served_slots(&serde_json::json!({})).is_empty());
+        // An effective reviewer drops smart (R4); an explicit null counts as absent.
+        let mut value = effective("anthropic");
+        value["reviewer"] = serde_json::json!({ "provider": "anthropic" });
+        assert_eq!(served_slots(&value), ["fast"]);
+        value["reviewer"] = Value::Null;
+        assert_eq!(served_slots(&value), ["smart", "fast"]);
+    }
+
     use std::time::Duration;
 
     #[test]
@@ -657,4 +737,227 @@ mod tests {
         let long = "x".repeat(500);
         assert_eq!(sanitize_failure(&long).len(), 200);
     }
+}
+
+/// One running chat: everything the spawned task needs, moved out of the provider.
+pub(crate) struct ChatTask {
+    pub(crate) command: provider::RushCommand,
+    pub(crate) data_root: std::sync::Arc<rush::ProviderRoot>,
+    pub(crate) chat_deadline: Duration,
+    pub(crate) envelope: bool,
+    pub(crate) sessions: std::sync::Arc<std::sync::Mutex<provider::SessionMap>>,
+    pub(crate) request: ChatRequest,
+}
+
+/// The rush session id: the stored one for a conversation, a fresh one for a stateless chat
+/// (the map untouched). Beyond [`MAX_SESSIONS`] the oldest conversation is evicted and its
+/// rush session deleted here.
+pub(crate) fn session_id(task: &ChatTask) -> (String, Option<String>) {
+    let Some(conversation) = task.request.conversation.clone() else {
+        return (rush::fresh_session_id(), None);
+    };
+    let data_root = task.data_root.path.get().map(|(_, data)| data.clone());
+    let Some(_data_root) = data_root else {
+        return (rush::fresh_session_id(), None);
+    };
+    let (id, evicted) = {
+        let mut sessions = task.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(id) = sessions.get(&conversation) {
+            (id.clone(), None)
+        } else {
+            let id = rush::fresh_session_id();
+            let evicted = sessions.insert(conversation, id.clone());
+            (id, evicted)
+        }
+    };
+    (id, evicted)
+}
+
+/// Best-effort one-shot on the session id: `sessions <word> <id>`.
+pub(crate) async fn oneshot_session(task: &ChatTask, word: &str, id: &str) {
+    let Some(data_root) = task.data_root.path.get().map(|(_, data)| data.clone()) else {
+        return;
+    };
+    let args = [
+        "sessions".to_owned(),
+        word.to_owned(),
+        id.to_owned(),
+        "--data-dir".to_owned(),
+        data_root.to_string_lossy().into_owned(),
+    ];
+    let command = task.command.clone();
+    let root = task.data_root.clone();
+    let workroot = data_root.clone();
+    tokio::spawn(async move {
+        let _keep_alive = root;
+        if let Ok(job) = builtin::executor().submit(move || sync::run(&command, &workroot, &args)) {
+            let _ = job.result().await;
+        }
+    });
+}
+
+pub(crate) async fn probe_phase(
+    control: &provider::ChatControl,
+    deadline: tokio::time::Instant,
+    command: provider::RushCommand,
+    data_root: std::sync::Arc<rush::ProviderRoot>,
+) -> Phase<Option<provider::ProbeOutcome>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let outcome = match data_root.get().await {
+            Ok(path) => Some(provider::run_probe(&command, &path).await),
+            Err(_) => None,
+        };
+        let _ = tx.send(outcome);
+    });
+    tokio::select! {
+        _ = control.cancel.cancelled() => Phase::Cancelled,
+        _ = tokio::time::sleep_until(deadline) => Phase::Deadline,
+        result = rx => Phase::Done(result.unwrap_or(None)),
+    }
+}
+
+/// A provider chat phase.
+pub(crate) async fn phase<T, F>(
+    control: &ChatControl,
+    deadline: tokio::time::Instant,
+    work: F,
+) -> Phase<Option<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let result = match builtin::executor().submit(work) {
+            Ok(job) => job.result().await.ok(),
+            Err(_) => None,
+        };
+        let _ = tx.send(result);
+    });
+    tokio::select! {
+        _ = control.cancel.cancelled() => Phase::Cancelled,
+        _ = tokio::time::sleep_until(deadline) => Phase::Deadline,
+        result = rx => Phase::Done(result.unwrap_or(None)),
+    }
+}
+
+pub(crate) enum Phase<T> {
+    Done(T),
+    Cancelled,
+    Deadline,
+}
+
+pub(crate) const CHUNK: usize = 64 * 1024;
+
+pub(crate) async fn remove_scratch(scratch: &std::path::Path) {
+    let scratch = scratch.to_path_buf();
+    if let Ok(job) = builtin::executor().submit(move || {
+        let _ = std::fs::remove_dir_all(&scratch);
+    }) {
+        let _ = job.result().await;
+    }
+}
+
+/// How one guarded event send ended: the only terminal outcomes of a chat task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// The event went out (or the module stopped listening, which ends the chat alike).
+    Sent,
+    Cancelled,
+    Deadline,
+}
+
+/// Sends one event, guarded by the chat deadline and the cancellation.
+pub(crate) async fn send_guarded(
+    sender: &mpsc::Sender<ChatEvent>,
+    control: &ChatControl,
+    deadline: tokio::time::Instant,
+    event: ChatEvent,
+) -> Outcome {
+    tokio::select! {
+        _ = control.cancel.cancelled() => Outcome::Cancelled,
+        _ = tokio::time::sleep_until(deadline) => Outcome::Deadline,
+        sent = sender.send(event) => if sent.is_ok() { Outcome::Sent } else { Outcome::Cancelled },
+    }
+}
+
+/// Sends the one failure event of a chat; the caller ends the chat right after.
+pub(crate) async fn fail(
+    control: &ChatControl,
+    sender: &mpsc::Sender<ChatEvent>,
+    deadline: tokio::time::Instant,
+    code: ErrorCode,
+    message: &str,
+) {
+    let _ = send_guarded(
+        sender,
+        control,
+        deadline,
+        ChatEvent::Failed {
+            code,
+            message: message.to_owned(),
+        },
+    )
+    .await;
+}
+
+/// The text of a message, whatever role it carries.
+pub(crate) fn content_of(message: &ChatMessage) -> &str {
+    match message {
+        ChatMessage::User { content } | ChatMessage::Assistant { content } => content,
+    }
+}
+
+/// The slots the probe serves: the intersection of {`smart`, `fast`} with the effective slots
+/// whose provider is allowlisted; `smart` is dropped while `reviewer` is effective (R4). A slot
+/// counts as present when its key holds an object; an explicit null counts as absent.
+pub(crate) fn served_slots(effective: &Value) -> Vec<&'static str> {
+    let present = |slot: &str| effective.get(slot).is_some_and(Value::is_object);
+    let reviewer = present("reviewer");
+    ["smart", "fast"]
+        .into_iter()
+        .filter(|slot| (*slot != "smart" || !reviewer) && present(slot))
+        .filter(|slot| {
+            effective
+                .get(*slot)
+                .and_then(|value| value.get("provider"))
+                .and_then(Value::as_str)
+                .is_some_and(|provider| ALLOWED_PROVIDERS.contains(&provider))
+        })
+        .collect()
+}
+
+/// The argv of one run: everything but the prefix, and never the prompt (stdin carries it).
+pub(crate) fn build_args(
+    role: &str,
+    session: &str,
+    scratch: &std::path::Path,
+    data_root: &std::path::Path,
+    timeout_secs: u64,
+    max_tokens: u64,
+    envelope: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "run".to_owned(),
+        "--role".to_owned(),
+        role.to_owned(),
+        "--session".to_owned(),
+        session.to_owned(),
+        "--cwd".to_owned(),
+        scratch.to_string_lossy().into_owned(),
+        "--data-dir".to_owned(),
+        data_root.to_string_lossy().into_owned(),
+        "--restrict-run".to_owned(),
+        "--max-tokens".to_owned(),
+        max_tokens.to_string(),
+        "--timeout".to_owned(),
+        timeout_secs.to_string(),
+    ];
+    args.push(if envelope {
+        "--json".to_owned()
+    } else {
+        "--stream".to_owned()
+    });
+    args
 }

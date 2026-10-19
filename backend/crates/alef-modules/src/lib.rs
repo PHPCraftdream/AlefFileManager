@@ -24,11 +24,11 @@ pub mod desktop;
 pub mod net;
 pub mod system;
 
-pub use ai::dto::{ChatMessage, ChatOptions, ChatPart, Role};
 pub use ai::provider::{
-    AiProvider, ChatControl, ChatEvent, ChatRequest, ChatUsage, FakeProvider, MissingProvider,
-    ToolDef,
+    AiProvider, ChatControl, ChatEvent, ChatMessage, ChatOptions, ChatPart, ChatRequest, ChatUsage,
+    FakeProvider, MissingProvider, Role, ToolDef,
 };
+pub use ai::rush::{RushCliProvider, RushCommand};
 pub use data::secrets::{MemorySecrets, SecretsBackend, SystemSecrets};
 pub use desktop::{
     app::{
@@ -55,7 +55,8 @@ pub struct Backends {
     pub shell: Arc<dyn ShellBackend>,
     pub notification: Arc<dyn NotificationBackend>,
     pub secrets: Arc<dyn SecretsBackend>,
-    /// Where the chats of the `ai` module go; none in a build without a bridge to Rush.
+    /// Where the chats of the `ai` module go: the user's own `rush` CLI when it is on `PATH`,
+    /// none in a build without a bridge to Rush.
     pub ai: Arc<dyn AiProvider>,
 }
 
@@ -70,7 +71,10 @@ impl Backends {
             shell: Arc::new(SystemShell),
             notification: Arc::new(SystemNotifications::new(application)),
             secrets: Arc::new(SystemSecrets::default()),
-            ai: Arc::new(MissingProvider),
+            ai: match crate::ai::rush::RushCliProvider::detect() {
+                Some(provider) => Arc::new(provider),
+                None => Arc::new(MissingProvider),
+            },
         }
     }
 

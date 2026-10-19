@@ -84,6 +84,9 @@ pub(super) async fn start_chat(
         tools: tools.into_iter().map(|(tool, _)| tool).collect(),
         builtin: builtin_tools,
         history: turn.is_some(),
+        conversation: turn
+            .as_ref()
+            .and_then(|turn| turn.conversation().map(str::to_owned)),
     };
     let bound = provider.token_bound(&request);
     // The counters write is disk work: it goes through the blocking executor.
@@ -554,6 +557,11 @@ async fn produce(
                                 return;
                             }
                         }
+                    }
+                    ChatEvent::Failed { code, message } => {
+                        journal_cancelled(&usage, &abandon(&state)).await;
+                        writer.error(cleanse(AlefError::new(code, message)));
+                        return;
                     }
                     ChatEvent::Completed => {
                         // Exactly one end (docs/stages/m9-ai.md §2): the frame, then the transport end.
