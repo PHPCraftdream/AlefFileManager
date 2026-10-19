@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use super::common::Fixture;
 
-const BASE_MANIFEST: &str = include_str!("../fixtures/app.ktav");
+pub(crate) const BASE_MANIFEST: &str = include_str!("../fixtures/app.ktav");
 
 /// The fixture manifest with an `ai` section: two roles and one tool (docs/stages/m9-ai.md §3).
 fn ai_manifest() -> String {
@@ -53,12 +53,12 @@ fn consent(tool: Decision) -> Consent {
 
 /// A fixture whose application key is its own: the per-application budgets of the `ai` module
 /// never couple two tests that run side by side.
-async fn ai_fixture(app: &'static str, consent: Consent) -> Fixture {
+pub(crate) async fn ai_fixture(app: &'static str, consent: Consent) -> Fixture {
     ai_fixture_with_manifest(app, consent, false).await
 }
 
 /// Fixture that can explicitly declare execution builtins for consent-path tests.
-async fn ai_fixture_with_manifest(
+pub(crate) async fn ai_fixture_with_manifest(
     app: &'static str,
     consent: Consent,
     declare_exec: bool,
@@ -89,7 +89,7 @@ async fn ai_fixture_with_manifest(
 }
 
 /// One frame of the chat stream, within a bounded wait: a test fails, it does not hang.
-async fn frame(reader: &mut StreamReader) -> Frame {
+pub(crate) async fn frame(reader: &mut StreamReader) -> Frame {
     tokio::time::timeout(Duration::from_secs(5), reader.next_frame())
         .await
         .expect("a frame in time")
@@ -97,7 +97,7 @@ async fn frame(reader: &mut StreamReader) -> Frame {
 }
 
 /// The payload of the first event of `name` the host was given, within a bounded wait.
-async fn event(fixture: &Fixture, name: &str) -> Value {
+pub(crate) async fn event(fixture: &Fixture, name: &str) -> Value {
     for _ in 0..250 {
         let found = fixture
             .host
@@ -116,7 +116,7 @@ async fn event(fixture: &Fixture, name: &str) -> Value {
 }
 
 /// Starts a chat and returns its chat id, its stream id and the reader of the stream.
-async fn start_chat(fixture: &Fixture, options: Value) -> (u64, u64, StreamReader) {
+pub(crate) async fn start_chat(fixture: &Fixture, options: Value) -> (u64, u64, StreamReader) {
     let reply = fixture
         .call("ai.chat", options)
         .await
@@ -132,7 +132,11 @@ async fn start_chat(fixture: &Fixture, options: Value) -> (u64, u64, StreamReade
 }
 
 /// Starts a command-backed stream and returns its id and reader.
-async fn start_mode(fixture: &Fixture, command: &str, options: Value) -> (u64, StreamReader) {
+pub(crate) async fn start_mode(
+    fixture: &Fixture,
+    command: &str,
+    options: Value,
+) -> (u64, StreamReader) {
     let reply = fixture
         .call(command, options)
         .await
@@ -147,7 +151,7 @@ async fn start_mode(fixture: &Fixture, command: &str, options: Value) -> (u64, S
 }
 
 /// Drains a stream to its terminal frame, collecting text; provider errors fail the test.
-async fn drain_text(reader: &mut StreamReader) -> String {
+pub(crate) async fn drain_text(reader: &mut StreamReader) -> String {
     let mut text = String::new();
     for _ in 0..32 {
         match frame(reader).await {
@@ -158,13 +162,13 @@ async fn drain_text(reader: &mut StreamReader) -> String {
             Frame::Binary(bytes) => panic!("unexpected binary frame: {} bytes", bytes.len()),
             Frame::Error(error) => panic!("transport error: {error}"),
             Frame::End => return text,
-            other => {}
+            _ => {}
         }
     }
     panic!("stream exceeded the frame bound");
 }
 
-fn chat_options(tools: &[&str]) -> Value {
+pub(crate) fn chat_options(tools: &[&str]) -> Value {
     json!({
         "role": "smart",
         "messages": [{"role": "user", "content": "hello"}],

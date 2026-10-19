@@ -10,6 +10,7 @@ const GROUPS = [
   ['fs', 'Files'],
   ['net', 'Network'],
   ['cli', 'Programs'],
+  ['ai', 'AI'],
   ['shell', 'Opening addresses'],
   ['app', 'Environment'],
   ['clipboard', 'Clipboard'],
@@ -119,11 +120,11 @@ function render(request) {
       choices.append(element('label', {}, radio, document.createTextNode(LABELS[decision])));
     }
     const confirmBox = element('input', { type: 'checkbox', disabled: '' });
-    const row = element('div', { class: 'right', 'data-right': textOf(right) },
+    const row = element('div', { class: right.level === 'red' ? 'right red' : 'right', 'data-right': textOf(right) },
       element('div', { class: 'what', text: textOf(right) }),
       choices);
     if (right.detail !== undefined) row.append(element('div', { class: 'detail', text: right.detail }));
-    if (right.level === 'red') row.append(element('div', { class: 'risk', text: 'RED — removes all protections, including model keys' }));
+    if (right.level === 'red') row.append(element('div', { class: 'risk', text: 'RED — bypasses all protections, including the AI model keys' }));
     if (right.risk !== undefined) {
       row.append(element('div', { class: 'risk' },
         element('span', { text: `⚠ ${right.risk}` }),

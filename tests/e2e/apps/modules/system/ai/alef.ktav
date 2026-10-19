@@ -49,6 +49,9 @@ permissions: {
                 name: fs.read
                 scopes: [ $TEMP/ai-e2e/** ]
             }
+            {
+                name: exec
+            }
         ]
         tools: [
             {

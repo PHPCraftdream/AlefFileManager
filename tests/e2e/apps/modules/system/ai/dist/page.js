@@ -69,13 +69,14 @@ async function allowed(t, check) {
     if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name}, expected PERMISSION_DENIED`);
   });
 
-  await check('ai-red-absent-and-exec-denied', async () => {
+  await check('ai-declared-exec-builtin-stays-unavailable', async () => {
     const roles = await ai.roles();
     if (roles.some(role => role.id === 'red')) throw new Error('red role must not be exposed');
+    // The execution builtin is declared and allowed, yet the runtime refuses it: only the file builtins run.
     const error = await rejection((async () => {
       for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }], builtin: ['exec'] })) { void part; }
     })());
-    if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name}, expected PERMISSION_DENIED for absent exec right`);
+    if (error?.code !== 'NOT_AVAILABLE') throw new Error(`${error?.code ?? error?.name}, expected NOT_AVAILABLE for the declared execution builtin`);
   });
 
 
@@ -174,11 +175,67 @@ async function toolDenied(t, check) {
   });
 }
 
+/** The scenario set `--requests 1` before the start: the first chat spends the day, the second is refused. */
+async function quota(t, check) {
+  await check('ai-quota-exceeded-stops-the-second-request', async () => {
+    const first = [];
+    for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }] })) first.push(part);
+    endOf(first);
+    const error = await rejection((async () => {
+      for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }] })) { void part; }
+    })());
+    if (error?.code !== 'QUOTA_EXCEEDED') throw new Error(`${error?.code ?? error?.name ?? 'it succeeded'}, expected QUOTA_EXCEEDED`);
+  });
+}
+
+/** A `.rush` folder stays closed to the declared scope, directly and through a link into it. */
+async function protectedPaths(t, check) {
+  await check('ai-builtin-into-a-dot-rush-folder-is-denied', async () => {
+    const error = await rejection((async () => {
+      for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: JSON.stringify({ path: t.aiRush }) }], builtin: ['fs.read'] })) { void part; }
+    })());
+    if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name ?? 'it succeeded'}, expected PERMISSION_DENIED`);
+  });
+  await check('ai-builtin-through-a-link-into-a-dot-rush-folder-is-denied', async () => {
+    if (t.aiLink === 'LINK-CREATION-FAILED') throw new Error('the scenario could not create a link into the rush folder');
+    const error = await rejection((async () => {
+      for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: JSON.stringify({ path: t.aiLink }) }], builtin: ['fs.read'] })) { void part; }
+    })());
+    if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name ?? 'it succeeded'}, expected PERMISSION_DENIED`);
+  });
+}
+
+/** The user decided in the consent window: the role is allowed, the execution builtin is denied. */
+async function windowConsent(t, check) {
+  await check('ai-window-roles-list-the-allowed-role', async () => {
+    const roles = await ai.roles();
+    if (JSON.stringify(roles.map(role => role.id)) !== JSON.stringify(['smart'])) {
+      throw new Error(`roles: ${JSON.stringify(roles.map(role => role.id))}`);
+    }
+  });
+  await check('ai-window-denied-exec-is-permission-denied', async () => {
+    // A denial of the user in the window, distinct from the runtime's NOT_AVAILABLE refusal.
+    const error = await rejection((async () => {
+      for await (const part of ai.request({ role: 'smart', messages: [{ role: 'user', content: 'hello' }], builtin: ['exec'] })) { void part; }
+    })());
+    if (error?.code !== 'PERMISSION_DENIED') throw new Error(`${error?.code ?? error?.name ?? 'it succeeded'}, expected PERMISSION_DENIED`);
+  });
+  await check('ai-window-detail-shows-the-escaped-description-and-schema', async () => {
+    const detail = t.aiDetails?.['ai.tool:summarizeSelection'];
+    if (typeof detail !== 'string') throw new Error(`no detail for ai.tool:summarizeSelection: ${JSON.stringify(t.aiDetails)}`);
+    if (!detail.includes('Summarize the selected text')) throw new Error(`the detail lost the description: ${detail}`);
+    if (!detail.includes('"additionalProperties":false')) throw new Error(`the detail lost the schema: ${detail}`);
+  });
+}
+
 const MODES = {
   allowed,
   'role-denied': roleDenied,
   'role-substituted': roleSubstituted,
   'tool-denied': toolDenied,
+  quota,
+  protected: protectedPaths,
+  'window-consent': windowConsent,
 };
 
 async function main() {

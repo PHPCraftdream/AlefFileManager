@@ -4,9 +4,12 @@
 
 [advisories]
 # A vulnerability or a withdrawn crate always fails. These are notices that a crate is no longer
-# maintained; all are transitive dependencies of Servo (or of what Servo pins), none has a
-# known vulnerability, and the pins stay until Servo moves off them.
+# maintained; all are transitive dependencies of Servo (or of what Servo pins) or of the keyring
+# store, none has a known vulnerability, and the pins stay until Servo (the keyring store) moves off them.
 ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant 5.15.0, merged into zbus 6 as a module; via secret-service and zbus-secret-service-keyring-store (alef-modules, Linux secret store); no known flaw, pinned until the keyring store moves to zbus 6" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names 4.3.4, same notice and path as RUSTSEC-2026-0370" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive 5.15.0, same notice and path as RUSTSEC-2026-0370" },
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3, via webrender (Servo); declared complete, no known flaw" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, via Servo's build-time dependencies" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser, via Servo's font stack" },

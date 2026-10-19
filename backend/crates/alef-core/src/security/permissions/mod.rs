@@ -14,6 +14,7 @@ use super::{
         invalid,
         net::{SocketScope, UrlScope},
         path::{parts, same, PathPattern},
+        rush,
     },
 };
 use crate::{AlefError, ErrorCode};
@@ -222,9 +223,10 @@ pub struct PermissionSet {
     protected: Vec<Vec<String>>,
 }
 
-/// `$VAR` is only valid as the first path segment; its value is taken literally.
-fn path_pattern(pattern: &str, vars: &PathVars) -> Result<PathPattern, AlefError> {
-    match pattern.strip_prefix('$') {
+/// `$VAR` is only valid as the first path segment; its value is taken literally. A scope whose
+/// base names a folder of Rush (the model keys live there) is not even askable.
+fn path_pattern(scope: &str, vars: &PathVars) -> Result<PathPattern, AlefError> {
+    let parsed = match scope.strip_prefix('$') {
         Some(rest) => {
             let end = rest.find(['/', '\\']).unwrap_or(rest.len());
             let name = &rest[..end];
@@ -236,9 +238,15 @@ fn path_pattern(pattern: &str, vars: &PathVars) -> Result<PathPattern, AlefError
                 .ok_or_else(|| invalid(format!("unknown path variable ${}", &rest[..end])))?;
             PathPattern::parse(Some(root), rest[end..].trim_start_matches(['/', '\\']))
         }
-        None if pattern.contains('$') => Err(invalid("path variable must be the first segment")),
-        None => PathPattern::parse(None, pattern),
+        None if scope.contains('$') => Err(invalid("path variable must be the first segment")),
+        None => PathPattern::parse(None, scope),
+    }?;
+    if rush::protected(parsed.base()) {
+        return Err(invalid(format!(
+            "the scope reaches the folder of Rush: {scope}"
+        )));
     }
+    Ok(parsed)
 }
 
 /// The one refusal of every right: the same error whether the manifest does not list the right
@@ -352,7 +360,8 @@ impl PermissionSet {
             ai: policy.ai.clone(),
             builtin: builtin::parse(policy.ai.as_ref(), vars)?,
             consent: Arc::new(RwLock::new(Consent::allow_all())),
-            protected: Vec::new(),
+            // The folders of Rush are protected from the start: they never come within reach.
+            protected: rush::Rush::config().component_roots().to_vec(),
         })
     }
 
@@ -380,10 +389,11 @@ impl PermissionSet {
     }
 
     fn is_protected(&self, components: &[String]) -> bool {
-        self.protected.iter().any(|folder| {
-            components.len() >= folder.len()
-                && folder.iter().zip(components).all(|(a, b)| same(a, b))
-        })
+        rush::protected(components)
+            || self.protected.iter().any(|folder| {
+                components.len() >= folder.len()
+                    && folder.iter().zip(components).all(|(a, b)| same(a, b))
+            })
     }
 
     /// Whether the manifest allows elevating (`runas`) items of the context menu.
@@ -484,6 +494,15 @@ impl PermissionSet {
     /// What the user is told about `right` where it is listed (the description and the command
     /// line of a declared command); `None` for a right that says it all by itself.
     pub fn describe(&self, right: &Right) -> Option<String> {
+        if right.permission == "ai.tool" {
+            let tool = self.ai_tool(right.scope.as_deref()?)?;
+            // The consent window puts the text in with `textContent`, so the schema is escaped there.
+            let schema = serde_json::to_string(&tool.schema).unwrap_or_default();
+            return Some(format!(
+                "{} — {} (arguments: {})",
+                tool.name, tool.description, schema
+            ));
+        }
         if right.permission != "cli.command" {
             return None;
         }

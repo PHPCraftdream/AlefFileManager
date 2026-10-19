@@ -2,7 +2,7 @@
 name = "alef-core"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -11,6 +11,7 @@ e2e = []
 
 [dependencies]
 bytes = "=1.12.1"
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
 ktav = "=0.8.0"
 semver = "=1.0.28"
 serde = { version = "=1.0.229", features = ["derive"] }

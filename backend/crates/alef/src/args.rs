@@ -13,6 +13,8 @@ alef --app <DIRECTORY> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
 alef permissions list [<DIRECTORY>]\n\
 alef permissions set <DIRECTORY> <RIGHT> <DECISION>\n\
 alef permissions reset <DIRECTORY>\n\
+alef ai limits <DIRECTORY> [--requests <N>] [--tokens <N>]\n\
+alef ai log <DIRECTORY>\n\
 alef trust <REQUEST> <ANSWER>\n\
 alef runtime list\n\
 alef runtime install <VERSION> <SOURCE_BINARY>\n\
@@ -36,6 +38,7 @@ an existing file or directory always wins. Runs it: its alef.ktav manifest and a
 permissions: what you decided for an application. RIGHT is `permission` or `permission:scope`\n\
   (clipboard.read, app.env:HOME, fs.read:$DOCUMENTS/**); `list` without DIRECTORY lists the applications\n\
   you have decided for, `reset` makes the next start ask again\n\
+ai: the daily AI quota of an application and what its AI did (the journal); N of 0 means blocked\n\
 trust: answer a trust request\n\
 runtime: manage installed local runtime versions; install copies a local binary, no download\n\
   VERSION is strict MAJOR.MINOR.PATCH; prune always keeps the running version";
@@ -98,6 +101,19 @@ pub enum PermissionsCommand {
     Reset { app: PathBuf },
 }
 
+/// `alef ai ...`: the daily AI quota the user sets for an application and its journal.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AiCommand {
+    /// Shows, and with a flag sets, the daily limits of the application.
+    Limits {
+        app: PathBuf,
+        requests: Option<u64>,
+        tokens: Option<u64>,
+    },
+    /// Prints the AI journal of the application.
+    Log { app: PathBuf },
+}
+
 /// `alef runtime ...`: local runtime version management.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeCommand {
@@ -116,6 +132,7 @@ pub enum RuntimeCommand {
 pub enum Command {
     Run(Launch),
     Permissions(PermissionsCommand),
+    Ai(AiCommand),
     Runtime(RuntimeCommand),
     Install {
         package: PathBuf,
@@ -164,56 +181,6 @@ fn text_of(argument: OsString, what: &str) -> Result<String, String> {
     argument
         .into_string()
         .map_err(|_| format!("{what} is not valid text"))
-}
-
-fn folder(arguments: &mut impl Iterator<Item = OsString>, verb: &str) -> Result<PathBuf, String> {
-    arguments
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| format!("permissions {verb}: <DIRECTORY> is required"))
-}
-
-fn permissions(mut arguments: impl Iterator<Item = OsString>) -> Result<Command, String> {
-    let verb = arguments
-        .next()
-        .and_then(|verb| verb.into_string().ok())
-        .ok_or_else(|| "permissions: list, set or reset?".to_owned())?;
-    let command = match verb.as_str() {
-        "list" => PermissionsCommand::List {
-            app: arguments.next().map(PathBuf::from),
-        },
-        "set" => {
-            let app = folder(&mut arguments, "set")?;
-            let right = text_of(
-                arguments
-                    .next()
-                    .ok_or("permissions set: <RIGHT> is required")?,
-                "the right",
-            )?;
-            let decision = text_of(
-                arguments
-                    .next()
-                    .ok_or("permissions set: <DECISION> is required")?,
-                "the decision",
-            )?;
-            PermissionsCommand::Set {
-                app,
-                right: right.parse()?,
-                decision: decision_named(&decision)?,
-            }
-        }
-        "reset" => PermissionsCommand::Reset {
-            app: folder(&mut arguments, "reset")?,
-        },
-        other => return Err(format!("permissions: unknown verb {other:?}")),
-    };
-    if let Some(extra) = arguments.next() {
-        return Err(format!(
-            "permissions {verb}: unexpected argument {}",
-            extra.to_string_lossy()
-        ));
-    }
-    Ok(Command::Permissions(command))
 }
 
 /// Strict parser for the install-management commands; malformed forms are usage errors.
@@ -311,7 +278,14 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
         .is_some_and(|first| first.to_str() == Some("permissions"))
     {
         arguments.next();
-        return permissions(arguments);
+        return crate::consent::permissions::parse_permissions(arguments);
+    }
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("ai"))
+    {
+        arguments.next();
+        return crate::consent::permissions::parse_ai(arguments);
     }
     let mut after_run = false;
     if arguments
@@ -907,6 +881,43 @@ mod tests {
             &["permissions", "reset"],
             &["permissions", "reset", "site", "extra"],
             &["permissions", "list", "site", "extra"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn ai_limits_and_log_parse() {
+        assert_eq!(
+            parse(&[
+                "ai",
+                "limits",
+                "somewhere",
+                "--requests",
+                "5",
+                "--tokens",
+                "0"
+            ])
+            .unwrap(),
+            Command::Ai(AiCommand::Limits {
+                app: PathBuf::from("somewhere"),
+                requests: Some(5),
+                tokens: Some(0),
+            })
+        );
+        assert_eq!(
+            parse(&["ai", "log", "somewhere"]).unwrap(),
+            Command::Ai(AiCommand::Log {
+                app: PathBuf::from("somewhere"),
+            })
+        );
+        for bad in [
+            &["ai", "limits", "site", "--requests", "5", "--requests", "6"][..],
+            &["ai", "limits", "site", "--wat", "1"][..],
+            &["ai", "history", "site"][..],
+            &["ai", "log"][..],
+            &["ai", "log", "site", "extra"][..],
+            &["ai", "limits", "site", "--requests"][..],
         ] {
             assert!(parse(bad).is_err(), "{bad:?}");
         }
