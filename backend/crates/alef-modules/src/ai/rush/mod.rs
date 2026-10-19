@@ -98,7 +98,8 @@ impl ProviderRoot {
                                 }
                                 // Links above the named directory are the system's (macOS /var).
                                 Ok(_) => {
-                                    if !std::fs::metadata(&current).is_ok_and(|meta| meta.is_dir()) {
+                                    if !std::fs::metadata(&current).is_ok_and(|meta| meta.is_dir())
+                                    {
                                         return Err(());
                                     }
                                 }
