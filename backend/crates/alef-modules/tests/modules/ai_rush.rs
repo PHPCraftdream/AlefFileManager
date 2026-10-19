@@ -126,7 +126,7 @@ async fn pid_gone(pid: u32, timeout: Duration) -> bool {
     loop {
         // SAFETY: signal zero only probes for the existence of the recorded child.
         if unsafe { libc::kill(pid as i32, 0) } == -1
-            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
         {
             return true;
         }

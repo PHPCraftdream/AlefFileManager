@@ -245,10 +245,12 @@ pub(super) async fn run_chat(
             let _ = stdin.shutdown().await;
         })
     });
+    let mut write_finished = false;
     let pump_and_write = async {
         let write_wait = async {
             if let Some(task) = write_task.as_mut() {
                 let _ = task.await;
+                write_finished = true;
             }
         };
         let (pumped, _) = tokio::join!(&mut stdout_pump, write_wait);
@@ -265,7 +267,7 @@ pub(super) async fn run_chat(
         Phase::Cancelled => {
             killer.kill();
             let _ = tokio::time::timeout(SEND_GRACE, process.child.wait()).await;
-            if let Some(task) = write_task.take() {
+            if let Some(task) = write_task.take().filter(|_| !write_finished) {
                 let _ = tokio::time::timeout(SEND_GRACE, task).await;
             }
             drop(stderr);
@@ -285,7 +287,7 @@ pub(super) async fn run_chat(
             .await;
             killer.kill();
             let _ = tokio::time::timeout(SEND_GRACE, process.child.wait()).await;
-            if let Some(task) = write_task.take() {
+            if let Some(task) = write_task.take().filter(|_| !write_finished) {
                 let _ = tokio::time::timeout(SEND_GRACE, task).await;
             }
             drop(stderr);
@@ -294,19 +296,6 @@ pub(super) async fn run_chat(
             remove_scratch(&scratch).await;
             return;
         }
-    };
-    let stderr_overflow = match stderr.as_mut() {
-        Some(task) => match tokio::time::timeout(SEND_GRACE, task).await {
-            Ok(Ok(overflow)) => overflow,
-            _ => true,
-        },
-        None => false,
-    };
-    remove_scratch(&scratch).await;
-    let pumped = if stderr_overflow {
-        Pump::TooLarge
-    } else {
-        pumped
     };
     // Kill paths keep the tree armed; a natural exit disarms it (a recycled pid is never
     // signalled). Kill before disarm: disarm terminates what is still running.
@@ -332,6 +321,29 @@ pub(super) async fn run_chat(
             status = process.child.wait() => status,
         };
         killer.disarm();
+        // Stderr is complete once the process (and what disarm terminated) is gone.
+        let stderr_overflow = match stderr.as_mut() {
+            Some(task) => match tokio::time::timeout(SEND_GRACE, task).await {
+                Ok(Ok(overflow)) => overflow,
+                _ => true,
+            },
+            None => false,
+        };
+        remove_scratch(&scratch).await;
+        if stderr_overflow {
+            if !task.request.history {
+                oneshot_session(&task, "delete", &id).await;
+            }
+            fail(
+                &control,
+                &sender,
+                deadline,
+                ErrorCode::Internal,
+                "the rush answer is too large",
+            )
+            .await;
+            return;
+        }
         if !status.map(|status| status.success()).unwrap_or(false) {
             if !task.request.history {
                 oneshot_session(&task, "delete", &id).await;
@@ -353,6 +365,8 @@ pub(super) async fn run_chat(
     }
     killer.kill();
     let _ = tokio::time::timeout(SEND_GRACE, process.child.wait()).await;
+    drop(stderr);
+    remove_scratch(&scratch).await;
     match pumped {
         // The module already treats a cancelled chat as closed: end silently. Cancel first,
         // then the delete of a stateless chat; both best effort.

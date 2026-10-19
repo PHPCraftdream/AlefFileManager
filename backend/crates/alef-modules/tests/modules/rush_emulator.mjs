@@ -19,6 +19,19 @@ const has = (name) => args.includes(name);
 
 const dataDir = flag("--data-dir");
 
+/** Writes the whole buffer to a descriptor, waiting out a full non-blocking pipe. */
+function writeAll(fd, buffer) {
+  let at = 0;
+  while (at < buffer.length) {
+    try {
+      at += fs.writeSync(fd, buffer, at, buffer.length - at);
+    } catch (error) {
+      if (error.code !== "EAGAIN") throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+}
+
 function main() {
   function record(name, text, append) {
     if (dataDir === undefined) return;
@@ -115,7 +128,10 @@ function main() {
       return;
     }
     if (mode === "oversize") {
-      process.stdout.write(`${"x".repeat(300 * 1024)}\n`);
+      // Synchronous writes: exit(0) must not drop what a pipe has not taken yet.
+      const chunk = Buffer.alloc(64 * 1024, "x");
+      for (let i = 0; i < 5; i += 1) writeAll(1, chunk);
+      writeAll(1, Buffer.from(`${"x".repeat(12 * 1024)}\n`));
       process.exit(0);
     }
     if (mode === "fast-lines") {
