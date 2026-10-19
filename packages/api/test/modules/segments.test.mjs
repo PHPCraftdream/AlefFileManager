@@ -116,6 +116,14 @@ test('the AI segment exports only its allow-listed values', async () => {
   assert.deepEqual(Object.keys(segment.ai).sort(), ['chat', 'request', 'roles', 'session', 'tools']);
 });
 
+test('the media segment exports only its allow-listed values', async () => {
+  const segment = await import('../../src/system/media.ts');
+  assert.deepEqual(Object.keys(segment).sort(), ['AudioSink', 'Camera', 'Microphone', 'audio', 'camera', 'microphone']);
+  assert.deepEqual(Object.keys(segment.camera).sort(), ['list', 'open']);
+  assert.deepEqual(Object.keys(segment.microphone).sort(), ['list', 'open']);
+  assert.deepEqual(Object.keys(segment.audio).sort(), ['open']);
+});
+
 // Split masked source into top-level statements: { text, line } (1-based line of the statement head).
 function topLevelStatements(masked) {
   const statements = [];
@@ -296,7 +304,7 @@ test('importing any subpath entry issues no runtime call', { timeout: 300000 }, 
 
 test('every code subpath has exactly one uniform type entry under type_entries', () => {
   const codeEntries = Object.entries(exportsMap).filter(([subpath]) => subpath !== '.' && subpath !== './types' && !subpath.endsWith('/types'));
-  assert.equal(codeEntries.length, 24, `expected 24 code subpaths, got ${codeEntries.length}`);
+  assert.equal(codeEntries.length, 25, `expected 25 code subpaths, got ${codeEntries.length}`);
   const violations = [];
   for (const [subpath] of codeEntries) {
     const typesSubpath = `${subpath}/types`;

@@ -157,7 +157,8 @@
         "manifest",
         "permissions",
         "csp",
-        "ai"
+        "ai",
+        "media"
       ]
     },
     {
@@ -260,7 +261,8 @@
       "glob": "tests/e2e/scenarios/app/modules.mjs",
       "scenarios": [
         "desktop",
-        "ai"
+        "ai",
+        "media"
       ]
     },
     {
@@ -341,6 +343,24 @@
       "glob": "tests/e2e/apps/modules/system/ai/**",
       "scenarios": [
         "ai"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-modules/src/media/**",
+      "scenarios": [
+        "media"
+      ]
+    },
+    {
+      "glob": "packages/api/src/system/media.ts",
+      "scenarios": [
+        "media"
+      ]
+    },
+    {
+      "glob": "tests/e2e/apps/modules/system/media/**",
+      "scenarios": [
+        "media"
       ]
     }
   ]

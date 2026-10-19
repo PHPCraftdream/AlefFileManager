@@ -112,6 +112,16 @@ pub fn plist(artifact: &Artifact) -> io::Result<String> {
     if artifact.icon.is_some() {
         plist_string("CFBundleIconFile", "icon.png", &mut out)?;
     }
+    plist_string(
+        "NSCameraUsageDescription",
+        "Alef applications you install may use the camera; Alef asks before an app first opens it.",
+        &mut out,
+    )?;
+    plist_string(
+        "NSMicrophoneUsageDescription",
+        "Alef applications you install may use the microphone; Alef asks before an app first opens it.",
+        &mut out,
+    )?;
     out.push_str("</dict></plist>\n");
     Ok(out)
 }
@@ -250,6 +260,14 @@ mod tests {
         let rendered = plist(&artifact()).unwrap();
         assert!(rendered.contains("<key>CFBundleExecutable</key><string>launcher</string>"));
         assert!(rendered.contains("<key>CFBundleIconFile</key><string>icon.png</string>"));
+        assert!(rendered.contains(concat!(
+            "<key>NSCameraUsageDescription</key><string>Alef applications you install may use ",
+            "the camera; Alef asks before an app first opens it.</string>"
+        )));
+        assert!(rendered.contains(concat!(
+            "<key>NSMicrophoneUsageDescription</key><string>Alef applications you install may ",
+            "use the microphone; Alef asks before an app first opens it.</string>"
+        )));
         assert!(!rendered.contains("/icons/"));
     }
 

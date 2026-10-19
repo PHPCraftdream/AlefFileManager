@@ -25,8 +25,8 @@ use alef_core::{
 };
 use alef_modules::{
     desktop::args, register_all, AppInfo, Backends, Console, FakeProvider, MemoryAutostart,
-    MemoryClipboard, MemoryDeepLinks, MemorySecrets, ModuleContext, PretendNotifications,
-    PretendShell, Termination,
+    MemoryClipboard, MemoryDeepLinks, MemorySecrets, MissingAudio, MissingCamera,
+    MissingMicrophone, ModuleContext, PretendNotifications, PretendShell, Termination,
 };
 use bytes::Bytes;
 use serde_json::Value;
@@ -335,6 +335,9 @@ impl Fixture {
                 notification: notifications.clone(),
                 secrets: options.secrets.clone(),
                 ai: fake.clone(),
+                camera: Arc::new(MissingCamera),
+                microphone: Arc::new(MissingMicrophone),
+                audio: Arc::new(MissingAudio),
             },
             // Its own for every fixture: tests run side by side.
             shadow: root.join(format!(

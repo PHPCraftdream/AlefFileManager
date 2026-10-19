@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub mod ai;
 pub mod data;
 pub mod desktop;
+pub mod media;
 pub mod net;
 pub mod system;
 
@@ -40,6 +41,10 @@ pub use desktop::{
     args::{ArgValue, ParsedArgs},
     shell::{PretendShell, ShellBackend, ShellRequest, SystemShell},
 };
+pub use media::{
+    AudioBackend, AudioSink, CameraBackend, CameraInfo, MicrophoneBackend, MicrophoneInfo,
+    MissingAudio, MissingCamera, MissingMicrophone, VirtualAudio, VirtualCamera, VirtualMicrophone,
+};
 pub use system::{
     clipboard::{ClipboardBackend, Image, MemoryClipboard, SystemClipboard},
     notification::{Notification, NotificationBackend, PretendNotifications, SystemNotifications},
@@ -58,6 +63,11 @@ pub struct Backends {
     /// Where the chats of the `ai` module go: the user's own `rush` CLI when it is on `PATH`,
     /// none in a build without a bridge to Rush.
     pub ai: Arc<dyn AiProvider>,
+    /// Where camera frames, microphone chunks and played audio come from and go; the system build
+    /// has none of them.
+    pub camera: Arc<dyn CameraBackend>,
+    pub microphone: Arc<dyn MicrophoneBackend>,
+    pub audio: Arc<dyn AudioBackend>,
 }
 
 impl Backends {
@@ -75,6 +85,18 @@ impl Backends {
                 Some(provider) => Arc::new(provider),
                 None => Arc::new(MissingProvider),
             },
+            #[cfg(feature = "media-system")]
+            camera: Arc::new(media::system::SystemCamera),
+            #[cfg(feature = "media-system")]
+            microphone: Arc::new(media::system::SystemMicrophone),
+            #[cfg(feature = "media-system")]
+            audio: Arc::new(media::system::SystemAudio),
+            #[cfg(not(feature = "media-system"))]
+            camera: Arc::new(MissingCamera),
+            #[cfg(not(feature = "media-system"))]
+            microphone: Arc::new(MissingMicrophone),
+            #[cfg(not(feature = "media-system"))]
+            audio: Arc::new(MissingAudio),
         }
     }
 
@@ -95,6 +117,9 @@ impl Backends {
             }),
             secrets: Arc::new(MemorySecrets::default()),
             ai: Arc::new(MissingProvider),
+            camera: Arc::new(MissingCamera),
+            microphone: Arc::new(MissingMicrophone),
+            audio: Arc::new(MissingAudio),
         }
     }
 
@@ -138,6 +163,10 @@ impl Backends {
         }
         // An end-to-end run chats with the deterministic fake; nothing reaches a real model.
         backends.ai = Arc::new(FakeProvider::default());
+        // An end-to-end run uses the deterministic virtual devices; nothing touches real hardware.
+        backends.camera = Arc::new(VirtualCamera::default());
+        backends.microphone = Arc::new(VirtualMicrophone::default());
+        backends.audio = Arc::new(VirtualAudio);
         backends
     }
 }
@@ -146,7 +175,14 @@ impl Backends {
 mod tests {
     use super::*;
 
-    fn kinds(backends: &Backends) -> [String; 6] {
+    /// The `media-system` build has the real devices behind `Backends::system`; the others keep
+    /// the Missing stand-ins.
+    #[cfg(feature = "media-system")]
+    const SYSTEM_MEDIA: [&str; 3] = ["SystemCamera", "SystemMicrophone", "SystemAudio"];
+    #[cfg(not(feature = "media-system"))]
+    const SYSTEM_MEDIA: [&str; 3] = ["MissingCamera", "MissingMicrophone", "MissingAudio"];
+
+    fn kinds(backends: &Backends) -> [String; 9] {
         [
             format!("{:?}", backends.clipboard),
             format!("{:?}", backends.shell),
@@ -154,6 +190,9 @@ mod tests {
             format!("{:?}", backends.secrets),
             format!("{:?}", backends.autostart),
             format!("{:?}", backends.deep_links),
+            format!("{:?}", backends.camera),
+            format!("{:?}", backends.microphone),
+            format!("{:?}", backends.audio),
         ]
     }
 
@@ -161,14 +200,17 @@ mod tests {
     #[test]
     fn from_environment_without_the_e2e_feature_uses_system_backends() {
         let kinds = kinds(&Backends::from_environment("app"));
-        for (kind, expected) in kinds.iter().zip([
+        let mut expected = [
             "SystemClipboard",
             "SystemShell",
             "SystemNotifications",
             "SystemSecrets",
             "SystemAutostart",
             "SystemDeepLinks",
-        ]) {
+        ]
+        .to_vec();
+        expected.extend_from_slice(&SYSTEM_MEDIA);
+        for (kind, expected) in kinds.iter().zip(expected) {
             assert!(kind.contains(expected), "{kinds:?}");
         }
     }
@@ -184,7 +226,19 @@ mod tests {
             assert!(kinds[3].contains("SystemSecrets"), "{kinds:?}");
             assert!(kinds[4].contains("SystemAutostart"), "{kinds:?}");
             assert!(kinds[5].contains("SystemDeepLinks"), "{kinds:?}");
+            for (kind, expected) in kinds[6..].iter().zip(SYSTEM_MEDIA) {
+                assert!(kind.contains(expected), "{kinds:?}");
+            }
         }
+    }
+
+    #[cfg(feature = "media-system")]
+    #[test]
+    fn the_system_backends_pick_the_system_media_devices() {
+        let kinds = kinds(&Backends::system("app"));
+        assert!(kinds[6].contains("SystemCamera"), "{kinds:?}");
+        assert!(kinds[7].contains("SystemMicrophone"), "{kinds:?}");
+        assert!(kinds[8].contains("SystemAudio"), "{kinds:?}");
     }
 
     #[test]
@@ -199,9 +253,18 @@ mod tests {
         assert!(pretending[3].contains("MemorySecrets"), "{pretending:?}");
         assert!(pretending[4].contains("MemoryAutostart"), "{pretending:?}");
         assert!(pretending[5].contains("MemoryDeepLinks"), "{pretending:?}");
+        assert!(pretending[6].contains("VirtualCamera"), "{pretending:?}");
+        assert!(
+            pretending[7].contains("VirtualMicrophone"),
+            "{pretending:?}"
+        );
+        assert!(pretending[8].contains("VirtualAudio"), "{pretending:?}");
         let opted = kinds(&Backends::chosen("app", true, true, None, None));
         assert!(opted[4].contains("SystemAutostart"), "{opted:?}");
         assert!(opted[5].contains("SystemDeepLinks"), "{opted:?}");
+        assert!(opted[6].contains("VirtualCamera"), "{opted:?}");
+        assert!(opted[7].contains("VirtualMicrophone"), "{opted:?}");
+        assert!(opted[8].contains("VirtualAudio"), "{opted:?}");
         assert_eq!(opted[..4], pretending[..4]);
     }
 }
@@ -316,6 +379,7 @@ pub fn register_all(
     effective.paths = context.effective_paths()?;
     let context = &effective;
     desktop::register(registry, host.clone(), context)?;
+    media::register(registry, context)?;
     data::register(registry, context)?;
     net::register(registry, context)?;
     ai::register(registry, host.clone(), context)?;

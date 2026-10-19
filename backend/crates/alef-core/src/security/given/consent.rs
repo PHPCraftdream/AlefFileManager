@@ -113,6 +113,12 @@ impl Right {
         if self.permission == "shell.contextMenu" {
             return Some("the system menu of a file can run any program of the computer");
         }
+        if self.permission == "media.camera" {
+            return Some("sees through the camera of the computer");
+        }
+        if self.permission == "media.microphone" {
+            return Some("hears through the microphone of the computer");
+        }
         let scope = self.scope.as_deref()?;
         match self.permission.as_str() {
             "ai.role" => Some("sends the application's messages to an AI model and can cost money"),
@@ -485,6 +491,22 @@ mod tests {
             Right::scoped("ai.builtin.exec", "scope").level(),
             RiskLevel::Normal
         );
+    }
+
+    #[test]
+    fn media_camera_and_microphone_are_risky_but_audio_is_not() {
+        assert_eq!(Right::plain("media.camera").level(), RiskLevel::Risky);
+        assert_eq!(
+            Right::plain("media.camera").risk(),
+            Some("sees through the camera of the computer")
+        );
+        assert_eq!(Right::plain("media.microphone").level(), RiskLevel::Risky);
+        assert_eq!(
+            Right::plain("media.microphone").risk(),
+            Some("hears through the microphone of the computer")
+        );
+        assert_eq!(Right::plain("audio").level(), RiskLevel::Normal);
+        assert_eq!(Right::plain("audio").risk(), None);
     }
 
     #[test]

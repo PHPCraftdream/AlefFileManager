@@ -29,6 +29,8 @@ struct Outgoing {
     closed: Notify,
     rx: Mutex<Option<mpsc::UnboundedReceiver<Frame>>>,
     chunk: usize,
+    /// Set by a terminal that discards pending frames; the reader skips what was queued before it.
+    discard_pending: std::sync::atomic::AtomicBool,
 }
 impl Outgoing {
     fn is_terminal(&self) -> bool {
@@ -48,6 +50,24 @@ impl Outgoing {
             let _ = tx.send(frame);
             self.closed.notify_waiters();
         }
+    }
+
+    /// Queues the terminal frame once and marks every frame queued before it as discardable: a
+    /// canceled media relay ends the stream with `End`, and the reader skips the torn payload
+    /// instead of delivering it.
+    fn terminate_discarding_pending(&self, frame: Frame) {
+        if let Some(tx) = self.tx.lock().expect("outgoing mutex poisoned").take() {
+            self.discard_pending
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.gate.close();
+            let _ = tx.send(frame);
+            self.closed.notify_waiters();
+        }
+    }
+
+    fn is_discarding_pending(&self) -> bool {
+        self.discard_pending
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 struct Incoming {
@@ -161,6 +181,7 @@ impl StreamHub {
             closed: Notify::new(),
             rx: Mutex::new(Some(rx)),
             chunk: self.chunk,
+            discard_pending: std::sync::atomic::AtomicBool::new(false),
         });
         if h.closed {
             o.terminate(Frame::Error(closed()));
@@ -261,6 +282,7 @@ impl StreamHub {
         Some(StreamReader {
             id,
             rx,
+            outgoing: o.clone(),
             delivered: false,
         })
     }
@@ -393,6 +415,11 @@ impl StreamWriter {
         self.done = true;
         self.o.terminate(Frame::End)
     }
+    /// Enqueues terminal `End` and drops the frames queued before it (a canceled media relay).
+    pub fn end_discarding_pending(mut self) {
+        self.done = true;
+        self.o.terminate_discarding_pending(Frame::End)
+    }
     /// Enqueues terminal Error.
     pub fn error(mut self, e: AlefError) {
         self.done = true;
@@ -410,6 +437,7 @@ impl Drop for StreamWriter {
 pub struct StreamReader {
     id: StreamId,
     rx: mpsc::UnboundedReceiver<Frame>,
+    outgoing: Arc<Outgoing>,
     delivered: bool,
 }
 impl StreamReader {
@@ -422,9 +450,15 @@ impl StreamReader {
         if self.delivered {
             return None;
         }
-        let frame = self.rx.recv().await;
+        let mut frame = self.rx.recv().await;
+        // A terminal that discards pending frames hides everything queued before it.
+        if self.outgoing.is_discarding_pending() {
+            while matches!(&frame, Some(seen) if !matches!(seen, Frame::End | Frame::Error(_))) {
+                frame = self.rx.recv().await;
+            }
+        }
         if matches!(frame, Some(Frame::End | Frame::Error(_)) | None) {
-            self.delivered = true
+            self.delivered = true;
         }
         frame
     }
