@@ -4,7 +4,7 @@ mod updater_manifest;
 
 use alef_core::{
     security::{
-        manifest::{ArgKind, Manifest},
+        manifest::{ArgKind, Manifest, MediaPermissions},
         window::{Length, LengthUnit, Monitor, WindowPosition},
     },
     ErrorCode,
@@ -58,6 +58,26 @@ fn webcrypto_is_optional_defaults_to_false_and_can_be_enabled() {
     );
     let manifest = Manifest::from_ktav_str(&source).unwrap();
     assert!(manifest.permissions.webcrypto);
+}
+
+#[test]
+fn the_media_section_and_the_audio_flag_are_optional_and_default_to_closed() {
+    let default = Manifest::from_ktav_str(MINIMAL).unwrap();
+    assert!(!default.permissions.audio);
+    assert_eq!(default.permissions.media, None);
+    let source = MINIMAL.replace(
+        "    app: {",
+        "    audio: true\n    media: {\n        camera: true\n        microphone: false\n    }\n    app: {",
+    );
+    let manifest = Manifest::from_ktav_str(&source).unwrap();
+    assert!(manifest.permissions.audio);
+    assert_eq!(
+        manifest.permissions.media,
+        Some(MediaPermissions {
+            camera: true,
+            microphone: false
+        })
+    );
 }
 
 #[test]

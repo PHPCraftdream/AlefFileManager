@@ -283,6 +283,19 @@ export type Manifest = {
   updater?: Updater, };
 
 /**
+ * Media permissions; both fields are required when the section is present.
+ */
+export type MediaPermissions = {
+  /**
+   * Whether the page may open cameras (`media.camera`).
+   */
+  camera: boolean,
+  /**
+   * Whether the page may open microphones (`media.microphone`).
+   */
+  microphone: boolean, };
+
+/**
  * Launch modes selectable by application code (M5 integration manifest rules).
  */
 export type Mode = "cli" | "foreground" | "window";
@@ -345,6 +358,14 @@ export type Permissions = {
    * Whether the page gets the real WebCrypto (`crypto.subtle`); substituted when omitted.
    */
   webcrypto?: boolean,
+  /**
+   * Whether the page may open audio sinks (`audio`); denied when omitted.
+   */
+  audio?: boolean,
+  /**
+   * Camera and microphone access; closed when the section is absent.
+   */
+  media?: MediaPermissions,
   /**
    * Application environment access.
    */

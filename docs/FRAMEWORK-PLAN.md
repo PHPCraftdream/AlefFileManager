@@ -12,7 +12,7 @@ Alef — десктопный фреймворк: пользователь пи�
 2. Из JS доступны модули этапов M1–M5 (§8) с типами, правами и тестами на всех трёх ОС.
 3. Alef File Manager переписан на `@alef-runtime/api` без собственного Rust-кода — это доказательство, что API достаточно для реального приложения.
 
-**Не цели MVP:** Node.js внутри runtime, мобильные платформы, печать, медиа (камера, микрофон, аудио — M6 отложен), обновление Servo с 0.6.
+**Не цели MVP:** Node.js внутри runtime, мобильные платформы, печать, обновление Servo с 0.6. Медиа (M6) в MVP не входит, но работа возобновлена: вариант B, M6.1 — спайк на виртуальных устройствах.
 
 ## 2. Архитектура
 
@@ -107,7 +107,7 @@ packages/api/src/
   system/      clipboard, notification, screen, os, path, cli
   data/        fs, store, sqlite, crypto
   net/         http, socket, websocket
-  devices/     camera, microphone, audio
+  system/media.ts  camera, microphone, audio (сегмент `./media`)
 ```
 
 Соглашения:
@@ -370,7 +370,7 @@ permissions: {
 | net | `socket` | TCP client/server, UDP, TLS | tokio, `rustls` | `net.socket` + scope host:port; серверы — scope `listen:host:port` (по умолчанию только loopback) | M |
 | net | `websocket` | клиент и сервер (`serve`, либо `upgrade` из `http.serve`) | `tokio-tungstenite` | `net.http` scope (клиент), `listen` (сервер) | S |
 | net | `mcp` (`@alef-runtime/mcp`, JS-пакет поверх модулей) | MCP-сервер (tools/resources/prompts; stdio и Streamable HTTP) и клиент | JSON-RPC в JS поверх `http`, `websocket`, `cli` | права `http.serve`/`listen`, `cli`, `net` | M |
-| devices | `camera`, `microphone`, `audio` | см. решение в M6 | GStreamer-backend Servo **или** `nokhwa`/`cpal` | `media.*` + запрос пользователю | L |
+| media | `camera`, `microphone`, `audio` | `camera.open()` — кадры в `<canvas>`, `microphone.open()` — f32-чанки, `audio` — приёмник | трейты бэкендов + виртуальные устройства (M6.1); реальные `nokhwa`/`cpal` позже | `media.camera`, `media.microphone`, `audio` + запрос пользователю | M |
 | platform | `log`, `devtools`, `updater` | логи в файл, crash-репорты; Servo devtools; обновления | `tracing`, Servo devtools, позже | — | S/S/L |
 
 `fs.tempFile`/`tempDir` живут в `$APPCACHE/tmp` до закрытия создавшей сессии (гранты только в ней) и удаляются при её закрытии; чтобы сохранить результат, его нужно до закрытия переименовать или скопировать в собственную разрешённую область; после аварии остатки остаются, очистки при старте нет (подробности R-008 — `stages/m3-data.md`).
@@ -389,7 +389,7 @@ permissions: {
 | M4 | `stages/m4-net-cli.md` | `http` (клиент и сервер), `socket`, `websocket` (клиент и сервер), `cli` (командная строка ОС, объявленные команды), режимы `app`: консоль и служба | M3, M0.5 |
 | M4b | `stages/m4b-mcp.md` | серверы и MCP: `@alef-runtime/mcp` (сервер и клиент), безопасность локальных серверов | M4 |
 | M5 | `stages/m5-integration.md` | `menu`, `tray`, `shortcut`, автозапуск, deep links | M2 |
-| M6 | `stages/m6-media.md` | медиа — **отложено**, вне MVP | — |
+| M6 | `stages/m6-media.md` | медиа, вариант B: нативный API поверх трейтов бэкендов; M6.1 — спайк на виртуальных устройствах (кадры 1280×720@30 в `<canvas>`, синус, checksum-приёмник); реальные устройства — следующий шаг | M1–M5 |
 | M7 | `stages/m7-distribution.md` | M7a runtime и лаунчер (установщики, версии рядом), M7b пакеты `.alef` (подпись, `alef install`, `@alef-runtime/tools`, `updater`), M7c единая сборка (опция) | M3, M2b, M0.4 |
 | M9 | [stages/m9-ai.md](stages/m9-ai.md) | Безопасный мост недоверенного приложения к пользовательским AI-ролям Rush; M9.2: манифест `permissions.ai`, `ai.roles`/`ai.chat`/`ai.tools.*`, сегмент `api/ai`, заглушечный `AiProvider` (реализация без транспорта); остаются согласие-UI, квоты, журнал, OS-изоляция, транспорт Rush (#165–#167) | M3, M2b, M4, M7a.1; интеграция Rush; BlockingExecutor (TARGET) |
 
@@ -423,6 +423,10 @@ permissions: {
 10. **Права подтверждает пользователь и может подменить любое** (§6.4): подмена, а не отказ; решения хранятся по `id` и ключу подписи; для `cli` приложение заранее объявляет фиксированные команды. Ядро согласия — отдельный этап M2b перед `fs`.
 11. **Серверы и MCP:** `http.serve`, `websocket.serve`, scope `listen:host:port` (по умолчанию только loopback, проверка `Host`/`Origin`); MCP — JS-пакет `@alef-runtime/mcp` поверх модулей (M4b).
 12. **Безоконные режимы** (консоль, служба) — через скрытый `WebView` на программном контексте; сначала спайк M0.5.
+
+Принято (2026-10-18):
+
+13. **Медиа — вариант B:** нативный API (`media.camera`/`media.microphone`/`audio`) без GStreamer; отложение снято. M6.1 — спайк на виртуальной камере/микрофоне/приёмнике в CI (критерий 3 m6-media.md); решение обратимо.
 
 ## 11. Риски
 

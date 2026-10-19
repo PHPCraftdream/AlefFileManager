@@ -163,6 +163,17 @@ pub struct WindowPermissions {
     pub create: bool,
 }
 
+/// Media permissions; both fields are required when the section is present.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export, export_to = "manifest.ts")]
+pub struct MediaPermissions {
+    /// Whether the page may open cameras (`media.camera`).
+    pub camera: bool,
+    /// Whether the page may open microphones (`media.microphone`).
+    pub microphone: bool,
+}
+
 /// Complete permission policy. Every subsection is required except `window`; `tray` defaults to false.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(deny_unknown_fields)]
@@ -190,6 +201,14 @@ pub struct Permissions {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub webcrypto: bool,
+    /// Whether the page may open audio sinks (`audio`); denied when omitted.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub audio: bool,
+    /// Camera and microphone access; closed when the section is absent.
+    #[serde(default, rename = "media", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub media: Option<MediaPermissions>,
     /// Application environment access.
     pub app: AppPermissions,
     /// Runtime window creation; denied when the section is absent.

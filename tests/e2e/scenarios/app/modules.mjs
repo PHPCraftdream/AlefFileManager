@@ -8,6 +8,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 
 import { prepareSite, root, scratch, startApp, verdictOf } from '../../lib.mjs';
+import { mediaScenarios } from './media.mjs';
 
 const APP_CHECKS = [
   'app-info-matches-the-manifest', 'app-args-are-parsed-by-the-manifest-schema',
@@ -609,6 +610,7 @@ export function moduleScenarios({ drive, exe, verbose }) {
         rmSync(directory, { recursive: true, force: true });
       }
     },
+    ...mediaScenarios({ drive }),
     app: () => drive({
       name: 'app', app: 'modules/app/basic', targets: { cwd: process.cwd() },
       env: { ALEF_E2E_ENV_ALLOWED: 'yes', ALEF_E2E_ENV_SECRET: 'secret-value-31337' },
