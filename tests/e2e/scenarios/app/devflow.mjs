@@ -187,8 +187,8 @@ export function devflowScenarios({ exe, verbose, timeoutMs }) {
         const fingerprint = keys.out.split('\n')[0]?.trim().split(' ')[1];
         expect('alef-runtime keys creates a key under ALEF_RUNTIME_HOME', keys.code === 0 && /^[0-9a-f]{64}$/.test(fingerprint ?? ''), `${keys.code}: ${keys.err}`);
         const pkgPath = join(dir, 'devflow.alef');
-        const pack = run(process.execPath, [toolsBin, 'pack', 'app-build', '--key', 'e2e-devflow', '--out', pkgPath], { cwd: project, env: toolEnv, timeoutMs: 60000 });
-        expect('alef-runtime packs the built app', pack.code === 0 && existsSync(pkgPath), `${pack.code}: ${pack.err}`);
+        const packResult = run(process.execPath, [toolsBin, 'pack', 'app-build', '--key', 'e2e-devflow', '--out', pkgPath], { cwd: project, env: toolEnv, timeoutMs: 60000 });
+        expect('alef-runtime packs the built app', packResult.code === 0 && existsSync(pkgPath), `${packResult.code}: ${packResult.err}`);
         const verify = run(process.execPath, [toolsBin, 'verify', pkgPath], { cwd: project, env: toolEnv, timeoutMs: 60000 });
         expect('alef-runtime verify names the signing fingerprint', verify.code === 0 && verify.out.includes(`signed by ${fingerprint}`), `${verify.code}: ${verify.out} ${verify.err}`);
 
