@@ -129,6 +129,7 @@ async fn the_command_surface_is_exactly_the_documented_one() {
             "notification.show",
             "os.info",
             "os.theme",
+            "os.watchPower",
             "path.appCache",
             "path.appConfig",
             "path.appData",

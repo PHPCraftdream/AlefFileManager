@@ -45,6 +45,8 @@ pub use media::{
     AudioBackend, AudioSink, CameraBackend, CameraInfo, MicrophoneBackend, MicrophoneInfo,
     MissingAudio, MissingCamera, MissingMicrophone, VirtualAudio, VirtualCamera, VirtualMicrophone,
 };
+pub use system::os::power::{MissingPower, PowerBackend, PowerEvent, PretendPower};
+pub use system::os::SystemPower;
 pub use system::{
     clipboard::{ClipboardBackend, Image, MemoryClipboard, SystemClipboard},
     notification::{Notification, NotificationBackend, PretendNotifications, SystemNotifications},
@@ -68,6 +70,8 @@ pub struct Backends {
     pub camera: Arc<dyn CameraBackend>,
     pub microphone: Arc<dyn MicrophoneBackend>,
     pub audio: Arc<dyn AudioBackend>,
+    /// Where suspend/resume events of the machine come from.
+    pub power: Arc<dyn PowerBackend>,
 }
 
 impl Backends {
@@ -97,6 +101,7 @@ impl Backends {
             microphone: Arc::new(MissingMicrophone),
             #[cfg(not(feature = "media-system"))]
             audio: Arc::new(MissingAudio),
+            power: Arc::new(SystemPower),
         }
     }
 
@@ -120,6 +125,7 @@ impl Backends {
             camera: Arc::new(MissingCamera),
             microphone: Arc::new(MissingMicrophone),
             audio: Arc::new(MissingAudio),
+            power: Arc::new(PretendPower::default()),
         }
     }
 
@@ -182,7 +188,7 @@ mod tests {
     #[cfg(not(feature = "media-system"))]
     const SYSTEM_MEDIA: [&str; 3] = ["MissingCamera", "MissingMicrophone", "MissingAudio"];
 
-    fn kinds(backends: &Backends) -> [String; 9] {
+    fn kinds(backends: &Backends) -> [String; 10] {
         [
             format!("{:?}", backends.clipboard),
             format!("{:?}", backends.shell),
@@ -193,6 +199,7 @@ mod tests {
             format!("{:?}", backends.camera),
             format!("{:?}", backends.microphone),
             format!("{:?}", backends.audio),
+            format!("{:?}", backends.power),
         ]
     }
 
@@ -210,6 +217,7 @@ mod tests {
         ]
         .to_vec();
         expected.extend_from_slice(&SYSTEM_MEDIA);
+        expected.push("SystemPower");
         for (kind, expected) in kinds.iter().zip(expected) {
             assert!(kind.contains(expected), "{kinds:?}");
         }
@@ -226,9 +234,10 @@ mod tests {
             assert!(kinds[3].contains("SystemSecrets"), "{kinds:?}");
             assert!(kinds[4].contains("SystemAutostart"), "{kinds:?}");
             assert!(kinds[5].contains("SystemDeepLinks"), "{kinds:?}");
-            for (kind, expected) in kinds[6..].iter().zip(SYSTEM_MEDIA) {
+            for (kind, expected) in kinds[6..9].iter().zip(SYSTEM_MEDIA) {
                 assert!(kind.contains(expected), "{kinds:?}");
             }
+            assert!(kinds[9].contains("SystemPower"), "{kinds:?}");
         }
     }
 
@@ -239,6 +248,7 @@ mod tests {
         assert!(kinds[6].contains("SystemCamera"), "{kinds:?}");
         assert!(kinds[7].contains("SystemMicrophone"), "{kinds:?}");
         assert!(kinds[8].contains("SystemAudio"), "{kinds:?}");
+        assert!(kinds[9].contains("SystemPower"), "{kinds:?}");
     }
 
     #[test]
@@ -259,12 +269,14 @@ mod tests {
             "{pretending:?}"
         );
         assert!(pretending[8].contains("VirtualAudio"), "{pretending:?}");
+        assert!(pretending[9].contains("PretendPower"), "{pretending:?}");
         let opted = kinds(&Backends::chosen("app", true, true, None, None));
         assert!(opted[4].contains("SystemAutostart"), "{opted:?}");
         assert!(opted[5].contains("SystemDeepLinks"), "{opted:?}");
         assert!(opted[6].contains("VirtualCamera"), "{opted:?}");
         assert!(opted[7].contains("VirtualMicrophone"), "{opted:?}");
         assert!(opted[8].contains("VirtualAudio"), "{opted:?}");
+        assert!(opted[9].contains("PretendPower"), "{opted:?}");
         assert_eq!(opted[..4], pretending[..4]);
     }
 }

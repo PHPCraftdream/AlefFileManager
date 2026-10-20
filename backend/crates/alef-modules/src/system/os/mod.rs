@@ -1,14 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `os`: platform facts and the desktop theme.
+//! `os`: platform facts, power notifications, and the desktop theme.
 use std::{process::Command, sync::Arc, sync::OnceLock};
 
 use alef_core::{
     registry::{dispatch::Registry, host::Host},
+    session::BlockingExecutor,
     AlefError, ErrorCode,
 };
 use serde::{Deserialize, Serialize};
 
+use self::power::{PowerBackend, PowerSink};
 use crate::json;
+pub mod power;
+// `power` is a file module (`power.rs`), so the sibling `power/platform.rs` needs an explicit
+// `#[path]`; a plain `mod platform;` would look for the removed `os/platform.rs`.
+#[path = "power/platform.rs"]
+mod platform;
+pub use platform::SystemPower;
+#[cfg(test)]
+#[path = "power_tests.rs"]
+mod power_tests;
 
 /// Facts about the machine (`os.info`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
@@ -97,7 +108,17 @@ pub fn info() -> OsInfo {
     }
 }
 
-pub(crate) fn register(registry: &mut Registry, host: Arc<dyn Host>) -> Result<(), AlefError> {
+/// The `PowerSink` of `os.watchPower`: forwards each event to every document.
+pub(crate) fn forwarding_sink(host: &Arc<dyn Host>) -> PowerSink {
+    let host = host.clone();
+    Arc::new(move |event| host.emit(None, event.name(), serde_json::json!({})))
+}
+
+pub(crate) fn register(
+    registry: &mut Registry,
+    host: Arc<dyn Host>,
+    power: Arc<dyn PowerBackend>,
+) -> Result<(), AlefError> {
     registry
         .command::<()>("os.info")?
         .handler(|_ctx, ()| async move {
@@ -106,13 +127,53 @@ pub(crate) fn register(registry: &mut Registry, host: Arc<dyn Host>) -> Result<(
                 .map_err(|error| AlefError::new(ErrorCode::Internal, error.to_string()))?;
             json(&info)
         })?;
+    // The theme handler below owns one clone of `host`; the power watcher takes its own.
+    let power_host = host.clone();
     registry
         .command::<()>("os.theme")?
         .handler(move |_ctx, ()| {
             let host = host.clone();
             async move { json(&host.theme()) }
         })?;
+    // One watcher registration and one simulation share the backend; each closure gets its
+    // own clone so both feature configurations compile.
+    let watch_power = power.clone();
+    let power_executor = BlockingExecutor::new(std::num::NonZeroUsize::new(1).expect("one"));
+    registry
+        .command::<()>("os.watchPower")?
+        .handler(move |_ctx, ()| {
+            let host = power_host.clone();
+            let power = watch_power.clone();
+            let executor = power_executor.clone();
+            async move {
+                power::ensure_watching(executor, power, forwarding_sink(&host)).await?;
+                json(&serde_json::json!({}))
+            }
+        })?;
+    #[cfg(feature = "e2e")]
+    registry
+        .command::<SimulatePowerArgs>("e2e.simulatePower")?
+        .handler(move |_ctx, args| {
+            let power = power.clone();
+            async move {
+                let event = power::parse_power_event(&args.event)?;
+                if !power.simulate(event) {
+                    return Err(AlefError::new(
+                        ErrorCode::NotAvailable,
+                        "simulate is not available for this power backend",
+                    ));
+                }
+                json(&serde_json::json!({}))
+            }
+        })?;
     Ok(())
+}
+
+/// The argument of the end-to-end-only `e2e.simulatePower` command.
+#[cfg(feature = "e2e")]
+#[derive(Debug, Deserialize)]
+struct SimulatePowerArgs {
+    event: String,
 }
 
 #[cfg(test)]

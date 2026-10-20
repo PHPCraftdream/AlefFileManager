@@ -1,7 +1,7 @@
 // System modules scenario: `path` (well-known directories, lexical arithmetic) and `os` (facts of the
 // machine, theme). The directories are also reported to the runner (`path <name> <value>`), which
 // checks on the disk that the ones that must exist do.
-import { api, guard, rejection, report, suite, verdict } from './harness.js';
+import { api, guard, rejection, report, suite, until, verdict } from './harness.js';
 
 const PLATFORMS = { win32: 'windows', darwin: 'macos', linux: 'linux' };
 const ARCHES = { x64: 'x86_64', arm64: 'aarch64', ia32: 'x86' };
@@ -52,6 +52,23 @@ async function main() {
   await check('os-theme-changed-subscription-can-be-made-and-undone', async () => {
     const off = await api.os.on('theme-changed', () => {});
     off();
+  });
+  await check('os-suspend-and-resume-events-arrive', async () => {
+    const seen = [];
+    const off = await api.os.on('suspend', () => seen.push('suspend'));
+    const offResume = await api.os.on('resume', () => seen.push('resume'));
+    try {
+      await api.call('e2e.simulatePower', { event: 'suspend' });
+      await until(() => seen.includes('suspend'), 3000, 'the suspend event');
+      await api.call('e2e.simulatePower', { event: 'resume' });
+      await until(() => seen.includes('resume'), 3000, 'the resume event');
+    } finally {
+      off();
+      offResume();
+    }
+    await api.call('e2e.simulatePower', { event: 'suspend' });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    if (seen.length !== 2) throw new Error(`unsubscribed handlers still fired: ${seen.join(',')}`);
   });
   await check('screen-agrees-with-the-state-of-the-window', async () => {
     const monitors = await api.screen.monitors();

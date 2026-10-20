@@ -56,6 +56,7 @@ async function ask(port, path) {
 const SYSTEM_CHECKS = [
   'path-directories-are-absolute-and-the-app-ones-end-with-the-id', 'path-join-normalize-dirname-basename',
   'os-info-describes-this-machine', 'os-theme-is-light-or-dark', 'os-theme-changed-subscription-can-be-made-and-undone',
+  'os-suspend-and-resume-events-arrive',
   'screen-agrees-with-the-state-of-the-window', 'window-create-is-denied-without-the-permission',
   'clipboard-read-and-shell-are-denied-without-the-rights',
 ];
