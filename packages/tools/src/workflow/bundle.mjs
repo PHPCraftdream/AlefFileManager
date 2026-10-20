@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Assemble a verified .alef package plus a runtime binary into distributable
-// bundles: plain dir layout, zip, tar.gz, deb, NSIS staging dir and macOS .app.
+// bundles: plain dir layout, zip, tar.gz, deb, NSIS staging dir, macOS .app and dmg.
 // Every rejection happens before the first output byte is written.
 import { createHash, randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { constants, readFileSync, realpathSync } from 'node:fs';
 import { lstat, link, mkdir, open, readdir, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { noSymlinks } from '../keys.mjs';
 import { verify } from '../verify.mjs';
 import { writeZip } from '../zip.mjs';
@@ -31,7 +33,7 @@ const PLATFORMS = Object.freeze({
   'darwin-x64': Object.freeze({ suffix: '', platform: 'darwin', arch: 'x64', binary: 'alef' }),
   'linux-x64': Object.freeze({ suffix: '', platform: 'linux', arch: 'x64', binary: 'alef' }),
 });
-const FORMATS = ['dir', 'zip', 'tar.gz', 'deb', 'nsis', 'app'];
+const FORMATS = ['dir', 'zip', 'tar.gz', 'deb', 'nsis', 'app', 'dmg'];
 const NOFOLLOW = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
 // Ancestor symlinks are tolerated only inside the OS temp-dir chain (mkdtemp roots).
 const realTmp = realpathSync(tmpdir());
@@ -179,6 +181,28 @@ async function writeLayout(stage, files, runtimePath, runtimeSize, runtimeSha256
   check(digest === runtimeSha256, 'runtime binary changed while bundling');
 }
 
+// hdiutil takes an argument vector only (no shell); `options.hdiutil` replaces it in tests.
+const runHdiutil = args => promisify(execFile)('hdiutil', args, { timeout: 30 * 60 * 1000, maxBuffer: 4 * MIB });
+
+// The volume name shown when the image is mounted: the application name without path and control characters.
+function volumeName(name, fallback) {
+  const unsafe = char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 || '/:'.includes(char) || char.charCodeAt(0) === 92;
+  const clean = [...name].map(char => (unsafe(char) ? '_' : char)).join('').trim().slice(0, 27).trim();
+  return clean === '' ? fallback.slice(0, 27) : clean;
+}
+
+// Race-safe publication of a finished file by an exclusive link; force replaces once.
+async function publishLinked(target, source, force = false) {
+  try {
+    await link(source, target);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (force !== true) throw new Error(`Bundle: ${target} already exists (use --force)`, { cause: error });
+    await rm(target, { recursive: true, force: true });
+    await link(source, target);
+  }
+}
+
 // Debian package names: lowercase, non-alphanumeric runs collapse to '-'.
 function kebab(name) {
   const pkg = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -203,7 +227,12 @@ export async function bundle(packagePath, options = {}) {
     if (format === 'deb') check(platform === 'linux-x64', `format deb is not available for platform ${platform}`);
     if (format === 'nsis') check(platform === 'win32-x64', `format nsis is not available for platform ${platform}`);
     if (format === 'app') check(entry.platform === 'darwin', `format app is not available for platform ${platform}`);
+    if (format === 'dmg') {
+      check(entry.platform === 'darwin', `format dmg is not available for platform ${platform}`);
+      check(typeof options.hdiutil === 'function' || process.platform === 'darwin', 'format dmg can be built only on macOS (it needs hdiutil)');
+    }
   }
+  check(options.hdiutil === undefined || typeof options.hdiutil === 'function', 'hdiutil must be a function or undefined');
   // Runtime: required regular file, symlink-free, at most 1 GiB.
   check(typeof options.runtime === 'string' && options.runtime !== '', 'runtime binary path is required');
   const runtimePath = path.resolve(options.runtime);
@@ -281,6 +310,7 @@ export async function bundle(packagePath, options = {}) {
   if (formats.includes('deb')) plan.push({ name: `${stem}.deb`, kind: 'file' });
   if (formats.includes('nsis')) plan.push({ name: `${stem}-nsis`, kind: 'dir' });
   if (appFormat) plan.push({ name: `${stem}.app`, kind: 'dir' });
+  if (formats.includes('dmg')) plan.push({ name: `${stem}.dmg`, kind: 'file' });
   for (const artifact of plan) {
     const target = path.join(outDir, artifact.name);
     const inside = within(packagePath, target) ? packagePath : within(runtimePath, target) ? runtimePath : null;
@@ -422,6 +452,30 @@ export async function bundle(packagePath, options = {}) {
       }
       return target;
     });
+    out.push(target);
+  }
+  if (formats.includes('dmg')) {
+    const target = path.join(outDir, `${stem}.dmg`);
+    if (afterPreflight) await afterPreflight();
+    const work = path.join(outDir, `.alef-bundle-${randomUUID()}`);
+    try {
+      await mkdir(work, { mode: 0o700 });
+      // The image root is a folder holding the .app: `-srcfolder` copies the CONTENTS of its folder.
+      const root = path.join(work, 'root');
+      for (const file of await appTree(runtimeBytes)) {
+        const fileTarget = path.join(root, `${stem}.app`, ...file.rel.split('/'));
+        await mkdir(path.dirname(fileTarget), { recursive: true });
+        await writeFile(fileTarget, file.data, { mode: file.mode });
+      }
+      const image = path.join(work, 'image.dmg');
+      await (options.hdiutil ?? runHdiutil)([
+        'create', '-srcfolder', root, '-volname', volumeName(manifest.name, stem),
+        '-fs', 'HFS+', '-format', 'UDZO', '-ov', image,
+      ]);
+      const made = await lstat(image).catch(() => null);
+      check(made !== null && made.isFile() && made.size > 0, 'hdiutil did not produce the disk image');
+      await publishLinked(target, image, options.force === true);
+    } finally { await rm(work, { recursive: true, force: true }); }
     out.push(target);
   }
   if (formats.includes('zip')) {

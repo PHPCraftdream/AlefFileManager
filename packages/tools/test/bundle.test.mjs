@@ -5,7 +5,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, rename, symlink, writeFile, readFile, rm, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, rename, symlink, writeFile, readFile, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createKey } from '../src/keys.mjs';
@@ -631,6 +631,96 @@ test('makensis_compiles_the_staged_installer_into_a_setup_exe_without_warnings',
   const setup = await readFile(path.join(stageDir, 'sample-setup.exe'));
   assert.equal(setup.subarray(0, 2).toString('latin1'), 'MZ');
   assert.ok(setup.length > runtimeBytes.length, `setup is ${setup.length} bytes`);
+}));
+// The dmg tool is injected: the real hdiutil exists only on macOS. The fake records its arguments and
+// what the image root held at that moment, then writes the "image" at the output path (the last argument).
+function fakeHdiutil(calls) {
+  return async args => {
+    const source = args[args.indexOf('-srcfolder') + 1];
+    calls.push({ args, plist: await readFile(path.join(source, 'sample.app', 'Contents', 'Info.plist'), 'utf8') });
+    await writeFile(args.at(-1), 'FAKE-DMG');
+  };
+}
+const leftovers = async root => (await readdir(root)).filter(name => name.startsWith('.alef-bundle'));
+test('dmg_hands_the_tool_an_image_root_holding_the_app_and_publishes_the_image_the_tool_made', bundleBounded, () => bundleScratch(async root => {
+  const { packagePath, runtime } = await makeFixture(root);
+  const calls = [];
+  const result = await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['dmg'], name: 'sample', hdiutil: fakeHdiutil(calls) });
+  const target = path.join(root, 'sample.dmg');
+  assert.deepEqual([...result.out], [target]);
+  assert.equal(await readFile(target, 'utf8'), 'FAKE-DMG');
+  assert.equal(calls.length, 1);
+  const { args, plist } = calls[0];
+  assert.equal(args[0], 'create');
+  assert.equal(args[1], '-srcfolder');
+  assert.deepEqual(args.slice(3, -1), ['-volname', 'Sample App', '-fs', 'HFS+', '-format', 'UDZO', '-ov']);
+  assert.equal(path.basename(args.at(-1)), 'image.dmg');
+  assert.equal(plist, renderInfoPlist({ id: 'com.example.app', name: 'Sample App', executable: 'sample' }));
+  assert.deepEqual(await leftovers(root), [], 'the work directory is removed');
+}));
+test('dmg_is_refused_before_any_write_for_other_platforms_and_for_a_host_without_hdiutil', bundleBounded, () => bundleScratch(async root => {
+  const { packagePath, runtime } = await makeFixture(root);
+  const calls = [];
+  for (const platform of ['win32-x64', 'linux-x64']) {
+    await assert.rejects(bundle(packagePath, { runtime, platform, formats: ['dmg'], name: 'sample', hdiutil: fakeHdiutil(calls) }),
+      /Bundle: format dmg is not available for platform/, platform);
+  }
+  if (process.platform !== 'darwin') {
+    await assert.rejects(bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['dmg'], name: 'sample' }),
+      /Bundle: format dmg can be built only on macOS/);
+  }
+  await assert.rejects(bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['dmg'], name: 'sample', hdiutil: 'hdiutil' }),
+    /Bundle: hdiutil must be a function or undefined/);
+  assert.equal(calls.length, 0);
+  assert.deepEqual((await readdir(root)).sort(), ['app', 'home', 'pkg.alef', 'runtime'], 'nothing was written');
+}));
+test('dmg_failures_of_the_tool_leave_no_output_and_an_existing_image_needs_force', bundleBounded, () => bundleScratch(async root => {
+  const { packagePath, runtime } = await makeFixture(root);
+  const base = { runtime, platform: 'darwin-arm64', formats: ['dmg'], name: 'sample' };
+  await assert.rejects(bundle(packagePath, { ...base, hdiutil: async () => { throw new Error('hdiutil: no space left'); } }), /no space left/);
+  await assert.rejects(bundle(packagePath, { ...base, hdiutil: async () => {} }), /Bundle: hdiutil did not produce the disk image/);
+  assert.deepEqual((await readdir(root)).sort(), ['app', 'home', 'pkg.alef', 'runtime'], 'no image and no work directory remain');
+  await writeFile(path.join(root, 'sample.dmg'), 'OLD');
+  const calls = [];
+  await assert.rejects(bundle(packagePath, { ...base, hdiutil: fakeHdiutil(calls) }), /already exists \(use --force\)/);
+  assert.equal(calls.length, 0, 'the tool is not run for a refused target');
+  assert.equal(await readFile(path.join(root, 'sample.dmg'), 'utf8'), 'OLD');
+  await bundle(packagePath, { ...base, force: true, hdiutil: fakeHdiutil(calls) });
+  assert.equal(await readFile(path.join(root, 'sample.dmg'), 'utf8'), 'FAKE-DMG');
+  assert.deepEqual(await leftovers(root), []);
+}));
+test('dmg_volume_name_drops_separators_and_is_cut_to_27_characters', bundleBounded, () => bundleScratch(async root => {
+  const volumes = [];
+  const tool = async args => { volumes.push(args[args.indexOf('-volname') + 1]); await writeFile(args.at(-1), 'FAKE-DMG'); };
+  for (const [index, name] of ['A/B:C', 'x'.repeat(40)].entries()) {
+    const sub = path.join(root, `n${index}`);
+    await mkdir(sub);
+    const { packagePath, runtime } = await makeFixture(sub, { name });
+    await bundle(packagePath, { runtime, platform: 'darwin-x64', formats: ['dmg'], name: 'sample', hdiutil: tool });
+  }
+  assert.deepEqual(volumes, ['A_B_C', 'x'.repeat(27)]);
+}));
+// The real tool on a macOS runner: CI turns it on (ALEF_TEST_HDIUTIL=1); the app inside is never launched.
+test('hdiutil_builds_a_verifiable_mountable_dmg_with_the_app_bundle', {
+  timeout: 300000,
+  skip: process.env.ALEF_TEST_HDIUTIL === '1' ? false : 'ALEF_TEST_HDIUTIL=1 is not set',
+}, () => bundleScratch(async root => {
+  const { packagePath, runtime } = await makeFixture(root);
+  const platform = process.arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+  await bundle(packagePath, { runtime, platform, formats: ['dmg'], name: 'sample' });
+  const image = path.join(root, 'sample.dmg');
+  const run = promisify(execFile);
+  await run('hdiutil', ['verify', image]);
+  const mount = path.join(root, 'mount');
+  await mkdir(mount);
+  await run('hdiutil', ['attach', '-nobrowse', '-readonly', '-noverify', '-mountpoint', mount, image]);
+  try {
+    assert.equal(await readFile(path.join(mount, 'sample.app', 'Contents', 'Info.plist'), 'utf8'),
+      renderInfoPlist({ id: 'com.example.app', name: 'Sample App', executable: 'sample' }));
+    assert.ok((await lstat(path.join(mount, 'sample.app', 'Contents', 'Resources', 'alef'))).isFile());
+  } finally {
+    await run('hdiutil', ['detach', mount, '-force']);
+  }
 }));
 test('app_bundle_matches_renderinfoplist_exactly_and_the_app_zip_prefixes_entries_with_the_app_tree', bundleBounded, () => bundleScratch(async root => {
   const { packagePath, runtime } = await makeFixture(root);

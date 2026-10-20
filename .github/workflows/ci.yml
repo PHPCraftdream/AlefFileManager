@@ -283,6 +283,13 @@ jobs:
           choco install --no-progress -y nsis
           node --experimental-strip-types --test --test-name-pattern=makensis packages/tools/test/bundle.test.mjs scripts/release/tests/installer.test.mjs
 
+      # The real hdiutil on a macOS runner: the dmg of the bundle is created, verified and mounted read-only.
+      - name: Disk image (hdiutil)
+        if: runner.os == 'macOS' && (needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,'))
+        env:
+          ALEF_TEST_HDIUTIL: "1"
+        run: node --experimental-strip-types --test --test-name-pattern=hdiutil packages/tools/test/bundle.test.mjs
+
       - name: "create-alef-runtime tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/create-alef-runtime,')
         run: npm run test:create

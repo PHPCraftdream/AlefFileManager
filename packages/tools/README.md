@@ -14,7 +14,7 @@ alef-runtime verify <file>
 alef-runtime check [dir]
 alef-runtime build [dir] [--out <dir>]
 alef-runtime dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
-alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
+alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
 alef-runtime --help
 ```
 
@@ -99,7 +99,10 @@ Maintainer from `--maintainer` or a placeholder); `nsis` (generated
 Menu shortcut with the `run` argument and a safe `.lnk` name, an HKCU
 uninstall key and AppUserModelId; `build-installer.cmd` text; `bundle` does not run
 makensis, CI compiles the staged script with the real one); `app` (a thin `.app` tree, Info.plist with CFBundleIdentifier, launcher
-runs `run`; zipped to `<stem>.app.zip` when combined with `zip`, with modes).
+runs `run`; zipped to `<stem>.app.zip` when combined with `zip`, with modes); `dmg` (macOS hosts only: `hdiutil create -srcfolder` over a folder that holds
+`<stem>.app`, HFS+, UDZO, run through an argument vector without a shell, the volume
+name is the application name cut to 27 characters; the image is not signed and not
+deterministic, and the build is refused with a clear error on any other host).
 Safety: runtime and package paths are walked component-by-component and
 symlinked components are refused (OS temp-dir chain exempt); the runtime is at
 most 1 GiB: the `dir` and `nsis` layouts copy it streamed with a double hash
