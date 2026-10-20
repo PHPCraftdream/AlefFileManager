@@ -304,7 +304,7 @@ test('importing any subpath entry issues no runtime call', { timeout: 300000 }, 
 
 test('every code subpath has exactly one uniform type entry under type_entries', () => {
   const codeEntries = Object.entries(exportsMap).filter(([subpath]) => subpath !== '.' && subpath !== './types' && !subpath.endsWith('/types'));
-  assert.equal(codeEntries.length, 25, `expected 25 code subpaths, got ${codeEntries.length}`);
+  assert.equal(codeEntries.length, 26, `expected 26 code subpaths, got ${codeEntries.length}`);
   const violations = [];
   for (const [subpath] of codeEntries) {
     const typesSubpath = `${subpath}/types`;
