@@ -28,6 +28,7 @@ export default defineConfig({
       '@alef-runtime/api/app': './packages/api/src/desktop/app.ts',
       '@alef-runtime/api/fs': './packages/api/src/data/fs.ts',
       '@alef-runtime/api/store': './packages/api/src/data/store.ts',
+      '@alef-runtime/api/log': './packages/api/src/data/log.ts',
       '@alef-runtime/api/path': './packages/api/src/system/path.ts',
       '@alef-runtime/api/core': './packages/api/src/core/index.ts',
       '@alef-runtime/api': './packages/api/src/index.ts',

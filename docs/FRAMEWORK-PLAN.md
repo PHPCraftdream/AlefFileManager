@@ -371,7 +371,8 @@ permissions: {
 | net | `websocket` | клиент и сервер (`serve`, либо `upgrade` из `http.serve`) | `tokio-tungstenite` | `net.http` scope (клиент), `listen` (сервер) | S |
 | net | `mcp` (`@alef-runtime/mcp`, JS-пакет поверх модулей) | MCP-сервер (tools/resources/prompts; stdio и Streamable HTTP) и клиент | JSON-RPC в JS поверх `http`, `websocket`, `cli` | права `http.serve`/`listen`, `cli`, `net` | M |
 | media | `camera`, `microphone`, `audio` | `camera.open()` — кадры в `<canvas>`, `microphone.open()` — f32-чанки, `audio` — приёмник | трейты бэкендов + виртуальные устройства (M6.1); реальные — за фичей `media-system` (M6.2), без устройств в CI | `media.camera`, `media.microphone`, `audio` + запрос пользователю | M |
-| platform | `log`, `devtools`, `updater` | логи в файл, crash-репорты; Servo devtools; обновления | `tracing`, Servo devtools, позже | — | S/S/L |
+| platform | `log` | `debug/info/warn/error`, `read`, список/чтение crash-отчётов; ограниченное приватное хранение | `alef-modules::data::log`; [M10](stages/m10-platform-log.md) — черновик, есть разрывы по panic hook и Servo `notify_crashed` | — | S |
+| platform | `devtools`, `updater` | Servo devtools; обновления | Servo devtools, позже | — | S/L |
 
 `fs.tempFile`/`tempDir` живут в `$APPCACHE/tmp` до закрытия создавшей сессии (гранты только в ней) и удаляются при её закрытии; чтобы сохранить результат, его нужно до закрытия переименовать или скопировать в собственную разрешённую область; после аварии остатки остаются, очистки при старте нет (подробности R-008 — `stages/m3-data.md`).
 

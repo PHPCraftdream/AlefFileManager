@@ -2,7 +2,7 @@
 // Helpers of the end-to-end runner: a scenario site (application files + the transpiled
 // @alef-runtime/api), the runtime process with its stderr log, and small local HTTP servers.
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -152,6 +152,7 @@ export function prepareSite(name, app, { replacements = {}, targets = {} } = {})
     filter: path => path === source || !statSync(path).isDirectory() || !existsSync(join(path, 'alef.ktav')),
   });
   const publicRoot = join(site, 'dist');
+  mkdirSync(publicRoot, { recursive: true });
   copyFileSync(join(here, 'harness.js'), join(publicRoot, 'harness.js'));
   const api = transpileApi();
   for (const folder of ['src', 'types']) cpSync(join(api, folder), join(publicRoot, folder), { recursive: true });

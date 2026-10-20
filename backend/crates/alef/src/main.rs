@@ -727,6 +727,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         launch: launch_state.clone(),
     };
     let console = context.console.clone();
+    alef_modules::data::log::install_panic_hook(&context)?;
 
     install_tls()?;
     let allowed_origins = dev_url
