@@ -2,7 +2,7 @@
 // Helpers of the end-to-end runner: a scenario site (application files + the transpiled
 // @alef-runtime/api), the runtime process with its stderr log, and small local HTTP servers.
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -87,7 +87,7 @@ export async function runScenario(body) {
     for (const record of scope.records) {
       try {
         if (!record.exit) record.stop();
-        if (!(await record.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
+        if (!(await record.waitForClosed(5000))) problems.push(`runtime log pipe did not close within 5000ms: ${record.stuckReport()}`);
       } catch (error) {
         problems.push(`could not close runtime log pipe: ${error?.message ?? error}`);
       }
@@ -259,8 +259,22 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
   // The stdout pipe is closed only when the runtime and everything holding it are done: reading
   // `stdout()` before that loses the tail of a large stream (the drain race).
   const stdoutClosed = new Promise(resolvePromise => child.stdout.on('close', resolvePromise));
+  /** What a runtime that does not let go of its log pipe is doing: the evidence of a hang at exit. */
+  const stuckReport = () => {
+    const state = exit ? `exited with ${JSON.stringify(exit)}` : 'still running';
+    if (process.platform !== 'linux' || !child.pid) return state;
+    try {
+      const base = `/proc/${child.pid}/task`;
+      const read = (file) => { try { return readFileSync(file, 'utf8').trim(); } catch { return '?'; } };
+      const threads = readdirSync(base).slice(0, 80).map(tid => `${read(`${base}/${tid}/comm`)}:${read(`${base}/${tid}/wchan`)}`);
+      const children = read(`${base}/${child.pid}/children`);
+      return `${state}; children=[${children}]; ${threads.length} threads: ${threads.join(' ')}`;
+    } catch {
+      return state;
+    }
+  };
   const processRecord = {
-    stderrLines, expectedBusStalls, stop: () => child.kill(),
+    stderrLines, expectedBusStalls, stop: () => child.kill(), stuckReport,
     waitForClosed: ms => new Promise(resolvePromise => {
       let done = false;
       const timer = setTimeout(() => { done = true; resolvePromise(false); }, ms);
@@ -304,6 +318,7 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
     waitForExit: ms => waitFor(() => false, ms, 'the runtime to exit').catch(() => exit),
     /** Resolves `true` once nobody holds the log pipe any more, `false` after `ms`. */
     waitForClosed: processRecord.waitForClosed,
+    stuckReport,
     /** Resolves `true` once the stdout pipe is closed, `false` after `ms`: await before `stdout()`. */
     stdoutDrained: ms => new Promise(resolvePromise => {
       let done = false;
@@ -410,8 +425,11 @@ export function makeDriver({ exe, verbose, timeoutMs }) {
     } catch (error) {
       problems.push(error.message);
     } finally {
+      const stopped = performance.now();
       running.stop();
-      if (!(await running.waitForClosed(5000))) problems.push('runtime log pipe did not close within 5000ms');
+      const closed = await running.waitForClosed(5000);
+      if (verbose) console.log(`    | ALEF_E2E harness ${name} closed in ${Math.round(performance.now() - stopped)}ms`);
+      if (!closed) problems.push(`runtime log pipe did not close within 5000ms: ${running.stuckReport()}`);
     }
     return { problems, lines: running.lines, site, expectedBusStalls };
   };
