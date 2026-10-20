@@ -162,7 +162,9 @@ jobs:
             libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
             libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri \
             libfontconfig1 libfreetype6 \
-            xvfb openbox
+            xvfb openbox gdb
+          # gdb attaches to a runtime the e2e runner started (a sibling, not a child, of gdb).
+          sudo sysctl -w kernel.yama.ptrace_scope=0
 
       - name: npm ci
         run: npm ci

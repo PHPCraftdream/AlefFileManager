@@ -32,6 +32,7 @@
 | Linux (runtime): `libegl1 libgl1 libglx-mesa0 libgl1-mesa-dri` | софтверный GL/EGL (llvmpipe) для smoke | требуется в рантайме |
 | Linux (runtime): `libfontconfig1 libfreetype6` | fontconfig — dlib dlopen (yeslogic-fontconfig-sys) | требуется в рантайме |
 | Linux: `xvfb` | headless X11 для smoke | требуется |
+| Linux: `gdb` | стеки всех потоков рантайма, который не вышел за 5 с в e2e (`stackSnapshot` в `tests/e2e/lib.mjs`): называет кадр, на котором завис выход; без него отчёт содержит только список потоков | диагностика (для attach CI снижает `kernel.yama.ptrace_scope` до 0) |
 
 ## Факты из исходников (OBSERVED)
 
