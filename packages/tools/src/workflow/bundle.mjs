@@ -222,6 +222,7 @@ export async function bundle(packagePath, options = {}) {
   const platform = options.platform;
   const formats = [...new Set(options.formats ?? ['dir', platform.startsWith('win32') ? 'zip' : 'tar.gz'])];
   check(Array.isArray(formats) && formats.length > 0, 'formats must be a nonempty array of strings');
+  check(options.hdiutil === undefined || typeof options.hdiutil === 'function', 'hdiutil must be a function or undefined');
   for (const format of formats) {
     check(FORMATS.includes(format), `unknown format '${String(format)}'`);
     if (format === 'deb') check(platform === 'linux-x64', `format deb is not available for platform ${platform}`);
@@ -232,7 +233,6 @@ export async function bundle(packagePath, options = {}) {
       check(typeof options.hdiutil === 'function' || process.platform === 'darwin', 'format dmg can be built only on macOS (it needs hdiutil)');
     }
   }
-  check(options.hdiutil === undefined || typeof options.hdiutil === 'function', 'hdiutil must be a function or undefined');
   // Runtime: required regular file, symlink-free, at most 1 GiB.
   check(typeof options.runtime === 'string' && options.runtime !== '', 'runtime binary path is required');
   const runtimePath = path.resolve(options.runtime);
