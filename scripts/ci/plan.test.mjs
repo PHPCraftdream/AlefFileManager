@@ -149,6 +149,10 @@ test('bus_stall_diagnostics_accept_only_expected_well_formed_entries_in_phase', 
   assert.deepEqual(busStallProblems(['ALEF_BUS_STALL_STARVED call/window.state 135 135']), []);
   assert.notDeepEqual(busStallProblems(['ALEF_BUS_STALL_STARVED call/window.state 135']), []);
   assert.notDeepEqual(busStallProblems(['ALEF_BUS_STALL_STARVED call/window.state 135 x']), []);
+  // A starved line still counts as the watchdog seeing the long poll of a required control.
+  assert.deepEqual(busStallProblems(['START', 'ALEF_BUS_STALL_STARVED executor 15 15', 'END'], [allowance]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL_STARVED executor 9 9', 'END'], [allowance]), []);
+  assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL_STARVED other 15 15', 'END'], [allowance]), []);
 });
 test('a_docs_only_change_runs_only_structure_and_fmt_on_linux_with_no_crates_js_or_e2e', () => {
   const p = plan(['docs/stages/m0-results/ci.md']);
