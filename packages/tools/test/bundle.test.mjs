@@ -617,6 +617,21 @@ test('nsis_staging_dir_contains_the_installer_script_build_cmd_and_real_payload_
   assert.deepEqual(await readFile(path.join(stageDir, 'app', 'app.alef')), await readFile(packagePath));
   assert.ok(await lstat(path.join(stageDir, 'installer.nsi')).then(stat => stat.isFile()));
 }));
+// The real compiler against the staged script. CI turns it on (NSIS installed on Linux and
+// Windows runners); it never runs the installer itself, which stays a manual check.
+test('makensis_compiles_the_staged_installer_into_a_setup_exe_without_warnings', {
+  timeout: 120000,
+  skip: process.env.ALEF_TEST_MAKENSIS === '1' ? false : 'ALEF_TEST_MAKENSIS=1 is not set',
+}, () => bundleScratch(async root => {
+  const { packagePath, runtime, runtimeBytes } = await makeFixture(root);
+  await bundle(packagePath, { runtime, platform: 'win32-x64', formats: ['nsis'], name: 'sample' });
+  const stageDir = path.join(root, 'sample-nsis');
+  const { stdout } = await promisify(execFile)(process.env.MAKENSIS || 'makensis', ['-NOCD', 'installer.nsi'], { cwd: stageDir, timeout: 90000 });
+  assert.doesNotMatch(stdout, /warning:/i, stdout);
+  const setup = await readFile(path.join(stageDir, 'sample-setup.exe'));
+  assert.equal(setup.subarray(0, 2).toString('latin1'), 'MZ');
+  assert.ok(setup.length > runtimeBytes.length, `setup is ${setup.length} bytes`);
+}));
 test('app_bundle_matches_renderinfoplist_exactly_and_the_app_zip_prefixes_entries_with_the_app_tree', bundleBounded, () => bundleScratch(async root => {
   const { packagePath, runtime } = await makeFixture(root);
   const result = await bundle(packagePath, { runtime, platform: 'darwin-arm64', formats: ['app'], name: 'sample' });

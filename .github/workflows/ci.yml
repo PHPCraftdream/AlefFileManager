@@ -263,6 +263,26 @@ jobs:
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,')
         run: npm run test:tools
 
+      # The real NSIS compiler against the generated installers (the bundle format nsis and the runtime
+      # installer of the release): their scripts were only text-checked. The installers are never run.
+      - name: NSIS installers compile (Linux)
+        if: runner.os == 'Linux' && (needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,'))
+        env:
+          ALEF_TEST_MAKENSIS: "1"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nsis
+          node --experimental-strip-types --test --test-name-pattern=makensis packages/tools/test/bundle.test.mjs scripts/release/tests/installer.test.mjs
+
+      - name: NSIS installers compile (Windows)
+        if: runner.os == 'Windows' && (needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,'))
+        env:
+          ALEF_TEST_MAKENSIS: "1"
+          MAKENSIS: C:\Program Files (x86)\NSIS\makensis.exe
+        run: |
+          choco install --no-progress -y nsis
+          node --experimental-strip-types --test --test-name-pattern=makensis packages/tools/test/bundle.test.mjs scripts/release/tests/installer.test.mjs
+
       - name: "create-alef-runtime tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/create-alef-runtime,')
         run: npm run test:create
