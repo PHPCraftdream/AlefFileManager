@@ -159,9 +159,7 @@ pub struct BridgeOptions {
     /// Servo profile root (`Opts.config_dir`): web storage and the disk cache live under it.
     /// `None` keeps the Servo default.
     pub profile_dir: Option<std::path::PathBuf>,
-    pub devtools_port: Option<u16>, // optional loopback DevTools listener; absent = off
-    /// Name and id of the application, shown in the DevTools consent dialog of a headless run.
-    pub devtools_app: Option<(String, String)>,
+    pub devtools: Option<(u16, String, String)>, // headless DevTools: port, app name, app id
     /// Called when the headless entry finishes loading; runtime owns no module state.
     pub headless_loaded: Option<Box<dyn Fn() + Send>>,
     /// Called each headless iteration; true requests a launch-timeout exit (code 2).
@@ -180,8 +178,7 @@ pub struct Bridge {
     pub(crate) headless_loaded: Option<Box<dyn Fn() + Send>>,
     pub(crate) headless_tick: Option<Box<dyn Fn() -> bool + Send>>,
     pub(crate) profile_dir: Option<PathBuf>,
-    pub(crate) devtools_port: Option<u16>, // None keeps the DevTools server off
-    pub(crate) devtools_app: Option<(String, String)>,
+    pub(crate) devtools: Option<(u16, String, String)>, // None keeps the DevTools server off
     /// Every document of this bridge gets the WebCrypto stand-in (the right was not granted).
     pub(crate) webcrypto_substitute: bool,
     /// RAII owner of the installed interception site; cleared on drop, never inherited.
@@ -455,8 +452,7 @@ impl Bridge {
             headless_loaded: options.headless_loaded,
             headless_tick: options.headless_tick,
             profile_dir: options.profile_dir,
-            devtools_port: options.devtools_port,
-            devtools_app: options.devtools_app,
+            devtools: options.devtools,
             webcrypto_substitute,
             site: site_guard_slot,
             #[cfg(test)]

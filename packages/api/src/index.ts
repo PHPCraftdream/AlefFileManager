@@ -42,10 +42,12 @@ export {
   type SqliteOpenOptions,
 } from './data/sqlite.ts';
 export { secrets } from './data/secrets.ts';
+export { log, type CrashInfo, type LogLevel, type LogReadOptions, type LogRecord } from './data/log.ts';
 export { Store, store } from './data/store.ts';
 export {
   http,
   HttpResponse,
+  CookieJar,
   HttpServer,
   ServerRequest,
   type DownloadOptions,

@@ -4,7 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import * as nodeCrypto from 'node:crypto';
 import { createCipheriv, createDecipheriv, createHash, createHmac, createPrivateKey, createPublicKey, hkdfSync, pbkdf2Sync, randomBytes, scryptSync } from 'node:crypto';
-import { closeSync, createReadStream, existsSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, copyFileSync, createReadStream, existsSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -526,6 +526,66 @@ export function dataScenarios({ drive, exe, verbose }) {
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
+    },
+
+    // The log of the application: levels, redaction, one record per message, rotation under the small
+    // e2e cap; the runtime and its data folder are private to this run and removed at the end.
+    async log() {
+      const problems = [];
+      const site = prepareSite('log', 'modules/data/log');
+      copyFileSync(join(site, 'index.html'), join(site, 'dist', 'index.html'));
+      copyFileSync(join(site, 'page.js'), join(site, 'dist', 'page.js'));
+      const isolated = mkdtempSync(join(os.tmpdir(), 'alef-e2e-log-'));
+      const appHome = join(isolated, 'apphome');
+      const env = {
+        ALEF_APP_HOME: appHome,
+        ALEF_HOME: join(isolated, 'runtime-home'),
+        ALEF_E2E_LOG_CAP: '65536',
+      };
+      let running;
+      try {
+        running = startApp({ exe, args: ['--app', site], env, verbose });
+        await running.waitFor(line => line.includes('ALEF_E2E RESULT'), 120000, 'the log page verdict', { survivesExit: true });
+        const result = verdictOf(running.lines);
+        if (result?.[1] !== 'PASS') problems.push(`page: ${result?.[2] || 'the run failed'}`);
+        const exit = await running.waitForExit(30000);
+        if (exit?.code !== 0) problems.push(`runtime ended with ${exit?.code ?? 'no exit'}`);
+        const done = new Set(running.lines.map(line => /ALEF_E2E check (\S+) ok/.exec(line)?.[1]).filter(Boolean));
+        for (const name of ['log-crashes-start-empty-and-invalid-crash-id-is-rejected', 'log-level-filter-redaction-and-newline-message-are-exact', 'log-rotation-retains-newest-marker']) {
+          if (!done.has(name)) problems.push(`no ok line for ${name}`);
+        }
+        const marker = running.lines.map(line => /ALEF_E2E log final-marker (\S+)$/.exec(line)?.[1]).find(Boolean);
+        const reported = running.lines.map(line => /ALEF_E2E path appData (.+)$/.exec(line)?.[1]).find(Boolean);
+        const expectedData = join(appHome, 'data', 'org.alef.e2e.modules.log');
+        const same = (left, right) => process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+        if (!reported || !same(reported.trim(), expectedData)) problems.push(`appData path was ${reported}, expected exactly ${expectedData}`);
+        const dir = join(expectedData, 'logs');
+        const names = existsSync(dir) ? readdirSync(dir).filter(name => /^app\.log(?:\.[1-4])?$/.test(name)).sort() : [];
+        if (names.length !== 5) problems.push(`expected five rotated log files, found ${names.length}`);
+        const allLines = [];
+        for (const name of names) {
+          const path = join(dir, name);
+          if (statSync(path).size > 65536) problems.push(`${name} exceeds 65536 bytes`);
+          for (const [index, line] of readFileSync(path, 'utf8').split('\n').entries()) {
+            if (!line) continue;
+            try { allLines.push(JSON.parse(line)); }
+            catch { problems.push(`${name}:${index + 1} is not intact JSONL`); }
+          }
+        }
+        if (!marker || !allLines.some(record => record.message?.startsWith(`rotate-79-${marker}-`))) problems.push('newest marker is not retained in the log files');
+        if (allLines.some(record => record.message === 'line-two')) problems.push('a logged newline became a separate file record');
+        if (allLines.some(record => record.fields?.password !== undefined && record.fields.password !== '[redacted]')) problems.push('sensitive password was not exactly redacted');
+      } catch (error) {
+        problems.push(error.message);
+      } finally {
+        if (running) {
+          running.stop();
+          const closed = await running.waitForClosed(5000);
+          if (!closed) problems.push(`runtime did not close; preserving ${isolated}`);
+          else rmSync(isolated, { recursive: true, force: true });
+        } else rmSync(isolated, { recursive: true, force: true });
+      }
+      return { problems, lines: [] };
     },
 
     // The store keeps what was written for the next run: the application runs twice, a new process each

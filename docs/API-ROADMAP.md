@@ -54,13 +54,13 @@
 | `fs` | read/write (text/bytes/stream), stat, readDir, mkdir, rm, rename, copy, exists, watch, temp-файлы — в пределах scopes | tokio fs, `notify` |
 | `sqlite` | open/close, exec, query, prepared statements, транзакции, batch | `rusqlite` (уже есть) |
 | `store` | простое key-value хранилище настроек | `fjall` (уже есть) |
-| `http` | request без CORS: стриминг тела, таймауты, прокси, редиректы, cookies; download/upload с прогрессом | `hyper` + `rustls` (уже есть) |
+| `http` | request без CORS: стриминг тела, таймауты, HTTP-прокси, явный cookie jar, редиректы; download/upload с прогрессом | `hyper` + `rustls` (уже есть) |
 | `net` | TCP client/server, UDP, TLS, WebSocket client | tokio, `rustls`, `tokio-tungstenite` |
 | `crypto` | WebCrypto уже в Servo (`crypto.subtle`) — проверить покрытие; дополнительно: argon2/scrypt, ed25519/x25519 при пробелах; **secure storage** (Keychain/Credential Manager) | `ring`, `keyring` |
 | `cli` | командная строка ОС: exec через оболочку, spawn с stdio-потоками, env, cwd, kill, exit code; sidecar-бинарники приложения | tokio process |
 | `media` | камера, микрофон, воспроизведение и запись аудио | см. «Открытые вопросы» |
 | `updater` | проверка/загрузка/установка обновлений | позже |
-| `log` | логирование в файл, crash-репорты | `tracing` |
+| `log` | `debug/info/warn/error`, `read`, список и чтение crash-отчётов; ограниченное локальное хранение | `alef-modules::data::log` (черновик: [M10](stages/m10-platform.md)); без tracing-зависимости |
 | `devtools` | отладка страницы; не API страницы, а флаг запуска runtime `--devtools` (только каталог приложения, подтверждение каждого подключения) — см. [stages/m10-platform.md](stages/m10-platform.md) | Servo devtools (Firefox protocol) |
 | `ai` | роли Rush (`ai.roles`), чат-поток (`ai.chat` → `AsyncIterable<ChatPart>`), обработчики инструментов (`ai.tools.handle`/`result`/`unhandle`); права `ai.role:<id>`/`ai.tool:<name>` по согласию M2b — см. [stages/m9-ai.md](stages/m9-ai.md) | трейт `AiProvider` (M9.2 — заглушка; транспорт Rush — #167) |
 

@@ -4,13 +4,15 @@
 //! piles up in memory.
 use std::io;
 
+use super::proxy::ResponseBody;
+
 use alef_core::{
     session::streams::{IncomingReader, StreamWriter},
     AlefError, ErrorCode,
 };
 use bytes::Bytes;
 use http_body_util::{channel::Channel, combinators::BoxBody, BodyExt, Empty, Full};
-use hyper::{body::Incoming, Method, StatusCode};
+use hyper::{Method, StatusCode};
 
 pub(super) type RequestBody = BoxBody<Bytes, io::Error>;
 
@@ -75,10 +77,15 @@ pub(super) fn from_stream(mut reader: IncomingReader) -> RequestBody {
 
 /// Sends the body of the answer to the page, frame by frame, as the page takes it. When the page
 /// closes the stream (or the document goes away) the body is dropped and the connection with it.
-pub(super) fn pump(mut body: Incoming, writer: StreamWriter) {
+pub(super) fn pump(mut body: ResponseBody, writer: StreamWriter) {
     tokio::spawn(async move {
         loop {
-            match body.frame().await {
+            // `frame()` delegates one atomically-polled frame to Incoming; canceling it cannot lose a partial frame.
+            let frame = tokio::select! {
+                frame = body.frame() => frame,
+                _ = writer.closed() => return,
+            };
+            match frame {
                 None => {
                     writer.end();
                     return;

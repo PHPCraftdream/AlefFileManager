@@ -20,6 +20,7 @@
 | `./sqlite` | `src/data/sqlite.ts` | `sqlite`, `SqliteDatabase` и связанные классы |
 | `./crypto` | `src/data/crypto.ts` | `crypto`: хэши, шифры, подписи, KDF |
 | `./secrets` | `src/data/secrets.ts` | `secrets`: хранилище секретов |
+| `./log` | `src/data/log.ts` | `log`: журнал приложения и сведения о crash-файлах; собственный сегмент с лимитами на стороне Rust |
 | `./http` | `src/net/http.ts` | `http`, `HttpResponse`: HTTP-клиент |
 | `./http-server` | `src/net/http-server.ts` | `HttpServer`, `ServerRequest`: HTTP-сервер |
 | `./socket` | `src/net/socket.ts` | `socket`, TCP/UDP-классы |

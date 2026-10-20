@@ -118,10 +118,9 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         let waker = waker.clone();
         handle.windowless(move || waker.wake());
     }
-    let devtools = bridge.devtools_port.map(|port| {
+    let devtools = bridge.devtools.clone().map(|(port, name, id)| {
         let failed = std::rc::Rc::new(Cell::new(false));
         let wake = waker.clone();
-        let (name, id) = bridge.devtools_app.clone().unwrap_or_default();
         crate::ui::devtools::DevtoolsDelegate::new(move || wake.wake(), failed, port, name, id)
     });
     let servo = ServoBuilder::default()
@@ -129,7 +128,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
             bridge.profile_dir().map(|path| path.to_owned()),
         ))
         .preferences(crate::bridge::assets::origin::preferences_for(
-            bridge.devtools_port,
+            bridge.devtools.as_ref().map(|(port, _, _)| *port),
         ))
         .protocol_registry(bridge.take_registry()?)
         .event_loop_waker(Box::new(waker.clone()))
@@ -166,7 +165,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
             devtools.poll();
             if devtools.failed() {
                 return Err(io::Error::other(crate::ui::devtools::unavailable_message(
-                    bridge.devtools_port.unwrap_or(7000),
+                    bridge.devtools.as_ref().map_or(7000, |(port, _, _)| *port),
                 ))
                 .into());
             }

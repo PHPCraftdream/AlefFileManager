@@ -95,6 +95,7 @@
         "fs",
         "sqlite",
         "store",
+        "log",
         "crypto",
         "webcrypto",
         "secrets"
@@ -295,6 +296,7 @@
         "fs",
         "sqlite",
         "store",
+        "log",
         "crypto",
         "webcrypto",
         "secrets"

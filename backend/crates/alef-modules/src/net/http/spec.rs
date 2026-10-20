@@ -35,6 +35,7 @@ pub(super) fn spec(
         method,
         headers: headers::parse(headers, &["proxy-"])?,
         follow,
+        proxy: None,
     })
 }
 

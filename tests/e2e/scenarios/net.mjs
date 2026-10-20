@@ -19,6 +19,7 @@ const HTTP_CHECKS = [
   'http-a-request-and-its-answer', 'http-a-big-body-goes-up-and-comes-down-as-a-stream',
   'http-redirects-follow-and-the-scope-holds-for-every-hop', 'http-time-and-the-network-fail-with-their-own-codes',
   'http-an-abort-reaches-the-connection', 'http-a-download-fills-a-file-with-progress-and-an-abort-leaves-none',
+  'http-cookie-jar-roundtrips-and-can-be-cleared', 'http-cookies-are-off-without-a-jar', 'http-proxy-forwards-the-request',
 ];
 const HTTP_SUBSTITUTE_CHECKS = ['http-a-substituted-network-hangs-until-its-time-is-up'];
 const SOCKET_CHECKS = [
@@ -68,6 +69,14 @@ function origin() {
       case '/hello':
         response.writeHead(200, { 'content-type': 'text/plain', 'x-test': 'a' });
         response.end('hello');
+        return;
+      case '/cookie-set':
+        response.writeHead(200, { 'set-cookie': 'session=roundtrip; Path=/' });
+        response.end('set');
+        return;
+      case '/cookie-echo':
+        response.writeHead(200, { 'content-type': 'text/plain' });
+        response.end(request.headers.cookie ?? '');
         return;
       case '/json':
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -150,6 +159,46 @@ function origin() {
       close: () => new Promise(done => { server.closeAllConnections(); server.close(done); }),
     }));
   });
+}
+
+/** HTTP proxy restricted to the origin fixture; records absolute-form requests and bounds both sides. */
+async function localProxy(originPort) {
+  const seen = [];
+  const sockets = new Set();
+  const server = http.createServer((incoming, outgoing) => {
+    const timer = setTimeout(() => outgoing.destroy(), 5000);
+    let target;
+    try {
+      target = new URL(incoming.url);
+    } catch {
+      clearTimeout(timer); outgoing.writeHead(400); outgoing.end(); return;
+    }
+    if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || Number(target.port) !== originPort || !incoming.url.startsWith('http://')) {
+      clearTimeout(timer); outgoing.writeHead(403); outgoing.end(); return;
+    }
+    seen.push(incoming.url);
+    const request = http.request({ host: '127.0.0.1', port: originPort, method: incoming.method, path: `${target.pathname}${target.search}`, headers: incoming.headers, agent: false }, response => {
+      outgoing.writeHead(response.statusCode, response.headers);
+      response.pipe(outgoing);
+    });
+    request.setTimeout(5000, () => request.destroy(new Error('proxy upstream timeout')));
+    request.on('error', () => outgoing.destroy());
+    incoming.on('error', () => request.destroy());
+    request.on('response', response => response.on('error', () => outgoing.destroy()));
+    incoming.pipe(request);
+    outgoing.on('close', () => { clearTimeout(timer); request.destroy(); });
+  });
+  server.headersTimeout = 5000;
+  server.requestTimeout = 5000;
+  server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return {
+    port: server.address().port, seen,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => { server.closeAllConnections(); server.close(resolve); });
+    },
+  };
 }
 
 /** A port nothing listens on. */
@@ -517,16 +566,18 @@ export function netScenarios({ drive }) {
     const main = await origin();
     const aside = await origin();
     const closed = await closedPort();
+    const proxy = await localProxy(main.port);
     try {
       return await drive({
         name, app: 'modules/net/http',
-        replacements: { PORT: String(main.port), CLOSED: String(closed), ROOT: root.replaceAll('\\', '/') },
-        targets: { mode, port: main.port, otherPort: aside.port, closed, size: SIZE, root: root.replaceAll('\\', '/') },
+        replacements: { PORT: String(main.port), CLOSED: String(closed), PROXY: String(proxy.port), ROOT: root.replaceAll('\\', '/') },
+        targets: { mode, port: main.port, otherPort: aside.port, closed, proxy: proxy.port, size: SIZE, root: root.replaceAll('\\', '/') },
         env: { ALEF_HOME: join(base, 'home'), ...(typeof env === 'function' ? env({ main, closed }) : env) },
         expectedChecks,
-        judge: () => judge({ root, main, aside, base }),
+        judge: () => judge({ root, main, aside, base, proxy }),
       });
     } finally {
+      await proxy.close();
       await main.close();
       await aside.close();
       rmSync(base, { recursive: true, force: true });
@@ -613,7 +664,7 @@ export function netScenarios({ drive }) {
     ),
 
     // The user allowed the addresses: everything is real, and the runner looks at what its servers saw.
-    http: () => run('http', 'allowed', HTTP_CHECKS, {}, async ({ root, main, aside }) => {
+    http: () => run('http', 'allowed', HTTP_CHECKS, {}, async ({ root, main, aside, proxy }) => {
       const problems = [];
       const file = join(root, 'big.bin');
       if (!existsSync(file)) problems.push('the downloaded file is missing');
@@ -634,6 +685,7 @@ export function netScenarios({ drive }) {
       if (aside.seen.length !== 0) problems.push(`the server outside the scope was reached: ${JSON.stringify(aside.seen)}`);
       if (!main.cut.includes('/slow')) problems.push('an aborted request did not close the connection');
       if (!main.cut.includes('/big')) problems.push('a body that the page gave up did not close the connection');
+      if (proxy.seen.length !== 1 || proxy.seen[0] !== `http://127.0.0.1:${main.port}/hello`) problems.push(`proxy recorded ${JSON.stringify(proxy.seen)}`);
       return problems;
     }),
 

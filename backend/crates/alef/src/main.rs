@@ -738,6 +738,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         launch: launch_state.clone(),
     };
     let console = context.console.clone();
+    alef_modules::data::log::install_panic_hook(&context)?;
 
     install_tls()?;
     let allowed_origins = dev_url
@@ -769,8 +770,8 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
             origin_host: Some(origin_host.clone()),
             allowed_external_origins,
             profile_dir: Some(servo_profile.clone()),
-            devtools_port,
-            devtools_app: Some((plan.manifest.name.clone(), plan.manifest.id.clone())),
+            devtools: devtools_port
+                .map(|port| (port, plan.manifest.name.clone(), plan.manifest.id.clone())),
             headless_loaded: Some(Box::new(move || loaded.loaded())),
             headless_tick: Some(Box::new(move || tick.check_timeout())),
             ..BridgeOptions::default()

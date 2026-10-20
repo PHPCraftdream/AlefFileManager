@@ -8,7 +8,7 @@ alef-runtime verify <file>
 alef-runtime check [dir]
 alef-runtime build [dir] [--out <dir>]
 alef-runtime dev [dir] [--ready-timeout <ms>] [--devtools[=PORT]] [-- <runtime args>]
-alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
+alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
 --include: repeat or use commas for .git,node_modules,.alef-runtime;
 key home and .alef-runtime are always excluded.
 check: basic text hygiene only; full runtime manifest validation is not performed.
@@ -112,7 +112,7 @@ async function main(args) {
   if (command === 'bundle') {
     const { positional, options } = argumentsFor(args, { runtime: true, platform: true, format: true, out: true, name: true, 'runtime-version': true, maintainer: true, 'allow-unsigned': false, force: false }, new Set(['format']));
     if (positional.length !== 1) fail('Usage: bundle <PACKAGE.alef> --runtime <alef-binary> --platform <platform> [options]');
-    if (options.platform === undefined) fail('Usage: bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]');
+    if (options.platform === undefined) fail('Usage: bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]');
     const result = await bundle(positional[0], {
       runtime: options.runtime, platform: options.platform, formats: options.format, out: options.out,
       name: options.name, runtimeVersion: options['runtime-version'], maintainer: options.maintainer,

@@ -137,6 +137,29 @@ async fn pid_gone(pid: u32, timeout: Duration) -> bool {
     }
 }
 
+/// The pid the emulator recorded first thing. It waits for the file: a child that boots slowly on a
+/// loaded runner may still be starting when a deadline under test fires.
+async fn recorded_pid(root: &Path) -> u32 {
+    let end = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(pid) = std::fs::read_to_string(root.join("run.pid"))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
+            return pid;
+        }
+        assert!(
+            tokio::time::Instant::now() < end,
+            "the child never recorded its pid: it was killed before it started"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A deadline that a child booting slowly on a saturated runner (node took over 800 ms there) still
+/// meets: the deadline tests need the child alive, with its pid written, when the deadline fires.
+const DEADLINE_AFTER_BOOT_MS: u64 = 4_000;
+
 fn read_data(dir: &Path, name: &str) -> Vec<u8> {
     std::fs::read(dir.join(name)).expect("the recording file exists")
 }
@@ -444,18 +467,18 @@ async fn a_cancel_kills_the_child_tree_and_cancels_the_rush_session() {
 // makes this test fail because the hung child would survive and no Timeout event would arrive.
 #[tokio::test]
 async fn a_hang_past_the_deadline_is_one_timeout_error_and_a_dead_child() {
-    let (bridge, _dir) = provider("hang", 600, false);
+    let (bridge, _dir) = provider("hang", DEADLINE_AFTER_BOOT_MS, false);
     let root = bridge.data_dir().await.expect("provider root");
     let (chat, _cancel) = control();
     let receiver = bridge
         .chat(request("smart", "deadline", false, None), chat)
         .expect("chat starts");
-    let events = collect(receiver, 4, Duration::from_secs(5)).await;
+    let events = collect(receiver, 4, Duration::from_secs(10)).await;
     assert_eq!(
         events,
         vec![failed(ErrorCode::Timeout, "the rush run took too long")]
     );
-    let pid: u32 = read_text(&root, "run.pid").trim().parse().expect("a pid");
+    let pid = recorded_pid(&root).await;
     assert!(pid_gone(pid, Duration::from_secs(5)).await);
 }
 
@@ -693,13 +716,13 @@ async fn the_bounded_channel_stops_the_provider_when_the_page_stops_reading() {
 // would hang the chat past its deadline without ever answering.
 #[tokio::test]
 async fn a_child_that_closes_stdout_but_stays_alive_is_killed_at_the_deadline() {
-    let (bridge, _dir) = provider("eof-hang", 800, false);
+    let (bridge, _dir) = provider("eof-hang", DEADLINE_AFTER_BOOT_MS, false);
     let root = bridge.data_dir().await.expect("provider root");
     let (chat, _cancel) = control();
     let receiver = bridge
         .chat(request("smart", "eof then hang", false, None), chat)
         .expect("chat starts");
-    let events = collect(receiver, 8, Duration::from_secs(5)).await;
+    let events = collect(receiver, 8, Duration::from_secs(10)).await;
     assert_eq!(
         events.last(),
         Some(&failed(ErrorCode::Timeout, "the rush run took too long"))
@@ -715,7 +738,7 @@ async fn a_child_that_closes_stdout_but_stays_alive_is_killed_at_the_deadline() 
             .count(),
         1
     );
-    let pid: u32 = read_text(&root, "run.pid").trim().parse().expect("a pid");
+    let pid = recorded_pid(&root).await;
     assert!(pid_gone(pid, Duration::from_secs(5)).await);
 }
 
