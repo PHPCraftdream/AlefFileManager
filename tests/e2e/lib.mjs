@@ -2,7 +2,7 @@
 // Helpers of the end-to-end runner: a scenario site (application files + the transpiled
 // @alef-runtime/api), the runtime process with its stderr log, and small local HTTP servers.
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -117,14 +117,75 @@ export async function runScenario(body) {
  * plain; what each attempt answered is said in the report when none produced stacks.
  */
 function stackSnapshot(pid) {
-  const args = ['-p', String(pid), '-batch', '-nx', '-ex', 'set pagination off', '-ex', 'thread apply all bt 25'];
+  const facts = processFacts(pid);
+  const gdbBase = ['-batch', '-nx', '-ex', 'set pagination off', '-ex', 'thread apply all bt 25'];
   const notes = [];
-  for (const [command, argv] of [['sudo', ['-n', 'gdb', ...args]], ['gdb', args]]) {
-    const run = spawnSync(command, argv, { encoding: 'utf8', timeout: 60000 });
-    if (!run.error && /\bThread \d+ /.test(run.stdout ?? '')) return `\n--- gdb stacks of pid ${pid} (${command}) ---\n${run.stdout.slice(0, 40000)}`;
-    notes.push(`${command}: ${run.error?.message ?? `${run.stdout ?? ''} ${run.stderr ?? ''}`.trim().slice(0, 200)}`);
-  }
-  return `\n--- no gdb stacks: ${notes.join(' | ')}`;
+  const attempt = (target, timeout) => {
+    for (const [command, argv] of [['sudo', ['-n', 'gdb', ...gdbBase, ...target]], ['gdb', [...gdbBase, ...target]]]) {
+      const run = spawnSync(command, argv, { encoding: 'utf8', timeout });
+      if (!run.error && /\bThread \d+ /.test(run.stdout ?? '')) return { command, stacks: run.stdout.slice(0, 40000) };
+      notes.push(`${command}: ${run.error?.message ?? `${run.stdout ?? ''} ${run.stderr ?? ''}`.trim().slice(-300)}`);
+    }
+    return null;
+  };
+  const attached = attempt(['-p', String(pid)], 60000);
+  if (attached) return `\n--- ${facts}\n--- gdb stacks of pid ${pid} (${attached.command}) ---\n${attached.stacks}`;
+  const dumped = coreDump(pid, notes);
+  const cored = dumped && attempt([dumped.exe, dumped.core], 240000);
+  if (dumped) rmQuiet(dumped.core);
+  if (cored) return `\n--- ${facts}\n--- gdb stacks of the core of pid ${pid} (${cored.command}) ---\n${cored.stacks}`;
+  return `\n--- ${facts}\n--- no gdb stacks: ${notes.join(' | ')}`;
+}
+
+function rmQuiet(path) {
+  try { rmSync(path, { force: true }); } catch { /* owned by root: the runner is thrown away */ }
+}
+
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/** What a ptrace attach depends on, and which threads burn CPU: both read without any ptrace right. */
+function processFacts(pid) {
+  const read = (file) => { try { return readFileSync(file, 'utf8'); } catch (error) { return `(${error.code})`; } };
+  const status = read(`/proc/${pid}/status`).split('\n')
+    .filter(line => /^(Uid|CapEff|NoNewPrivs|Seccomp|TracerPid):/.test(line)).map(line => line.replace(/\s+/g, ' ')).join(', ');
+  const ticks = () => {
+    const found = new Map();
+    for (const tid of readdirSync(`/proc/${pid}/task`)) {
+      const stat = read(`/proc/${pid}/task/${tid}/stat`);
+      const close = stat.lastIndexOf(')');
+      const fields = stat.slice(close + 2).split(' ');
+      if (close > 0) found.set(tid, { name: stat.slice(stat.indexOf('(') + 1, close), used: Number(fields[11]) + Number(fields[12]) });
+    }
+    return found;
+  };
+  let busy = '';
+  try {
+    const before = ticks();
+    pause(500);
+    busy = [...ticks()].map(([tid, now]) => `${now.name}:${now.used - (before.get(tid)?.used ?? now.used)}`).filter(entry => !entry.endsWith(':0')).join(' ');
+  } catch { /* the process is gone */ }
+  return `pid ${pid}: ${status}; ptrace_scope=${read('/proc/sys/kernel/yama/ptrace_scope').trim()}; cpu ticks in 500ms: ${busy || 'none'}`;
+}
+
+/**
+ * A core file of a process that cannot be attached to: SIGABRT makes the kernel write it (CI sets the
+ * pattern and the limit), gdb reads it afterwards. The process is hung already, nothing is lost.
+ */
+function coreDump(pid, notes) {
+  let exe;
+  try { exe = readlinkSync(`/proc/${pid}/exe`); } catch (error) { notes.push(`core: no exe (${error.code})`); return null; }
+  const core = `/tmp/alef-core.${pid}`;
+  rmQuiet(core);
+  process.kill(pid, 'SIGABRT');
+  const gone = () => {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return stat[stat.lastIndexOf(')') + 2] === 'Z';
+    } catch { return true; }
+  };
+  for (let waited = 0; !gone() && waited < 120000; waited += 250) pause(250);
+  if (!existsSync(core)) { notes.push('core: no file was written'); return null; }
+  return { exe, core };
 }
 
 /** Emits @alef-runtime/api as plain ES modules (`src/`, `types/`); done once per run. */

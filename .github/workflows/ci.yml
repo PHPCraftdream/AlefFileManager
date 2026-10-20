@@ -172,6 +172,8 @@ jobs:
             xvfb openbox gdb
           # gdb attaches to a runtime the e2e runner started (a sibling, not a child, of gdb).
           sudo sysctl -w kernel.yama.ptrace_scope=0
+          # A runtime gdb cannot attach to is made to write a core file instead: gdb reads it afterwards.
+          sudo sysctl -w kernel.core_pattern=/tmp/alef-core.%p fs.suid_dumpable=2
 
       - name: npm ci
         run: npm ci
@@ -386,6 +388,7 @@ jobs:
           if [ "${{ needs.plan.outputs.e2e }}" != "all" ]; then
             only="--only ${{ needs.plan.outputs.e2e }}"
           fi
+          ulimit -c unlimited
           xvfb-run -a -s "-screen 0 1280x1024x24" sh -c "openbox >/dev/null 2>&1 & sleep 2; exec node tests/e2e/run.mjs --exe backend/target/debug/alef --timeout-s 150 --verbose $only"
 
       # WGL on a GPUless Windows runner cannot create a context (#107, #116): only the no-window
