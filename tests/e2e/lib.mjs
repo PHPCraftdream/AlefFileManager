@@ -112,12 +112,19 @@ export async function runScenario(body) {
 
 /**
  * Stacks of every thread of a process that does not exit, taken by gdb when it is installed (the CI
- * Linux job installs it): names the frame each thread is stuck in. A missing gdb or a refused attach is said in the report.
+ * Linux job installs it): names the frame each thread is stuck in. gdb runs under `sudo -n` first (an
+ * attach of an unprivileged gdb to a sibling process was refused although ptrace_scope is 0), then
+ * plain; what each attempt answered is said in the report when none produced stacks.
  */
 function stackSnapshot(pid) {
-  const run = spawnSync('gdb', ['-p', String(pid), '-batch', '-nx', '-ex', 'set pagination off', '-ex', 'thread apply all bt 25'], { encoding: 'utf8', timeout: 60000 });
-  if (run.error || !run.stdout) return `\n--- no gdb stacks: ${run.error?.message ?? run.stderr?.slice(0, 300) ?? 'no output'}`;
-  return `\n--- gdb stacks of pid ${pid} ---\n${run.stdout.slice(0, 40000)}`;
+  const args = ['-p', String(pid), '-batch', '-nx', '-ex', 'set pagination off', '-ex', 'thread apply all bt 25'];
+  const notes = [];
+  for (const [command, argv] of [['sudo', ['-n', 'gdb', ...args]], ['gdb', args]]) {
+    const run = spawnSync(command, argv, { encoding: 'utf8', timeout: 60000 });
+    if (!run.error && /\bThread \d+ /.test(run.stdout ?? '')) return `\n--- gdb stacks of pid ${pid} (${command}) ---\n${run.stdout.slice(0, 40000)}`;
+    notes.push(`${command}: ${run.error?.message ?? `${run.stdout ?? ''} ${run.stderr ?? ''}`.trim().slice(0, 200)}`);
+  }
+  return `\n--- no gdb stacks: ${notes.join(' | ')}`;
 }
 
 /** Emits @alef-runtime/api as plain ES modules (`src/`, `types/`); done once per run. */
