@@ -137,7 +137,14 @@ jobs:
 
       - name: Servo build prerequisites (Windows)
         if: runner.os == 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
-        run: choco install --no-progress -y llvm cmake ninja
+        shell: bash
+        run: |
+          # The Chocolatey community feed fails now and then: try again before giving up.
+          for attempt in 1 2 3 4; do
+            choco install --no-progress -y llvm cmake ninja && break
+            [ "$attempt" = 4 ] && exit 1
+            sleep $((attempt * 20))
+          done
 
       - name: Servo build prerequisites (macOS)
         if: runner.os == 'macOS' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
@@ -281,8 +288,16 @@ jobs:
         env:
           ALEF_TEST_MAKENSIS: "1"
           MAKENSIS: C:\Program Files (x86)\NSIS\makensis.exe
+        shell: bash
         run: |
-          choco install --no-progress -y nsis
+          # The Chocolatey community feed fails now and then ("Unable to resolve dependency 'nsis.install'"):
+          # try again before giving up, and never go on without the compiler.
+          for attempt in 1 2 3 4; do
+            choco install --no-progress -y nsis && break
+            [ "$attempt" = 4 ] && exit 1
+            sleep $((attempt * 20))
+          done
+          test -f "$MAKENSIS"
           node --experimental-strip-types --test --test-name-pattern=makensis packages/tools/test/bundle.test.mjs scripts/release/tests/installer.test.mjs
 
       # The real hdiutil on a macOS runner: the dmg of the bundle is created, verified and mounted read-only.

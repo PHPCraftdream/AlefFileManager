@@ -114,7 +114,14 @@ jobs:
 
       - name: Servo build prerequisites (Windows)
         if: runner.os == 'Windows'
-        run: choco install --no-progress -y llvm cmake ninja
+        shell: bash
+        run: |
+          # The Chocolatey community feed fails now and then: try again before giving up.
+          for attempt in 1 2 3 4; do
+            choco install --no-progress -y llvm cmake ninja && break
+            [ "$attempt" = 4 ] && exit 1
+            sleep $((attempt * 20))
+          done
 
       - name: Servo build prerequisites (macOS)
         if: runner.os == 'macOS'
