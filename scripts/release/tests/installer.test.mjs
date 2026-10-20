@@ -300,3 +300,27 @@ test('cli_writes_the_win32_staging_tree_and_fails_on_bad_versions', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The real compiler against the generated runtime installer script. CI turns it on (NSIS is
+// installed on Linux and Windows runners); the installer itself is never run here.
+test('makensis_compiles_the_win32_runtime_installer_without_warnings', {
+  timeout: 120000,
+  skip: process.env.ALEF_TEST_MAKENSIS === '1' ? false : 'ALEF_TEST_MAKENSIS=1 is not set',
+}, () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'alef-installer-'));
+  try {
+    const binary = path.join(dir, 'alef.exe');
+    const out = path.join(dir, 'staging');
+    writeFileSync(binary, RUNTIME);
+    execFileSync(process.execPath, ['scripts/release/installer.mjs', 'win32-x64', V, binary, out],
+      { timeout: 30000, encoding: 'utf8' });
+    const stdout = execFileSync(process.env.MAKENSIS || 'makensis', ['-NOCD', 'alef-runtime-1.2.3-setup.nsi'],
+      { cwd: out, timeout: 90000, encoding: 'utf8' });
+    assert.doesNotMatch(stdout, /warning:/i, stdout);
+    const setup = readFileSync(path.join(out, 'alef-runtime-1.2.3-setup.exe'));
+    assert.equal(setup.subarray(0, 2).toString('latin1'), 'MZ');
+    assert.ok(setup.length > RUNTIME.length, `setup is ${setup.length} bytes`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -233,11 +233,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends gnome-keyring
           dbus-run-session -- bash -c 'echo -n "alef-ci" | gnome-keyring-daemon --unlock --components=secrets > /dev/null && node scripts/cargo.mjs test --locked -p alef-modules --test data -- --ignored --nocapture'
 
+      # The ts-rs export tests link alef-modules, which on Linux needs glib/gio/gdk-pixbuf (the icons
+      # and the context menu). Runs that skip the Servo prerequisites above (a change of JS only) need
+      # these too; a docs-only change cannot move the generated types and skips the step.
+      - name: Types prerequisites (Linux)
+        if: runner.os == 'Linux' && needs.plan.outputs.docs_only != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libglib2.0-dev libgdk-pixbuf-2.0-dev
+
       - name: Generated TypeScript types
+        if: needs.plan.outputs.docs_only != 'true'
         run: |
           npm run check:types
           npm run test:types
-          node --test scripts/supply/check-no-hooks.test.mjs
+
+      - name: Supply scripts have no install hooks
+        run: node --test scripts/supply/check-no-hooks.test.mjs
 
       - name: "@alef-runtime/api tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/api,') || contains(format(',{0},', needs.plan.outputs.js), ',frontend,')
@@ -250,6 +262,26 @@ jobs:
       - name: "@alef-runtime/tools tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,')
         run: npm run test:tools
+
+      # The real NSIS compiler against the generated installers (the bundle format nsis and the runtime
+      # installer of the release): their scripts were only text-checked. The installers are never run.
+      - name: NSIS installers compile (Linux)
+        if: runner.os == 'Linux' && (needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,'))
+        env:
+          ALEF_TEST_MAKENSIS: "1"
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nsis
+          node --experimental-strip-types --test --test-name-pattern=makensis packages/tools/test/bundle.test.mjs scripts/release/tests/installer.test.mjs
+
+      - name: NSIS installers compile (Windows)
+        if: runner.os == 'Windows' && (needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/tools,'))
+        env:
+          ALEF_TEST_MAKENSIS: "1"
+          MAKENSIS: C:\Program Files (x86)\NSIS\makensis.exe
+        run: |
+          choco install --no-progress -y nsis
+          node --experimental-strip-types --test --test-name-pattern=makensis packages/tools/test/bundle.test.mjs scripts/release/tests/installer.test.mjs
 
       - name: "create-alef-runtime tests"
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/create-alef-runtime,')

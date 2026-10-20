@@ -97,8 +97,8 @@ StartupWMClass, no `Version`; Architecture amd64, Package lowercase kebab,
 Maintainer from `--maintainer` or a placeholder); `nsis` (generated
 `installer.nsi` with `OutFile`, per-user `$LOCALAPPDATA\Programs`, a Start
 Menu shortcut with the `run` argument and a safe `.lnk` name, an HKCU
-uninstall key and AppUserModelId; `build-installer.cmd` text; makensis is NOT
-run); `app` (a thin `.app` tree, Info.plist with CFBundleIdentifier, launcher
+uninstall key and AppUserModelId; `build-installer.cmd` text; `bundle` does not run
+makensis, CI compiles the staged script with the real one); `app` (a thin `.app` tree, Info.plist with CFBundleIdentifier, launcher
 runs `run`; zipped to `<stem>.app.zip` when combined with `zip`, with modes).
 Safety: runtime and package paths are walked component-by-component and
 symlinked components are refused (OS temp-dir chain exempt); the runtime is at
