@@ -54,7 +54,7 @@
 | `fs` | read/write (text/bytes/stream), stat, readDir, mkdir, rm, rename, copy, exists, watch, temp-файлы — в пределах scopes | tokio fs, `notify` |
 | `sqlite` | open/close, exec, query, prepared statements, транзакции, batch | `rusqlite` (уже есть) |
 | `store` | простое key-value хранилище настроек | `fjall` (уже есть) |
-| `http` | request без CORS: стриминг тела, таймауты, прокси, редиректы, cookies; download/upload с прогрессом | `hyper` + `rustls` (уже есть) |
+| `http` | request без CORS: стриминг тела, таймауты, HTTP-прокси, явный cookie jar, редиректы; download/upload с прогрессом | `hyper` + `rustls` (уже есть) |
 | `net` | TCP client/server, UDP, TLS, WebSocket client | tokio, `rustls`, `tokio-tungstenite` |
 | `crypto` | WebCrypto уже в Servo (`crypto.subtle`) — проверить покрытие; дополнительно: argon2/scrypt, ed25519/x25519 при пробелах; **secure storage** (Keychain/Credential Manager) | `ring`, `keyring` |
 | `cli` | командная строка ОС: exec через оболочку, spawn с stdio-потоками, env, cwd, kill, exit code; sidecar-бинарники приложения | tokio process |

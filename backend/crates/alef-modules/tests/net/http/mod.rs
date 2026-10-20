@@ -126,8 +126,10 @@ async fn until(mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
+mod cookies;
 mod download;
 mod failures;
+mod proxy;
 mod redirects;
 mod serve;
 

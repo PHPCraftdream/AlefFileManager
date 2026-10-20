@@ -159,11 +159,19 @@ async fn answer(request: Request<Incoming>, log: Log) -> Response<Body> {
             })
             .or_insert(value);
     }
+    let port = headers
+        .get("host")
+        .and_then(|h| h.rsplit_once(':'))
+        .and_then(|(_, p)| p.parse::<u16>().ok())
+        .unwrap_or_default();
     let target = query(&request, "to");
+    let cookie_value = query(&request, "value").unwrap_or_else(|| "value".to_owned());
     let body = match request.into_body().collect().await {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(_) => Vec::new(),
     };
+    let host = headers.get("host").cloned().unwrap_or_default();
+    let cookie = headers.get("cookie").cloned().unwrap_or_default();
     log.seen.lock().unwrap().push(Seen {
         method: method.clone(),
         path: path.clone(),
@@ -178,7 +186,28 @@ async fn answer(request: Request<Incoming>, log: Log) -> Response<Body> {
             .expect("a response"),
         "/echo" => Response::builder()
             .header("x-method", method)
+            .header("x-cookie", cookie.clone())
             .body(full(body))
+            .expect("a response"),
+        "/echo-cookie" => Response::builder()
+            .header("x-cookie", cookie.clone())
+            .body(full(""))
+            .expect("a response"),
+        "/cookie-body" => Response::builder().body(full(cookie)).expect("a response"),
+        "/echo-cookie-host" => Response::builder()
+            .header("x-cookie", cookie.clone())
+            .header("x-host", host.clone())
+            .body(full(""))
+            .expect("a response"),
+        "/set-cookie" => Response::builder()
+            .header("set-cookie", format!("jar={cookie_value}; Path=/"))
+            .body(full("set"))
+            .expect("a response"),
+        "/set-redirect-cookie" => Response::builder()
+            .status(302)
+            .header("set-cookie", "redirect=stored; Path=/")
+            .header("location", "/echo-cookie")
+            .body(full(""))
             .expect("a response"),
         "/sum" => {
             // What arrived, as one number: a body that is wrong anywhere changes it.
@@ -236,6 +265,14 @@ async fn answer(request: Request<Incoming>, log: Log) -> Response<Body> {
                 .body(channel.boxed())
                 .expect("a response")
         }
+        "/redirect-cookie" => Response::builder()
+            .status(302)
+            .header(
+                "location",
+                format!("http://localhost:{port}/echo-cookie-host"),
+            )
+            .body(full(""))
+            .expect("a response"),
         "/loop" => Response::builder()
             .status(302)
             .header("location", "/loop")

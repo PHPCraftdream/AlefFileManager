@@ -29,6 +29,60 @@ async fn follow_download(app: &Fixture, started: &Value) -> Result<Vec<Value>, A
 }
 
 #[tokio::test]
+async fn a_download_uses_only_the_explicit_cookie_jar() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let server = Server::start().await;
+        let directory = tempfile::tempdir().unwrap();
+        let app = Fixture::new(
+            Some(&manifest(
+                &[server.scope()],
+                &[write_scope(directory.path())],
+            )),
+            &[],
+        )
+        .await;
+        let jar = app
+            .call("http.cookieJar", json!({}))
+            .await
+            .unwrap()["jar"]
+            .as_u64()
+            .unwrap();
+        let seeded = app
+            .call(
+                "http.request",
+                json!({ "url": server.url("/set-cookie"), "jar": jar }),
+            )
+            .await
+            .unwrap();
+        body_of(&app, &seeded).await;
+
+        let with_jar = directory.path().join("with-jar.txt");
+        let started = app
+            .call(
+                "http.download",
+                json!({ "url": server.url("/cookie-body"), "path": with_jar.to_string_lossy(), "jar": jar }),
+            )
+            .await
+            .unwrap();
+        follow_download(&app, &started).await.unwrap();
+        assert_eq!(std::fs::read(&with_jar).unwrap(), b"jar=value");
+
+        let without_jar = directory.path().join("without-jar.txt");
+        let started = app
+            .call(
+                "http.download",
+                json!({ "url": server.url("/cookie-body"), "path": without_jar.to_string_lossy() }),
+            )
+            .await
+            .unwrap();
+        follow_download(&app, &started).await.unwrap();
+        assert_eq!(std::fs::read(&without_jar).unwrap(), b"");
+    })
+    .await
+    .expect("the cookie download test stalled");
+}
+
+#[tokio::test]
 async fn a_download_fills_a_file_with_progress_and_leaves_none_when_it_fails() {
     let server = Server::start().await;
     let directory = tempfile::tempdir().unwrap();
