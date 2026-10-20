@@ -29,6 +29,6 @@ pub(crate) fn register(
     )?;
     notification::register(registry, context.backends.notification.clone())?;
     path::register(registry, context)?;
-    os::register(registry, host.clone())?;
+    os::register(registry, host.clone(), context.backends.power.clone())?;
     screen::register(registry, host)
 }

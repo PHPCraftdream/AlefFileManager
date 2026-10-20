@@ -4,7 +4,7 @@
 import { spawnSync } from 'node:child_process';
 import * as nodeCrypto from 'node:crypto';
 import { createCipheriv, createDecipheriv, createHash, createHmac, createPrivateKey, createPublicKey, hkdfSync, pbkdf2Sync, randomBytes, scryptSync } from 'node:crypto';
-import { closeSync, copyFileSync, createReadStream, existsSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, createReadStream, existsSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -533,8 +533,6 @@ export function dataScenarios({ drive, exe, verbose }) {
     async log() {
       const problems = [];
       const site = prepareSite('log', 'modules/data/log');
-      copyFileSync(join(site, 'index.html'), join(site, 'dist', 'index.html'));
-      copyFileSync(join(site, 'page.js'), join(site, 'dist', 'page.js'));
       const isolated = mkdtempSync(join(os.tmpdir(), 'alef-e2e-log-'));
       const appHome = join(isolated, 'apphome');
       const env = {

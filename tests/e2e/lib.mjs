@@ -102,6 +102,16 @@ export async function runScenario(body) {
 }
 
 
+/**
+ * Stacks of every thread of a process that does not exit, taken by gdb when it is installed (the CI
+ * Linux job installs it): names the frame each thread is stuck in. A missing gdb or a refused attach is said in the report.
+ */
+function stackSnapshot(pid) {
+  const run = spawnSync('gdb', ['-p', String(pid), '-batch', '-nx', '-ex', 'set pagination off', '-ex', 'thread apply all bt 25'], { encoding: 'utf8', timeout: 60000 });
+  if (run.error || !run.stdout) return `\n--- no gdb stacks: ${run.error?.message ?? run.stderr?.slice(0, 300) ?? 'no output'}`;
+  return `\n--- gdb stacks of pid ${pid} ---\n${run.stdout.slice(0, 40000)}`;
+}
+
 /** Emits @alef-runtime/api as plain ES modules (`src/`, `types/`); done once per run. */
 export function transpileApi() {
   if (transpiled) return transpiled;
@@ -269,7 +279,7 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
       const read = (file) => { try { return readFileSync(file, 'utf8').trim(); } catch { return '?'; } };
       const threads = readdirSync(base).slice(0, 80).map(tid => `${read(`${base}/${tid}/comm`)}:${read(`${base}/${tid}/wchan`)}`);
       const children = read(`${base}/${child.pid}/children`);
-      return `${state}; children=[${children}]; ${threads.length} threads: ${threads.join(' ')}`;
+      return `${state}; children=[${children}]; ${threads.length} threads: ${threads.join(' ')}${stackSnapshot(child.pid)}`;
     } catch {
       return state;
     }
