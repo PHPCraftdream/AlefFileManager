@@ -60,7 +60,7 @@
 | `cli` | командная строка ОС: exec через оболочку, spawn с stdio-потоками, env, cwd, kill, exit code; sidecar-бинарники приложения | tokio process |
 | `media` | камера, микрофон, воспроизведение и запись аудио | см. «Открытые вопросы» |
 | `updater` | проверка/загрузка/установка обновлений | позже |
-| `log` | логирование в файл, crash-репорты | `tracing` |
+| `log` | `debug/info/warn/error`, `read`, список и чтение crash-отчётов; ограниченное локальное хранение | `alef-modules::data::log` (черновик: [M10](stages/m10-platform-log.md)); без tracing-зависимости |
 | `devtools` | отладка страницы | Servo devtools (Firefox protocol) |
 | `ai` | роли Rush (`ai.roles`), чат-поток (`ai.chat` → `AsyncIterable<ChatPart>`), обработчики инструментов (`ai.tools.handle`/`result`/`unhandle`); права `ai.role:<id>`/`ai.tool:<name>` по согласию M2b — см. [stages/m9-ai.md](stages/m9-ai.md) | трейт `AiProvider` (M9.2 — заглушка; транспорт Rush — #167) |
 

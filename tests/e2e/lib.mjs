@@ -152,6 +152,7 @@ export function prepareSite(name, app, { replacements = {}, targets = {} } = {})
     filter: path => path === source || !statSync(path).isDirectory() || !existsSync(join(path, 'alef.ktav')),
   });
   const publicRoot = join(site, 'dist');
+  mkdirSync(publicRoot, { recursive: true });
   copyFileSync(join(here, 'harness.js'), join(publicRoot, 'harness.js'));
   const api = transpileApi();
   for (const folder of ['src', 'types']) cpSync(join(api, folder), join(publicRoot, folder), { recursive: true });
