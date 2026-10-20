@@ -35,6 +35,8 @@ export function busStallProblems(lines, expected = []) {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
     if (!line.includes('ALEF_BUS_STALL')) continue;
+    // The machine stopped scheduling the whole process for most of the poll: the bus was not blocked.
+    if (/^ALEF_BUS_STALL_STARVED \S+ \d+ \d+$/.test(line)) continue;
     const match = /^ALEF_BUS_STALL (\S+) (\d+)$/.exec(line);
     if (!match) problems.push(`malformed bus stall diagnostic: ${line}`);
     else actual.push({ kind: match[1], ms: Number(match[2]), index });

@@ -145,6 +145,10 @@ test('bus_stall_diagnostics_accept_only_expected_well_formed_entries_in_phase', 
   assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL executor 15', 'END'], [{ ...allowance, before: 'MISSING' }]), []);
   assert.notDeepEqual(busStallProblems(['START', 'END', 'END', 'ALEF_BUS_STALL executor 15'], [{ ...allowance, before: 'END' }]), []);
   assert.deepEqual(busStallProblems(['quiet line']), []);
+  // A stall the machine's pauses explain is not a bus stall; a malformed one still is a problem.
+  assert.deepEqual(busStallProblems(['ALEF_BUS_STALL_STARVED call/window.state 135 135']), []);
+  assert.notDeepEqual(busStallProblems(['ALEF_BUS_STALL_STARVED call/window.state 135']), []);
+  assert.notDeepEqual(busStallProblems(['ALEF_BUS_STALL_STARVED call/window.state 135 x']), []);
 });
 test('a_docs_only_change_runs_only_structure_and_fmt_on_linux_with_no_crates_js_or_e2e', () => {
   const p = plan(['docs/stages/m0-results/ci.md']);
