@@ -11,8 +11,8 @@ async function main() {
   await checks.check('log-crashes-start-empty-and-invalid-crash-id-is-rejected', async () => {
     const crashes = await api.log.crashes();
     assert(Array.isArray(crashes) && crashes.length === 0, `expected no initial crashes, got ${crashes.length}`);
-    const error = await api.log.crash('../bad').then(() => null, error => error);
-    assert(error?.code === 'INVALID_ARGUMENT', `expected INVALID_ARGUMENT, got ${error?.code}`);
+    const refusal = await api.log.crash('../bad').then(() => null, failure => failure);
+    assert(refusal?.code === 'INVALID_ARGUMENT', `expected INVALID_ARGUMENT, got ${refusal?.code}`);
   });
   await checks.check('log-level-filter-redaction-and-newline-message-are-exact', async () => {
     await api.log.info('line-one\nline-two', { password: 'e2e-sensitive-password', marker });
