@@ -30,13 +30,18 @@ pub(crate) fn filter_env(inherited: Vec<(String, String)>) -> Vec<(String, Strin
 pub(crate) fn filtered_env() -> Vec<(String, String)> {
     filter_env(std::env::vars().collect())
 }
+/// A scratch directory name that no other call of this process can repeat: the clock alone
+/// ticks in microseconds on some hosts, and the cancel and delete of one session start together
+/// (a repeated name makes one job delete the directory the other child runs in).
 pub(crate) fn scratch_dir(root: &Path, label: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     root.join(format!(
-        "{label}-{}",
+        "{label}-{}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ))
 }
 pub(crate) enum ProbeOutcome {
@@ -443,6 +448,28 @@ pub(crate) fn spawn_child(
             child: Child::Windows(child),
             killer,
         })
+    }
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::scratch_dir;
+
+    #[test]
+    fn concurrent_calls_never_share_a_scratch_name() {
+        let root = std::path::Path::new("root");
+        let names: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    (0..500)
+                        .map(|_| scratch_dir(root, "shot"))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .flat_map(|thread| thread.join().expect("scratch names"))
+            .collect();
+        let distinct: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(distinct.len(), names.len());
     }
 }
 
