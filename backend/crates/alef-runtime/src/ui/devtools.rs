@@ -77,8 +77,6 @@ pub(crate) struct DevtoolsDelegate {
     runtime: Option<tokio::runtime::Handle>,
     failed: Rc<Cell<bool>>,
     started: Cell<bool>,
-    /// The requested port, for the failure diagnostic.
-    port: u16,
     /// The application the page belongs to, named in the consent dialog.
     #[cfg_attr(feature = "e2e", allow(dead_code))]
     app_name: String,
@@ -91,7 +89,6 @@ impl DevtoolsDelegate {
     pub(crate) fn new(
         wake: impl Fn() + Send + Sync + 'static,
         failed: Rc<Cell<bool>>,
-        port: u16,
         app_name: String,
         app_id: String,
     ) -> Rc<Self> {
@@ -102,7 +99,6 @@ impl DevtoolsDelegate {
             runtime: tokio::runtime::Handle::try_current().ok(),
             failed,
             started: Cell::new(false),
-            port,
             app_name,
             app_id,
         })
@@ -238,7 +234,7 @@ mod tests {
     fn the_failure_flag_starts_clear_and_stays_set_once_raised() {
         let failed = Rc::new(Cell::new(false));
         let delegate =
-            DevtoolsDelegate::new(|| {}, failed.clone(), 7000, "App".to_owned(), String::new());
+            DevtoolsDelegate::new(|| {}, failed.clone(), "App".to_owned(), String::new());
         assert!(!delegate.failed());
         delegate.notify_error(ServoError::DevtoolsFailedToStart);
         assert!(delegate.failed());
@@ -256,7 +252,6 @@ mod tests {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             },
             Rc::new(Cell::new(false)),
-            7000,
             "App".to_owned(),
             String::new(),
         );

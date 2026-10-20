@@ -217,11 +217,6 @@ pub(crate) fn test_site_host() -> Option<String> {
     site_snapshot().map(|site| site.host.clone())
 }
 
-/// IndexedDB needs the pref; the secure context is guaranteed by the https origin.
-pub(crate) fn preferences() -> Preferences {
-    preferences_for(None)
-}
-
 #[cfg(test)]
 mod devtools_preferences_tests {
     use super::*;
@@ -236,6 +231,8 @@ mod devtools_preferences_tests {
     }
 }
 
+/// IndexedDB needs the pref; the secure context is guaranteed by the https origin. The DevTools
+/// server is off unless a port is given, and then listens on IPv4 loopback only.
 pub(crate) fn preferences_for(devtools_port: Option<u16>) -> Preferences {
     let mut preferences = Preferences {
         dom_indexeddb_enabled: true,

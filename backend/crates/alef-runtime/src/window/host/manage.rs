@@ -209,7 +209,7 @@ impl App {
                 // Only with an explicit port is the delegate installed: without it the
                 // server is off, no callback can fire, and the reveal gate in `tick` must
                 // not engage (windows of a normal run would otherwise never show).
-                if let Some(port) = self.devtools_port {
+                if self.devtools_port.is_some() {
                     let failed = std::rc::Rc::new(std::cell::Cell::new(false));
                     let proxy = self.waker.0.clone();
                     self.bridge_devtools = Some(crate::ui::devtools::DevtoolsDelegate::new(
@@ -217,7 +217,6 @@ impl App {
                             let _ = proxy.send_event(crate::ui::Wake);
                         },
                         failed,
-                        port,
                         // `title` is the manifest name (`WindowOptions::new` stores it).
                         self.title.clone(),
                         self.app_id.clone(),

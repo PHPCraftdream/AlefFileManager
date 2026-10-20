@@ -118,10 +118,10 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         let waker = waker.clone();
         handle.windowless(move || waker.wake());
     }
-    let devtools = bridge.devtools.clone().map(|(port, name, id)| {
+    let devtools = bridge.devtools.clone().map(|(_, name, id)| {
         let failed = std::rc::Rc::new(Cell::new(false));
         let wake = waker.clone();
-        crate::ui::devtools::DevtoolsDelegate::new(move || wake.wake(), failed, port, name, id)
+        crate::ui::devtools::DevtoolsDelegate::new(move || wake.wake(), failed, name, id)
     });
     let servo = ServoBuilder::default()
         .opts(crate::bridge::assets::origin::servo_opts(
