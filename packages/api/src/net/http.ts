@@ -18,11 +18,15 @@ export interface HttpRequestOptions extends Cancelable {
   timeout?: number;
   /** `follow` (up to 10 redirects, each held against the scope again) or `manual`: the redirect is the answer. */
   redirect?: 'follow' | 'manual';
+  jar?: CookieJar;
+  proxy?: string;
 }
 
 export interface DownloadOptions extends Cancelable {
   headers?: HeadersInit;
   timeout?: number;
+  jar?: CookieJar;
+  proxy?: string;
   /** Called as the bytes come: how many so far, and how many in all when the server says. */
   onProgress?: (progress: { received: number; total: number | null }) => void;
 }
@@ -38,6 +42,16 @@ interface Head {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+/** Cookie storage shared by HTTP requests. */
+export class CookieJar {
+  #id: number;
+  constructor(id: number) { this.#id = id; }
+  get id(): number { return this.#id; }
+  clear(): Promise<void> { return call('http.cookieJar.clear', { jar: this.#id }); }
+  list(url: string): Promise<Array<{ name: string; value: string }>> { return call('http.cookieJar.list', { jar: this.#id, url }); }
+  close(): Promise<void> { return call('http.cookieJar.close', { jar: this.#id }); }
+}
 
 /** The answer of a server. The body is read once, as a stream or through `bytes`, `text` or `json`. */
 export class HttpResponse {
@@ -99,8 +113,8 @@ export class HttpResponse {
  */
 export const http = {
   request: async (url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> => {
-    const { method, headers, body, timeout, redirect, signal } = options;
-    const args = { url, method, headers: pairs(headers), timeoutMs: timeout, redirect };
+    const { method, headers, body, timeout, redirect, signal, jar, proxy } = options;
+    const args = { url, method, headers: pairs(headers), timeoutMs: timeout, redirect, ...(jar ? { jar: jar.id } : {}), ...(proxy !== undefined ? { proxy } : {}) };
     const small = typeof body === 'string' ? encoder.encode(body) : body instanceof Uint8Array ? body : undefined;
     if (body === undefined || (small !== undefined && small.length <= UNARY_BODY)) {
       const head = await call<Head>('http.request', args, { signal, body: small && small.length > 0 ? small : undefined });
@@ -111,6 +125,9 @@ export const http = {
     return new HttpResponse(await call<Head>('http.response', { request }, { signal }));
   },
 
+  /** Opens an empty cookie jar. */
+  cookieJar: async (): Promise<CookieJar> => new CookieJar((await call<{ jar: number }>('http.cookieJar', {})).jar),
+
   /** Takes a port of this machine and gives the requests that come to it; see `HttpServer`. */
   serve: async (options: ServeOptions = {}): Promise<HttpServer> => {
     const { answerTimeout, signal, ...rest } = options;
@@ -120,8 +137,9 @@ export const http = {
 
   /** Fills the file at `path` (it needs `permissions.fs.write`); a download that fails or is aborted leaves no file. */
   download: async (url: string, path: string, options: DownloadOptions = {}): Promise<void> => {
-    const { headers, timeout, onProgress, signal } = options;
-    const { stream } = await call<{ stream: number }>('http.download', { url, path, headers: pairs(headers), timeoutMs: timeout }, { signal });
+    const { headers, timeout, onProgress, signal, jar, proxy } = options;
+    const args = { url, path, headers: pairs(headers), timeoutMs: timeout, ...(jar ? { jar: jar.id } : {}), ...(proxy !== undefined ? { proxy } : {}) };
+    const { stream } = await call<{ stream: number }>('http.download', args, { signal });
     for await (const frame of await openReadable(stream, { signal })) {
       if (frame.kind === 'json') {
         const { received, total } = frame.value as { received: number; total: number | null };

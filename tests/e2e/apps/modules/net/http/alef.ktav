@@ -29,7 +29,7 @@ permissions: {
         exec: []
     }
     net: {
-        http: [ http://127.0.0.1:{{PORT}}/*, http://127.0.0.1:{{CLOSED}}/* ]
+        http: [ http://127.0.0.1:{{PORT}}/*, http://127.0.0.1:{{CLOSED}}/*, http://127.0.0.1:{{PROXY}}/* ]
         socket: []
     }
     shell: {

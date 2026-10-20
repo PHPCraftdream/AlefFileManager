@@ -47,6 +47,7 @@ export { Store, store } from './data/store.ts';
 export {
   http,
   HttpResponse,
+  CookieJar,
   HttpServer,
   ServerRequest,
   type DownloadOptions,

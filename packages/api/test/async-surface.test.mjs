@@ -147,6 +147,7 @@ const ARGS = {
   'http.request': ['http://127.0.0.1/'],
   'http.download': ['http://127.0.0.1/', '/probe'],
   'http.serve': [{}],
+  'http.cookieJar': [],
   'socket.connect': [{ host: '127.0.0.1', port: 1 }],
   'socket.listen': [{ port: 0 }],
   'socket.udp': [{}],
@@ -188,6 +189,7 @@ installRuntime({
     if (request.url === 'native://call/window.all') return { json: [] };
     if (request.url === 'native://call/http.request') return { json: { status: 200, statusText: 'OK', url: 'http://127.0.0.1/', redirected: false, headers: [], stream: null } };
     if (request.url === 'native://call/http.download') return { json: { stream: 9 } };
+    if (request.url === 'native://call/http.cookieJar') return { json: { jar: 3 } };
     if (request.url === 'native://stream/9') return { chunks: [endFrame()] };
     if (request.url === 'native://call/updater.check') return { json: { available: false } };
     if (request.url === 'native://call/updater.download') return { json: { stream: 61, resource: 62 } };
@@ -257,5 +259,5 @@ test('exports other than functions are only classes and nothing mutable', () => 
     const kind = isClass(value) ? 'class' : typeof value;
     assert.ok(['class', 'function', 'object'].includes(kind), `${name} is a ${kind}`);
   }
-  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'AudioSink', 'Camera', 'ChildProcess', 'FileHandle', 'HttpResponse', 'HttpServer', 'Microphone', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'ai', 'app', 'audio', 'call', 'camera', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'microphone', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'updater', 'websocket', 'window']);
+  assert.deepEqual(Object.keys(api).sort(), ['AlefError', 'AppWindow', 'AudioSink', 'Camera', 'ChildProcess', 'CookieJar', 'FileHandle', 'HttpResponse', 'HttpServer', 'Microphone', 'Pty', 'PtyOverflowEvent', 'ServerRequest', 'Shortcut', 'SqliteDatabase', 'SqliteStatement', 'SqliteTransaction', 'Store', 'TcpServer', 'TcpSocket', 'Tray', 'UdpSocket', 'WebSocketConnection', 'WebSocketServer', 'ai', 'app', 'audio', 'call', 'camera', 'cli', 'clipboard', 'connect', 'crypto', 'dialog', 'fs', 'http', 'menu', 'microphone', 'nativeWindow', 'notification', 'on', 'openReadable', 'openWritable', 'os', 'path', 'screen', 'secrets', 'shell', 'shortcut', 'socket', 'sqlite', 'store', 'tray', 'updater', 'websocket', 'window']);
 });

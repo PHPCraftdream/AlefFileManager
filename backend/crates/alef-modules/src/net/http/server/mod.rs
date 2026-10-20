@@ -54,6 +54,7 @@ use self::{
     upgrade::Offer,
 };
 use super::body::{from_stream, pump, RequestBody};
+use crate::net::http::proxy::ResponseBody;
 use crate::{
     json,
     net::{
@@ -232,7 +233,7 @@ async fn answer_request(shared: &Shared, mut request: Request<Incoming>) -> Resp
         None
     } else {
         let (writer, stream) = shared.session.streams().open_outgoing();
-        pump(incoming, writer);
+        pump(ResponseBody::direct(incoming), writer);
         Some(stream.0)
     };
     let headers: Vec<[String; 2]> = parts

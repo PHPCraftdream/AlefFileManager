@@ -6,7 +6,6 @@ use std::sync::{Arc, OnceLock};
 
 use alef_core::{security::consent::Decision, AlefError, ErrorCode};
 use hyper::{
-    body::Incoming,
     header::{
         HeaderValue, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LANGUAGE, CONTENT_LOCATION,
         CONTENT_TYPE, COOKIE, LOCATION, USER_AGENT,
@@ -21,6 +20,7 @@ use hyper_util::{
 use url::Url;
 
 use super::body::{Payload, RequestBody};
+use super::proxy::ResponseBody;
 
 /// How many redirects a request follows before it gives up.
 pub(super) const MAX_REDIRECTS: usize = 10;
@@ -48,11 +48,12 @@ pub(super) struct Spec {
     pub method: Method,
     pub headers: HeaderMap,
     pub follow: bool,
+    pub proxy: Option<super::proxy::Proxy>,
 }
 
 /// The answer, and where it came from after the redirects.
 pub(super) struct Answer {
-    pub response: Response<Incoming>,
+    pub response: Response<ResponseBody>,
     pub url: Url,
     pub redirected: bool,
 }
@@ -136,12 +137,14 @@ pub(super) async fn execute(
     mut payload: Payload,
     authorize: &Authorize,
     deadline: tokio::time::Instant,
+    jar: Option<super::cookies::Jar>,
 ) -> Result<Answer, AlefError> {
     let Spec {
         mut url,
         mut method,
         mut headers,
         follow,
+        proxy,
     } = spec;
     if !headers.contains_key(USER_AGENT) {
         headers.insert(
@@ -162,23 +165,71 @@ pub(super) async fn execute(
                 return Err(AlefError::new(
                     ErrorCode::PermissionDenied,
                     "the address is outside what the application may reach",
-                ));
+                ))
+            }
+        }
+        if let Some(proxy) = &proxy {
+            match authorize(proxy.url.as_str())? {
+                Decision::Allow => {}
+                Decision::Substitute => {
+                    tokio::time::sleep_until(deadline).await;
+                    return Err(super::timeout_error());
+                }
+                Decision::Deny => {
+                    return Err(AlefError::new(
+                        ErrorCode::PermissionDenied,
+                        "the proxy is outside what the application may reach",
+                    ))
+                }
             }
         }
         let uri = Uri::try_from(url.as_str()).map_err(|_| network("the address is not valid"))?;
+        if let Some(jar) = &jar {
+            if let Some(value) = jar.header(&url) {
+                let mut value = HeaderValue::from_str(&value)
+                    .map_err(|_| network("cookie header is invalid"))?;
+                value.set_sensitive(true);
+                headers.insert(COOKIE, value);
+            } else {
+                headers.remove(COOKIE);
+            }
+        }
         let mut request = Request::builder()
             .method(method.clone())
             .uri(uri)
             .body(payload.take())
             .map_err(|_| network("the request is not valid"))?;
         *request.headers_mut() = headers.clone();
-        let response = pool().request(request).await.map_err(|error| {
-            if error.is_connect() {
-                network("cannot connect to the server")
-            } else {
-                network("the request failed")
-            }
-        })?;
+        let response = if let Some(proxy) = &proxy {
+            super::proxy::request(proxy, &url, request, deadline).await?
+        } else {
+            pool()
+                .request(request)
+                .await
+                .map_err(|error| {
+                    if error.is_connect() {
+                        network("cannot connect to the server")
+                    } else {
+                        network("the request failed")
+                    }
+                })
+                .map(|response| response.map(ResponseBody::direct))?
+        };
+        if let Some(jar) = &jar {
+            jar.store(
+                &url,
+                response
+                    .headers()
+                    .get_all(hyper::header::SET_COOKIE)
+                    .iter()
+                    .filter_map(|v| {
+                        (v.as_bytes().len() <= super::cookies::LINE_LIMIT)
+                            .then(|| v.to_str().ok())
+                            .flatten()
+                    })
+                    .map(str::to_owned),
+            );
+        }
         let next = if follow {
             next_hop(
                 response.status(),
@@ -244,11 +295,18 @@ mod tests {
             method: Method::GET,
             headers: HeaderMap::new(),
             follow: true,
+            proxy: None,
         };
-        let error = execute(spec, Payload::Empty, &deny, tokio::time::Instant::now())
-            .await
-            .err()
-            .expect("a denied hop is an error");
+        let error = execute(
+            spec,
+            Payload::Empty,
+            &deny,
+            tokio::time::Instant::now(),
+            None,
+        )
+        .await
+        .err()
+        .expect("a denied hop is an error");
         assert_eq!(error.code, ErrorCode::PermissionDenied);
     }
 

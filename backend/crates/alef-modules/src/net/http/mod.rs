@@ -22,10 +22,14 @@ use tokio::{io::AsyncWriteExt, task::JoinHandle};
 use crate::{json, ModuleContext};
 use body::{bodiless, Payload};
 use client::{execute, Answer, Authorize, Spec};
+
+use cookies::commands::Owned;
 use spec::spec;
 
 mod body;
 mod client;
+mod cookies;
+mod proxy;
 mod server;
 mod spec;
 
@@ -54,6 +58,10 @@ struct RequestArgs {
     timeout_ms: Option<u64>,
     #[serde(default)]
     redirect: Redirect,
+    #[serde(default)]
+    proxy: Option<String>,
+    #[serde(default)]
+    jar: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +73,10 @@ struct DownloadArgs {
     headers: Vec<(String, String)>,
     #[serde(default)]
     timeout_ms: Option<u64>,
+    #[serde(default)]
+    proxy: Option<String>,
+    #[serde(default)]
+    jar: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,15 +100,24 @@ fn authorizer(ctx: &CallContext) -> Authorize {
     Box::new(move |url| permissions.check(Permission::NetHttp, Some(url), &grants))
 }
 
+fn resolve_jar(ctx: &CallContext, id: Option<u64>) -> Result<Option<cookies::Jar>, AlefError> {
+    id.map(|id| {
+        ctx.resources()
+            .with_as::<Owned, _>(ResourceId(id), |x| x.0.clone())
+    })
+    .transpose()
+}
+
 /// The request, until its answer comes or its time is up.
 async fn run(
     spec: Spec,
     payload: Payload,
     authorize: Authorize,
     timeout: Option<Duration>,
+    jar: Option<cookies::Jar>,
 ) -> Result<Answer, AlefError> {
     let deadline = tokio::time::Instant::now() + timeout.unwrap_or(HANG);
-    let exchange = execute(spec, payload, &authorize, deadline);
+    let exchange = execute(spec, payload, &authorize, deadline, jar);
     match timeout {
         Some(limit) => tokio::time::timeout(limit, exchange)
             .await
@@ -188,13 +209,22 @@ async fn fill(
     let mut file = tokio::fs::File::from_std(file);
     let (mut received, mut told) = (0_u64, 0_u64);
     let failure = loop {
-        match body.frame().await {
+        let frame = tokio::select! {
+            frame = body.frame() => frame,
+            _ = writer.closed() => {
+                drop(body);
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
+                return;
+            }
+        };
+        match frame {
             None => break None,
             Some(Err(_)) => {
                 break Some(AlefError::new(
                     ErrorCode::Network,
                     "the connection broke while the body came",
-                ))
+                ));
             }
             Some(Ok(frame)) => {
                 let Ok(data) = frame.into_data() else {
@@ -250,15 +280,27 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .substitutes()
         .handler(|ctx, args| async move {
             let follow = args.redirect == Redirect::Follow;
-            let spec = spec(&args.url, args.method.as_deref(), &args.headers, follow)?;
+            let mut spec = spec(&args.url, args.method.as_deref(), &args.headers, follow)?;
+            spec.proxy = proxy::parse(args.proxy.as_deref())?;
+            if args.jar.is_some() && spec.headers.contains_key(hyper::header::COOKIE) {
+                return Err(invalid("manual Cookie header conflicts with cookie jar"));
+            }
             let method = spec.method.clone();
+            let jar = resolve_jar(&ctx, args.jar)?;
             let answer = if ctx.decision() == Decision::Substitute {
                 dead(args.timeout_ms).await?
             } else {
                 let payload = ctx
                     .body()
                     .map_or(Payload::Empty, |bytes| Payload::Bytes(bytes.clone()));
-                run(spec, payload, authorizer(&ctx), timeout_of(args.timeout_ms)).await?
+                run(
+                    spec,
+                    payload,
+                    authorizer(&ctx),
+                    timeout_of(args.timeout_ms),
+                    jar,
+                )
+                .await?
             };
             Ok(Reply::Json(open_body(&ctx, &method, answer)))
         })?;
@@ -269,8 +311,13 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .substitutes()
         .handler(|ctx, args| async move {
             let follow = args.redirect == Redirect::Follow;
-            let spec = spec(&args.url, args.method.as_deref(), &args.headers, follow)?;
+            let mut spec = spec(&args.url, args.method.as_deref(), &args.headers, follow)?;
+            spec.proxy = proxy::parse(args.proxy.as_deref())?;
+            if args.jar.is_some() && spec.headers.contains_key(hyper::header::COOKIE) {
+                return Err(invalid("manual Cookie header conflicts with cookie jar"));
+            }
             let method = spec.method.clone();
+            let jar = resolve_jar(&ctx, args.jar)?;
             let (reader, upload) = ctx.streams().open_incoming_reader();
             let timeout = timeout_of(args.timeout_ms);
             let task = if ctx.decision() == Decision::Substitute {
@@ -282,7 +329,7 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
             } else {
                 let payload = Payload::Stream(Some(body::from_stream(reader)));
                 let authorize = authorizer(&ctx);
-                tokio::spawn(run(spec, payload, authorize, timeout))
+                tokio::spawn(run(spec, payload, authorize, timeout, jar))
             };
             let id = ctx.resources().insert(Box::new(Pending {
                 task: Mutex::new(Some(task)),
@@ -323,19 +370,25 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
         .handler(move |ctx, args| {
             let shadow = shadow.clone();
             async move {
-                let spec = spec(&args.url, None, &args.headers, true)?;
+                let mut spec = spec(&args.url, None, &args.headers, true)?;
+                spec.proxy = proxy::parse(args.proxy.as_deref())?;
+                if args.jar.is_some() && spec.headers.contains_key(hyper::header::COOKIE) {
+                    return Err(invalid("manual Cookie header conflicts with cookie jar"));
+                }
                 if ctx.decision() == Decision::Substitute {
                     return Err(dead(args.timeout_ms)
                         .await
                         .err()
                         .unwrap_or_else(timeout_error));
                 }
+                let jar = resolve_jar(&ctx, args.jar)?;
                 let target = crate::data::fs::write_target(&shadow, &ctx, &args.path).await?;
                 let answer = run(
                     spec,
                     Payload::Empty,
                     authorizer(&ctx),
                     timeout_of(args.timeout_ms),
+                    jar,
                 )
                 .await?;
                 if !answer.response.status().is_success() {
@@ -354,6 +407,7 @@ pub(crate) fn register(registry: &mut Registry, context: &ModuleContext) -> Resu
             }
         })?;
 
+    cookies::register_commands(registry)?;
     server::register(registry)
 }
 

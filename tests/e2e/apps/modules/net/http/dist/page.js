@@ -120,6 +120,26 @@ async function allowed(t, check) {
     await reader.cancel();
   });
 
+  await check('http-cookie-jar-roundtrips-and-can-be-cleared', async () => {
+    const jar = await http.cookieJar();
+    try {
+      await (await http.request(url('/cookie-set'), { jar })).text();
+      if (await (await http.request(url('/cookie-echo'), { jar })).text() !== 'session=roundtrip') throw new Error('cookie did not roundtrip');
+      if (!(await jar.list(url('/cookie-echo'))).some(cookie => cookie.name === 'session' && cookie.value === 'roundtrip')) throw new Error('cookie missing from jar list');
+      await jar.clear();
+      if ((await jar.list(url('/cookie-echo'))).length !== 0) throw new Error('clear left cookies');
+      if (await (await http.request(url('/cookie-echo'), { jar })).text() !== '') throw new Error('cleared cookie was sent');
+    } finally { await jar.close(); }
+  });
+  await check('http-cookies-are-off-without-a-jar', async () => {
+    await (await http.request(url('/cookie-set'))).text();
+    if (await (await http.request(url('/cookie-echo'))).text() !== '') throw new Error('cookie stored or sent without jar');
+  });
+  await check('http-proxy-forwards-the-request', async () => {
+    const answer = await http.request(url('/hello'), { proxy: `http://127.0.0.1:${t.proxy}` });
+    if (answer.status !== 200 || await answer.text() !== 'hello') throw new Error('proxy response');
+  });
+
   await check('http-a-download-fills-a-file-with-progress-and-an-abort-leaves-none', async () => {
     const progress = [];
     await http.download(url(`/big?size=${t.size}`), `${t.root}/big.bin`, { onProgress: item => progress.push(item) });

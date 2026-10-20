@@ -41,6 +41,37 @@ async function sent(command, fn, reply) {
   return { result, args: runtime.argsOf(request), body: request.body };
 }
 
+test('cookie jars are returned as instances and serialize only their numeric id', async () => {
+  replies.set('http.cookieJar', { json: { jar: 73 } });
+  const jar = await http.cookieJar();
+  assert.equal(jar.constructor.name, 'CookieJar');
+  assert.equal(jar.id, 73);
+  assert.deepEqual(runtime.argsOf(runtime.calls('http.cookieJar').at(-1)), {});
+  replies.set('http.cookieJar.list', { json: [{ name: 'session', value: 'abc' }] });
+  assert.deepEqual(await jar.list('https://example.com/'), [{ name: 'session', value: 'abc' }]);
+  assert.deepEqual(runtime.argsOf(runtime.calls('http.cookieJar.list').at(-1)), { jar: 73, url: 'https://example.com/' });
+  for (const method of ['clear', 'close']) {
+    replies.set(`http.cookieJar.${method}`, { json: null });
+    await jar[method]();
+    assert.deepEqual(runtime.argsOf(runtime.calls(`http.cookieJar.${method}`).at(-1)), { jar: 73 });
+  }
+});
+
+test('jar and proxy are passed to unary, streaming and download requests, omitted by default', async () => {
+  replies.set('http.cookieJar', { json: { jar: 74 } });
+  const jar = await http.cookieJar();
+  replies.set('http.request', { json: head() });
+  await http.request('http://127.0.0.1/a', { jar, proxy: 'http://proxy' });
+  assert.deepEqual(runtime.argsOf(runtime.calls('http.request').at(-1)), { url: 'http://127.0.0.1/a', headers: [], jar: 74, proxy: 'http://proxy' });
+  replies.set('http.start', { json: { request: 75, upload: 76 } });
+  replies.set('http.response', { json: head() });
+  await http.request('http://127.0.0.1/a', { body: new Uint8Array(300 * 1024), jar, proxy: 'http://proxy' });
+  assert.deepEqual(runtime.argsOf(runtime.calls('http.start').at(-1)), { url: 'http://127.0.0.1/a', headers: [], jar: 74, proxy: 'http://proxy' });
+  replies.set('http.download', { json: { stream: 77 } });
+  streams.set(77, { chunks: [endFrame()] });
+  await http.download('http://127.0.0.1/f', '/tmp/f', { jar, proxy: 'http://proxy' });
+  assert.deepEqual(runtime.argsOf(runtime.calls('http.download').at(-1)), { url: 'http://127.0.0.1/f', path: '/tmp/f', headers: [], jar: 74, proxy: 'http://proxy' });
+});
 test('a request names the address, method, headers, timeout and redirect, and a small body travels with the call', async () => {
   const plain = await sent('http.request', () => http.request('http://127.0.0.1/a'), { json: head() });
   assert.deepEqual(plain.args, { url: 'http://127.0.0.1/a', headers: [] });
