@@ -28,6 +28,10 @@ pub fn window_args(arguments: &[OsString]) -> Vec<OsString> {
         Some((first, rest)) if first.to_str() == Some("run") => (true, rest),
         _ => (false, arguments),
     };
+    // DevTools needs no re-positioning: `--devtools[=PORT]` is a runtime option that the
+    // strict parser only accepts before URLs and `--`, and it is carried inside `rest`
+    // exactly as the user gave it — retained with `--dev-url` for the window child, absent
+    // when the original command line had none (no second listener is ever invented here).
     let mut args = Vec::with_capacity(arguments.len() + 2);
     if first {
         args.push(OsString::from("run"));

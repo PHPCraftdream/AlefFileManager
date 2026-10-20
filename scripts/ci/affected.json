@@ -147,6 +147,20 @@
     {
       "glob": "tests/e2e/scenarios/app/devflow.mjs",
       "scenarios": [
+        "devflow",
+        "devtools"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-runtime/src/ui/devtools.rs",
+      "scenarios": [
+        "devtools"
+      ]
+    },
+    {
+      "glob": "packages/tools/src/workflow/dev.mjs",
+      "scenarios": [
+        "devtools",
         "devflow"
       ]
     },
@@ -316,7 +330,8 @@
       "scenarios": [
         "cli",
         "cli-commands",
-        "arguments"
+        "arguments",
+        "devtools"
       ]
     },
     {

@@ -58,6 +58,13 @@ function runtimeSpawn(executable, args, options) {
 const describeDevExit = (exit, failure) =>
   `Dev server exited before readiness (exit ${exit?.code}, signal ${exit?.signal ?? 'none'}${failure ? `: ${failure.message}` : ''})`;
 
+/** CLI devtools option to runtime argv: true → `--devtools`, port → `--devtools=<port>`, else nothing. */
+export function devtoolsArg(devtools) {
+  if (devtools === true) return ['--devtools'];
+  if (typeof devtools === 'number') return [`--devtools=${devtools}`];
+  return [];
+}
+
 /** Start the dev command, wait for devUrl, then run the runtime until it exits. */
 export async function dev(dir = process.cwd(), options = {}) {
   const readyTimeoutMs = options.readyTimeoutMs ?? 60000;
@@ -104,6 +111,7 @@ export async function dev(dir = process.cwd(), options = {}) {
     if (interrupted) throw interruptedError();
     const executable = await findRuntime(project.root, options);
     const runtimeArgv = ['--app', project.root, '--dev-url', project.devUrl,
+      ...devtoolsArg(options.devtools),
       ...(options.appArgs?.length ? ['--', ...options.appArgs] : [])];
     runtime.child = own(runtimeSpawn(executable, runtimeArgv,
       { stdio: 'inherit', windowsHide: true }));

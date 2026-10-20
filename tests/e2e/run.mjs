@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,context-menu,consent,origin,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto-undeclared,webcrypto-substitute,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package,devflow,fm-package,updater,bus,ai,ai-threat,media]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,context-menu,consent,origin,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,crypto,webcrypto-undeclared,webcrypto-substitute,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package,devflow,devtools,fm-package,updater,bus,ai,ai-threat,media]
 //                          [--timeout-s 150] [--verbose]
 // Build beforehand: node scripts/cargo.mjs build -p alef --features e2e
 // This runner does not build the runtime.
@@ -20,7 +20,7 @@ import { moduleScenarios } from './scenarios/app/modules.mjs';
 import { appIntegrationScenarios } from './scenarios/app/app-integration.mjs';
 import { launchModesScenarios } from './scenarios/app/launch-modes.mjs';
 import { packageScenarios, fmPackageScenarios } from './scenarios/app/package.mjs';
-import { devflowScenarios } from './scenarios/app/devflow.mjs';
+import { devflowScenarios, devtoolsScenarios } from './scenarios/app/devflow.mjs';
 import { updaterScenarios } from './scenarios/app/updater.mjs';
 import { startupScenarios, busScenarios } from './scenarios/startup.mjs';
 
@@ -85,6 +85,7 @@ const scenarios = {
   ...appIntegrationScenarios({ exe, verbose, timeoutMs }),
   ...packageScenarios({ exe, verbose, timeoutMs }),
   ...devflowScenarios({ exe, verbose, timeoutMs }),
+  ...devtoolsScenarios({ exe, verbose, timeoutMs }),
   ...fmPackageScenarios({ exe, verbose, timeoutMs }),
   ...updaterScenarios({ exe, verbose, timeoutMs }),
   ...busScenarios({ drive, exe, verbose, timeoutMs }),

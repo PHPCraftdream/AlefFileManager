@@ -342,8 +342,10 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     }
 }
 
-/// The directory source has no load failure to fall back to: the diagnostic comes from the
-/// same command module detail the package path uses.
+/// Directory source runtime compatibility check. The relaunched child receives
+/// `process_args` verbatim: `--devtools[=PORT]` is already carried there when the user gave
+/// it (retained with `--dev-url`, absent otherwise), and appending a synthesized flag could
+/// land after a URL (parser refuses) or after `--` (silently becomes an app argument).
 async fn relaunch_directory(requirement: &str, process_args: &[OsString]) -> Result<u8, Failure> {
     match relaunch::runtime::attempt(requirement, process_args).await {
         Ok(code) => Ok(code),
@@ -360,6 +362,7 @@ async fn relaunch_directory(requirement: &str, process_args: &[OsString]) -> Res
 struct Run {
     process_args: Vec<OsString>,
     dev_url: Option<Url>,
+    devtools_port: Option<u16>,
     app_args: Vec<OsString>,
     grant: Option<Decision>,
     no_prompt: bool,
@@ -383,6 +386,7 @@ async fn run_directory(
 ) -> Result<u8, Failure> {
     let Launch {
         dev_url,
+        devtools_port,
         app_args,
         grant,
         no_prompt,
@@ -405,6 +409,9 @@ async fn run_directory(
     run_app(Run {
         process_args,
         dev_url,
+        // `--devtools` rides in `process_args` verbatim for relaunches; the parsed port
+        // drives this process's Servo preferences.
+        devtools_port,
         app_args,
         grant,
         no_prompt,
@@ -434,6 +441,7 @@ async fn run_package(
         trust_key,
         allow_unsigned,
         launch_window,
+        // `--devtools` is refused for packages by `check` before this point.
         ..
     } = launch;
     let identity = prepared.identity();
@@ -475,6 +483,8 @@ async fn run_package(
     run_app(Run {
         process_args,
         dev_url,
+        // Refused for packages by `check` before this point.
+        devtools_port: None,
         app_args,
         grant,
         no_prompt,
@@ -562,6 +572,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     let Run {
         process_args,
         dev_url,
+        devtools_port,
         app_args,
         grant,
         no_prompt,
@@ -758,6 +769,8 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
             origin_host: Some(origin_host.clone()),
             allowed_external_origins,
             profile_dir: Some(servo_profile.clone()),
+            devtools_port,
+            devtools_app: Some((plan.manifest.name.clone(), plan.manifest.id.clone())),
             headless_loaded: Some(Box::new(move || loaded.loaded())),
             headless_tick: Some(Box::new(move || tick.check_timeout())),
             ..BridgeOptions::default()
@@ -785,6 +798,8 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
             WindowOptions {
                 windows: plan.manifest.windows.clone(),
                 profile_dir: Some(servo_profile),
+                devtools_port,
+                app_id: plan.manifest.id.clone(),
                 ..WindowOptions::new(plan.manifest.name.clone(), icon)
                     .remembering_windows_in(window_state)
             },

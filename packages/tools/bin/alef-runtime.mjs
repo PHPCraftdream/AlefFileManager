@@ -7,7 +7,7 @@ alef-runtime pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <n
 alef-runtime verify <file>
 alef-runtime check [dir]
 alef-runtime build [dir] [--out <dir>]
-alef-runtime dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
+alef-runtime dev [dir] [--ready-timeout <ms>] [--devtools[=PORT]] [-- <runtime args>]
 alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
 --include: repeat or use commas for .git,node_modules,.alef-runtime;
 key home and .alef-runtime are always excluded.
@@ -82,9 +82,25 @@ async function main(args) {
   if (command === 'dev') {
     const separator = args.indexOf('--');
     const appArgs = separator === -1 ? [] : args.splice(separator).slice(1);
+    // --flag=value cannot be expressed in argumentsFor; strip --devtools manually.
+    let devtools; let devtoolsSeen = 0;
+    args = args.filter(arg => {
+      if (arg === '--devtools') { devtoolsSeen++; devtools = true; return false; }
+      if (arg?.startsWith('--devtools=')) {
+        devtoolsSeen++;
+        const portText = arg.slice('--devtools='.length);
+        if (!/^\d+$/.test(portText)) fail('--devtools must be an integer between 1 and 65535');
+        const port = Number(portText);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) fail('--devtools must be an integer between 1 and 65535');
+        devtools = port;
+        return false;
+      }
+      return true;
+    });
+    if (devtoolsSeen > 1) fail('--devtools is given twice');
     const { positional, options } = argumentsFor(args, { 'ready-timeout': true });
     if (positional.length > 1) fail('Usage: dev [dir] [--ready-timeout <ms>] [-- <runtime args>]');
-    const devOptions = { stdio: 'inherit', appArgs };
+    const devOptions = { stdio: 'inherit', appArgs, ...(devtools !== undefined ? { devtools } : {}) };
     if (options['ready-timeout'] !== undefined) {
       devOptions.readyTimeoutMs = Number(options['ready-timeout']);
       if (!Number.isSafeInteger(devOptions.readyTimeoutMs) || devOptions.readyTimeoutMs < 1) fail('--ready-timeout must be a positive integer');

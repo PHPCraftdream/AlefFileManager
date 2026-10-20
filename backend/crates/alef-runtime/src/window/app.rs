@@ -91,6 +91,21 @@ impl App {
         if let Some(state) = self.windows.first() {
             state.servo.spin_event_loop();
         }
+        if let Some(delegate) = &self.bridge_devtools {
+            delegate.poll();
+            if delegate.server_started() {
+                self.servo_started = true;
+            }
+            if delegate.failed() {
+                self.error.get_or_insert_with(|| {
+                    io::Error::other(crate::ui::devtools::unavailable_message(
+                        self.devtools_port.unwrap_or(7000),
+                    ))
+                });
+                event_loop.exit();
+                return;
+            }
+        }
         for state in &mut self.windows {
             // A window that is never shown gets no redraw requests from the system.
             let paint = |state: &mut super::state::State| {
@@ -100,6 +115,9 @@ impl App {
                     Ok(())
                 }
             };
+            if self.bridge_devtools.is_some() && !self.servo_started {
+                continue;
+            }
             let _ = handle_result(
                 state.try_reveal(),
                 FailureContext::WindowOperation("reveal"),

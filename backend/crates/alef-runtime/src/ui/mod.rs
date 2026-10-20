@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+pub(crate) mod devtools;
 pub(crate) mod integration;
 
 use std::io;

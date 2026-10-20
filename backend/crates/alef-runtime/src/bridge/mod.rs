@@ -159,6 +159,9 @@ pub struct BridgeOptions {
     /// Servo profile root (`Opts.config_dir`): web storage and the disk cache live under it.
     /// `None` keeps the Servo default.
     pub profile_dir: Option<std::path::PathBuf>,
+    pub devtools_port: Option<u16>, // optional loopback DevTools listener; absent = off
+    /// Name and id of the application, shown in the DevTools consent dialog of a headless run.
+    pub devtools_app: Option<(String, String)>,
     /// Called when the headless entry finishes loading; runtime owns no module state.
     pub headless_loaded: Option<Box<dyn Fn() + Send>>,
     /// Called each headless iteration; true requests a launch-timeout exit (code 2).
@@ -177,6 +180,8 @@ pub struct Bridge {
     pub(crate) headless_loaded: Option<Box<dyn Fn() + Send>>,
     pub(crate) headless_tick: Option<Box<dyn Fn() -> bool + Send>>,
     pub(crate) profile_dir: Option<PathBuf>,
+    pub(crate) devtools_port: Option<u16>, // None keeps the DevTools server off
+    pub(crate) devtools_app: Option<(String, String)>,
     /// Every document of this bridge gets the WebCrypto stand-in (the right was not granted).
     pub(crate) webcrypto_substitute: bool,
     /// RAII owner of the installed interception site; cleared on drop, never inherited.
@@ -331,7 +336,6 @@ impl Bridge {
         };
         Self::with_options(commands, assets, development_url, BridgeOptions::default()).await
     }
-
     /// `None` is supported only for development callers, which never resolve disk assets.
     pub async fn with_options(
         commands: Commands,
@@ -451,17 +455,17 @@ impl Bridge {
             headless_loaded: options.headless_loaded,
             headless_tick: options.headless_tick,
             profile_dir: options.profile_dir,
+            devtools_port: options.devtools_port,
+            devtools_app: options.devtools_app,
             webcrypto_substitute,
             site: site_guard_slot,
             #[cfg(test)]
             native_assets,
         })
     }
-
     pub fn handle(&self) -> RuntimeHandle {
         self.ui.clone()
     }
-
     pub(crate) fn take_requests(&mut self) -> io::Result<mpsc::Receiver<UiRequest>> {
         self.requests
             .take()
@@ -496,7 +500,7 @@ impl Bridge {
         self.profile_dir.as_deref()
     }
 
-    /// Every document of this bridge gets the WebCrypto stand-in (the right was not granted).
+    /// Every document gets the WebCrypto stand-in (the right was not granted).
     pub(crate) fn webcrypto_substitute(&self) -> bool {
         self.webcrypto_substitute
     }

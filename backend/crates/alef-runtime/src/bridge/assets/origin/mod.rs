@@ -219,10 +219,33 @@ pub(crate) fn test_site_host() -> Option<String> {
 
 /// IndexedDB needs the pref; the secure context is guaranteed by the https origin.
 pub(crate) fn preferences() -> Preferences {
-    Preferences {
+    preferences_for(None)
+}
+
+#[cfg(test)]
+mod devtools_preferences_tests {
+    use super::*;
+    #[test]
+    fn disabled_by_default_and_bound_only_to_ipv4_loopback_when_enabled() {
+        let off = preferences_for(None);
+        assert!(!off.devtools_server_enabled);
+        assert!(off.devtools_server_listen_address.is_empty());
+        let on = preferences_for(Some(43123));
+        assert!(on.devtools_server_enabled);
+        assert_eq!(on.devtools_server_listen_address, "127.0.0.1:43123");
+    }
+}
+
+pub(crate) fn preferences_for(devtools_port: Option<u16>) -> Preferences {
+    let mut preferences = Preferences {
         dom_indexeddb_enabled: true,
         ..Default::default()
+    };
+    if let Some(port) = devtools_port {
+        preferences.devtools_server_enabled = true;
+        preferences.devtools_server_listen_address = format!("127.0.0.1:{port}");
     }
+    preferences
 }
 
 /// URL for logs without the fragment: the entry fragment carries the bridge capability.
