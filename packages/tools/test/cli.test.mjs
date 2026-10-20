@@ -32,7 +32,9 @@ async function scratch(run) {
     await Promise.allSettled(kills);
     const reapDeadline = Date.now() + 3000;
     while (ownedPids().some(isAlive) && Date.now() < reapDeadline) await delay(50);
-    await rm(root, { recursive: true, force: true });
+    // Windows lets go of the working directory of a killed process a moment after taskkill returned (EBUSY);
+    // a directory that a live process still holds fails after the last retry.
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }
 function invoke(args, cwd, home) {
