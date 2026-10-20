@@ -23,6 +23,14 @@ const MEDIA_MODE_CHECKS = {
   substituted: ['media-substituted-camera-is-not-available'],
 };
 
+// The raw 1280x720 stream keeps the 3-vCPU Intel macOS runner saturated (60 frames take 4-18 s). The
+// scheduler then stretches a single poll of the bridge glue past the watchdog's 50 ms (seen: bridge.pump
+// 68 ms and 141 ms; never on Linux and Windows). That is CPU starvation, not a blocked bus: it is
+// tolerated ONLY in the allowed run on macOS, capped at 250 ms and counted, so a real block still fails.
+const SATURATED_RUNNER = process.platform === 'darwin'
+  ? ['bridge.pump', 'bridge.request'].map(kind => ({ kind, minMs: 50, maxMs: 250, count: 8 }))
+  : [];
+
 export function mediaScenarios({ drive }) {
   return {
     // The virtual camera, microphone and audio sink: the judge keeps the measured spike of the
@@ -39,6 +47,7 @@ export function mediaScenarios({ drive }) {
           targets: { mode },
           env: { ALEF_E2E_CONSENT: decision },
           expectedChecks: expected,
+          expectedBusStalls: mode === 'allowed' ? SATURATED_RUNNER : [],
           judge: async lines => {
             for (const line of lines.filter(candidate => candidate.includes('media-camera-stats'))) {
               console.log(`    ${line}`);
