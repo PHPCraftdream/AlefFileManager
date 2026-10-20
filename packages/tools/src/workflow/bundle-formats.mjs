@@ -181,10 +181,19 @@ export function escapeNsis(value) {
   return value.replace(/\$/g, () => '$$').replaceAll('"', '$\\"');
 }
 
+// Without these keys macOS kills a process that opens the camera or microphone. Same keys as
+// `alef install` (backend/crates/alef/src/runtimes/install/integration/render.rs); the texts speak
+// of this one application, not of installed ones.
+const USAGE_DESCRIPTIONS = [
+  ['NSCameraUsageDescription', 'This application may use the camera; the Alef runtime asks before the application first opens it.'],
+  ['NSMicrophoneUsageDescription', 'This application may use the microphone; the Alef runtime asks before the application first opens it.'],
+];
+
 /** macOS Info.plist XML for an app bundle. */
 export function renderInfoPlist({ id, name, executable, iconFile }) {
   const pairs = [['CFBundleIdentifier', id], ['CFBundleName', name], ['CFBundleExecutable', executable]];
   if (iconFile !== undefined) pairs.push(['CFBundleIconFile', iconFile]);
+  pairs.push(...USAGE_DESCRIPTIONS);
   let body = '';
   for (const [key, value] of pairs) {
     check(typeof value === 'string' && value !== '', `plist: ${key}: must be a nonempty string`);
