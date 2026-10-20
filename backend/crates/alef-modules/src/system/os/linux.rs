@@ -52,7 +52,7 @@ impl PowerBackend for LinuxPower {
                             "org.freedesktop.DBus",
                         )
                         .await?;
-                        let has_owner = dbus
+                        let has_owner: bool = dbus
                             .call("NameHasOwner", &("org.freedesktop.login1",))
                             .await?;
                         if !has_owner {
