@@ -234,9 +234,23 @@ export function devflowScenarios({ exe, verbose, timeoutMs }) {
           devLines = dev.lines;
           const tail = verbose ? '' : `; last output: ${devLines.slice(-40).join(' | ')}`;
           // Whether the dev server still answers tells a page that never loaded from a server that died.
-          const server = await fetch('http://127.0.0.1:3000/', { signal: AbortSignal.timeout(5000) }).then(
-            async response => `the dev server answers ${response.status} with ${(await response.text()).length} bytes`,
-            reason => `the dev server does not answer: ${reason.message}`);
+          const probe = url => fetch(url, { signal: AbortSignal.timeout(5000) }).then(
+            async response => ({ status: response.status, text: await response.text() }),
+            reason => ({ failure: reason.message }));
+          const landing = await probe('http://127.0.0.1:3000/');
+          let server = landing.failure === undefined
+            ? `the dev server answers ${landing.status} with ${landing.text.length} bytes`
+            : `the dev server does not answer: ${landing.failure}`;
+          if (landing.failure === undefined) {
+            // A page that loaded without a single console line never ran its scripts: say what each one serves.
+            const sources = [...landing.text.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)].map(found => found[1]).slice(0, 6);
+            const served = [];
+            for (const source of sources) {
+              const script = await probe(new URL(source, 'http://127.0.0.1:3000/').href);
+              served.push(`${source} -> ${script.failure ?? `${script.status}, ${script.text.length} bytes`}`);
+            }
+            server += `; scripts: ${served.join(', ') || 'none in the document'}`;
+          }
           expect('alef-runtime dev serves the page through the runtime and shuts both down', false, `${error.message}; ${server}${tail}`);
         } finally {
           await dev.stop();
