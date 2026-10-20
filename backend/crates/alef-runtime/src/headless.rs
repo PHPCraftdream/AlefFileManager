@@ -61,6 +61,7 @@ struct Delegate {
     handle: RuntimeHandle,
     crashed: Cell<bool>,
     loaded: Option<Box<dyn Fn() + Send>>,
+    devtools_delegate: Option<Rc<crate::ui::devtools::DevtoolsDelegate>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -117,14 +118,24 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         let waker = waker.clone();
         handle.windowless(move || waker.wake());
     }
+    let devtools = bridge.devtools.clone().map(|(_, name, id)| {
+        let failed = std::rc::Rc::new(Cell::new(false));
+        let wake = waker.clone();
+        crate::ui::devtools::DevtoolsDelegate::new(move || wake.wake(), failed, name, id)
+    });
     let servo = ServoBuilder::default()
         .opts(crate::bridge::assets::origin::servo_opts(
             bridge.profile_dir().map(|path| path.to_owned()),
         ))
-        .preferences(crate::bridge::assets::origin::preferences())
+        .preferences(crate::bridge::assets::origin::preferences_for(
+            bridge.devtools.as_ref().map(|(port, _, _)| *port),
+        ))
         .protocol_registry(bridge.take_registry()?)
         .event_loop_waker(Box::new(waker.clone()))
         .build();
+    if let Some(delegate) = devtools.as_ref() {
+        servo.set_delegate(delegate.clone());
+    }
     servo.setup_logging();
     // Per-document WebCrypto policy: substitution or RSA timing mitigation.
     let manager = UserContentManager::new(&servo);
@@ -137,7 +148,9 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         handle: handle.clone(),
         crashed: Cell::new(false),
         loaded: bridge.headless_loaded.take(),
+        devtools_delegate: devtools,
     });
+    let devtools_delegate = delegate.devtools_delegate.clone();
     let webview = WebViewBuilder::new(&servo, rendering.clone())
         .url(bridge.entry_url.clone())
         .delegate(delegate);
@@ -148,6 +161,15 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
     webview.hide();
     while !handle.quit_requested() {
         servo.spin_event_loop();
+        if let Some(devtools) = &devtools_delegate {
+            devtools.poll();
+            if devtools.failed() {
+                return Err(io::Error::other(crate::ui::devtools::unavailable_message(
+                    bridge.devtools.as_ref().map_or(7000, |(port, _, _)| *port),
+                ))
+                .into());
+            }
+        }
         check_launch_timeout(bridge.headless_tick.as_deref(), &handle);
         if handle.quit_requested() {
             break;

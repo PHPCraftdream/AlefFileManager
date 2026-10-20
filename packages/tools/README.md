@@ -13,7 +13,7 @@ alef-runtime pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <n
 alef-runtime verify <file>
 alef-runtime check [dir]
 alef-runtime build [dir] [--out <dir>]
-alef-runtime dev [dir] [--ready-timeout <ms>] [-- <runtime args>]
+alef-runtime dev [dir] [--ready-timeout <ms>] [--devtools[=PORT]] [-- <runtime args>]
 alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
 alef-runtime --help
 ```
@@ -57,7 +57,9 @@ semantics. Alef performs full manifest validation before launching the app.
 manifest assets directory; unsafe or overlapping destinations fail before any
 deletion. `dev` starts the configured dev command, polls `alef-runtime.devUrl`
 until it answers (default 60 s, `--ready-timeout`), then spawns the runtime
-with `--app <root> --dev-url <url>` plus any args after `--`; the runtime is
+with `--app <root> --dev-url <url>` plus any args after `--`; `--devtools` (or
+`--devtools=PORT`) enables loopback-only page debugging and is forwarded to the
+runtime as `--devtools`/`--devtools=<port>`; the runtime is
 resolved from `ALEF_BIN`, `@alef-runtime/runtime` `getRuntimePath()` or `alef`
 on PATH. Both children are owned and cleaned up: the dev server is killed when
 the runtime exits, on dev death, readiness timeout and SIGINT/SIGTERM; the
@@ -125,7 +127,7 @@ control characters in interpolated values, and `.`/`..` names.
 | `keyHome({ home? })` | Absolute key-home path |
 | `check(dir = cwd)` | Promise of frozen `{ file, message }` |
 | `build(dir, { out?, timeoutMs?, stdio? })` | Promise of frozen `{ dir, out, assets }` |
-| `dev(dir, { readyTimeoutMs?, devStdio?, stdio?, appArgs?, alefBin? })` | Promise of frozen `{ code }`; runs until the runtime exits |
+| `dev(dir, { readyTimeoutMs?, devStdio?, stdio?, appArgs?, alefBin?, devtools? })` | Promise of frozen `{ code }`; runs until the runtime exits |
 | `bundle(packagePath, { runtime?, platform?, formats?, out?, name?, runtimeVersion?, maintainer?, allowUnsigned?, force? })` | Promise of frozen `{ stem, id, name, version, platform, formats, packageSha256, runtimeSha256, out, warnings }` |
 | `findRuntime(dir?, { alefBin?, runtimeModule?, path? })` | Promise of the runtime executable path |
 | `readZip(input)` | Path/URL or Uint8Array; Promise of frozen `{ entries, read }` |

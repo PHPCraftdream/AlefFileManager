@@ -297,7 +297,7 @@ test('project npm defaults and optional package config execute fixed script name
 import { realpath, stat } from 'node:fs/promises';
 import net from 'node:net';
 import { pathToFileURL } from 'node:url';
-import { dev, findRuntime, ownedPids } from '../src/workflow/dev.mjs';
+import { dev, devtoolsArg, findRuntime, ownedPids } from '../src/workflow/dev.mjs';
 
 const isAlive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -388,6 +388,12 @@ test('dev starts the server waits for the url then runs the runtime with exact a
   assert.deepEqual(await dev(dir, { alefBin: shim, devStdio: 'ignore' }), { code: 0 });
   assert.deepEqual(JSON.parse(await readFile(log, 'utf8')),
     ['--app', await realpath(dir), '--dev-url', `http://127.0.0.1:${port}`]);
+  await assertDead(await devPid(dir));
+  assert.deepEqual(ownedPids(), []);
+  // devtools: true becomes a bare --devtools before any -- separator.
+  assert.deepEqual(await dev(dir, { alefBin: shim, devStdio: 'ignore', devtools: true }), { code: 0 });
+  assert.deepEqual(JSON.parse(await readFile(log, 'utf8')),
+    ['--app', await realpath(dir), '--dev-url', `http://127.0.0.1:${port}`, '--devtools']);
   await assertDead(await devPid(dir));
   assert.deepEqual(ownedPids(), []);
 }));
@@ -508,7 +514,19 @@ test('the build command prints the directory and the dev command validates its u
   failure(await cli(['dev', dir, 'extra']), /Usage: dev/);
   failure(await cli(['dev', dir, '--ready-timeout', 'x']), /--ready-timeout must be a positive integer/);
   failure(await cli(['dev', dir, '--ready-timeout']), /Missing value: --ready-timeout/);
+  // Devtools validation happens in the CLI before dev() reads any project.
+  assert.match(success(await cli(['--help'])), /--devtools\[=PORT\]/);
+  const missing = path.join(await realpath(dir), '..', 'no-such-project');
+  failure(await cli(['dev', missing, '--devtools=0']), /--devtools must be an integer between 1 and 65535/);
+  failure(await cli(['dev', missing, '--devtools=abc']), /--devtools must be an integer between 1 and 65535/);
+  failure(await cli(['dev', dir, '--devtools', '--devtools']), /--devtools is given twice/);
 }));
+
+test('devtoolsArg maps the option to exact runtime argv pieces', () => {
+  assert.deepEqual(devtoolsArg(true), ['--devtools']);
+  assert.deepEqual(devtoolsArg(7000), ['--devtools=7000']);
+  assert.deepEqual(devtoolsArg(undefined), []);
+});
 
 test('the dev command starts the server reports the missing runtime and kills the server', bounded, () => scratch(async ({ cli, dir }) => {
   const port = await freePort();

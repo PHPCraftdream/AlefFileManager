@@ -197,13 +197,37 @@ impl App {
                         .opts(crate::bridge::assets::origin::servo_opts(
                             self.profile_dir.clone(),
                         ))
-                        .preferences(crate::bridge::assets::origin::preferences())
+                        .preferences(crate::bridge::assets::origin::preferences_for(
+                            self.devtools_port,
+                        ))
                         .protocol_registry(self.registry.borrow_mut().take().ok_or_else(|| {
                             io::Error::other("Protocol registry already consumed")
                         })?)
                         .event_loop_waker(Box::new(self.waker.clone()))
                         .build();
                 servo.setup_logging();
+                // Only with an explicit port is the delegate installed: without it the
+                // server is off, no callback can fire, and the reveal gate in `tick` must
+                // not engage (windows of a normal run would otherwise never show).
+                if self.devtools_port.is_some() {
+                    let failed = std::rc::Rc::new(std::cell::Cell::new(false));
+                    let proxy = self.waker.0.clone();
+                    self.bridge_devtools = Some(crate::ui::devtools::DevtoolsDelegate::new(
+                        move || {
+                            let _ = proxy.send_event(crate::ui::Wake);
+                        },
+                        failed,
+                        // `title` is the manifest name (`WindowOptions::new` stores it).
+                        self.title.clone(),
+                        self.app_id.clone(),
+                    ));
+                    let devtools = self
+                        .bridge_devtools
+                        .as_ref()
+                        .expect("delegate installed")
+                        .clone();
+                    servo.set_delegate(devtools.clone());
+                }
                 servo
             }
         };

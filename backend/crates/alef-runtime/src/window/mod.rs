@@ -41,6 +41,10 @@ pub struct WindowOptions {
     /// Servo profile root (`Opts.config_dir`): web storage and the disk cache live under it.
     /// `None` keeps the Servo default.
     pub profile_dir: Option<PathBuf>,
+    /// Optional loopback DevTools listener port.
+    pub devtools_port: Option<u16>,
+    /// The package identity of the application, named in the DevTools consent dialog.
+    pub app_id: String,
 }
 
 impl WindowOptions {
@@ -51,6 +55,8 @@ impl WindowOptions {
             icon_png,
             state_file: None,
             profile_dir: None,
+            devtools_port: None,
+            app_id: String::new(),
             windows: vec![WindowDef {
                 label: "main".to_owned(),
                 url: "/".to_owned(),
@@ -89,6 +95,8 @@ struct App {
     url: Url,
     title: String,
     icon_png: Vec<u8>,
+    /// Package identity, carried to the DevTools consent dialog.
+    app_id: String,
     icon: Option<Icon>,
     definitions: Vec<WindowDef>,
     registry: RefCell<Option<ProtocolRegistry>>,
@@ -112,6 +120,9 @@ struct App {
     trays: crate::ui::integration::tray::Trays,
     menus: crate::ui::integration::menu::Menus,
     restore: Option<state::restore::Restore>,
+    devtools_port: Option<u16>,
+    bridge_devtools: Option<std::rc::Rc<crate::ui::devtools::DevtoolsDelegate>>,
+    servo_started: bool,
     /// Per-application Servo profile root (`Opts.config_dir`).
     profile_dir: Option<PathBuf>,
     /// Every document gets the WebCrypto stand-in (the right was not granted).
@@ -352,6 +363,7 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         url: bridge.entry_url.clone(),
         title: options.title,
         icon_png: options.icon_png,
+        app_id: options.app_id,
         icon: None,
         definitions: options.windows,
         registry: RefCell::new(Some(bridge.take_registry()?)),
@@ -374,6 +386,10 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         trays: crate::ui::integration::tray::Trays::default(),
         menus,
         restore: options.state_file.map(state::restore::Restore::load),
+        devtools_port: options.devtools_port,
+        // Window mode builds its own delegate in `host::manage`; headless keeps one locally.
+        bridge_devtools: None,
+        servo_started: false,
         profile_dir: options.profile_dir,
         webcrypto_substitute: bridge.webcrypto_substitute(),
     };
