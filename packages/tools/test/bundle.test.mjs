@@ -300,12 +300,15 @@ test('build_deb_produces_an_ar_with_three_members_and_embedded_control_tarball',
 });
 
 test('plist_renders_exact_text_with_and_without_icon_and_escapes_hostile_values', bounded, () => {
+  const usage = '<key>NSCameraUsageDescription</key><string>This application may use the camera; the Alef runtime asks before the application first opens it.</string>'
+    + '<key>NSMicrophoneUsageDescription</key><string>This application may use the microphone; the Alef runtime asks before the application first opens it.</string>';
   const expected = '<?xml version="1.0" encoding="UTF-8"?>\n'
     + '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
     + '<plist version="1.0">\n<dict>'
     + '<key>CFBundleIdentifier</key><string>dev.alef.sync</string>'
     + '<key>CFBundleName</key><string>Alef</string>'
     + '<key>CFBundleExecutable</key><string>alef</string>'
+    + usage
     + '</dict>\n</plist>\n';
   assert.equal(renderInfoPlist({ id: 'dev.alef.sync', name: 'Alef', executable: 'alef' }), expected);
   assert.equal(

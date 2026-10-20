@@ -68,7 +68,7 @@ permissions: {
 - Выбор бэкендов: `Backends::system` с фичей берёт системные, без неё — Missing; пути e2e (`chosen`) всегда оставляют виртуальные устройства (в CI нет устройств). Права `permissions.media.camera`/`microphone`/`audio` работают как в M6.1; диалог прав операционной системы при первом открытии настоящего устройства — второй, независимый барьер.
 - Ошибки имеют фиксированные тексты; перечисление устройств — INTERNAL при сбое ОС; неизвестный id — NOT_FOUND; отказ macOS-камеры/микрофона — PERMISSION_DENIED; другие ошибки камеры/микрофона могут быть INTERNAL или NOT_AVAILABLE в зависимости от причины. Фатальная ошибка backend завершает поток вместо вечной тишины. Известные ограничения upstream: macOS AVFoundation может ограничивать `compatible_camera_formats` условием `!= fourcc`, Windows MSMF — не более двух compatible fourcc; это может сузить перечисленные режимы. Зависимости не патчились.
 - CI: шаг `Media system feature check` (`cargo check --locked -p alef-modules --features media-system`) на все ОС матрицы + `libasound2-dev` на Linux (ALSA-заголовки cpal; путь v4l nokhwa — чистые Rust-ioctl, системных пакетов не требует). MSRV-джоба supply.yml собирает без фичей — изменений не требует. Реальное железо в CI НЕ проверяется.
-- Info.plist, который пишет `alef install` для приложения формата `app`, содержит `NSCameraUsageDescription` и `NSMicrophoneUsageDescription` (рендер в `backend/crates/alef/src/runtimes/install/integration/render.rs`). `packages/tools` форматы пока не объявляют эти ключи — вне среза. Реальное железо и CI не подтверждены этим описанием.
+- Info.plist, который пишет `alef install` для приложения формата `app`, содержит `NSCameraUsageDescription` и `NSMicrophoneUsageDescription` (рендер в `backend/crates/alef/src/runtimes/install/integration/render.rs`). Info.plist `.app` из `alef-runtime bundle` (`packages/tools`, `renderInfoPlist`) содержит те же два ключа, их тексты говорят об одном приложении, а не об установленных. Реальное железо и CI не подтверждены этим описанием.
 - Пропускная способность потока кадров (задача #179) решена в M6.3: ack без ожидания ответа в `packages/api`; системная камера использует тот же транспорт.
 
 ### Ручной чек-лист (только вручную)
@@ -85,6 +85,5 @@ permissions: {
 ## Дальше
 
 - Ручной чек-лист выше на настоящем железе; обновить таблицу «Измерения спайка».
-- macOS-бандлер: ключи `NSCameraUsageDescription`/`NSMicrophoneUsageDescription` в Info.plist (правка packages/tools).
 - MJPEG и прочие форматы реальных камер — расширить конвертации или оставить честную NOT_AVAILABLE («the camera offers no decodable frame format»).
 - Подпись и нотаризация macOS — открытый вопрос m7.
