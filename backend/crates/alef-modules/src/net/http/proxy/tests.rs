@@ -177,12 +177,17 @@ async fn oversized_connect_head_is_rejected() {
         s.write_all(b"HTTP/1.1 200 Connection established\r\n")
             .await
             .unwrap();
-        s.write_all(&vec![b'a'; HEAD_LIMIT - 32]).await.unwrap();
+        // The client closes as soon as the head is too long; with bytes still unread that is a reset.
+        let _ = s.write_all(&vec![b'a'; HEAD_LIMIT - 32]).await;
         let mut extra = [0];
-        tokio::time::timeout(Duration::from_secs(10), s.read(&mut extra))
+        match tokio::time::timeout(Duration::from_secs(10), s.read(&mut extra))
             .await
             .unwrap()
-            .unwrap()
+        {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => 0,
+            Err(error) => panic!("unexpected socket error: {error}"),
+        }
     });
     let url = Url::parse("https://example.invalid/").unwrap();
     let response = request(
