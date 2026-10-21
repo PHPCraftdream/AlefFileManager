@@ -628,21 +628,18 @@ test('the bundle command validates usage and formats and produces a dir bundle',
 test('fetch-runtime gets the binary of another platform from the registry once and then from the cache', bounded, () => scratch(async ({ cli, root }) => {
   const toolsVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
   const binary = Buffer.from('linux-runtime-bytes');
-  const stub = await registry({ 'linux-x64': {
-    '0.1.0': { tarball: platformPackage('linux-x64', '0.1.0', binary) },
-    [toolsVersion]: { tarball: platformPackage('linux-x64', toolsVersion, Buffer.from('tools-version-bytes')) },
-  } });
+  const stub = await registry({ 'linux-x64': { [toolsVersion]: { tarball: platformPackage('linux-x64', toolsVersion, binary) } } });
   try {
     const cache = path.join(root, 'cache');
-    const args = ['fetch-runtime', '--platform', 'linux-x64', '--runtime-version', '0.1.0', '--cache', cache, '--registry', stub.url];
-    const file = path.join(cache, '0.1.0', 'linux-x64', 'alef');
+    const args = ['fetch-runtime', '--platform', 'linux-x64', '--runtime-version', toolsVersion, '--cache', cache, '--registry', stub.url];
+    const file = path.join(cache, toolsVersion, 'linux-x64', 'alef');
     assert.equal(success(await cli(args)), `${file}\n`);
     assert.deepEqual(await readFile(file), binary);
-    assert.equal(await readFile(path.join(cache, '0.1.0', 'linux-x64', 'LICENSE-MIT'), 'utf8'), 'MIT text\n');
-    assert.equal(await readFile(path.join(cache, '0.1.0', 'linux-x64', 'LICENSE-APACHE'), 'utf8'), 'Apache text\n');
+    assert.equal(await readFile(path.join(cache, toolsVersion, 'linux-x64', 'LICENSE-MIT'), 'utf8'), 'MIT text\n');
+    assert.equal(await readFile(path.join(cache, toolsVersion, 'linux-x64', 'LICENSE-APACHE'), 'utf8'), 'Apache text\n');
     if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o755);
     assert.equal(stub.requests.length, 2); // the registry entry and the tarball
-    assert.deepEqual(await readdir(path.join(cache, '0.1.0')), ['linux-x64']); // no staging leftovers
+    assert.deepEqual(await readdir(path.join(cache, toolsVersion)), ['linux-x64']); // no staging leftovers
     // A second request is answered from the cache without the network.
     assert.equal(success(await cli(args)), `${file}\n`);
     assert.equal(stub.requests.length, 2);
@@ -650,7 +647,7 @@ test('fetch-runtime gets the binary of another platform from the registry once a
     const other = path.join(root, 'other');
     const fetched = success(await cli(['fetch-runtime', '--platform', 'linux-x64', '--cache', other, '--registry', stub.url]));
     assert.equal(fetched, `${path.join(other, toolsVersion, 'linux-x64', 'alef')}\n`);
-    assert.deepEqual(await readFile(path.join(other, toolsVersion, 'linux-x64', 'alef')), Buffer.from('tools-version-bytes'));
+    assert.deepEqual(await readFile(path.join(other, toolsVersion, 'linux-x64', 'alef')), binary);
   } finally { await stub.close(); }
 }));
 
@@ -658,7 +655,7 @@ test('fetch-runtime refuses a tarball or a registry it cannot trust and leaves n
   const good = platformPackage('linux-x64', '0.1.0', Buffer.from('bytes'));
   const flipped = gunzipSync(good); flipped[3] ^= 1; // a byte of the first header name: its checksum no longer fits
   const withoutBinary = tarball([
-    { name: 'package/package.json', data: Buffer.from(JSON.stringify({ name: '@alef-runtime/runtime-linux-x64', version: '0.1.0' })) },
+    { name: 'package/package.json', data: Buffer.from(JSON.stringify({ name: '@alef-runtime/runtime-linux-x64', version: '0.5.0' })) },
     { name: 'package/LICENSE-MIT', data: Buffer.from('MIT text\n') },
     { name: 'package/LICENSE-APACHE', data: Buffer.from('Apache text\n') },
   ]);
