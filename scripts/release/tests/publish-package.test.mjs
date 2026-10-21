@@ -71,36 +71,27 @@ function withStagingDirs(check) {
 
 test('copyInto_stages_the_license_texts_from_the_root_when_the_package_has_no_copy_of_its_own', () => {
   withStagingDirs((dir, sources, staging) => {
-    writeFileSync(path.join(dir, 'README.md'), '# x
-');
-    writeFileSync(path.join(sources, 'LICENSE-MIT'), 'root mit
-');
-    writeFileSync(path.join(sources, 'LICENSE-APACHE'), 'root apache
-');
+    writeFileSync(path.join(dir, 'README.md'), '# x\n');
+    writeFileSync(path.join(sources, 'LICENSE-MIT'), 'root mit\n');
+    writeFileSync(path.join(sources, 'LICENSE-APACHE'), 'root apache\n');
     copyInto(dir, staging, { name: 'x', files: ['README.md', 'LICENSE-MIT', 'LICENSE-APACHE'] }, sources);
-    assert.equal(readFileSync(path.join(staging, 'LICENSE-MIT'), 'utf8'), 'root mit
-');
-    assert.equal(readFileSync(path.join(staging, 'LICENSE-APACHE'), 'utf8'), 'root apache
-');
+    assert.equal(readFileSync(path.join(staging, 'LICENSE-MIT'), 'utf8'), 'root mit\n');
+    assert.equal(readFileSync(path.join(staging, 'LICENSE-APACHE'), 'utf8'), 'root apache\n');
   });
 });
 
 test('copyInto_keeps_the_license_text_a_package_carries_over_the_root_one', () => {
   withStagingDirs((dir, sources, staging) => {
-    writeFileSync(path.join(dir, 'LICENSE-MIT'), 'own mit
-');
-    writeFileSync(path.join(sources, 'LICENSE-MIT'), 'root mit
-');
+    writeFileSync(path.join(dir, 'LICENSE-MIT'), 'own mit\n');
+    writeFileSync(path.join(sources, 'LICENSE-MIT'), 'root mit\n');
     copyInto(dir, staging, { name: 'x', files: ['LICENSE-MIT'] }, sources);
-    assert.equal(readFileSync(path.join(staging, 'LICENSE-MIT'), 'utf8'), 'own mit
-');
+    assert.equal(readFileSync(path.join(staging, 'LICENSE-MIT'), 'utf8'), 'own mit\n');
   });
 });
 
 test('only_the_license_texts_fall_back_to_the_root_any_other_missing_entry_stays_an_error', () => {
   withStagingDirs((dir, sources, staging) => {
-    writeFileSync(path.join(sources, 'README.md'), '# not the package
-');
+    writeFileSync(path.join(sources, 'README.md'), '# not the package\n');
     assert.throws(() => copyInto(dir, staging, { name: 'x', files: ['README.md'] }, sources), /"files" entry "README.md" is missing/);
   });
 });
