@@ -4,16 +4,17 @@
 // Every rejection happens before the first output byte is written.
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { constants, readFileSync, realpathSync } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { lstat, link, mkdir, open, readdir, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { noSymlinks } from '../keys.mjs';
-import { verify } from '../verify.mjs';
-import { writeZip } from '../zip.mjs';
+import { noSymlinks } from '../../keys.mjs';
+import { verify } from '../../verify.mjs';
+import { writeZip } from '../../zip.mjs';
 import { buildDeb, escapeDesktopValue, quoteDesktopExec, renderBuildInstallerCmd, renderInfoPlist, renderNsisInstaller, writeGzip, writeTar } from './bundle-formats.mjs';
 import { parseVersion, readManifestFields, satisfiesRange } from './bundle-manifest.mjs';
+import { fetchRuntime, PLATFORMS, toolVersion } from './fetch-runtime.mjs';
 const GIB = 1024 * 1024 * 1024;
 const MIB = 1024 * 1024;
 const MAX_PACKAGE = 2304 * MIB;
@@ -26,13 +27,6 @@ const within = (parent, child) => {
 };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
-// Target table: file suffix, node platform/arch pair and runtime binary name.
-const PLATFORMS = Object.freeze({
-  'win32-x64': Object.freeze({ suffix: '.exe', platform: 'win32', arch: 'x64', binary: 'alef.exe' }),
-  'darwin-arm64': Object.freeze({ suffix: '', platform: 'darwin', arch: 'arm64', binary: 'alef' }),
-  'darwin-x64': Object.freeze({ suffix: '', platform: 'darwin', arch: 'x64', binary: 'alef' }),
-  'linux-x64': Object.freeze({ suffix: '', platform: 'linux', arch: 'x64', binary: 'alef' }),
-});
 const FORMATS = ['dir', 'zip', 'tar.gz', 'deb', 'nsis', 'app', 'dmg'];
 const NOFOLLOW = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
 // Ancestor symlinks are tolerated only inside the OS temp-dir chain (mkdtemp roots).
@@ -52,12 +46,6 @@ async function noSymlinkComponents(absolutePath) {
     if (realTmp === real || realTmp.startsWith(real + path.sep)) continue;
     throw new Error(`Bundle: Symlink forbidden in path: ${current}`);
   }
-}
-
-// Tool version for bundle.json; a broken layout must not break bundling.
-function toolVersion() {
-  try { return String(JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version ?? '0.0.0-dev'); }
-  catch { return '0.0.0-dev'; }
 }
 
 // Exact, identity-checked full read of the package (bounded like pack.mjs).
@@ -233,14 +221,19 @@ export async function bundle(packagePath, options = {}) {
       check(typeof options.hdiutil === 'function' || process.platform === 'darwin', 'format dmg can be built only on macOS (it needs hdiutil)');
     }
   }
-  // Runtime: required regular file, symlink-free, at most 1 GiB.
-  check(typeof options.runtime === 'string' && options.runtime !== '', 'runtime binary path is required');
-  const runtimePath = path.resolve(options.runtime);
-  await noSymlinkComponents(runtimePath);
-  const runtimeStat = await lstat(runtimePath);
-  check(runtimeStat.isFile(), 'runtime binary must be a regular file');
-  check(runtimeStat.size <= GIB, 'runtime binary exceeds the 1 GiB limit');
-  const runtimeSize = runtimeStat.size;
+  // Runtime: a regular file, at most 1 GiB; a named one is symlink-free, without one the platform package is fetched below.
+  check(options.runtime === undefined || (typeof options.runtime === 'string' && options.runtime !== ''),
+    'runtime must be a nonempty file path (omit it to fetch the runtime of the platform)');
+  let runtimePath = null; let runtimeSize = 0;
+  const takeRuntime = async (file, fromCache) => {
+    // The cache is the tool's own directory; a path the caller names must have no symlinked component.
+    if (!fromCache) await noSymlinkComponents(file);
+    const stat = await lstat(file);
+    check(stat.isFile(), 'runtime binary must be a regular file');
+    check(stat.size <= GIB, 'runtime binary exceeds the 1 GiB limit');
+    runtimePath = file; runtimeSize = stat.size;
+  };
+  if (options.runtime !== undefined) await takeRuntime(path.resolve(options.runtime), false);
   const bytes = await readPackage(path.resolve(packagePath));
   const info = await verify(bytes);
   if (info.status !== 'Signed' && options.allowUnsigned !== true) {
@@ -276,18 +269,24 @@ export async function bundle(packagePath, options = {}) {
   // One executable name for the .app tree: the zip layer needs ASCII, so the
   // zipped app uses the sanitized stem; the dir-only app keeps the raw stem.
   const appExecutable = formats.includes('zip') ? zipStem : stem;
-  // Runtime version comes only from the caller: the runtime binary is never executed.
+  // Runtime version comes only from the caller (a fetched runtime is the version that was asked for): the binary is never executed.
   let version = null;
   if (options.runtimeVersion !== undefined) {
     check(typeof options.runtimeVersion === 'string', 'runtimeVersion must be a string');
     parseVersion(options.runtimeVersion);
     version = options.runtimeVersion;
+  } else if (runtimePath === null) {
+    version = toolVersion();
   } else {
     warnings.push('could not verify the runtime version; pass --runtime-version <semver> to check the package requirement; runtime range not checked');
   }
   if (version !== null && manifest.runtime !== undefined) {
     check(satisfiesRange(version, manifest.runtime),
       `runtime ${version} does not satisfy the package requirement ${manifest.runtime}`);
+  }
+  // Fetched only now: a package that is unsigned, unreadable or asks for another runtime was refused before any download.
+  if (runtimePath === null) {
+    await takeRuntime((await fetchRuntime({ platform, version, cache: options.cache, registry: options.registry })).path, true);
   }
   const packageSha256 = hash(bytes);
   const runtimeSha256 = await streamHash(runtimePath, runtimeSize);
@@ -327,7 +326,7 @@ export async function bundle(packagePath, options = {}) {
   const files = [{ rel: 'app/app.alef', data: bytes, mode: 0o644 }];
   const runtimeDir = path.dirname(runtimePath);
   for (const basename of (await readdir(runtimeDir)).sort()) {
-    if (!/^(license|notice)(\.md|\.txt)?$/i.test(basename)) continue;
+    if (!/^(license|notice)(-[a-z0-9]+)?(\.md|\.txt)?$/i.test(basename)) continue;
     const licenseStat = await lstat(path.join(runtimeDir, basename));
     if (!licenseStat.isFile()) continue; // symlinks and special files are skipped
     files.push({ rel: basename, data: await exactRead(path.join(runtimeDir, basename), LICENSE_LIMIT), mode: 0o644 });

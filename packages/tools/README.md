@@ -14,7 +14,8 @@ alef-runtime verify <file>
 alef-runtime check [dir]
 alef-runtime build [dir] [--out <dir>]
 alef-runtime dev [dir] [--ready-timeout <ms>] [--devtools[=PORT]] [-- <runtime args>]
-alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
+alef-runtime fetch-runtime [--platform <win32-x64|darwin-arm64|darwin-x64|linux-x64>] [--runtime-version <semver>] [--cache <dir>] [--registry <url>]
+alef-runtime bundle <PACKAGE.alef> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--runtime <alef-binary>] [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--cache <dir>] [--registry <url>] [--maintainer <text>] [--allow-unsigned] [--force]
 alef-runtime --help
 ```
 
@@ -115,6 +116,36 @@ package is bounded and identity-checked, publication is race-safe no-clobber
 children of the output directory. Refusals: a format unavailable for the platform, existing
 outputs without `force`, output lexically at or containing the input paths,
 control characters in interpolated values, and `.`/`..` names.
+`LICENSE*`/`NOTICE*` files next to the runtime (including `LICENSE-MIT` and
+`LICENSE-APACHE` of a platform package) are copied into the layout root.
+
+## Runtime of any platform
+
+`fetch-runtime` (API `fetchRuntime`) gets the binary of a platform (default: this
+one) from the npm package `@alef-runtime/runtime-<platform>` and prints its path;
+`bundle` without `--runtime` does the same for its `--platform`, after the
+package was verified (an unsigned or unreadable package, or one that asks for
+another runtime, is refused before any download).
+
+- **Version:** `--runtime-version`, default the version of these tools (tools and
+  runtime are released with one version). The package's `runtime` range is
+  checked against it before the download; a range is never resolved to a version.
+- **Registry:** read directly with `fetch`, no `npm` client: the registry entry
+  `/@alef-runtime%2Fruntime-<platform>` gives `dist.tarball` and `dist.integrity`.
+  The tarball must match a `sha512` the registry states (an entry without one is
+  refused), every ustar header is checksummed, and the `package.json` inside must
+  be the requested name and version. `--registry` (default
+  `https://registry.npmjs.org`) must use https, http only for localhost, and
+  must not carry credentials. Proxy variables are not read by `fetch` unless
+  Node is told to (`NODE_USE_ENV_PROXY=1` on Node 24). Publisher provenance is
+  not checked.
+- **Cache:** `<cache>/<version>/<platform>/` holds the binary (mode 0755 on POSIX),
+  `LICENSE-MIT` and `LICENSE-APACHE`; `--cache` or `$ALEF_RUNTIME_HOME/cache/runtime`
+  (default `~/.alef-runtime/cache/runtime`). The directory is staged beside it and
+  published by one `rename`, so an interrupted download leaves no half entry; a
+  cached entry is used without the network (delete the directory to fetch again).
+- **Limits:** registry entry 16 MiB, tarball 256 MiB, binary 1 GiB; the tarball and
+  the unpacked binary are held in memory. Errors are `Runtime: ...`.
 
 ## API
 
@@ -128,7 +159,8 @@ control characters in interpolated values, and `.`/`..` names.
 | `check(dir = cwd)` | Promise of frozen `{ file, message }` |
 | `build(dir, { out?, timeoutMs?, stdio? })` | Promise of frozen `{ dir, out, assets }` |
 | `dev(dir, { readyTimeoutMs?, devStdio?, stdio?, appArgs?, alefBin?, devtools? })` | Promise of frozen `{ code }`; runs until the runtime exits |
-| `bundle(packagePath, { runtime?, platform?, formats?, out?, name?, runtimeVersion?, maintainer?, allowUnsigned?, force? })` | Promise of frozen `{ stem, id, name, version, platform, formats, packageSha256, runtimeSha256, out, warnings }` |
+| `bundle(packagePath, { runtime?, platform?, formats?, out?, name?, runtimeVersion?, cache?, registry?, maintainer?, allowUnsigned?, force? })` | Promise of frozen `{ stem, id, name, version, platform, formats, packageSha256, runtimeSha256, out, warnings }`; without `runtime` the platform runtime is fetched |
+| `fetchRuntime({ platform?, version?, cache?, registry? })` | Promise of frozen `{ path, version, platform, cached }`; `path` is the binary in the cache |
 | `findRuntime(dir?, { alefBin?, runtimeModule?, path? })` | Promise of the runtime executable path |
 | `readZip(input)` | Path/URL or Uint8Array; Promise of frozen `{ entries, read }` |
 | `writeZip(entries, { method? })` | Buffer; entries `{ name, data: Uint8Array, method? }`; method 0/8, default automatic |

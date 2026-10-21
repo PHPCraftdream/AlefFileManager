@@ -1,20 +1,27 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT OR Apache-2.0
-import { pack, verify, check, createKey, listKeys, build, dev, bundle } from '../src/index.mjs';
+import { pack, verify, check, createKey, listKeys, build, dev, bundle, fetchRuntime } from '../src/index.mjs';
 
+const bundleUsage = 'bundle <PACKAGE.alef> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--runtime <alef-binary>] [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--cache <dir>] [--registry <url>] [--maintainer <text>] [--allow-unsigned] [--force]';
 const help = `alef-runtime keys [name] | keys --list
 alef-runtime pack <dir> [--key <name> | --unsigned] [--out <file>] [--include <names>]
 alef-runtime verify <file>
 alef-runtime check [dir]
 alef-runtime build [dir] [--out <dir>]
 alef-runtime dev [dir] [--ready-timeout <ms>] [--devtools[=PORT]] [-- <runtime args>]
-alef-runtime bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]
+alef-runtime fetch-runtime [--platform <win32-x64|darwin-arm64|darwin-x64|linux-x64>] [--runtime-version <semver>] [--cache <dir>] [--registry <url>]
+alef-runtime ${bundleUsage}
 --include: repeat or use commas for .git,node_modules,.alef-runtime;
 key home and .alef-runtime are always excluded.
 check: basic text hygiene only; full runtime manifest validation is not performed.
 build: runs the configured build command and assembles an app directory;
 dev: runs the dev command, waits for alef-runtime.devUrl, then the runtime.
+fetch-runtime: gets the runtime binary of a platform (default: this one) from its npm package
+@alef-runtime/runtime-<platform> into a cache ($ALEF_RUNTIME_HOME/cache/runtime unless --cache), checks the sha512
+integrity the registry states and prints the path; the version defaults to the version of these tools;
+the registry (default https://registry.npmjs.org) must use https, http only for localhost.
 bundle: verifies the package, places the runtime next to it and produces installable artifacts;
+without --runtime the runtime of --platform is fetched like fetch-runtime does, after the package was verified;
 the runtime range accepts only full x.y.z comparators (=,>,>=,<,<=,^,~); wildcards, bare and partial versions are refused;
 --format may repeat; without it the dir layout plus the platform archive is built (zip for win32-x64, tar.gz otherwise);
 --no-verify intentionally does not exist.
@@ -109,14 +116,20 @@ async function main(args) {
     if (typeof result.code === 'number') process.exitCode = result.code; // null must not overwrite a signal exit code
     return;
   }
+  if (command === 'fetch-runtime') {
+    const { positional, options } = argumentsFor(args, { platform: true, 'runtime-version': true, cache: true, registry: true });
+    if (positional.length !== 0) fail('Usage: fetch-runtime [--platform <platform>] [--runtime-version <semver>] [--cache <dir>] [--registry <url>]');
+    const result = await fetchRuntime({ platform: options.platform, version: options['runtime-version'], cache: options.cache, registry: options.registry });
+    process.stdout.write(`${result.path}\n`); return;
+  }
   if (command === 'bundle') {
-    const { positional, options } = argumentsFor(args, { runtime: true, platform: true, format: true, out: true, name: true, 'runtime-version': true, maintainer: true, 'allow-unsigned': false, force: false }, new Set(['format']));
-    if (positional.length !== 1) fail('Usage: bundle <PACKAGE.alef> --runtime <alef-binary> --platform <platform> [options]');
-    if (options.platform === undefined) fail('Usage: bundle <PACKAGE.alef> --runtime <alef-binary> --platform <win32-x64|darwin-arm64|darwin-x64|linux-x64> [--format <dir|zip|tar.gz|deb|nsis|app|dmg>]... [--out <dir>] [--name <name>] [--runtime-version <semver>] [--maintainer <text>] [--allow-unsigned] [--force]');
+    const { positional, options } = argumentsFor(args, { runtime: true, platform: true, format: true, out: true, name: true, 'runtime-version': true, cache: true, registry: true, maintainer: true, 'allow-unsigned': false, force: false }, new Set(['format']));
+    if (positional.length !== 1) fail(`Usage: ${bundleUsage}`);
+    if (options.platform === undefined) fail(`Usage: ${bundleUsage}`);
     const result = await bundle(positional[0], {
       runtime: options.runtime, platform: options.platform, formats: options.format, out: options.out,
-      name: options.name, runtimeVersion: options['runtime-version'], maintainer: options.maintainer,
-      allowUnsigned: options['allow-unsigned'] === true, force: options.force === true,
+      name: options.name, runtimeVersion: options['runtime-version'], cache: options.cache, registry: options.registry,
+      maintainer: options.maintainer, allowUnsigned: options['allow-unsigned'] === true, force: options.force === true,
     });
     for (const artifact of result.out) process.stdout.write(`${artifact}\n`);
     for (const warning of result.warnings) process.stderr.write(`alef-runtime: warning: ${warning}\n`);

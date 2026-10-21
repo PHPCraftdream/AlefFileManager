@@ -10,13 +10,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createKey } from '../src/keys.mjs';
 import { pack } from '../src/pack.mjs';
-import { bundle } from '../src/workflow/bundle.mjs';
+import { bundle } from '../src/workflow/bundle/bundle.mjs';
 import { readZip } from '../src/zip.mjs';
-import { parseRuntimeRange, parseVersion, readManifestFields, satisfiesRange } from '../src/workflow/bundle-manifest.mjs';
+import { parseRuntimeRange, parseVersion, readManifestFields, satisfiesRange } from '../src/workflow/bundle/bundle-manifest.mjs';
 import {
   buildDeb, escapeDesktopValue, escapeNsis, escapeXml, quoteDesktopExec, renderBuildInstallerCmd,
   renderControl, renderInfoPlist, renderNsisInstaller, writeAr, writeTar,
-} from '../src/workflow/bundle-formats.mjs';
+} from '../src/workflow/bundle/bundle-formats.mjs';
 
 const bounded = { timeout: 5000 };
 
@@ -439,6 +439,7 @@ test('dir_layout_copies_runtime_and_exact_package_bytes_and_writes_a_correct_bun
   // A LICENSE next to the runtime is carried into the layout root verbatim.
   const licenseBytes = Buffer.from(Array.from({ length: 300 }, (_, index) => (index * 7) & 255));
   await writeFile(path.join(root, 'LICENSE'), licenseBytes);
+  await writeFile(path.join(root, 'LICENSE-MIT'), 'MIT text\n'); // the license files of a platform package
   const result = await bundle(packagePath, { runtime, platform: 'linux-x64', formats: ['dir'] });
   assert.equal(result.stem, 'Sample App-1.2.3-linux-x64');
   const stemDir = path.join(root, 'Sample App-1.2.3-linux-x64');
@@ -460,6 +461,7 @@ test('dir_layout_copies_runtime_and_exact_package_bytes_and_writes_a_correct_bun
   const binMode = await posixMode(path.join(stemDir, 'bin', 'alef'));
   if (binMode !== undefined) assert.equal(binMode, 0o755);
   assert.deepEqual(await readFile(path.join(stemDir, 'LICENSE')), licenseBytes);
+  assert.equal(await readFile(path.join(stemDir, 'LICENSE-MIT'), 'utf8'), 'MIT text\n');
   await assert.rejects(lstat(path.join(stemDir, 'NOTICE')));
   // The explicit --name variant overrides the space-bearing default stem.
   const named = await bundle(packagePath, { runtime, platform: 'linux-x64', formats: ['dir'], name: 'sample' });
