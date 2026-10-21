@@ -1,11 +1,11 @@
-// Project structure limits for our own code (frontend and backend).
+// Project structure limits for our own code (backend, packages, scripts and tests).
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const MAX_ENTRIES = 7;
 export const MAX_LINES = 1000;
-export const SOURCE_ROOTS = ['frontend/src', 'frontend/test', 'backend/crates', 'scripts', 'packages', 'tests', 'experiments'];
+export const SOURCE_ROOTS = ['backend/crates', 'scripts', 'packages', 'tests', 'experiments'];
 const IGNORED = new Set(['node_modules', 'dist', 'target']);
 const CODE = /\.(rs|ts|tsx|js|jsx|mjs|cjs|css|html)$/;
 

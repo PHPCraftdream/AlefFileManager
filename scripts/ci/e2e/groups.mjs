@@ -20,5 +20,5 @@ export const E2E_GROUPS = [
   'system,desktop,menu,context-menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands',
   'fs,fs-substitute,sqlite,sqlite-substitute,store,log,crypto,webcrypto,secrets,secrets-substitute,secrets-denied',
   'http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,mcp,ai,ai-threat,media',
-  'origin,webcrypto-undeclared,webcrypto-substitute,package,fm-package,updater',
+  'origin,webcrypto-undeclared,webcrypto-substitute,package,updater',
 ];

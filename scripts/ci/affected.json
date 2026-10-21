@@ -59,10 +59,6 @@
     "**/*macos*",
     "tests/e2e/**"
   ],
-  "package_app": [
-    "frontend/**",
-    "packages/tools/**"
-  ],
   "e2e_smoke": [
     "core",
     "manifest",
@@ -141,7 +137,6 @@
         "service",
         "launch-modes",
         "package",
-        "fm-package",
         "updater"
       ]
     },
@@ -334,14 +329,6 @@
         "cli-commands",
         "arguments",
         "devtools"
-      ]
-    },
-    {
-      "glob": "frontend/**",
-      "scenarios": [
-        "app",
-        "console",
-        "fm-package"
       ]
     },
     {

@@ -48,7 +48,7 @@ impl Drop for Scratch {
     }
 }
 
-const ICON: &[u8] = include_bytes!("../../../../../../../frontend/public/logo-32x32.png");
+const ICON: &[u8] = include_bytes!("../../../../../../assets/logo-32x32.png");
 
 fn fixture(version: &str, body: &[u8]) -> (Vec<u8>, String) {
     let manifest =

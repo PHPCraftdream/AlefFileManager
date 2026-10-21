@@ -51,7 +51,6 @@ jobs:
       js_all: ${{ steps.plan.outputs.js_all }}
       e2e: ${{ steps.plan.outputs.e2e }}
       docs_only: ${{ steps.plan.outputs.docs_only }}
-      package_app: ${{ steps.plan.outputs.package_app }}
       reason: ${{ steps.plan.outputs.reason }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -263,7 +262,7 @@ jobs:
         run: node --test scripts/supply/check-no-hooks.test.mjs
 
       - name: "@alef-runtime/api tests"
-        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/api,') || contains(format(',{0},', needs.plan.outputs.js), ',frontend,')
+        if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/api,') || contains(format(',{0},', needs.plan.outputs.js), ',tests,')
         run: npm run test:api
 
       - name: "@alef-runtime/mcp tests"
@@ -317,13 +316,13 @@ jobs:
         if: needs.plan.outputs.js == 'all' || contains(format(',{0},', needs.plan.outputs.js), ',packages/runtime,')
         run: npm run test:runtime
 
-      # Typecheck ровно один раз — внутри полного билда на Linux (build:frontend запускает tsc).
-      - name: Build (Rust, без frontend)
+      # Typecheck ровно один раз — в сборке на Linux (npm run typecheck).
+      - name: Build (Rust)
         if: runner.os == 'macOS' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: node scripts/cargo.mjs build --locked --workspace --features alef/e2e
 
       # Windows builds ANGLE and copies its DLLs next to the exe; product default stays WGL.
-      - name: Build (Rust, без frontend; ANGLE)
+      - name: Build (Rust; ANGLE)
         id: build_windows_angle
         if: runner.os == 'Windows' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         shell: pwsh
@@ -340,33 +339,11 @@ jobs:
             Copy-Item -LiteralPath $source -Destination 'backend/target/debug' -ErrorAction Stop
           }
 
-      - name: Build (typecheck + frontend + Rust)
+      - name: Build (typecheck + Rust)
         if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
         run: |
-          npm run build:frontend
+          npm run typecheck
           node scripts/cargo.mjs build --locked --workspace --features alef/e2e
-
-      # M7d.5: the File Manager is packed like any Alef application; verify prints the signer
-      # fingerprint the user passes to `alef install --trust-key`. The gate repeats the frontend
-      # build condition: the step must not run when frontend/app was not produced.
-      - name: Package the File Manager (.alef)
-        if: runner.os == 'Linux' && needs.plan.outputs.package_app == 'true' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
-        env:
-          ALEF_RUNTIME_HOME: ${{ runner.temp }}/alef-runtime-home
-          ALEF_RUNTIME_KEY: fm-package-ci
-        run: |
-          node packages/tools/bin/alef-runtime.mjs keys fm-package-ci
-          npm run pack:app
-          node packages/tools/bin/alef-runtime.mjs verify dist/file-manager.alef
-
-      - name: Upload File Manager package
-        if: runner.os == 'Linux' && needs.plan.outputs.package_app == 'true' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: file-manager-alef
-          path: dist/file-manager.alef
-          retention-days: 7
-          if-no-files-found: error
 
       - name: Release build without test hooks (Linux)
         # Only the crates that carry test hooks (alef, alef-runtime, alef-modules) can leak them into a
@@ -465,7 +442,7 @@ jobs:
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
         shell: bash
-        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "origin,webcrypto-undeclared,webcrypto-substitute,package,fm-package,updater" --exe backend/target/debug/alef.exe --timeout-s 150
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "origin,webcrypto-undeclared,webcrypto-substitute,package,updater" --exe backend/target/debug/alef.exe --timeout-s 150
 
       # macOS has a WindowServer, so every canonical group runs like on a developer machine
       # (quiet mode is the default outside Linux); skips are declared in the scenarios themselves
@@ -497,14 +474,6 @@ jobs:
             backend/target/debug/alef.exe
             backend/target/debug/libEGL.dll
             backend/target/debug/libGLESv2.dll
-          if-no-files-found: error
-
-      - name: Upload frontend app
-        if: runner.os == 'Linux' && (needs.plan.outputs.crates_all == 'true' || needs.plan.outputs.crates != '' || needs.plan.outputs.e2e != 'none')
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: alef-frontend-app
-          path: frontend/app
           if-no-files-found: error
 
       - name: sccache stats

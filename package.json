@@ -1,5 +1,5 @@
 {
-  "name": "alef-file-manager",
+  "name": "alef-runtime",
   "version": "0.1.0",
   "private": true,
   "license": "MIT OR Apache-2.0",
@@ -8,48 +8,30 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "dev": "node scripts/app/dev.mjs",
     "gen:types": "node scripts/types/gen-types.mjs",
     "check:types": "node scripts/types/gen-types.mjs --check",
     "test:types": "node --test scripts/types/gen-types.test.mjs",
     "test:ci": "node --test scripts/ci/*.test.mjs scripts/ci/e2e/*.test.mjs",
     "test:release": "node --test scripts/release/tests/*.test.mjs",
     "test:assets": "node --test backend/crates/alef-runtime/src/bridge/assets/origin/*.test.mjs",
-    "test:api": "node --experimental-strip-types --test packages/api/test/*.test.mjs packages/api/test/*/*.test.mjs packages/api/test/*/*/*.test.mjs frontend/test/*.test.mjs",
+    "test:api": "node --experimental-strip-types --test packages/api/test/*.test.mjs packages/api/test/*/*.test.mjs packages/api/test/*/*/*.test.mjs tests/e2e/*.test.mjs",
     "test:mcp": "node --experimental-strip-types --test packages/mcp/test/*.test.mjs",
     "test:tools": "node --experimental-strip-types --test packages/tools/test/*.test.mjs",
     "test:create": "node --experimental-strip-types --test packages/create-alef-runtime/test/*.test.mjs",
     "test:runtime": "node --experimental-strip-types --test packages/runtime/test/*.test.mjs",
     "test:e2e": "node tests/e2e/run.mjs",
-    "dev:web": "rsbuild dev",
     "typecheck": "tsc --noEmit",
-    "build:frontend": "npm run typecheck && rsbuild build",
-    "build:rust": "node scripts/cargo.mjs build --locked --workspace",
-    "build": "npm run build:frontend && npm run build:rust",
-    "start": "node scripts/app/start.mjs",
-    "pack:app": "node scripts/app/pack.mjs",
+    "build": "node scripts/cargo.mjs build --locked --workspace",
     "test:rust": "node scripts/cargo.mjs test --locked --workspace --no-fail-fast",
-    "lint": "oxlint --config .oxlintrc.json frontend/src frontend/test packages scripts tests rsbuild.config.ts --max-warnings 0",
+    "lint": "oxlint --config .oxlintrc.json packages scripts tests --max-warnings 0",
     "lint:structure": "node scripts/quality/check-structure.mjs",
     "test:structure": "node --test scripts/quality/check-structure.test.mjs",
     "mutate": "node scripts/quality/mutate.mjs",
     "test:mutate": "node --test scripts/quality/mutate.test.mjs",
     "check": "npm run lint && npm run lint:structure && npm run typecheck &&node scripts/cargo.mjs clippy --locked --workspace --all-targets -- -D warnings"
   },
-  "dependencies": {
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "i18next": "26.4.2",
-    "react-i18next": "17.0.15"
-  },
   "devDependencies": {
-    "@rsbuild/core": "2.2.9",
-    "@rsbuild/plugin-react": "2.1.0",
-    "@rsbuild/plugin-tailwindcss": "2.0.3",
-    "tailwindcss": "4.3.3",
     "typescript": "7.0.2",
-    "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0",
     "@types/node": "24.13.6",
     "oxlint": "1.85.0"
   }
