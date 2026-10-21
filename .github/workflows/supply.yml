@@ -1,6 +1,7 @@
 # Supply chain: the copies of crates in backend/patches against the published ones, the audit of the
-# dependencies (advisories, licenses, sources), and the lower bound of the compiler. These jobs do
-# not build Servo, so they are quick. Actions are pinned by SHA (the tag is in the comment).
+# dependencies (advisories, bans, sources), the licenses of the Rust and npm dependencies (only when
+# the dependencies changed), and the lower bound of the compiler. These jobs do not build Servo, so
+# they are quick. Actions are pinned by SHA (the tag is in the comment).
 name: Supply
 
 # Docs-only pushes skip Supply: it checks code, not documentation.
@@ -18,6 +19,10 @@ on:
 concurrency:
   group: supply-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # The version the configuration was written and checked with (backend/deny.toml).
+  CARGO_DENY_VERSION: 0.19.9
 
 permissions:
   contents: read
@@ -44,12 +49,69 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # The version the configuration was written and checked with (backend/deny.toml).
       - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
-          tool: cargo-deny@0.19.9
-      - name: Advisories, licenses, bans, sources
-        run: cargo deny --manifest-path backend/Cargo.toml check
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
+      # New advisories appear without any change of ours, so this runs on every push. The licenses do
+      # not: they have their own job.
+      - name: Advisories, bans, sources
+        run: cargo deny --manifest-path backend/Cargo.toml check advisories bans sources
+
+  # The licenses of the dependencies change only when the dependencies do, so this job checks a set
+  # it has not passed yet. The key is the hash of everything the verdict depends on (the lock files,
+  # the manifests of the dependency graph, the policy in backend/deny.toml, the npm checker and its
+  # tests, the version of cargo-deny). The cache entry is written after a passing check and only then,
+  # so a failed check runs again on the next push; an entry nobody reads for 7 days is evicted, and the
+  # check simply runs once more. The Rust crates and the npm packages are judged by one list: the
+  # allow list of backend/deny.toml.
+  licenses:
+    name: licenses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Key of this set of dependencies
+        id: key
+        env:
+          DEPENDENCIES: ${{ hashFiles('backend/Cargo.lock', 'backend/Cargo.toml', 'backend/crates/*/Cargo.toml', 'backend/patches/*/Cargo.toml', 'backend/deny.toml', 'package-lock.json', 'scripts/supply/check-js-licenses.mjs', 'scripts/supply/check-js-licenses.test.mjs') }}
+        run: echo "value=licenses-cargo-deny-$CARGO_DENY_VERSION-$DEPENDENCIES" >> "$GITHUB_OUTPUT"
+      - name: Was this set of dependencies already checked
+        id: seen
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .licenses-checked
+          key: ${{ steps.key.outputs.value }}
+          lookup-only: true
+      - name: Dependencies unchanged since the last passing check
+        if: steps.seen.outputs.cache-hit == 'true'
+        run: echo "Skipped, this set of dependencies passed already (${{ steps.key.outputs.value }})."
+      - if: steps.seen.outputs.cache-hit != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - if: steps.seen.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }}
+      - name: Licenses of the crates (allow list of backend/deny.toml)
+        if: steps.seen.outputs.cache-hit != 'true'
+        run: cargo deny --manifest-path backend/Cargo.toml --locked check licenses
+      - name: Licenses of the npm packages (the same allow list)
+        if: steps.seen.outputs.cache-hit != 'true'
+        run: |
+          node --test scripts/supply/check-js-licenses.test.mjs
+          node scripts/supply/check-js-licenses.mjs
+      - name: Remember the checked set
+        if: steps.seen.outputs.cache-hit != 'true'
+        run: |
+          mkdir .licenses-checked
+          echo "${{ steps.key.outputs.value }}" > .licenses-checked/passed
+      - name: Save the checked set
+        if: steps.seen.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .licenses-checked
+          key: ${{ steps.key.outputs.value }}
 
   # The declared lower bound of the compiler is only a claim until something builds with it. The
   # crates that do not need Servo are checked on their own bound (alef-core 1.89 because of
