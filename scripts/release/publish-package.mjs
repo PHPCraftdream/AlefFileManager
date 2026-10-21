@@ -8,6 +8,13 @@ import { statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
+
+// The license texts exist once, in the root of the source tree, which is their authority (the platform
+// packages are generated the same way); a package that lists them in `files` and has no copy of its own
+// is staged with the root ones.
+const LICENSE_FILES = ['LICENSE-MIT', 'LICENSE-APACHE'];
+
 // A manifest without `files` packs everything npm's defaults allow; mirror that by staging the
 // whole directory (node_modules and .git excluded), so create-alef-runtime ships bin, src and templates.
 export function filesToCopy(manifest) {
@@ -15,11 +22,12 @@ export function filesToCopy(manifest) {
 }
 
 // Copies the package contents into a fresh staging directory, mirroring npm's `files` semantics.
-export function copyInto(dir, staging, manifest) {
+export function copyInto(dir, staging, manifest, root = repoRoot) {
   const files = filesToCopy(manifest);
   if (files) {
     for (const entry of files) {
-      const source = path.join(dir, entry);
+      const own = path.join(dir, entry);
+      const source = !existsSync(own) && LICENSE_FILES.includes(entry) ? path.join(root, entry) : own;
       const target = path.join(staging, entry);
       // dist/ of packages/api is a build artifact: staging a manifest without its implementation
       // would publish a package that resolves to nothing, so a missing entry is an error, not a skip.
@@ -69,7 +77,6 @@ function run(args) {
     return;
   }
   const [dir, version] = positional;
-  const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
   const manifest = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
   const staging = path.join(repoRoot, 'backend', 'target', 'release-npm', manifest.name.replaceAll('/', '-'));
   rmSync(staging, { recursive: true, force: true });

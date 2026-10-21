@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { copyInto, stagedManifest } from '../publish-package.mjs';
 
 const manifest = name => ({ name, files: ['dist', 'README.md'] });
@@ -54,4 +55,73 @@ test('a_package_staged_whole_keeps_its_scripts_because_its_sources_are_staged_to
 test('the_runtime_placeholder_of_optional_dependencies_resolves_to_the_release_version', () => {
   const staged = stagedManifest({ name: 'm', optionalDependencies: { a: 'workspace-version-placeholder', b: '9.9.9' } }, '2.0.0');
   assert.deepEqual(staged.optionalDependencies, { a: '2.0.0', b: '9.9.9' });
+});
+
+// The directories of one staging: the package, the root of the sources (the license texts) and the staging.
+function withStagingDirs(check) {
+  const base = mkdtempSync(path.join(tmpdir(), 'alef-publish-'));
+  try {
+    const dirs = ['package', 'sources', 'staging'].map(name => path.join(base, name));
+    for (const dir of dirs) mkdirSync(dir);
+    check(...dirs);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+test('copyInto_stages_the_license_texts_from_the_root_when_the_package_has_no_copy_of_its_own', () => {
+  withStagingDirs((dir, sources, staging) => {
+    writeFileSync(path.join(dir, 'README.md'), '# x
+');
+    writeFileSync(path.join(sources, 'LICENSE-MIT'), 'root mit
+');
+    writeFileSync(path.join(sources, 'LICENSE-APACHE'), 'root apache
+');
+    copyInto(dir, staging, { name: 'x', files: ['README.md', 'LICENSE-MIT', 'LICENSE-APACHE'] }, sources);
+    assert.equal(readFileSync(path.join(staging, 'LICENSE-MIT'), 'utf8'), 'root mit
+');
+    assert.equal(readFileSync(path.join(staging, 'LICENSE-APACHE'), 'utf8'), 'root apache
+');
+  });
+});
+
+test('copyInto_keeps_the_license_text_a_package_carries_over_the_root_one', () => {
+  withStagingDirs((dir, sources, staging) => {
+    writeFileSync(path.join(dir, 'LICENSE-MIT'), 'own mit
+');
+    writeFileSync(path.join(sources, 'LICENSE-MIT'), 'root mit
+');
+    copyInto(dir, staging, { name: 'x', files: ['LICENSE-MIT'] }, sources);
+    assert.equal(readFileSync(path.join(staging, 'LICENSE-MIT'), 'utf8'), 'own mit
+');
+  });
+});
+
+test('only_the_license_texts_fall_back_to_the_root_any_other_missing_entry_stays_an_error', () => {
+  withStagingDirs((dir, sources, staging) => {
+    writeFileSync(path.join(sources, 'README.md'), '# not the package
+');
+    assert.throws(() => copyInto(dir, staging, { name: 'x', files: ['README.md'] }, sources), /"files" entry "README.md" is missing/);
+  });
+});
+
+test('a_license_text_missing_in_the_root_too_is_an_error', () => {
+  withStagingDirs((dir, sources, staging) => {
+    assert.throws(() => copyInto(dir, staging, { name: 'x', files: ['LICENSE-MIT'] }, sources), /"files" entry "LICENSE-MIT" is missing/);
+  });
+});
+
+test('the_runtime_meta_package_stages_from_the_repository_as_it_is', () => {
+  // The release dry-run failed here: the package lists the license texts, the repository keeps them in its root.
+  const dir = fileURLToPath(new URL('../../../packages/runtime/', import.meta.url));
+  const runtime = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  const staging = mkdtempSync(path.join(tmpdir(), 'alef-publish-'));
+  try {
+    copyInto(dir, staging, runtime);
+    for (const name of ['LICENSE-MIT', 'LICENSE-APACHE', 'README.md', 'bin', 'src']) {
+      assert.ok(existsSync(path.join(staging, name)), `${name} is staged`);
+    }
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
 });
