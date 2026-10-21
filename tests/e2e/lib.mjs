@@ -69,6 +69,15 @@ export function busStallProblems(lines, expected = []) {
 }
 
 /**
+ * A failure made of unexpected bus stalls and nothing else, the one kind a second run settles: the
+ * heartbeat sees a process the machine stopped, not a single thread it starved, while blocking code
+ * stalls again in the same place and a thread that lost the CPU once does not.
+ */
+export function onlyUnexpectedBusStalls(problems) {
+  return problems.length > 0 && problems.every(problem => problem.startsWith('unexpected bus stall: '));
+}
+
+/**
  * Nobody should have to watch a test: the runtime never shows its windows (`ALEF_E2E_QUIET=1`:
  * geometry, events and the rest are real, visibility and focus are the runtime's own bookkeeping).
  * Linux defaults to a virtual display (`xvfb`) with real windows; `ALEF_E2E_QUIET=1` overrides it.

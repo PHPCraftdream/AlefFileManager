@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { busStallProblems } from '../../tests/e2e/lib.mjs';
+import { busStallProblems, onlyUnexpectedBusStalls } from '../../tests/e2e/lib.mjs';
 import { affectedJs, applyOverrides, computePlan, e2eFor, isDocsOnly, matchGlob, matchesAny, resolveBase, dispatchOnlyPlan, dispatchOverridesGiven, matrixFor } from './plan.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -154,6 +154,17 @@ test('bus_stall_diagnostics_accept_only_expected_well_formed_entries_in_phase', 
   assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL_STARVED executor 9 9', 'END'], [allowance]), []);
   assert.notDeepEqual(busStallProblems(['START', 'ALEF_BUS_STALL_STARVED other 15 15', 'END'], [allowance]), []);
 });
+
+test('only_a_failure_made_of_unexpected_bus_stalls_is_settled_by_a_second_run', () => {
+  assert.ok(onlyUnexpectedBusStalls(['unexpected bus stall: call/sqlite.open 63ms']));
+  assert.ok(onlyUnexpectedBusStalls(['unexpected bus stall: call/a 60ms', 'unexpected bus stall: call/b 70ms']));
+  assert.ok(!onlyUnexpectedBusStalls([]));
+  assert.ok(!onlyUnexpectedBusStalls(['unexpected bus stall: call/a 60ms', 'the page did not report']));
+  assert.ok(!onlyUnexpectedBusStalls(['expected 1 bus stall(s) of call/e2e.blockBus in 150-400ms; found 0']));
+  assert.ok(!onlyUnexpectedBusStalls(['malformed bus stall diagnostic: ALEF_BUS_STALL x']));
+  assert.ok(!onlyUnexpectedBusStalls(['runtime log pipe did not close within 5000ms: still running']));
+});
+
 test('a_docs_only_change_runs_only_structure_and_fmt_on_linux_with_no_crates_js_or_e2e', () => {
   const p = plan(['docs/stages/m0-results/ci.md']);
   assert.equal(p.full, false);

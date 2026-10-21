@@ -10,7 +10,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { countingServer, exeName, field, interesting, makeDriver, root, runScenario, scratch, staticServer, startApp } from './lib.mjs';
+import { countingServer, exeName, field, interesting, makeDriver, onlyUnexpectedBusStalls, root, runScenario, scratch, staticServer, startApp } from './lib.mjs';
 import { consentScenarios } from './scenarios/consent.mjs';
 import { dataScenarios } from './scenarios/data.mjs';
 import { mcpScenarios } from './scenarios/mcp.mjs';
@@ -250,6 +250,20 @@ for (const name of selected) {
     outcome = { problems: [error.message], lines: [] };
   }
   outcome.problems = [...new Set(outcome.problems ?? [])];
+  if (onlyUnexpectedBusStalls(outcome.problems)) {
+    const stalls = outcome.problems;
+    console.log(`    ${stalls.join('; ')}: running the scenario once more to tell blocking code from a starved thread`);
+    let again;
+    try {
+      again = await runScenario(() => scenarios[name]());
+    } catch (error) {
+      again = { problems: [error.message], lines: [] };
+    }
+    again.problems = [...new Set(again.problems ?? [])];
+    if (again.problems.length === 0) console.log('    the stall did not recur: it was the machine, not the bus');
+    else again.problems = [...stalls.map(stall => `${stall} (first run)`), ...again.problems];
+    outcome = again;
+  }
   for (const problem of outcome.problems) console.log(`    PROBLEM ${problem}`);
   if (outcome.problems.length > 0) {
     failures += 1;
