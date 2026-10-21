@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, createPublicKey } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { readZip, writeZip, verify, check, createKey, pack, validateName } from '../src/index.mjs';
+import { platformPackage, registry, tarball } from './fixtures.mjs';
 
 const cliPath = fileURLToPath(new URL('../bin/alef-runtime.mjs', import.meta.url));
 const bounded = { timeout: 300000 };
@@ -588,9 +590,9 @@ test('the bundle command validates usage and formats and produces a dir bundle',
   failure(await cli(['bundle', 'p.alef', '--platform', 'win32-x64', '--bogus']), /Unknown option: --bogus/);
   failure(await cli(['bundle', 'p.alef', '--format', 'deb', '--platform', 'win32-x64']),
     /Bundle: format deb is not available for platform win32-x64/); // format/platform validation precedes file reads
-  // Repeated --format is accepted; the failure comes later from the missing runtime.
+  // Repeated --format is accepted; the failure comes later from the missing package (a runtime nobody named is fetched only after the package is verified).
   failure(await cli(['bundle', 'p.alef', '--format', 'tar.gz', '--format', 'dir', '--platform', 'linux-x64']),
-    /Bundle: runtime binary path is required/);
+    /ENOENT/);
   // Successful dir-format run: key, signed package, fake runtime binary.
   success(await cli(['keys']));
   const app = path.join(root, 'bapp'); await mkdir(path.join(app, 'dist'), { recursive: true });
@@ -607,4 +609,86 @@ test('the bundle command validates usage and formats and produces a dir bundle',
   assert.equal(stdout, `${stemDir}\n`);
   assert.deepEqual(await readFile(path.join(stemDir, 'app', 'app.alef')), await readFile(pkg));
   assert.deepEqual(await readFile(path.join(stemDir, 'bin', 'alef')), Buffer.from('fake-runtime-bytes'));
+  // Without --runtime the runtime of the platform comes from the registry, in the version that was asked for.
+  const stub = await registry({ 'linux-x64': { '1.5.0': { tarball: platformPackage('linux-x64', '1.5.0', Buffer.from('fetched-runtime-bytes')) } } });
+  try {
+    const fetchedOut = path.join(root, 'fetched'); await mkdir(fetchedOut);
+    const fetchedArgs = ['bundle', pkg, '--platform', 'linux-x64', '--format', 'dir', '--out', fetchedOut, '--cache', path.join(root, 'cache'), '--registry', stub.url];
+    // A package that asks for another runtime is refused before anything is downloaded.
+    failure(await cli([...fetchedArgs, '--runtime-version', '2.0.0']), /runtime 2\.0\.0 does not satisfy the package requirement \^1\.2\.3/);
+    assert.deepEqual(stub.requests, []);
+    const fetchedDir = path.join(fetchedOut, 'Sample App-1.2.3-linux-x64');
+    assert.equal(success(await cli([...fetchedArgs, '--runtime-version', '1.5.0'])), `${fetchedDir}\n`);
+    assert.deepEqual(await readFile(path.join(fetchedDir, 'bin', 'alef')), Buffer.from('fetched-runtime-bytes'));
+    assert.equal(await readFile(path.join(fetchedDir, 'LICENSE-MIT'), 'utf8'), 'MIT text\n');
+    assert.equal(await readFile(path.join(fetchedDir, 'LICENSE-APACHE'), 'utf8'), 'Apache text\n');
+  } finally { await stub.close(); }
+}));
+
+test('fetch-runtime gets the binary of another platform from the registry once and then from the cache', bounded, () => scratch(async ({ cli, root }) => {
+  const toolsVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
+  const binary = Buffer.from('linux-runtime-bytes');
+  const stub = await registry({ 'linux-x64': { [toolsVersion]: { tarball: platformPackage('linux-x64', toolsVersion, binary) } } });
+  try {
+    const cache = path.join(root, 'cache');
+    const args = ['fetch-runtime', '--platform', 'linux-x64', '--runtime-version', toolsVersion, '--cache', cache, '--registry', stub.url];
+    const file = path.join(cache, toolsVersion, 'linux-x64', 'alef');
+    assert.equal(success(await cli(args)), `${file}\n`);
+    assert.deepEqual(await readFile(file), binary);
+    assert.equal(await readFile(path.join(cache, toolsVersion, 'linux-x64', 'LICENSE-MIT'), 'utf8'), 'MIT text\n');
+    assert.equal(await readFile(path.join(cache, toolsVersion, 'linux-x64', 'LICENSE-APACHE'), 'utf8'), 'Apache text\n');
+    if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o755);
+    assert.equal(stub.requests.length, 2); // the registry entry and the tarball
+    assert.deepEqual(await readdir(path.join(cache, toolsVersion)), ['linux-x64']); // no staging leftovers
+    // A second request is answered from the cache without the network.
+    assert.equal(success(await cli(args)), `${file}\n`);
+    assert.equal(stub.requests.length, 2);
+    // Without --runtime-version the version of these tools is fetched.
+    const other = path.join(root, 'other');
+    const fetched = success(await cli(['fetch-runtime', '--platform', 'linux-x64', '--cache', other, '--registry', stub.url]));
+    assert.equal(fetched, `${path.join(other, toolsVersion, 'linux-x64', 'alef')}\n`);
+    assert.deepEqual(await readFile(path.join(other, toolsVersion, 'linux-x64', 'alef')), binary);
+  } finally { await stub.close(); }
+}));
+
+test('fetch-runtime refuses a tarball or a registry it cannot trust and leaves nothing in the cache', bounded, () => scratch(async ({ cli, root }) => {
+  const good = platformPackage('linux-x64', '0.1.0', Buffer.from('bytes'));
+  const flipped = gunzipSync(good); flipped[3] ^= 1; // a byte of the first header name: its checksum no longer fits
+  const withoutBinary = tarball([
+    { name: 'package/package.json', data: Buffer.from(JSON.stringify({ name: '@alef-runtime/runtime-linux-x64', version: '0.5.0' })) },
+    { name: 'package/LICENSE-MIT', data: Buffer.from('MIT text\n') },
+    { name: 'package/LICENSE-APACHE', data: Buffer.from('Apache text\n') },
+  ]);
+  const stub = await registry({
+    'linux-x64': {
+      '0.1.0': { tarball: good, integrity: `sha512-${Buffer.alloc(64).toString('base64')}` },
+      '0.2.0': { tarball: platformPackage('linux-x64', '0.2.0', Buffer.from('bytes')), integrity: 'sha1-AAAA' },
+      '0.3.0': { tarball: platformPackage('linux-x64', '0.3.0', Buffer.from('bytes'), { name: '@alef-runtime/runtime-win32-x64' }) },
+      '0.4.0': { tarball: platformPackage('linux-x64', '0.4.0', Buffer.from('bytes'), { version: '0.4.1' }) },
+      '0.5.0': { tarball: withoutBinary },
+      '0.6.0': { tarball: gzipSync(flipped) },
+    },
+  });
+  try {
+    const cache = path.join(root, 'cache');
+    const attempt = (...extra) => cli(['fetch-runtime', '--platform', 'linux-x64', '--cache', cache, '--registry', stub.url, ...extra]);
+    failure(await attempt('--runtime-version', '0.1.0'), /does not match the integrity the registry states/);
+    failure(await attempt('--runtime-version', '0.2.0'), /states no sha512 integrity/);
+    failure(await attempt('--runtime-version', '0.3.0'), /the tarball is @alef-runtime\/runtime-win32-x64@0\.3\.0, not @alef-runtime\/runtime-linux-x64@0\.3\.0/);
+    failure(await attempt('--runtime-version', '0.4.0'), /the tarball is @alef-runtime\/runtime-linux-x64@0\.4\.1, not @alef-runtime\/runtime-linux-x64@0\.4\.0/);
+    failure(await attempt('--runtime-version', '0.5.0'), /lacks bin\/alef/);
+    failure(await attempt('--runtime-version', '0.6.0'), /damaged header \(checksum\)/);
+    failure(await attempt('--runtime-version', '9.9.9'), /@alef-runtime\/runtime-linux-x64@9\.9\.9 is not published on /);
+    failure(await cli(['fetch-runtime', '--platform', 'darwin-x64', '--runtime-version', '0.1.0', '--cache', cache, '--registry', stub.url]), /@alef-runtime\/runtime-darwin-x64@0\.1\.0 is not published on /);
+    assert.deepEqual(await readdir(cache).catch(() => []), []); // refused before the cache was touched
+  } finally { await stub.close(); }
+  // Refused before any request is made.
+  const never = (...args) => cli(['fetch-runtime', '--cache', path.join(root, 'cache'), ...args]);
+  failure(await never('--platform', 'linux-x64', '--registry', 'http://example.com'), /registry http:\/\/example\.com must use https/);
+  failure(await never('--platform', 'linux-x64', '--registry', 'https://user:secret@example.com'), /registry URL must not carry credentials/);
+  failure(await never('--platform', 'linux-x64', '--registry', 'not a url'), /is not a URL/);
+  failure(await never('--platform', 'freebsd-x64'), /unknown platform freebsd-x64/);
+  failure(await never('--platform', 'linux-x64', '--runtime-version', '1.0'), /invalid semver '1\.0'/);
+  failure(await never('--platform', 'linux-x64', '--runtime-version', '1.0.0+build'), /must not carry build metadata/);
+  failure(await never('extra'), /Usage: fetch-runtime/);
 }));

@@ -2,6 +2,14 @@
 
 ## 0.1.0 — M7b.2 (private)
 
+- Runtime of any platform: `alef-runtime fetch-runtime` / `fetchRuntime()` get the
+  binary from the npm package `@alef-runtime/runtime-<platform>` (registry read
+  directly, sha512 integrity required, https or localhost only) into a cache and
+  print its path; `bundle` without `--runtime` fetches the runtime of `--platform`
+  after the package was verified; `--cache` and `--registry` choose the cache and
+  the registry. `bundle` also copies `LICENSE-*` files next to the runtime into the
+  layout. The bundle sources moved to `src/workflow/bundle/` (entry limit).
+
 - Workflow commands: `alef-runtime build [dir] [--out <dir>]` runs the configured
   build command and assembles a packageable app directory (manifest, optional
   icon, assets); `alef-runtime dev [dir] [--ready-timeout <ms>] [-- <args>]` starts

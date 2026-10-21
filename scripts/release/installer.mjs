@@ -10,7 +10,7 @@ import path from 'node:path';
 import {
   writeAr, writeGzip, writeTar,
   escapeXml, escapeDesktopValue, quoteDesktopExec,
-} from '../../packages/tools/src/workflow/bundle-formats.mjs';
+} from '../../packages/tools/src/workflow/bundle/bundle-formats.mjs';
 
 export const INSTALLER_PLATFORMS = Object.freeze(['win32-x64', 'linux-x64', 'darwin-arm64', 'darwin-x64']);
 
