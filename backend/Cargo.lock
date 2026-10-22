@@ -139,6 +139,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "alef-broker"
+version = "0.1.0"
+dependencies = [
+ "alef-core",
+ "getrandom 0.4.3",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "alef-core"
 version = "0.1.0"
 dependencies = [

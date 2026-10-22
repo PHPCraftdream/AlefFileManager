@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/alef-core", "crates/alef-modules", "crates/alef-runtime", "crates/alef", "crates/alef-package"]
+members = ["crates/alef-core", "crates/alef-modules", "crates/alef-runtime", "crates/alef", "crates/alef-package", "crates/alef-broker"]
 exclude = ["patches/winit"]
 resolver = "2"
 
