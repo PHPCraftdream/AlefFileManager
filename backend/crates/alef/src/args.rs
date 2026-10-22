@@ -21,7 +21,7 @@ alef runtime install <VERSION> <SOURCE_BINARY>\n\
 alef runtime prune [--keep <VERSION>]... [--dry-run]\n\
 alef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\n\
 alef uninstall <ID> [--purge-data]\n\
-alef apps [--json]\n\
+alef apps [--json|--ui]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
 a file is an Alef package; when the argument is neither an existing file nor a directory,\n\
 it is the id of an application installed by `alef install` (`alef apps` lists them);\n\
@@ -160,6 +160,7 @@ pub enum Command {
     Apps {
         json: bool,
     },
+    AppsUi,
     /// `alef consent <REQUEST> <ANSWER>`, started by the launcher itself: the permission window.
     Consent {
         request: PathBuf,
@@ -269,15 +270,16 @@ fn parse_install(mut args: impl Iterator<Item = OsString>) -> Result<Command, St
             Command::Uninstall { id, purge_data }
         }
         "apps" => {
-            let json = match args.next() {
-                None => false,
-                Some(s) if s == "--json" => true,
+            let mode = match args.next() {
+                None => Command::Apps { json: false },
+                Some(s) if s == "--json" => Command::Apps { json: true },
+                Some(s) if s == "--ui" => Command::AppsUi,
                 Some(s) => return Err(format!("apps: unknown argument {}", s.to_string_lossy())),
             };
             if args.next().is_some() {
                 return Err("apps: unexpected argument".into());
             }
-            Command::Apps { json }
+            return Ok(mode);
         }
         _ => return Err(format!("unknown install command {verb:?}")),
     };

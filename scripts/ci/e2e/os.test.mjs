@@ -13,13 +13,21 @@ import { E2E_GROUPS, expandGroup } from './groups.mjs';
 const script = fileURLToPath(new URL('./os.mjs', import.meta.url));
 const ciYml = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const runMjs = readFileSync(new URL('../../../tests/e2e/run.mjs', import.meta.url), 'utf8');
+const affected = readFileSync(new URL('../affected.json', import.meta.url), 'utf8');
+
+test('the_apps_ui_scenario_is_selected_for_backend_assets_and_scenario_changes', () => {
+  const rules = JSON.parse(affected).e2e_rules;
+  assert.ok(runMjs.includes('...appsUiScenarios({ exe, verbose })'));
+  for (const changed of ['backend/crates/alef/apps/window.rs', 'backend/crates/alef/assets/apps/apps.js', 'tests/e2e/scenarios/consent.mjs']) {
+    const key = changed.startsWith('backend/crates/alef/assets/apps/') ? 'backend/crates/alef/assets/apps/**' : changed;
+    assert.ok(rules.some(rule => rule.scenarios.includes('apps-ui') && rule.glob === key), changed);
+  }
+});
 
 test('every_group_scenario_is_known_to_the_runner', () => {
   const known = runMjs.match(/--only ([a-z0-9,-]+)\]/)?.[1].split(',') ?? [];
   for (const group of E2E_GROUPS) {
-    for (const scenario of group.split(',')) {
-      assert.ok(known.includes(scenario), `unknown scenario: ${scenario}`);
-    }
+    for (const scenario of group.split(',')) assert.ok(known.includes(scenario), `unknown scenario: ${scenario}`);
   }
 });
 

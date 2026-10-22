@@ -54,7 +54,7 @@ alef run <ПУТЬ|ID> [параметры] [-- <аргументы прилож
 alef --app <КАТАЛОГ> [параметры] [-- <аргументы приложения>]
 alef install <ПАКЕТ> [--trust-key <КЛЮЧ>] [--allow-unsigned]
 alef uninstall <ID> [--purge-data]
-alef apps [--json]
+alef apps [--json|--ui]
 alef permissions list|set|reset <PATH|ID> … [--confirm-red]
 alef ai limits|log …
 alef trust <ЗАПРОС> <ОТВЕТ>

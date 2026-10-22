@@ -36,6 +36,8 @@ use alef_modules::{
 use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
 use url::Url;
 
+#[path = "../apps/window.rs"]
+mod apps_window;
 #[path = "consent/window.rs"]
 mod consent_window;
 
@@ -312,6 +314,13 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
                 "{}",
                 alef_launch::install::apps(json).map_err(install_failure)?
             );
+            return Ok(0);
+        }
+        Command::AppsUi => {
+            install_tls()?;
+            apps_window::run(DEFAULT_ICON.to_vec())
+                .await
+                .map_err(Failure::Runtime)?;
             return Ok(0);
         }
         Command::Run(launch) => launch,

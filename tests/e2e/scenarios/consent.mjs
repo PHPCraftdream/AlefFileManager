@@ -2,7 +2,7 @@
 // Scenarios of consent and substitution (docs/stages/m2b-consent.md, "Приёмка"): what the application
 // finds when the user decided before the start, and what the launcher does with the decisions.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
@@ -314,4 +314,124 @@ export function consentScenarios({ drive, exe, verbose }) {
     },
   };
 
+}
+
+// The manager window (`alef apps --ui`): the list, narrowing at once, the red confirmation and the
+// reset, checked against the same store the command line reads.
+const managerManifest = (id, right) => `id: ${id}
+name: ${id}
+version:: 1.0.0
+windows: [
+    {
+        label: main
+        url: /index.html
+        width: 800
+        height: 600
+    }
+]
+external: {
+    connect: []
+    load: {
+        scripts: []
+        styles: []
+        images: []
+        fonts: []
+        media: []
+        frames: []
+    }
+}
+permissions: {
+    fs: {
+        read: []
+        write: []
+    }
+    cli: {
+        exec: [ sidecar:tool ]
+    }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
+    clipboard: {
+        read: true
+    }
+    shortcut: {
+        global: false
+    }
+    app: {
+        env: []
+    }
+    ${right.startsWith('secrets:') ? '' : 'secrets: false\n    '}${right}
+}
+`;
+
+export function appsUiScenarios({ exe, verbose }) {
+  return {
+    async 'apps-ui'() {
+      const problems = [];
+      const directory = mkdtempSync(join(os.tmpdir(), 'alef-apps-ui-'));
+      const home = join(directory, 'home');
+      const folders = ['alpha', 'beta'].map(name => join(directory, name));
+      const [appA, appB] = folders;
+      const red = 'cli.exec:sidecar:tool';
+      mkdirSync(home, { recursive: true });
+      folders.forEach(folder => mkdirSync(folder, { recursive: true }));
+      writeFileSync(join(appA, 'alef.ktav'), managerManifest('org.example.apps.alpha', 'secrets: true'));
+      writeFileSync(join(appB, 'alef.ktav'), managerManifest('org.example.apps.beta', 'tray: true'));
+      const cli = args => spawnSync(exe, args, { encoding: 'utf8', timeout: 30000, env: { ...process.env, ALEF_HOME: home, ALEF_E2E: '0' } });
+      let running;
+      try {
+        // The store is the CLI's own: the directory form loads the manifest of the folder, the
+        // seeded decisions are what the window and `permissions list` both read.
+        for (const [app, right, decision] of [[appA, 'clipboard.read', 'allow'], [appA, red, 'deny'], [appB, 'clipboard.read', 'substitute'], [appB, 'tray', 'deny']]) {
+          const seeded = cli(['permissions', 'set', app, right, decision]);
+          if (seeded.status !== 0) problems.push(`seed ${right}: ${seeded.stderr}`);
+        }
+        const steps = [
+          { snapshot: 'initial' }, { search: 'no-such-app' }, { snapshot: 'search-empty' }, { search: '' },
+          { select: 'org.example.apps.alpha' }, { snapshot: 'alpha' },
+          { negativeRed: { permission: 'cli.exec', scope: 'sidecar:tool' } },
+          { choose: 'clipboard.read', decision: 'deny' }, { save: 'clipboard.read' }, { snapshot: 'narrowed' },
+          { choose: red, decision: 'allow' }, { save: red }, { snapshot: 'red-unconfirmed' },
+          { confirm: red }, { save: red }, { snapshot: 'red-allowed' },
+          { reset: true }, { snapshot: 'reset' }, { close: true },
+        ];
+        running = startApp({ exe, args: ['apps', '--ui'], env: { ALEF_HOME: home, ALEF_E2E: '1', ALEF_E2E_APPS_UI: JSON.stringify(steps) }, verbose });
+        await running.waitFor(line => line.includes('red-confirmation-required'), 120000, 'red negative-control report');
+        const exit = await running.waitForExit(120000);
+        if (exit?.code !== 0) problems.push(`the window ended with ${exit?.code ?? 'no exit'}`);
+        const reports = running.lines.filter(line => line.startsWith('ALEF_E2E '))
+          .map(line => { try { return JSON.parse(line.slice('ALEF_E2E '.length)); } catch { return null; } })
+          .filter(Boolean);
+        problems.push(...reports.filter(report => report.type === 'failure').map(report => `UI automation: ${report.message}`));
+        const snapshots = new Map(reports.filter(report => report.type === 'snapshot').map(report => [report.name, report]));
+        for (const name of ['initial', 'search-empty', 'alpha', 'narrowed', 'red-unconfirmed', 'red-allowed', 'reset']) {
+          if (!snapshots.has(name)) problems.push(`missing snapshot ${name}`);
+        }
+        if (snapshots.get('initial')?.list?.length !== 2) problems.push('initial list should include both applications');
+        if (snapshots.get('search-empty')?.list?.length !== 0) problems.push('search should return an empty result');
+        if (snapshots.get('alpha')?.rows?.length !== 3) problems.push('alpha should display three rights');
+        const seededRow = snapshots.get('alpha')?.rows?.find(item => item.right === red);
+        if (seededRow?.checked !== 'deny' || seededRow?.red !== true) problems.push('alpha should show the red right denied and flagged');
+        if (!reports.some(report => report.name === 'red-confirmation-required' && report.ok)) problems.push('unconfirmed red expansion was not rejected');
+        for (const [name, right, expected] of [['narrowed', 'clipboard.read', 'deny'], ['red-allowed', red, 'allow']]) {
+          const row = snapshots.get(name)?.rows?.find(item => item.right === right);
+          if (row?.checked !== expected) problems.push(`${name}: expected ${right}=${expected}, got ${row?.checked}`);
+        }
+        const unconfirmed = snapshots.get('red-unconfirmed')?.rows?.find(item => item.right === red);
+        if (!unconfirmed?.error?.includes('confirm-red')) problems.push(`the unconfirmed red save did not show the policy refusal: ${unconfirmed?.error}`);
+        if (snapshots.get('red-allowed')?.rows?.find(item => item.right === red)?.error !== '') problems.push('the confirmed red save left an error shown');
+        if (snapshots.get('reset')?.rows?.some(row => row.checked !== null)) problems.push('reset should leave rights undecided');
+        const after = cli(['permissions', 'list', appA]);
+        if (after.status !== 0 || !after.stdout.includes('undecided\tclipboard.read') || !after.stdout.includes('undecided\tsecrets') || !after.stdout.includes(`undecided\t${red}`)) {
+          problems.push(`CLI store mismatch after reset: ${after.stdout}${after.stderr}`);
+        }
+      } catch (error) { problems.push(error.message); }
+      finally { running?.stop(); rmSync(directory, { recursive: true, force: true }); }
+      return { problems, lines: [] };
+    },
+  };
 }
