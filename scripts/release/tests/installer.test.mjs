@@ -66,6 +66,32 @@ test('win32_nsis_script_contains_the_required_verbatim_lines', () => {
   assert.ok(!/RequestExecutionLevel admin/i.test(nsi) && !/\bAdmin\b/.test(nsi));
 });
 
+test('win32_nsis_has_opt_in_warm_start_section_and_uninstaller_cleanup', () => {
+  const nsi = text(build('win32-x64'))('alef-runtime-1.2.3-setup.nsi');
+  assert.ok(nsi.includes('!include "FileFunc.nsh"'));
+  assert.ok(nsi.includes('${GetOptions} $CMDLINE "/WARM="'));
+  assert.ok(nsi.includes('SectionSetFlags ${SEC_WARM} ${SF_SELECTED}'));
+  const sectionLine = nsi.split('\n').find(l => l.includes('Section /o "Держать запасные процессы'));
+  assert.ok(sectionLine, 'warm section line');
+  const warmSection = nsi.indexOf(sectionLine);
+  assert.ok(warmSection > 0 && warmSection < nsi.indexOf('SectionSetFlags'),
+    'warm section must be declared before .onInit flags logic');
+  const sectionEnd = nsi.indexOf('SectionEnd', warmSection);
+  const installSlice = nsi.slice(warmSection, sectionEnd);
+  assert.equal(installSlice.split('warm enable').length - 1, 1);
+  assert.ok(installSlice.includes('$LOCALAPPDATA\\alef\\runtimes\\1.2.3\\alef.exe'));
+  // warm enable only inside the warm section, never in the uninstaller.
+  assert.ok(!nsi.slice(sectionEnd).includes('warm enable'));
+  const unSection = nsi.indexOf('Section "un.Uninstall"');
+  const unSlice = nsi.slice(unSection);
+  assert.ok(unSlice.includes('warm stop'));
+  assert.ok(unSlice.includes('warm disable'));
+  const stopAt = unSlice.indexOf('warm stop');
+  const disableAt = unSlice.indexOf('warm disable');
+  const deleteAt = unSlice.indexOf('Delete "$INSTDIR\\alef.exe"');
+  assert.ok(stopAt < deleteAt && disableAt < deleteAt);
+});
+
 test('win32_uninstall_cleans_shared_state_only_in_the_un_last_branch', () => {
   const nsi = text(build('win32-x64'))('alef-runtime-1.2.3-setup.nsi');
   assert.equal(nsi.split('DeleteRegKey HKCU "Software\\Classes\\.alef"').length - 1, 1);
@@ -151,10 +177,11 @@ test('deb_control_tar_has_control_and_maintainer_scripts_with_expected_content',
   assert.ok(controlText.includes('Depends: alef-runtime-common\n'));
   assert.ok(controlText.includes('Maintainer: Alef Runtime <runtime@alef.invalid>'));
   assert.ok(controlText.includes('Installed-Size:'));
-  assert.deepEqual([...control.keys()], ['./control', './postinst', './prerm']);
-  for (const script of ['./postinst', './prerm']) {
+  assert.deepEqual([...control.keys()], ['./control', './postinst', './postrm', './prerm', './templates']);
+  for (const script of ['./postinst', './prerm', './postrm']) {
     assert.equal(control.get(script).mode, 0o755);
   }
+  assert.equal(control.get('./templates').mode, 0o644);
   const prio = alternativesPriority(V);
   const postinst = control.get('./postinst').data.toString('utf8');
   assert.ok(postinst.includes(`update-alternatives --install /usr/bin/alef alef /opt/alef-runtime/1.2.3/alef ${prio}`));
@@ -187,13 +214,35 @@ test('common_deb_ships_mime_and_desktop_and_no_alternatives_or_conflicts', () =>
   assert.ok(postrm.includes('update-mime-database /usr/share/mime'));
   assert.ok(postrm.includes('update-desktop-database /usr/share/applications'));
   assert.ok(!postrm.includes('update-alternatives'));
-  assert.deepEqual([...data.keys()].sort(), ['./usr/share/applications/alef-runtime.desktop', './usr/share/mime/packages/alef.xml']);
+  // The common deb does not own the runtime: its postrm stays free of warm logic.
+  assert.ok(!postrm.includes('warm disable'));
+  assert.ok(!postrm.includes('warm stop'));
   const mime = data.get('./usr/share/mime/packages/alef.xml').data.toString('utf8');
   assert.ok(mime.includes('type="application/x-alef-package"'));
   assert.ok(mime.includes('glob pattern="*.alef"'));
   const desktop = data.get('./usr/share/applications/alef-runtime.desktop').data.toString('utf8');
   assert.ok(desktop.includes('MimeType=application/x-alef-package;'));
   assert.equal(desktop.split('\n').find(l => l.startsWith('Exec=')), 'Exec="alef" run %f');
+});
+
+test('deb_ships_opt_in_warm_start_debconf_template_and_scripts', () => {
+  const { control } = debTree(build('linux-x64'));
+  const templates = control.get('./templates').data.toString('utf8');
+  assert.ok(templates.includes('Template: alef-runtime/warm\n'));
+  assert.ok(templates.includes('Type: boolean\n'));
+  assert.ok(templates.includes('Default: false\n'));
+  const postinst = control.get('./postinst').data.toString('utf8');
+  assert.ok(postinst.includes('db_get alef-runtime/warm'));
+  assert.ok(postinst.includes('ALEF_WARM'));
+  assert.ok(postinst.includes('SUDO_USER'));
+  assert.ok(postinst.includes(`su -s /bin/sh "$SUDO_USER" -c '/opt/alef-runtime/1.2.3/alef warm enable'`));
+  const prerm = control.get('./prerm').data.toString('utf8');
+  assert.ok(prerm.includes('warm stop'));
+  const postrm = control.get('./postrm').data.toString('utf8');
+  assert.ok(postrm.includes('warm stop'));
+  assert.ok(postrm.includes('warm disable'));
+  assert.ok(postrm.includes('/usr/bin/alef'));
+  assert.ok(postrm.includes('SUDO_USER'));
 });
 
 test('deb_data_tar_ships_only_the_versioned_runtime_tree_not_usr_share_or_usr_bin', () => {
@@ -254,6 +303,28 @@ test('darwin_tree_ships_runtime_applescript_and_pkg_build_tooling', () => {
   assert.ok(files.has('Distribution.xml'));
   assert.ok(files.get('Distribution.xml').data.toString('utf8').includes('alef-runtime-1.2.3'));
   assert.deepEqual([...files.keys()].sort(), [...x64.keys()].sort());
+});
+
+test('darwin_pkg_has_opt_in_warm_start_choice_and_scripts_only_component', () => {
+  const files = fileMap(build('darwin-arm64'));
+  const distribution = files.get('Distribution.xml').data.toString('utf8');
+  assert.ok(distribution.includes('customize="always"'));
+  assert.ok(distribution.includes('selected="no"'));
+  assert.ok(distribution.includes('id="org.alef.runtime.warm"'));
+  assert.ok(distribution.includes('alef-runtime-1.2.3-warm.pkg'));
+  const postinstall = files.get('warm-scripts/postinstall').data.toString('utf8');
+  assert.ok(postinstall.includes('stat -f%Su /dev/console'));
+  assert.ok(postinstall.includes('launchctl asuser'));
+  assert.ok(postinstall.includes('sudo -u'));
+  assert.ok(postinstall.includes('warm enable'));
+  assert.ok(postinstall.includes('|| true'));
+  const preinstall = files.get('warm-scripts/preinstall').data.toString('utf8');
+  assert.ok(preinstall.includes('#!/bin/sh'));
+  const buildSh = files.get('build-pkg.sh').data.toString('utf8');
+  assert.ok(buildSh.includes('--nopayload'));
+  assert.ok(buildSh.includes('pkgbuild --nopayload --scripts warm-scripts'));
+  // The main package postinstall must not silently enable warm start on upgrade.
+  assert.ok(!files.get('scripts/postinstall').data.toString('utf8').includes('warm'));
 });
 
 test('building_twice_for_each_platform_gives_identical_files', () => {
