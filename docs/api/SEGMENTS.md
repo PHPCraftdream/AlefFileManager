@@ -107,13 +107,16 @@ import type { FileOpenOptions } from '@alef-runtime/api/fs/types';
 
 | Кто | Механизм | Что видит |
 | --- | --- | --- |
-| tsc монорепы (`typecheck`) | `paths` корневого tsconfig (перечислены используемые сабпути) | исходники |
-| rsbuild фронтенда | `source.alias` (те же сабпути, сначала более длинные) | исходники |
-| e2e-тест страницы File Manager | loader-хук `frontend/test/native-api.test.mjs`, собранный из `alef-sources` | исходники |
+| tsc монорепы (`typecheck`: `packages/api` и `packages/mcp`) | `paths` корневого tsconfig (перечислены используемые сабпути) | исходники |
 | потребитель тарбола (devflow, npm) | условия `types`/`import`/`default` | `dist/` |
 
-Новый используемый сабпуть добавляется и в `paths`, и в `alias` — за этим (по значениям,
-а не только по ключам) следит тест `frontend/test/native-api.test.mjs`.
+Новый используемый сабпуть добавляется в `paths` корневого tsconfig.
+
+Раньше исходники потребляли ещё rsbuild фронтенда (`source.alias`) и e2e-тест страницы
+File Manager (loader-хук `frontend/test/native-api.test.mjs`, собранный из `alef-sources`); этот
+тест следил, что новый сабпуть есть и в `paths`, и в `alias` (по значениям, а не только по
+ключам). Приложение вынесено в отдельный репозиторий alef-file-manager; в этом репозитории
+`alias`, хука и теста больше нет, а за `paths` отдельный тест не следит.
 
 Тарбол: `files: ["dist"]` — исходники не публикуются, `prepack` собирает их перед
 упаковкой. Гард-тесты сегментации после сборки проверяют, что у каждого сабпути есть
