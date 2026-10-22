@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,context-menu,consent,origin,narrowing,ask,cancel,decisions,fs,fs-substitute,sqlite,sqlite-substitute,store,log,crypto,webcrypto-undeclared,webcrypto-substitute,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package,devflow,devtools,updater,bus,ai,ai-threat,media]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,context-menu,consent,origin,narrowing,ask,cancel,decisions,apps-ui,fs,fs-substitute,sqlite,sqlite-substitute,store,log,crypto,webcrypto-undeclared,webcrypto-substitute,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,autostart,deeplink,package,devflow,devtools,updater,bus,ai,ai-threat,media]
 //                          [--timeout-s 150] [--verbose]
 // Build beforehand: node scripts/cargo.mjs build -p alef --features e2e
 // This runner does not build the runtime.
@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { countingServer, exeName, field, interesting, makeDriver, onlyUnexpectedBusStalls, root, runScenario, scratch, staticServer, startApp } from './lib.mjs';
-import { consentScenarios } from './scenarios/consent.mjs';
+import { appsUiScenarios, consentScenarios } from './scenarios/consent.mjs';
 import { dataScenarios } from './scenarios/data.mjs';
 import { mcpScenarios } from './scenarios/mcp.mjs';
 import { netScenarios } from './scenarios/net.mjs';
@@ -89,6 +89,7 @@ const scenarios = {
   ...updaterScenarios({ exe, verbose, timeoutMs }),
   ...busScenarios({ drive, exe, verbose, timeoutMs }),
   ...consentScenarios({ drive, exe, verbose }),
+  ...appsUiScenarios({ exe, verbose }),
   ...dataScenarios({ drive, exe, verbose }),
   ...mcpScenarios({ exe, verbose, timeoutMs }),
   ...netScenarios({ drive }),

@@ -16,6 +16,7 @@ export const E2E_GROUPS = [
   'permissions',
   'induced,dev',
   'consent,narrowing,ask,cancel,decisions',
+  'apps-ui',
   'app,quit,relaunch,instance,restore,autostart,deeplink,devflow,devtools',
   'system,desktop,menu,context-menu,tray,shortcut,shortcut-denied,shortcut-substitute,cli,cli-substitute,cli-commands',
   'fs,fs-substitute,sqlite,sqlite-substitute,store,log,crypto,webcrypto,secrets,secrets-substitute,secrets-denied',

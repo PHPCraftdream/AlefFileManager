@@ -415,6 +415,12 @@ jobs:
         shell: bash
         run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "consent,narrowing,ask,cancel,decisions" --exe backend/target/debug/alef.exe --timeout-s 150
 
+      - name: "e2e (alef on Servo, Windows, apps UI)"
+        if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
+        timeout-minutes: 30
+        shell: bash
+        run: node scripts/ci/e2e/group.mjs --plan "${{ needs.plan.outputs.e2e }}" --group "apps-ui" --exe backend/target/debug/alef.exe --timeout-s 150
+
       - name: "e2e (alef on Servo, Windows, lifecycle/integration: app)"
         if: runner.os == 'Windows' && !cancelled() && steps.build_windows_angle.outcome == 'success' && needs.plan.outputs.e2e != 'none'
         timeout-minutes: 30
