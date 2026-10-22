@@ -18,7 +18,7 @@ pub mod timing {
 }
 pub use timing::mark;
 pub use ui::RuntimeHandle;
-pub use window::{run, WindowOptions};
+pub use window::{run, run_warm, WarmAssignment, WarmPrepare, WindowOptions};
 
 /// Delays `runtime.consent.request` in end-to-end mode; see `bridge::e2e`.
 #[cfg(feature = "e2e")]

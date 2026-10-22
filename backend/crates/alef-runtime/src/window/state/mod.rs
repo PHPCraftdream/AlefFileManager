@@ -4,6 +4,7 @@ pub(super) mod rendering;
 pub(super) mod resize_wait;
 pub(super) mod restore;
 pub(crate) mod timing;
+pub(super) mod warm;
 
 use std::cell::Cell;
 use std::io;
