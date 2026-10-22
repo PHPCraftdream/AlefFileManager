@@ -3,7 +3,7 @@
 // process): no helper window flashes, and the main window is shown with content, not as an
 // unpainted rectangle (white, with a black strip where it grew to its size).
 import { spawnSync } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { here, prepareSite, quiet, scratch, startApp } from '../lib.mjs';
@@ -100,3 +100,193 @@ export function busScenarios({ drive, exe, verbose, timeoutMs }) {
   };
 }
 
+
+/** Runs per mode; kept small so the scenario stays within its e2e group's budget on slow runners. */
+export const RUNS = 9;
+/** Marks every windowed run must print; `first-frame` is only noted when it comes (the quiet e2e windows may never present one). */
+export const REQUIRED_WINDOWED = ['main', 'ready', 'first-info', 'context-ready', 'servo-built', 'webview-built', 'load-complete'];
+/** Marks every windowless run must print. */
+export const REQUIRED_WINDOWLESS = ['main', 'ready', 'first-info'];
+/** Canonical order of the marks of the cold path (docs/stages/m11-warm-start.md). */
+export const COLD_PATH = ['main', 'args-parsed', 'settle-begin', 'settle-end', 'tls-installed', 'bridge-ready', 'ready', 'context-ready', 'servo-built', 'webview-built', 'load-complete', 'first-info', 'first-frame'];
+
+// The page of the timing site: one `app.info` (the `first-info` mark); the runner stops the process
+// itself once the marks it needs have been seen.
+const TIMING_PAGE = [
+  '// Startup-timing site: one app.info for the first-info mark; the runner stops the process.',
+  "import { api } from './harness.js';",
+  'try { await api.app.info(); } catch { /* the mark is what matters, not the reply */ }',
+  '',
+].join('\n');
+
+/** A prepared scenario site whose page only calls `app.info` and idles. */
+function timingSite(name, app) {
+  const site = prepareSite(name, app);
+  writeFileSync(join(site, 'dist', 'page.js'), TIMING_PAGE);
+  return site;
+}
+
+/** One `ALEF_TIMING <name> <ms>` line, in order of appearance. */
+export function parseTimings(lines) {
+  const marks = [];
+  for (const line of lines) {
+    const match = /^ALEF_TIMING (\S+) (\d+(?:\.\d+)?)$/.exec(line.trim());
+    if (match) marks.push({ name: match[1], ms: Number(match[2]) });
+  }
+  return marks;
+}
+
+/** Structural verdict on one run: required marks, once each, values never decreasing. */
+export function checkMarks(marks, windowed, requiredWindowed = REQUIRED_WINDOWED, requiredWindowless = REQUIRED_WINDOWLESS) {
+  const problems = [];
+  const seen = new Map();
+  for (const { name, ms } of marks) {
+    if (seen.has(name)) problems.push(`mark ${name} printed twice (${seen.get(name)} and ${ms} ms)`);
+    seen.set(name, ms);
+  }
+  for (let index = 1; index < marks.length; index++) {
+    if (marks[index].ms < marks[index - 1].ms) {
+      problems.push(`marks are not monotonic: ${marks[index - 1].name} ${marks[index - 1].ms} -> ${marks[index].name} ${marks[index].ms}`);
+    }
+  }
+  for (const name of windowed ? requiredWindowed : requiredWindowless) {
+    if (!seen.has(name)) problems.push(`mark ${name} is missing`);
+  }
+  return problems;
+}
+
+/** Linear-interpolation percentile of an unsorted array (p in 0..1). */
+export function percentile(values, p) {
+  if (values.length === 0) return NaN;
+  const sorted = [...values].sort((left, right) => left - right);
+  const at = (sorted.length - 1) * p;
+  const low = Math.floor(at);
+  const high = Math.ceil(at);
+  return sorted[low] + (sorted[high] - sorted[low]) * (at - low);
+}
+
+const spread = values => ({
+  n: values.length,
+  p50: percentile(values, 0.5),
+  p95: percentile(values, 0.95),
+  min: Math.min(...values),
+  max: Math.max(...values),
+});
+
+const round = value => Number(value.toFixed(1));
+
+/**
+ * Table of milestones and of the phases between neighbouring marks: `runs` is an array of mark
+ * arrays (one per run, in print order). A milestone a run did not print is simply absent from its
+ * sample; the numbers stay comparable because a missing mark means a missing phase, not a zero.
+ */
+export function summarize(runs) {
+  const byName = new Map();
+  for (const marks of runs) {
+    for (const { name, ms } of marks) {
+      if (!byName.has(name)) byName.set(name, []);
+      byName.get(name).push(ms);
+    }
+  }
+  const milestones = new Map([...byName.entries()]
+    .map(([name, values]) => [name, spread(values)]));
+  const phases = new Map();
+  for (const marks of runs) {
+    for (let index = 1; index < marks.length; index++) {
+      const key = `${marks[index - 1].name} -> ${marks[index].name}`;
+      const delta = marks[index].ms - marks[index - 1].ms;
+      if (!phases.has(key)) phases.set(key, []);
+      phases.get(key).push(delta);
+    }
+  }
+  const phaseStats = new Map([...phases.entries()].map(([key, values]) => [key, spread(values)]));
+  return { milestones, phases: phaseStats };
+}
+
+const header = ['milestone', 'n', 'p50', 'p95', 'min', 'max'];
+
+function table(rows) {
+  const width = column => Math.max(...[header[column], ...rows.map(row => String(row[column]))].map(cell => cell.length));
+  const line = row => `| ${header.map((_, column) => String(row[column]).padEnd(width(column))).join(' | ')} |`;
+  return [line(header), `| ${header.map((_, column) => '-'.repeat(width(column))).join(' | ')} |`, ...rows.map(line)];
+}
+
+const statRows = (stats, nameOf) => [...stats.entries()]
+  .sort((left, right) => COLD_PATH.indexOf(nameOf(left)) - COLD_PATH.indexOf(nameOf(right)))
+  .map(([key, item]) => [nameOf({ key }), item.n, round(item.p50), round(item.p95), round(item.min), round(item.max)]);
+
+/** Readable stdout table of one mode's summary. */
+export function summaryText(mode, summary) {
+  const milestoneRows = statRows(summary.milestones, ({ key }) => key);
+  const phaseRows = statRows(summary.phases, ({ key }) => `phase ${key}`);
+  return [`startup-timing ${mode}: milestone ms from process start`, ...table(milestoneRows),
+    `startup-timing ${mode}: phase ms between neighbouring marks`, ...table(phaseRows)].join('\n');
+}
+
+/** Markdown block for $GITHUB_STEP_SUMMARY: OS, mode and N in the heading, the same tables. */
+export function summaryMarkdown(os, mode, runsCount, summary) {
+  const milestoneRows = statRows(summary.milestones, ({ key }) => ('`' + key + '`'));
+  const phaseRows = statRows(summary.phases, ({ key }) => ('`' + key + '`'));
+  const section = (title, rows) => [`### startup-timing — ${os} — ${mode} — N=${runsCount} — ${title}`, ...table(rows)].join('\n');
+  return [section('milestones (ms from process start)', milestoneRows), section('phases (ms between neighbouring marks)', phaseRows)].join('\n\n');
+}
+
+export function startupTimingScenarios({ exe, verbose, timeoutMs }) {
+  const waitMs = Math.min(timeoutMs, 120000);
+  // Windowed: the manifest of `modules/app/basic` declares windows; windowless: the console one
+  // has none. Both pages are replaced, so only the mode of the manifest differs.
+  const MODES = [
+    { mode: 'windowed', windowed: true, app: 'modules/app/basic', site: 'startup-timing-windowed' },
+    { mode: 'windowless', windowed: false, app: 'modules/app/console', site: 'startup-timing-windowless' },
+  ];
+
+  async function timedRun(spec) {
+    const site = timingSite(spec.site, spec.app);
+    const running = startApp({ exe, args: ['--app', site], verbose, env: { ALEF_TIMING: '1' } });
+    try {
+      await running.waitFor(line => line.startsWith('ALEF_TIMING first-info '), waitMs, 'the ALEF_TIMING first-info mark');
+      // The first frame is a bonus: a hidden e2e window may never present one.
+      if (spec.windowed) await running.waitFor(line => line.startsWith('ALEF_TIMING first-frame '), 5000, 'the ALEF_TIMING first-frame mark').catch(() => {});
+    } finally {
+      running.stop();
+      if (!(await running.waitForClosed(5000))) {
+        console.log(`    the timing process did not let go of its log pipe: ${running.stuckReport()}`);
+      }
+    }
+    return { marks: parseTimings(running.lines), stderr: running.stderr().toString() };
+  }
+
+  async function measure(spec) {
+    const problems = [];
+    const runs = [];
+    for (let index = 0; index < RUNS; index++) {
+      const run = await timedRun(spec);
+      for (const problem of checkMarks(run.marks, spec.windowed)) {
+        problems.push(`run ${index + 1}/${RUNS}: ${problem}\n--- stderr of the run ---\n${run.stderr}--- end of stderr ---`);
+      }
+      runs.push(run.marks);
+    }
+    const summary = summarize(runs);
+    console.log(summaryText(spec.mode, summary));
+    return { problems, summary, runsCount: runs.length };
+  }
+
+  return {
+    async 'startup-timing'() {
+      const problems = [];
+      const summaries = [];
+      for (const spec of MODES) {
+        const outcome = await measure(spec);
+        outcome.mode = spec.mode;
+        problems.push(...outcome.problems.map(problem => `${spec.mode}: ${problem}`));
+        summaries.push(outcome);
+      }
+      const summaryFile = process.env.GITHUB_STEP_SUMMARY;
+      if (summaryFile) {
+        const os = `${process.platform}/${process.arch}`;
+        writeFileSync(summaryFile, `${summaries.map(outcome => summaryMarkdown(os, outcome.mode, RUNS, outcome.summary)).join('\n\n')}\n`, { flag: 'a' });
+      }
+      return { problems, lines: [] };
+    },
+  };
+}
