@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{application::window, consent::ask::AppSummary, consent::runtime_home};
+use alef_core::security::permissions::store;
 
 /// A single record file is bounded so a hostile folder cannot balloon the parse step.
 pub const RECORD_LIMIT: u64 = 4 * 1024;
@@ -103,13 +104,12 @@ pub fn load(folder: &Path, app_id: &str) -> io::Result<Option<Pin>> {
         ));
     }
     let bytes = std::fs::read(&path)?;
-    let pin: Pin =
-        alef_core::security::permissions::store::from_bytes(&bytes).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("the trust record is damaged: {error}"),
-            )
-        })?;
+    let pin: Pin = store::from_bytes(&bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the trust record is damaged: {error}"),
+        )
+    })?;
     if pin.version != RECORD_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -157,8 +157,7 @@ pub fn pin(folder: &Path, app_id: &str, public_key: &str) -> io::Result<Pin> {
         public_key: public_key.to_owned(),
         fingerprint,
     };
-    let bytes =
-        alef_core::security::permissions::store::to_bytes(&record).map_err(io::Error::other)?;
+    let bytes = store::to_bytes(&record).map_err(io::Error::other)?;
     std::fs::create_dir_all(folder)?;
     #[cfg(unix)]
     {
@@ -484,9 +483,7 @@ mod tests {
         assert_eq!(record.fingerprint, fingerprint_of(&key('a')).unwrap());
         let path = pin_path(folder.path(), ID);
         assert!(path.exists());
-        let stored: Pin =
-            alef_core::security::permissions::store::from_bytes(&std::fs::read(&path).unwrap())
-                .unwrap();
+        let stored: Pin = store::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored, record);
         assert_eq!(
             load(folder.path(), ID).unwrap(),
@@ -600,19 +597,15 @@ mod tests {
         let error = pin(folder.path(), ID, &key('b')).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert!(error.to_string().contains("another key"));
-        let stored: Pin = alef_core::security::permissions::store::from_bytes(
-            &std::fs::read(pin_path(folder.path(), ID)).unwrap(),
-        )
-        .unwrap();
+        let stored: Pin =
+            store::from_bytes(&std::fs::read(pin_path(folder.path(), ID)).unwrap()).unwrap();
         assert_eq!(stored, first);
         // Two threads race for the first pin with different keys: exactly one wins, the other
         // reloads the winner's record and is refused; the record is never replaced.
         let raced = tempfile::tempdir().unwrap();
         let [one, other] = race(raced.path(), 'a', 'b');
-        let stored: Pin = alef_core::security::permissions::store::from_bytes(
-            &std::fs::read(pin_path(raced.path(), ID)).unwrap(),
-        )
-        .unwrap();
+        let stored: Pin =
+            store::from_bytes(&std::fs::read(pin_path(raced.path(), ID)).unwrap()).unwrap();
         let (winner, loser) = match (one, other) {
             (Ok(pinned), Err(error)) => {
                 assert_eq!(stored.public_key, key('a'));
