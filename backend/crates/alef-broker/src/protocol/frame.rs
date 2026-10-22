@@ -90,10 +90,9 @@ impl FrameDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>, FrameError> {
         let mut done = Vec::new();
         let mut rest = bytes;
-        while !rest.is_empty() {
+        loop {
             if self.buf.len() < 4 {
-                // Still collecting the header. Copy at most 4 bytes; the
-                // internal buffer never grows past 4 here.
+                // Still collecting the header: the buffer never grows past 4 here.
                 let take = rest.len().min(4 - self.buf.len());
                 self.buf.extend_from_slice(&rest[..take]);
                 rest = &rest[take..];
@@ -117,7 +116,9 @@ impl FrameDecoder {
                 let take = rest.len().min(body_len - have);
                 self.buf.extend_from_slice(&rest[..take]);
                 rest = &rest[take..];
-                continue;
+                if self.buf.len() - 4 < body_len {
+                    break;
+                }
             }
             self.buf.drain(..4);
             let body: Vec<u8> = self.buf.drain(..body_len).collect();
