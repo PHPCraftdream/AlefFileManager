@@ -327,6 +327,6 @@ mod tests {
 
     #[test]
     fn empty_token_rejected() {
-        assert_eq!(Token::new(Vec::new()), Err(TokenError::Empty));
+        assert!(matches!(Token::new(Vec::new()), Err(TokenError::Empty)));
     }
 }

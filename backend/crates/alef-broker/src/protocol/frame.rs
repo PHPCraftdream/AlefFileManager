@@ -250,7 +250,7 @@ mod tests {
         let data = encode_frame(&body).unwrap();
         for split in [2usize, 5, 4, 20, 40] {
             let mut dec = FrameDecoder::new();
-            let frames = dec.push(&data[..split]).unwrap();
+            let mut frames = dec.push(&data[..split]).unwrap();
             assert!(frames.is_empty());
             frames.extend(dec.push(&data[split..]).unwrap());
             assert_eq!(frames, vec![body.clone()], "split at {split}");
