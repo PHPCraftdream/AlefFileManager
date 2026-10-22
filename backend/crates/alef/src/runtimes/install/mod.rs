@@ -300,12 +300,12 @@ pub fn run_id<T>(
     run_id_in(&crate::consent::runtime_home(), id, load)
 }
 
-/// The bytes of the `app.json` record of `id`, `None` when there is no record file.
+/// The bytes of the `app.ktav` record of `id`, `None` when there is no record file.
 fn record_bytes(home: &std::path::Path, id: &str) -> Option<Vec<u8>> {
     let path = home
         .join("apps")
         .join(format!("{:x}", sha2::Sha256::digest(id.as_bytes())))
-        .join("app.json");
+        .join("app.ktav");
     // No FIFO, link or reparse point is opened; the strict reader reports those.
     if !crate::runtimes::store::is_regular_file(&path) {
         return None;
@@ -381,7 +381,7 @@ pub fn read_record(path: &std::path::Path, hash: &str) -> Result<AppRecord, Inst
             1,
         ));
     }
-    let record = read_record_file(&path.join("app.json"), hash)?;
+    let record = read_record_file(&path.join("app.ktav"), hash)?;
     let package = path.join(&record.package);
     if !crate::runtimes::store::is_regular_file(&package) {
         return Err(InstallError::new(
@@ -426,7 +426,7 @@ fn read_record_file(path: &std::path::Path, hash: &str) -> Result<AppRecord, Ins
             1,
         ));
     }
-    let record: AppRecord = serde_json::from_slice(&bytes)
+    let record: AppRecord = alef_core::security::permissions::store::from_bytes(&bytes)
         .map_err(|e| InstallError::new("APP_RECORD", e.to_string(), 1))?;
     // The runtime store's parser enforces the same strict SemVer 2.0.0 contract used
     // for runtime directory names; validate before deriving any persisted path.
@@ -457,7 +457,7 @@ impl AppRecord {
 use sha2::Digest;
 
 /// The updater's installed context: only a package the store of `alef install` runs may
-/// apply an update — the running file must be the package a valid `app.json` record of
+/// apply an update — the running file must be the package a valid `app.ktav` record of
 /// exactly this id and version references. Canonical comparison: a relative or linked
 /// command-line path still matches, and nothing else in the store is mistaken for the
 /// running package.
@@ -469,7 +469,7 @@ pub fn installed_app(
 ) -> Option<alef_modules::net::updater::InstalledApp> {
     let hash = format!("{:x}", sha2::Sha256::digest(id.as_bytes()));
     let app_dir = home.join("apps").join(&hash);
-    // read_record fails unless app.json exists, is plain, bounded, and passes its semantic
+    // read_record fails unless app.ktav exists, is plain, bounded, and passes its semantic
     // validation (id hash, `package` = `<version>.alef`, absolute executable).
     let record = read_record(&app_dir, &hash).ok()?;
     if record.id != id || record.version != version {

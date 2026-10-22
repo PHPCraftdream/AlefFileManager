@@ -236,6 +236,9 @@ mod devtools_preferences_tests {
 pub(crate) fn preferences_for(devtools_port: Option<u16>) -> Preferences {
     let mut preferences = Preferences {
         dom_indexeddb_enabled: true,
+        // With temporary_storage a non-empty path makes Servo disable its shared
+        // OS-tempdir HTTP disk cache (servo-net disk_cache.rs storage_dir).
+        network_http_disk_cache: "disabled-by-alef".into(),
         ..Default::default()
     };
     if let Some(port) = devtools_port {

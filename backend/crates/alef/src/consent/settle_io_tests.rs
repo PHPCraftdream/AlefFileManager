@@ -55,7 +55,7 @@ fn the_store_write_waits_for_its_turn_on_the_executor_and_does_not_run_inline() 
         let written = scratch
             .path()
             .join("consent")
-            .join(format!("{}.json", identity.key()));
+            .join(format!("{}.ktav", identity.key()));
         let mut write = Box::pin(store_decisions(&executor, &store, &identity, &consent));
         assert!(
             polls_pending(&mut write),
@@ -136,7 +136,7 @@ fn a_queued_store_write_cancelled_with_its_caller_never_runs() {
         let written = scratch
             .path()
             .join("consent")
-            .join(format!("{}.json", identity.key()));
+            .join(format!("{}.ktav", identity.key()));
         let mut write = Box::pin(store_decisions(&executor, &store, &identity, &consent));
         assert!(
             polls_pending(&mut write),

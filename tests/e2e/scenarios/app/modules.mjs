@@ -7,7 +7,7 @@ import net from 'node:net';
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { prepareSite, root, scratch, startApp, verdictOf } from '../../lib.mjs';
+import { ktavLine, prepareSite, root, scratch, startApp, verdictOf } from '../../lib.mjs';
 import { mediaScenarios } from './media.mjs';
 
 const APP_CHECKS = [
@@ -486,11 +486,11 @@ export function moduleScenarios({ drive, exe, verbose }) {
               local.push(`red rights flagged: ${JSON.stringify(red)}`);
             }
             const saved = existsSync(join(homeOf('ai-window'), 'consent')) ? readdirSync(join(homeOf('ai-window'), 'consent')) : [];
-            if (saved.length !== 1) local.push(`the decisions were not kept in one file: ${JSON.stringify(saved)}`);
+            if (saved.length !== 1 || !saved[0].endsWith('.ktav')) local.push(`the decisions were not kept in one .ktav file: ${JSON.stringify(saved)}`);
             else {
-              const kept = JSON.parse(readFileSync(join(homeOf('ai-window'), 'consent', saved[0]), 'utf8')).decisions
-                .map(({ permission, scope, decision }) => `${scope === undefined ? permission : `${permission}:${scope}`}=${decision}`);
-              if (!kept.includes('ai.builtin.exec=deny')) local.push(`the store holds ${JSON.stringify(kept)}`);
+              const text = readFileSync(join(homeOf('ai-window'), 'consent', saved[0]), 'utf8');
+              // No Ktav parser in the runner: the entry of the one red right is matched as adjacent lines.
+              if (!/(?:^|\n)\s*permission: ai\.builtin\.exec\n\s*scope: null\n\s*decision: deny(?:\n|$)/.test(text)) local.push(`the store does not hold ai.builtin.exec=deny: ${saved[0]}`);
             }
             return local;
           },
@@ -746,24 +746,24 @@ export function moduleScenarios({ drive, exe, verbose }) {
       };
       try {
         await run('save');
-        const stateFile = appData && join(appData, 'window-state.json');
+        const stateFile = appData && join(appData, 'window-state.ktav');
         if (!stateFile || !existsSync(stateFile)) {
-          problems.push('the first run left no window-state.json');
+          problems.push('the first run left no window-state.ktav');
         } else {
-          const saved = JSON.parse(readFileSync(stateFile, 'utf8'));
-          const main = saved.windows?.main;
-          if (saved.version !== 1 || !main || Math.abs(main.width - 777) > tolerance || Math.abs(main.height - 555) > tolerance || main.maximized !== false) {
+          const state = () => readFileSync(stateFile, 'utf8');
+          const saved = state();
+          if (ktavLine(saved, 'version') !== '1' || Math.abs(Number(ktavLine(saved, 'width')) - 777) > tolerance || Math.abs(Number(ktavLine(saved, 'height')) - 555) > tolerance || ktavLine(saved, 'maximized') !== 'false') {
             problems.push(`the file holds ${JSON.stringify(saved)}`);
           }
           await run('reopen');
-          const afterMaximize = JSON.parse(readFileSync(stateFile, 'utf8')).windows?.main;
-          if (afterMaximize?.maximized !== true || Math.abs(afterMaximize.width - 777) > tolerance) {
+          const afterMaximize = state();
+          if (ktavLine(afterMaximize, 'maximized') !== 'true' || Math.abs(Number(ktavLine(afterMaximize, 'width')) - 777) > tolerance) {
             problems.push(`a maximized window must be remembered as maximized with the size it had: ${JSON.stringify(afterMaximize)}`);
           }
           await run('maximized');
-          writeFileSync(stateFile, JSON.stringify({ version: 1, windows: { main: { x: 99999, y: 99999, width: 700, height: 500, maximized: false } } }));
+          writeFileSync(stateFile, 'version: 1\nwindows: {\n    main: {\n        x: 99999.0\n        y: 99999.0\n        width: 700.0\n        height: 500.0\n        maximized: false\n    }\n}');
           await run('gone');
-          writeFileSync(stateFile, 'not json');
+          writeFileSync(stateFile, 'not ktav');
           await run('damaged');
         }
       } catch (error) {

@@ -69,7 +69,8 @@ fn trust_error(err: TrustFailure) -> InstallError {
     }
 }
 fn record_bytes(record: &AppRecord) -> Result<Vec<u8>, InstallError> {
-    let bytes = serde_json::to_vec(record).map_err(|e| error("APP_STORE", e.to_string(), 1))?;
+    let bytes = alef_core::security::permissions::store::to_bytes(record)
+        .map_err(|e| error("APP_STORE", e.to_string(), 1))?;
     if bytes.len() as u64 > RECORD_LIMIT {
         return Err(error("APP_STORE", "record exceeds size limit", 1));
     }
@@ -134,7 +135,7 @@ impl Drop for NewAppDirGuard {
 }
 
 fn cleanup_owned_app_dir(dir: &Path) {
-    for name in ["app.json", "icon.png", ".lock"] {
+    for name in ["app.ktav", "icon.png", ".lock"] {
         let _ = std::fs::remove_file(dir.join(name));
     }
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -311,7 +312,7 @@ pub async fn install_in(
         drop(app_lock);
         return Err(error("APP_STORE", "application directory is not plain", 1));
     }
-    let record_path = app_dir.join("app.json");
+    let record_path = app_dir.join("app.ktav");
     let old = match std::fs::symlink_metadata(&record_path) {
         Ok(_) => match super::read_record(&app_dir, &hash) {
             Ok(record) => Some(record),

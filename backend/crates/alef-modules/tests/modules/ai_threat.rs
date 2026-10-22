@@ -300,13 +300,13 @@ async fn credential_sentinel_never_crosses_the_rush_boundary() {
         !String::from_utf8_lossy(&journal_bytes).contains(sentinel),
         "the journal carries the sentinel"
     );
-    let usage_bytes = std::fs::read(folder.join("usage.json"))
+    let usage_bytes = std::fs::read(folder.join("usage.ktav"))
         .expect("the usage counters exist after the control chat");
     assert!(
         !String::from_utf8_lossy(&usage_bytes).contains(sentinel),
         "the usage counters carry the sentinel"
     );
-    if let Ok(bytes) = std::fs::read(folder.join("limits.json")) {
+    if let Ok(bytes) = std::fs::read(folder.join("limits.ktav")) {
         assert!(
             !String::from_utf8_lossy(&bytes).contains(sentinel),
             "the limits file carries the sentinel"

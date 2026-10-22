@@ -203,7 +203,7 @@ export function devflowScenarios({ exe, verbose, timeoutMs }) {
           runLines = running.lines;
           expect('the packaged app starts, its page reports and exits cleanly', exit?.code === 0, `exit ${exit?.code}`);
           expect('the page verdict is PASS', runLines.some(line => line.includes('ALEF_E2E RESULT PASS')), runLines.find(line => line.includes('ALEF_E2E RESULT')) ?? 'no verdict');
-          const pinPath = join(homeRun, 'trust', `${createHash('sha256').update(ID).digest('hex')}.json`);
+          const pinPath = join(homeRun, 'trust', `${createHash('sha256').update(ID).digest('hex')}.ktav`);
           expect('the trust key was pinned under the scratch home', existsSync(pinPath) && readFileSync(pinPath, 'utf8').includes(fingerprint), pinPath);
           expect('the key file exists under the scratch ALEF_RUNTIME_HOME', existsSync(join(keyHome, 'keys', 'e2e-devflow.pem')), join(keyHome, 'keys', 'e2e-devflow.pem'));
           const runOrigin = runLines.find(line => line.includes('devflow-origin='));

@@ -1,0 +1,35 @@
+[package]
+name = "alef-broker"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# The broker of the warm start (docs/stages/m11-warm-start.md): the pool of spare processes,
+# the wire protocol and the transport to them, the autostart adapters. No Servo here.
+[dependencies]
+alef-core = { path = "../alef-core" }
+getrandom = "=0.4.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.10.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.189"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.52.0", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"

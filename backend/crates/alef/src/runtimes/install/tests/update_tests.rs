@@ -347,14 +347,14 @@ async fn an_update_requiring_an_unsatisfied_runtime_is_refused_and_the_old_insta
         apply(&applier, &old).await.unwrap();
         let old_package_path = appdir(home.path()).join("1.0.0.alef");
         let old_package = std::fs::read(&old_package_path).unwrap();
-        let old_record = std::fs::read(appdir(home.path()).join("app.json")).unwrap();
+        let old_record = std::fs::read(appdir(home.path()).join("app.ktav")).unwrap();
         let (new, _) = runtime_fixture("2.0.0", "^9.0.0");
         assert!(apply(&applier, &new).await.is_err());
         // The store looks exactly as before the refused update.
         assert_eq!(record(home.path()).version, "1.0.0");
         assert_eq!(std::fs::read(&old_package_path).unwrap(), old_package);
         assert_eq!(
-            std::fs::read(appdir(home.path()).join("app.json")).unwrap(),
+            std::fs::read(appdir(home.path()).join("app.ktav")).unwrap(),
             old_record
         );
         assert!(!appdir(home.path()).join("2.0.0.alef").exists());

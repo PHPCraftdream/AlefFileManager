@@ -12,6 +12,11 @@ pub use bridge::{
 };
 pub use headless::run_headless;
 pub use store::Store;
+// The startup marks live under `window/state` to keep `src/` within its entry limit.
+pub mod timing {
+    pub use crate::window::timing::{format_mark, mark};
+}
+pub use timing::mark;
 pub use ui::RuntimeHandle;
 pub use window::{run, WindowOptions};
 

@@ -21,6 +21,7 @@ use alef_core::{
 };
 use delegate::Waker;
 use servo::protocol_handler::ProtocolRegistry;
+pub(crate) use state::timing;
 use state::State;
 use tokio::sync::mpsc;
 use url::Url;
