@@ -111,34 +111,53 @@ pub fn uninstall(id: &str, purge_data: bool) -> Result<(), InstallError> {
 }
 
 pub fn apps(json: bool) -> Result<String, InstallError> {
-    use crate::consent::runtime_home;
-    let rows = list_records(&runtime_home().join("apps"))?;
+    use crate::{apps::AppsIndex, consent::runtime_home};
+    use alef_core::security::consent::FileConsentStore;
+    let home = runtime_home();
+    let store = FileConsentStore::new(home.join("consent"));
+    let rows = AppsIndex::new(&home, &store)
+        .list()
+        .map_err(|e| InstallError::new("APP_STORE", e, 1))?;
     if json {
-        let values: Vec<serde_json::Value> = rows
-            .into_iter()
-            .map(|row| match row {
-                AppListing::Installed(r) => {
-                    serde_json::json!({"id":r.id,"version":r.version,"name":r.name})
-                }
-                AppListing::Damaged { hash } => serde_json::json!({"hash":hash,"status":"DAMAGED"}),
-            })
-            .collect();
-        return serde_json::to_string(&values)
+        return serde_json::to_string(&rows)
             .map_err(|e| InstallError::new("APP_STORE", e.to_string(), 1));
     }
-    Ok(rows
-        .into_iter()
-        .map(|row| match row {
-            AppListing::Installed(r) => format!(
-                "{} {} {}",
-                r.id,
-                r.version,
-                r.name.replace('\n', "\\n").replace('\r', "\\r")
-            ),
-            AppListing::Damaged { hash } => format!("{hash} DAMAGED"),
-        })
-        .collect::<Vec<_>>()
-        .join("\n"))
+    let mut lines = vec!["ID VERSION NAME SOURCE DECISIONS".to_owned()];
+    for row in rows {
+        let clean = |value: &str| {
+            let mut clean = String::new();
+            for character in value.chars() {
+                if character.is_control() {
+                    clean.extend(character.escape_default());
+                } else {
+                    clean.push(character);
+                }
+            }
+            clean
+        };
+        let name = row.name.as_deref().unwrap_or("-");
+        let source = row.source.as_deref().unwrap_or("-");
+        let summary = &row.summary;
+        let damaged = if row.availability == crate::apps::Availability::Damaged {
+            " DAMAGED"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "{} {} {} {} allow={} substitute={} deny={} undecided={} red={}{}",
+            clean(&row.id),
+            row.version.as_deref().unwrap_or("-"),
+            clean(name),
+            clean(source),
+            summary.allow,
+            summary.substitute,
+            summary.deny,
+            summary.undecided,
+            summary.red,
+            damaged
+        ));
+    }
+    Ok(lines.join("\n"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

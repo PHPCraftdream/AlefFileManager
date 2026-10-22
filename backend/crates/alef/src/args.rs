@@ -10,15 +10,18 @@ use crate::consent::decision_named;
 pub const USAGE: &str =
     "alef run <PATH|ID> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
 alef --app <DIRECTORY> [launcher options] [-- <APPLICATION ARGUMENTS>...]\n\
-alef permissions list [<DIRECTORY>]\n\
-alef permissions set <DIRECTORY> <RIGHT> <DECISION>\n\
-alef permissions reset <DIRECTORY>\n\
+alef permissions list [<PATH|ID>]\n\
+alef permissions set <PATH|ID> <RIGHT> <DECISION> [--confirm-red]\n\
+alef permissions reset <PATH|ID>\n\
 alef ai limits <DIRECTORY> [--requests <N>] [--tokens <N>]\n\
 alef ai log <DIRECTORY>\n\
 alef trust <REQUEST> <ANSWER>\n\
 alef runtime list\n\
 alef runtime install <VERSION> <SOURCE_BINARY>\n\
-alef runtime prune [--keep <VERSION>]... [--dry-run]\nalef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\nalef uninstall <ID> [--purge-data]\nalef apps [--json]\n\
+alef runtime prune [--keep <VERSION>]... [--dry-run]\n\
+alef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\n\
+alef uninstall <ID> [--purge-data]\n\
+alef apps [--json]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
 a file is an Alef package; when the argument is neither an existing file nor a directory,\n\
 it is the id of an application installed by `alef install` (`alef apps` lists them);\n\
@@ -36,7 +39,8 @@ an existing file or directory always wins. Runs it: its alef.ktav manifest and a
                     decided on does not start\n\
   --                everything after it is the command line of the application\n\
                     (parsed by the `arguments` of its manifest; `-- --help` prints its usage)\n\
-permissions: what you decided for an application. RIGHT is `permission` or `permission:scope`\n\
+permissions: what you decided for an application. RIGHT is `permission` or `permission:scope`; targets are PATH or installed ID\n\
+  an existing PATH wins over interpreting its text as an ID; --confirm-red is required only for expansions, not narrowing\n\
   (clipboard.read, app.env:HOME, fs.read:$DOCUMENTS/**); `list` without DIRECTORY lists the applications\n\
   you have decided for, `reset` makes the next start ask again\n\
 ai: the daily AI quota of an application and what its AI did (the journal); N of 0 means blocked\n\
@@ -105,6 +109,7 @@ pub enum PermissionsCommand {
         app: PathBuf,
         right: Right,
         decision: Decision,
+        confirm_red: bool,
     },
     /// Forgets the decisions: the next start asks again.
     Reset { app: PathBuf },
