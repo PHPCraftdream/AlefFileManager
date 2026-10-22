@@ -486,3 +486,11 @@ fn servo_options_carry_the_profile_dir_and_temporary_storage() {
     assert!(!opts.multiprocess);
     assert!(servo_opts(None).config_dir.is_none());
 }
+
+// With temporary_storage the HTTP disk cache must be disabled: Servo would otherwise put a
+// shared cache.sqlite3 in an OS tempdir, outside the per-app profile (origin/tests.rs style note).
+#[test]
+fn preferences_disable_the_disk_http_cache_under_temporary_storage() {
+    assert!(servo_opts(None).temporary_storage);
+    assert!(!preferences_for(None).network_http_disk_cache.is_empty());
+}
