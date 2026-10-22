@@ -156,13 +156,17 @@ pub fn connect_with_timeout(path: &Path, timeout: Duration) -> io::Result<UnixSt
     let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() }; // invariant: all-zero is a valid start
     addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
     let bytes = path.as_os_str().as_bytes();
-    if bytes.len() >= addr.sun_path.len() {
+    // Keep room for the implicit NUL terminator.
+    if bytes.len() + 1 > addr.sun_path.len() {
         return Err(io::Error::new(
             ErrorKind::InvalidInput,
             "socket path too long",
         ));
     }
-    addr.sun_path[..bytes.len()].copy_from_slice(bytes);
+    // sun_path is [c_char] (i8 or u8 per platform); copy element-wise.
+    for (dst, src) in addr.sun_path.iter_mut().zip(bytes.iter()) {
+        *dst = *src as libc::c_char;
+    }
     // Invariant: AF_UNIX SOCK_STREAM is always supported.
     let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
     if fd < 0 {

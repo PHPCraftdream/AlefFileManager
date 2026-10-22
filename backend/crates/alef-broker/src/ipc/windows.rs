@@ -25,28 +25,29 @@ use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use windows_sys::core::PWSTR;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
-    ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, PWSTR,
+    CloseHandle, GetLastError, LocalFree, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND,
+    ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE, PSID,
 };
 use windows_sys::Win32::Security::Authorization::{
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{
-    ConvertSidToStringSidW, GetTokenInformation, OpenProcessToken, TokenUser, SECURITY_ATTRIBUTES,
-    SECURITY_DESCRIPTOR, TOKEN_QUERY,
+    GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
-use windows_sys::Win32::System::Memory::LocalFree;
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
     GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
     PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
+use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, ProcessIdToSessionId, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 use crate::ipc::endpoint::Endpoint;
@@ -130,7 +131,8 @@ fn create_instance(name_wide: &[u16], user_sid: &str, first: bool) -> io::Result
     let sddl = crate::ipc::endpoint::sddl_dacl(user_sid);
     let sddl_wide: Vec<u16> = sddl.encode_utf16().chain([0]).collect();
     // Invariant: sddl_wide is NUL-terminated; out-params written on success.
-    let mut sd: *mut SECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // PSECURITY_DESCRIPTOR = *mut c_void in windows-sys 0.52.
+    let mut sd: *mut c_void = std::ptr::null_mut();
     let mut sd_size: u32 = 0;
     let ok = unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -145,7 +147,7 @@ fn create_instance(name_wide: &[u16], user_sid: &str, first: bool) -> io::Result
     }
     let sa = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: sd as *mut c_void,
+        lpSecurityDescriptor: sd,
         bInheritHandle: 0,
     };
     let mut open_mode = PIPE_ACCESS_DUPLEX;
@@ -167,15 +169,13 @@ fn create_instance(name_wide: &[u16], user_sid: &str, first: bool) -> io::Result
     };
     // Invariant: sd was allocated by the SDDL conversion; LocalFree frees it.
     unsafe {
-        LocalFree(sd as *mut c_void as HANDLE);
+        LocalFree(sd as HANDLE);
     }
     if handle == INVALID_HANDLE_VALUE {
         let err = io::Error::last_os_error();
         if err.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) && first {
-            return Err(io::Error::new(
-                ErrorKind::AlreadyExists,
-                "another broker already owns this pipe",
-            ));
+            // Keep the raw OS code: tests match on ERROR_ACCESS_DENIED.
+            return Err(io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32));
         }
         return Err(err);
     }
@@ -519,9 +519,9 @@ fn token_user_sid(process: HANDLE) -> io::Result<String> {
         {
             return Err(io::Error::last_os_error());
         }
-        // Layout: TOKEN_USER { SID_AND_ATTRIBUTES { Sid, Attributes } }.
-        let sid: windows_sys::Win32::Security::PSID =
-            (buffer.as_mut_ptr() as *const usize).read() as windows_sys::Win32::Security::PSID;
+        // Layout: TOKEN_USER { SID_AND_ATTRIBUTES { Sid, Attributes } };
+        // PSID is *mut c_void in windows-sys 0.52 (Win32::Foundation).
+        let sid: PSID = (buffer.as_mut_ptr() as *const usize).read() as PSID;
         let mut sid_str: PWSTR = std::ptr::null_mut();
         // Invariant: sid points into the buffer just returned by the API.
         if unsafe { ConvertSidToStringSidW(sid, &mut sid_str) } == 0 {
@@ -534,7 +534,7 @@ fn token_user_sid(process: HANDLE) -> io::Result<String> {
             }
             let s = String::from_utf16_lossy(std::slice::from_raw_parts(sid_str, len));
             // Invariant: sid_str allocated by ConvertSidToStringSidW; LocalFree.
-            LocalFree(sid_str as *mut c_void as HANDLE);
+            LocalFree(sid_str as _);
             s
         };
         Ok(s)

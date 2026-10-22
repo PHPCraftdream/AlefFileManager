@@ -105,7 +105,7 @@ fn atomic_create(path: &std::path::Path, len: usize) -> io::Result<Option<Vec<u8
 fn read_existing(path: &std::path::Path) -> io::Result<Token> {
     #[cfg(unix)]
     verify_unix_token_file(path)?;
-    let bytes = fs::read(path)?;
+    let mut bytes = fs::read(path)?;
     if bytes.len() != TOKEN_LEN {
         bytes.zeroize();
         return Err(io::Error::new(

@@ -274,7 +274,7 @@ fn serve_conn(
         match decode_client_msg(&body) {
             Ok(ClientMsg::Hello(_)) => {
                 let _ = reject(&mut conn, RejectReason::IncompatibleProtocol);
-                return Err(io::Error::new(ErrorKind::ProtocolError, "duplicate Hello"));
+                return Err(io::Error::new(ErrorKind::InvalidData, "duplicate Hello"));
             }
             Ok(msg) => handler.on_message(&mut conn, msg),
             Err(_) => {

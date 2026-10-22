@@ -97,9 +97,9 @@ pub fn is_valid_sid_string(sid: &str) -> bool {
     !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'-')
 }
 
-/// Unix permission problems, kept typed for tests.
+/// Typed endpoint problems (shared type on all OSes; Unix-specific variants
+/// are produced only by the Unix permission checks).
 #[derive(Debug)]
-#[cfg(unix)]
 pub enum EndpointError {
     /// Path does not exist.
     Missing,
@@ -119,7 +119,6 @@ pub enum EndpointError {
     Io(io::Error),
 }
 
-#[cfg(unix)]
 impl fmt::Display for EndpointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -137,10 +136,8 @@ impl fmt::Display for EndpointError {
     }
 }
 
-#[cfg(unix)]
 impl std::error::Error for EndpointError {}
 
-#[cfg(unix)]
 impl From<io::Error> for EndpointError {
     fn from(e: io::Error) -> Self {
         if e.kind() == io::ErrorKind::NotFound {

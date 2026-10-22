@@ -111,9 +111,23 @@ pub trait ReplyTo {
 }
 
 /// Write one framed message body to a stream.
-pub fn write_frame(w: &mut impl Write, body: &[u8]) -> io::Result<()> {
+pub fn write_frame(w: &mut dyn Write, body: &[u8]) -> io::Result<()> {
     let bytes = encode_frame(body).map_err(io::Error::other)?;
     w.write_all(&bytes)
+}
+
+/// `Box<C>` forwards to `C` (std already forwards `Read`/`Write`), so a
+/// `Box<dyn Conn>` is itself a `Conn` and can be coerced to `&mut dyn Conn`.
+impl<C: Conn + ?Sized> Conn for Box<C> {
+    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        (**self).set_read_timeout(timeout)
+    }
+    fn set_write_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        (**self).set_write_timeout(timeout)
+    }
+    fn peer_identity(&self) -> io::Result<PeerIdentity> {
+        (**self).peer_identity()
+    }
 }
 
 /// Every `Conn` can answer broker messages: framing is the same both ways.
@@ -123,7 +137,6 @@ impl<C: Conn + ?Sized> ReplyTo for C {
         write_frame(self, &body)
     }
 }
-
 /// Incremental frame reader over a [`Conn`].
 ///
 /// Canonical `FrameDecoder::push` semantics: it returns EVERY frame completed
