@@ -89,6 +89,8 @@ fn spawn_id(action: &Action) -> SpareId {
 trait TakeExt {
     /// Unwrap `Unavailable` with exactly one action (a refill Spawn).
     fn one_spawn(self) -> Action;
+    /// The id of that Spawn.
+    fn one_spawn_id(self) -> SpareId;
 }
 
 impl TakeExt for Take {
@@ -100,6 +102,10 @@ impl TakeExt for Take {
             }
             _ => panic!("expected Unavailable with one Spawn"),
         }
+    }
+
+    fn one_spawn_id(self) -> SpareId {
+        spawn_id(&self.one_spawn())
     }
 }
 
@@ -184,7 +190,7 @@ fn volley_of_takes_creates_at_most_one_initializing_per_kind() {
 #[test]
 fn take_while_initializing_or_backoff_returns_no_actions() {
     let mut p = pool();
-    let a = p.take(SlotKind::Windowed, t(0)).one_spawn();
+    let a = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
     // Initializing: no second spawn for the same kind.
     match p.take(SlotKind::Windowed, t(1)) {
         Take::Unavailable { actions } => assert!(actions.is_empty()),
@@ -229,7 +235,7 @@ fn two_kinds_are_independent() {
 #[test]
 fn failed_replacement_backs_off_and_grows_to_cap() {
     let mut p = pool_no_breaker();
-    let mut current = p.take(SlotKind::Windowed, t(0)).one_spawn();
+    let mut current = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
     let mut now = t(0);
     // Consecutive failures double the delay: 250, 500, 1000, 2000, 4000 ms.
     for expected_ms in [250u64, 500, 1000, 2000, 4000] {
@@ -256,7 +262,7 @@ fn failed_replacement_backs_off_and_grows_to_cap() {
 #[test]
 fn success_resets_backoff() {
     let mut p = pool_no_breaker();
-    let a = p.take(SlotKind::Windowed, t(0)).one_spawn();
+    let a = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
     p.on_failed(a, t(1)); // failures = 1 -> 250ms
     let actions = p.fill(t(251));
     let b = spawn_id(&actions[0]);
@@ -269,7 +275,7 @@ fn success_resets_backoff() {
 #[test]
 fn circuit_breaker_pauses_after_consecutive_failures() {
     let mut p = pool();
-    let mut current = p.take(SlotKind::Windowed, t(0)).one_spawn();
+    let mut current = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
     let mut now = t(0);
     // Three ordinary failures keep the exponential schedule.
     for expected_ms in [250u64, 500, 1000] {
@@ -491,7 +497,7 @@ fn deterministic_given_same_inputs() {
 fn jitter_shifts_backoff_deterministically() {
     let delay = |frac: f64| {
         let mut p = Pool::new(cfg(), FakeClock(Duration::ZERO), ConstJitter(frac));
-        let a = p.take(SlotKind::Windowed, t(0)).one_spawn();
+        let a = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
         p.on_failed(a, t(1));
         p.next_wake().unwrap() - t(1)
     };
@@ -504,8 +510,8 @@ fn jitter_shifts_backoff_deterministically() {
 fn next_wake_reports_earliest_backoff() {
     let mut p = pool();
     assert_eq!(p.next_wake(), None);
-    let a = p.take(SlotKind::Windowed, t(0)).one_spawn();
-    let b = p.take(SlotKind::Windowless, t(0)).one_spawn();
+    let a = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
+    let b = p.take(SlotKind::Windowless, t(0)).one_spawn_id();
     p.on_failed(a, t(1));
     let wake_w = p.next_wake().unwrap();
     p.on_failed(b, t(500));
