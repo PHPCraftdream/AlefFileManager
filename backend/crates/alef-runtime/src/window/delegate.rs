@@ -41,6 +41,9 @@ impl WebViewDelegate for Delegate {
     fn notify_new_frame_ready(&self, _: WebView) {
         self.frame_ready.set(true);
         if self.page_ready.get() {
+            // The first frame announced after the page finished loading is the first frame
+            // of presented content; the mark prints once (dedup by name).
+            crate::timing::mark("first-frame");
             self.content_frame.set(true);
         }
         if let Some(window) = self.window.upgrade() {
@@ -66,6 +69,7 @@ impl WebViewDelegate for Delegate {
         // `runtime.hello` creates the session of the calling document (see `SessionManager`).
         self.page_ready.set(status == LoadStatus::Complete);
         if status == LoadStatus::Complete {
+            crate::timing::mark("load-complete");
             if let Some(window) = self.window.upgrade() {
                 window.request_redraw();
             }

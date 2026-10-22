@@ -112,6 +112,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
     rendering
         .make_current()
         .map_err(|error| io::Error::other(format!("make_current: {error:?}")))?;
+    crate::timing::mark("context-ready");
     let waker = Waker::default();
     let handle = bridge.handle();
     {
@@ -133,6 +134,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         .protocol_registry(bridge.take_registry()?)
         .event_loop_waker(Box::new(waker.clone()))
         .build();
+    crate::timing::mark("servo-built");
     if let Some(delegate) = devtools.as_ref() {
         servo.set_delegate(delegate.clone());
     }
@@ -155,6 +157,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
         .url(bridge.entry_url.clone())
         .delegate(delegate);
     let webview = webview.user_content_manager(webcrypto).build();
+    crate::timing::mark("webview-built");
     // The transport tells documents apart by the webview: this is window 1 of a process without a window.
     let ids = bridge.windows();
     ids.bind(webview.id(), ids.allocate());
@@ -183,6 +186,7 @@ pub fn run_headless(bridge: &mut Bridge) -> Result<(), Box<dyn Error>> {
 
 fn notify_loaded(status: LoadStatus, callback: Option<&(dyn Fn() + Send)>) {
     if status == LoadStatus::Complete {
+        crate::timing::mark("load-complete");
         if let Some(loaded) = callback {
             loaded();
         }

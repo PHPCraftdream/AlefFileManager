@@ -61,7 +61,7 @@ alef trust <ЗАПРОС> <ОТВЕТ>
 alef runtime list|install|prune …
 ```
 
-`run` принимает каталог разработки, файл `.alef` или id установленного приложения. Параметры запуска: `--dev-url` (документ с сервера разработки на 127.0.0.1), `--devtools[=PORT]` (локальная отладка Servo, только для каталога разработки), `--grant allow|substitute|deny`, `--trust-key`, `--allow-unsigned`, `--no-prompt`. Полный текст — `alef --help` и `backend/crates/alef/src/args.rs`.
+`run` принимает каталог разработки, файл `.alef` или id установленного приложения. Параметры запуска: `--dev-url` (документ с сервера разработки на 127.0.0.1), `--devtools[=PORT]` (локальная отладка Servo, только для каталога разработки), `--grant allow|substitute|deny`, `--trust-key`, `--allow-unsigned`, `--no-prompt`. Полный текст — `alef --help` и `backend/crates/alef/src/args.rs`. `ALEF_TIMING=1` печатает в stderr метки фаз холодного запуска (`ALEF_TIMING <имя> <мс от старта>`); список вех — [docs/stages/m11-warm-start.md](docs/stages/m11-warm-start.md).
 
 ## Сборка и проверки
 
