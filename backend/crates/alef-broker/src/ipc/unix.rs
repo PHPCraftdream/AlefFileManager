@@ -29,7 +29,10 @@ impl UnixEndpointListener {
     /// Create or reuse the private directory, bind the socket, force 0600.
     pub fn bind(ep: &Endpoint) -> io::Result<UnixEndpointListener> {
         let dir = &ep.unix_dir;
-        match std::fs::create_dir(dir) {
+        // Created 0700 from the start (a plain create_dir would follow the umask).
+        match std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+            .create(dir)
+        {
             Ok(()) => {}
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),

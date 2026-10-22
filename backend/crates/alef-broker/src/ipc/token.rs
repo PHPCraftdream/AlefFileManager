@@ -119,7 +119,8 @@ fn read_existing(path: &std::path::Path) -> io::Result<Token> {
 /// Unix: ensure the broker directory exists and passes the 0700/uid checks.
 #[cfg(unix)]
 fn unix_prepare_dir(dir: &std::path::Path) -> io::Result<()> {
-    match fs::create_dir(dir) {
+    // Created 0700 from the start (a plain create_dir would follow the umask).
+    match std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700).create(dir) {
         Ok(()) => {}
         Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e),
