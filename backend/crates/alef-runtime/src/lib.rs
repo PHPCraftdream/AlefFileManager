@@ -20,6 +20,10 @@ pub use timing::mark;
 pub use ui::RuntimeHandle;
 pub use window::{run, WindowOptions};
 
+// Broker tray: an independent notification-area icon for the windowless
+// `alef broker` process (no windows, no Servo, no document Owner).
+pub use ui::broker_tray::{BrokerTray, BrokerTrayCommand, BrokerTrayConfig, BrokerTrayHandle};
+
 /// Delays `runtime.consent.request` in end-to-end mode; see `bridge::e2e`.
 #[cfg(feature = "e2e")]
 pub use bridge::e2e::e2e_hold_consent_request;

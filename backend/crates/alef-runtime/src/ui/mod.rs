@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+pub mod broker_tray;
 pub(crate) mod devtools;
 pub(crate) mod integration;
 
