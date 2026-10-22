@@ -241,7 +241,7 @@
   },
   {
     "name": "a document settlement failure is treated as a runtime failure",
-    "file": "backend/crates/alef/src/main.rs",
+    "file": "backend/crates/alef/src/cli/failure.rs",
     "from": "SettleFailure::Documents(failure) => Self::load(failure),",
     "to": "SettleFailure::Documents(failure) => Self::Runtime(failure.to_string()),",
     "package": "alef",
@@ -251,7 +251,7 @@
   },
   {
     "name": "a trust settlement failure is treated as a runtime failure",
-    "file": "backend/crates/alef/src/main.rs",
+    "file": "backend/crates/alef/src/cli/failure.rs",
     "from": "SettleFailure::Trust(failure) => Self::trust(failure),",
     "to": "SettleFailure::Trust(failure) => Self::Runtime(format!(\"{failure:?}\")),",
     "package": "alef",
@@ -261,7 +261,7 @@
   },
   {
     "name": "a settlement with unanswered rights is treated as a runtime failure",
-    "file": "backend/crates/alef/src/main.rs",
+    "file": "backend/crates/alef/src/cli/failure.rs",
     "from": "SettleFailure::Unanswered(unanswered) => Self::Declined(unanswered.to_string()),",
     "to": "SettleFailure::Unanswered(unanswered) => Self::Runtime(unanswered.to_string()),",
     "package": "alef",

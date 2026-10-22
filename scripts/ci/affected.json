@@ -337,7 +337,7 @@
       ]
     },
     {
-      "glob": "backend/crates/alef/src/args.rs",
+      "glob": "backend/crates/alef/src/cli/args.rs",
       "scenarios": [
         "cli",
         "cli-commands",
