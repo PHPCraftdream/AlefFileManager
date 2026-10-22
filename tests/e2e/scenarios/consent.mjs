@@ -361,11 +361,10 @@ permissions: {
     shortcut: {
         global: false
     }
-    secrets: false
     app: {
         env: []
     }
-    ${right}
+    ${right.startsWith('secrets:') ? '' : 'secrets: false\n    '}${right}
 }
 `;
 

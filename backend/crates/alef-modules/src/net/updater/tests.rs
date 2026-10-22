@@ -567,7 +567,16 @@ fn download_storage_lock_prevents_a_second_active_update() {
     };
     assert_eq!(error.code, ErrorCode::UpdateBusy);
     drop(storage);
-    assert!(storage::Storage::prepare(scratch.path()).is_ok());
+    // A fork of a concurrent test thread holds the descriptor, and so the lock, until its exec (see
+    // `lock_exclusive`); on a loaded runner that can outlast the grace wait of one `prepare`, so wait it out.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while storage::Storage::prepare(scratch.path()).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the update lock was not released after the storage was dropped"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 pub(crate) fn signed_package(version: &str, app_id: &str) -> (Vec<u8>, [u8; 32]) {
