@@ -18,7 +18,7 @@ use zbus::{
     connection::Connection,
     object_server::{ObjectServer, SignalEmitter},
     proxy,
-    zvariant::{ObjectPath, OwnedValue, Value},
+    zvariant::{ObjectPath, OwnedValue, Structure, Value},
 };
 
 /// Shared, mutable per-tray menu state read by the exported dbusmenu methods.
@@ -191,13 +191,31 @@ fn props(node: &MenuNode) -> HashMap<String, OwnedValue> {
     map
 }
 
+/// A child of a layout: the node as the struct (ia{sv}av), boxed in a variant.
+fn child_value(node: &MenuNode) -> Result<OwnedValue, zbus::zvariant::Error> {
+    let children = node
+        .children
+        .iter()
+        .map(child_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    owned(Value::from(Structure::from((
+        node.id,
+        props(node),
+        children,
+    ))))
+}
+
 fn layout(node: &MenuNode) -> Result<LayoutNode, zbus::zvariant::Error> {
     let children = node
         .children
         .iter()
-        .map(|child| owned(Value::from(layout(child)?)))
+        .map(child_value)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(LayoutNode(node.id, props(node), children))
+}
+
+fn failed(error: zbus::zvariant::Error) -> zbus::fdo::Error {
+    zbus::fdo::Error::Failed(error.to_string())
 }
 
 fn find<'a>(node: &'a MenuNode, id: i32) -> Option<&'a MenuNode> {
@@ -214,7 +232,7 @@ impl MenuIface {
         parent_id: i32,
         _recursion_depth: i32,
         _property_names: Vec<String>,
-    ) -> zbus::Result<(u32, LayoutNode)> {
+    ) -> zbus::fdo::Result<(u32, LayoutNode)> {
         let state = self.menu.lock().expect("menu state");
         let root = &state.menu.root;
         let node = if parent_id == 0 {
@@ -222,7 +240,7 @@ impl MenuIface {
         } else {
             find(root, parent_id).unwrap_or(root)
         };
-        Ok((state.revision, layout(node)?))
+        Ok((state.revision, layout(node).map_err(failed)?))
     }
 
     /// Per the dbusmenu spec: `(u revision, a(ia{sv}))` — the revision and, for every
@@ -231,7 +249,7 @@ impl MenuIface {
         &self,
         ids: Vec<i32>,
         _property_names: Vec<String>,
-    ) -> zbus::Result<(u32, Vec<(i32, HashMap<String, OwnedValue>)>)> {
+    ) -> zbus::fdo::Result<(u32, Vec<(i32, HashMap<String, OwnedValue>)>)> {
         let state = self.menu.lock().expect("menu state");
         let root = &state.menu.root;
         let nodes = ids
@@ -359,7 +377,14 @@ async fn dispatch(
                 .await
                 .map_err(to_io)?;
             server
-                .at(menu_path.as_str(), MenuIface { id, menu, events })
+                .at(
+                    menu_path.as_str(),
+                    MenuIface {
+                        id,
+                        menu,
+                        events: events.clone(),
+                    },
+                )
                 .await
                 .map_err(to_io)?;
             if let Err(error) = watcher.register_status_notifier_item(&path).await {

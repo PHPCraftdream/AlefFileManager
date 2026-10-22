@@ -483,7 +483,7 @@ impl Trays {
 
     /// The end of the process: no icon stays in the notification area.
     pub(crate) fn shutdown(&mut self) {
-        let paths = self.entries.drain(..).map(|entry| entry.path).collect();
+        let paths: Vec<String> = self.entries.drain(..).map(|entry| entry.path).collect();
         self.destroy(&paths);
     }
 

@@ -297,9 +297,12 @@ mod tests {
 
     #[test]
     fn menu_plan_rejects_roles() {
-        let mut quit = item("quit", "Quit");
-        quit.role = Some(MenuRole::Quit);
-        let error = TrayMenu::build(&[quit]).err().unwrap();
+        // A role item has neither an id nor a label (the menu validation), so only the role is set.
+        let mut copy = item("", "");
+        copy.id = None;
+        copy.label = None;
+        copy.role = Some(MenuRole::Copy);
+        let error = TrayMenu::build(&[copy]).err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("roles"));
     }
