@@ -221,3 +221,17 @@ Windows: именованный канал с DACL только текущему
 
 - localStorage сохраняется между запусками уже сейчас: он игнорирует `temporary_storage` и лежит в `<config_dir>/webstorage/<uuid5(origin)>/webstorage.sqlite`; утверждения «между запусками ничего не persistится» в `m1-core.md` и `m0-results/origin.md` неточны для localStorage (временное хранилище касается IndexedDB и CacheStorage).
 - Дисковый HTTP-кэш при `temporary_storage: true` и пустой настройке `network_http_disk_cache` — `tempdir()` с заменённым последним компонентом (`cache.sqlite3` во временном каталоге ОС): он общий для всех приложений Alef и вне профиля, а `--purge-data` его не удаляет. Исправление без патча: задать `network_http_disk_cache` непустым при `temporary_storage: true` (тогда Servo отключает дисковый кэш) — отдельное решение, см. задачу в списке работ.
+
+## Автозапуск (alef-broker/src/autostart)
+
+Реализован срез M11.4a: каталог `backend/crates/alef-broker/src/autostart/` — одна собственная запись брокера на платформу, без UI/CLI и без включения по умолчанию.
+
+**Имена и пути.** Windows: значение `AlefRuntimeBroker` в `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. macOS: `~/Library/LaunchAgents/org.alef.runtime.broker.plist`. Linux: `<config>/autostart/alef-runtime-broker.desktop`, где `<config>` — абсолютный `$XDG_CONFIG_HOME`, иначе `$HOME/.config` (пустой или относительный `XDG_CONFIG_HOME` игнорируется).
+
+**Форматы записи.** Команда хранится как executable + массив аргументов, никогда не как shell-команда. Windows — командная строка по правилам `CommandLineToArgvW` (кавычки, удвоение обратных слэшей). Plist — минимальный строгий документ (Label, ProgramArguments, RunAtLoad true, KeepAlive false) с XML-экранированием; чужой plist не реинтерпретируется. Desktop — `[Desktop Entry]` с `Type=Application`, `NoDisplay=true`, `X-GNOME-Autostart-enabled=true`; Exec-экранирование: каждый аргумент в двойных кавычках, `%`→`%%`, ``→`\`, `"`→`\"`, `$`→`$`, `` ` ``→`` ` ``. Entry валидируется всегда: абсолютный exe, никакого NUL и переводов строк.
+
+**Владение.** Windows: последним аргументом добавляется `--alef-runtime-autostart`; парсится и есть маркер → свой, парсится без маркера → чужой (`Foreign`), не парсится → `Damaged`. macOS: `Label` == нашему; другой Label → `Foreign`, структура не наша → `Damaged`. Linux: строка-маркер `# Owner: alef-runtime-broker (alef-broker autostart)`; парсится без маркера → `Foreign`, не парсится → `Damaged`. `Foreign`/`Damaged` никогда не перезаписываются и не удаляются: enable возвращает `NotOwned`/`Damaged`, disable — тоже (`Damaged` — fail closed: сломанную запись нельзя молча стереть).
+
+**Readback и атомарность.** После каждого write/read выполняется чтение записи и сверка (байт-в-байт с записанным или отсутствие записи после remove); расхождение → `ReadbackMismatch`. Файловые адаптеры пишут во временный файл в том же каталоге (`.<имя>.tmp<случайный hex>`), затем rename: на unix — атомарно поверх цели, на прочих ОС — remove+rename с документированным окном без записи; временный файл удаляется при любой ошибке, после enable в каталоге не остаётся `*.tmp*`. Реестр: один `RegSetValueExW` под открытым подключом, close на всех путях.
+
+**Что этот срез НЕ делает:** не вызывает `launchctl` (bootstrap/bootout — отдельный срез); не включается по умолчанию; не имеет UI/CLI-проводки (отдельный срез); не трогает регистрацию автозапуска приложений `app.autostart` (другой владелец и пространство имён); не изменяет чужие записи и соседние файлы в каталогах.
