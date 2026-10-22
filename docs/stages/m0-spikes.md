@@ -22,7 +22,7 @@
 2. Проверить, в каком потоке вызывается делегат, и можно ли передать `InterceptedWebResourceLoad` в задачу Tokio (`Send`). Если нет — чтение файла в Tokio, отправка чанков через канал в главный поток.
 3. Тестовая страница с `https://<app-id>.alef/` сообщает: `location.origin`, `isSecureContext`, `localStorage`/`sessionStorage` (запись-чтение), `indexedDB` (открыть БД; если нет — проверить pref Servo `dom_indexeddb_enabled`), `crypto.subtle` (digest SHA-256).
 4. С этой страницы вызвать `native://call` (существующий spike-маршрут или `native://invoke`): проходит ли CORS-preflight, нет ли блокировки как mixed content, задержка вызова в сравнении со страницей на `native://app`.
-5. Загрузка ассетов: время загрузки JS-бандла File Manager через перехват и через `native://app`.
+5. Загрузка ассетов: время загрузки JS-бандла приложения через перехват и через `native://app` (по плану — бандл приложения-примера alef-file-manager (отдельный репозиторий); в spike — синтетический ассет 2 MiB, см. `m0-results/origin.md`).
 6. Блокировка внешних запросов на уровне перехвата: запрос к неразрешённому `https://example.com` → `cancel()`; убедиться, что это не ломает страницу (база для `external` из манифеста в дополнение к CSP).
 
 **Критерий успеха (вариант A принят).** Origin — `https://<app-id>.alef`, `localStorage` работает, `isSecureContext === true`, вызовы `native://` из такой страницы работают, загрузка ассетов не медленнее `native://app` более чем в 1.5 раза.
@@ -70,7 +70,7 @@
 
 **Вопрос.** Собирается и проходит ли тесты runtime на Windows, macOS и Linux; что ломается вне Windows?
 
-**Требование.** Нужен пуш в GitHub (`PHPCraftdream/AlefFileManager`) — только с явного разрешения владельца.
+**Требование.** Нужен пуш в GitHub (`PHPCraftdream/alef-runtime`; на момент плана репозиторий назывался AlefFileManager) — только с явного разрешения владельца.
 
 **Шаги.**
 
