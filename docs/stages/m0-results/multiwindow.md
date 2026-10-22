@@ -1,12 +1,12 @@
 # M0.2 — Мультиоконность: результаты
 
-> **Spike удалён в M2.2** (`spikes/multiwindow`, хуки в `window/`, `experiments/multiwindow-spike`): мультиоконность — штатный путь `alef-runtime` (`window/manage.rs`), проверяется e2e-сценарием `window`. Ниже — результаты и дизайн того времени; ссылки на удалённые файлы и `run.sh` исторические. Нестабильность оракула (раздел в конце) закрыта вместе с ним.
+> **Spike удалён в M2.2** (`spikes/multiwindow`, хуки в `window/`, `experiments/multiwindow-spike`): мультиоконность — штатный путь `alef-runtime` (`window/manage.rs`), проверяется e2e-сценарием `window`. Ниже — результаты и дизайн того времени; ссылки на удалённые файлы и `run.sh` исторические. Нестабильность оракула (раздел в конце) закрыта вместе с ним. Исполняемый файл в запусках тогда назывался `alef-file-manager.exe`; ниже и в команде запуска стоит нынешнее имя `alef.exe` (runtime — самостоятельный бинарник, приложение File Manager вынесено в alef-file-manager, отдельный репозиторий).
 
 Spike: `backend/crates/alef-runtime/src/spikes/multiwindow/` (+ минимальные хуки в `window/app.rs`, `window/mod.rs`), страница `experiments/multiwindow-spike/`. Включение: `ALEF_SPIKE_MULTIWINDOW=1` (+ `ALEF_RESIZE_TRACE=1` для трейсов, `ALEF_TRANSPORT_SPIKE=1` для отчётов страницы). Бюджеты: загрузка второго окна — 140 с; подтверждение resize — 2000 мс (обычный режим), 1 мс (`ALEF_SPIKE_MW_STRICT=1`); ожидание resize-кадра — 100 мс. Запуск:
 
 ```
 ALEF_SPIKE_MULTIWINDOW=1 ALEF_TRANSPORT_SPIKE=1 ALEF_RESIZE_TRACE=1 \
-  backend/target/debug/alef-file-manager.exe --frontend-dir experiments/multiwindow-spike
+  backend/target/debug/alef.exe --frontend-dir experiments/multiwindow-spike
 ```
 
 ## Что сделано
@@ -20,7 +20,7 @@ ALEF_SPIKE_MULTIWINDOW=1 ALEF_TRANSPORT_SPIKE=1 ALEF_RESIZE_TRACE=1 \
 
 ### Автоматическая оценка (oracle)
 
-Результаты этого запуска worktree приведены ниже; никаких прежних результатов сюда не переносили. Для всех прогонов применялся `backend/target/debug/alef-file-manager.exe`. Скрипт `run.sh` использует `timeout 180`; здесь `timeout` разрешил все обычные сценарии по их штатному завершению. Фактические длительности сценариев — из `MW summary elapsed`; у control — его 25-секундный предел.
+Результаты этого запуска worktree приведены ниже; никаких прежних результатов сюда не переносили. Для всех прогонов применялся `backend/target/debug/alef.exe`. Скрипт `run.sh` использует `timeout 180`; здесь `timeout` разрешил все обычные сценарии по их штатному завершению. Фактические длительности сценариев — из `MW summary elapsed`; у control — его 25-секундный предел.
 
 | Прогон | Режим | Exit code | failed | requested / confirmed | elapsed |
 |---|---|---:|---|---:|---:|
@@ -70,7 +70,7 @@ ALEF_SPIKE_MULTIWINDOW=1 ALEF_TRANSPORT_SPIKE=1 ALEF_RESIZE_TRACE=1 \
 
 ## Примечания по измерениям
 
-- В этой серии использовался `backend/target/debug/alef-file-manager.exe`: независимый четвёртый прогон прошёл (`mw oracle: PASS`, exit 0, все 7 проверок true). Каталог per-slug `backend/target/spike-bins/<slug>/...` в этом worktree не создавался.
+- В этой серии использовался `backend/target/debug/alef.exe`: независимый четвёртый прогон прошёл (`mw oracle: PASS`, exit 0, все 7 проверок true). Каталог per-slug `backend/target/spike-bins/<slug>/...` в этом worktree не создавался.
 - В сегодняшней серии второй странице потребовалось менее секунды после создания окна; применяемый кодом дедлайн — 140 с (не смешивать с глобальным watchdog 150 с).
 - Oracle exit code non-zero только если `failed=true` либо crash/panic обнаружены; spike emit'ит процессу non-zero через хук `window/mod.rs:73–77` (`run()` возвращает Err).
 - Strict-mode FAIL тест (1 мс бюджет) доказывает, что oracle обнаруживает вневремя resize-ответы.
