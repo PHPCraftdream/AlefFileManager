@@ -368,7 +368,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn os_bytes_lossless_unpaired_surrogate_windows() {
-        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
         // 'a' + unpaired high surrogate.
         let units: Vec<u16> = vec![0x61, 0xD800];
         let os = OsString::from_wide(&units);
