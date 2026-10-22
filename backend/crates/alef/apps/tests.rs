@@ -183,7 +183,11 @@ fn installed_signed_package_id_uses_recorded_path_and_identity() {
         executable: std::env::current_exe().unwrap(),
         installed_time: 1,
     };
-    std::fs::write(dir.join("app.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("app.ktav"),
+        alef_core::security::permissions::store::to_bytes(&record).unwrap(),
+    )
+    .unwrap();
     let pkg = dir.join("1.0.0.alef");
     assert!(matches!(
         crate::application::source::load(&pkg),

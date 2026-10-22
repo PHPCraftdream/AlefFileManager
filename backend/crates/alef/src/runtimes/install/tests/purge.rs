@@ -196,7 +196,7 @@ fn purge_removes_data_config_cache_identity_and_trust_but_keeps_legacy_and_other
     assert!(store.load(&app_identity).unwrap().is_none());
     let consent_path = home
         .join("consent")
-        .join(format!("{}.json", app_identity.key()));
+        .join(format!("{}.ktav", app_identity.key()));
     let pin_path = trust::pin_path(&home.join("trust"), id);
     let mut expected = paths.to_vec();
     expected.push(consent_path);

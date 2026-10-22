@@ -105,7 +105,7 @@ impl Integration for Fake {
         self.artifacts.insert(artifact.id.clone(), artifact.clone());
         if self.fail_record_publish {
             self.fail_record_publish = false;
-            let record = artifact.package.parent().unwrap().join("app.json");
+            let record = artifact.package.parent().unwrap().join("app.ktav");
             std::fs::create_dir(&record)?;
             self.publication_path = Some(record);
         }
@@ -114,7 +114,7 @@ impl Integration for Fake {
 
     fn remove(&mut self, id: &str, _: Option<&str>) -> io::Result<bool> {
         if let Some(artifact) = self.artifacts.get(id) {
-            let record = artifact.package.parent().unwrap().join("app.json");
+            let record = artifact.package.parent().unwrap().join("app.ktav");
             if std::fs::symlink_metadata(&record).is_ok_and(|meta| meta.is_dir()) {
                 std::fs::remove_dir(&record)?;
             }

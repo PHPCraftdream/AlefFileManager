@@ -706,7 +706,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     // The user may take a right back while the application runs.
     let _following = watch(granted.clone(), store(), identity, WATCH_EVERY);
     // Where the windows that ask for it (`restore: true`) are written down between runs.
-    let window_state = vars.app_data.join("window-state.json");
+    let window_state = vars.app_data.join("window-state.ktav");
     // Servo profile root, before `vars` moves into the module context.
     let servo_profile = vars.app_data.join("servo");
     // Directory apps derive the origin label from the manifest id; packages from the

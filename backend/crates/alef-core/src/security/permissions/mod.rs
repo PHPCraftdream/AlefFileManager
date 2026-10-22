@@ -3,6 +3,7 @@
 //! per-session grants.
 #[path = "../given/builtin.rs"]
 mod builtin;
+pub mod store;
 
 use super::{
     consent::{Consent, Decision, Right},

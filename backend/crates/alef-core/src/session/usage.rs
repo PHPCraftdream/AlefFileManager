@@ -7,10 +7,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::security::permissions::store;
 use serde::{Deserialize, Serialize};
 
-/// The version of the JSON state files.
+/// The version of the Ktav state files.
 const VERSION: u32 = 1;
+
+/// The file of the user's daily limits.
+const LIMITS_FILE: &str = "limits.ktav";
+/// The file of the per-day counters.
+const USAGE_FILE: &str = "usage.ktav";
 
 /// Unique temp-file suffixes for concurrent persists inside this process.
 static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -84,11 +90,11 @@ impl Store {
     }
 
     fn limits_path(&self) -> PathBuf {
-        self.folder.join("limits.json")
+        self.folder.join(LIMITS_FILE)
     }
 
     fn usage_path(&self) -> PathBuf {
-        self.folder.join("usage.json")
+        self.folder.join(USAGE_FILE)
     }
 
     /// The limits the user set; a missing, damaged, or wrong-version file is no limit: a quota
@@ -100,7 +106,7 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Limits::none()),
             Err(error) => return Err(error),
         };
-        let Ok(saved) = serde_json::from_slice::<SavedLimits>(&bytes) else {
+        let Ok(saved) = store::from_bytes::<SavedLimits>(&bytes) else {
             return Ok(Limits::none());
         };
         if saved.version != VERSION {
@@ -119,10 +125,10 @@ impl Store {
             requests: limits.requests,
             tokens: limits.tokens,
         };
-        let text = serde_json::to_vec(&saved).map_err(io::Error::other)?;
+        let text = store::to_bytes(&saved)?;
         std::fs::create_dir_all(&self.folder)?;
         let path = self.limits_path();
-        let partial = path.with_extension("json.part");
+        let partial = path.with_extension("ktav.part");
         std::fs::write(&partial, text)?;
         std::fs::rename(&partial, &path)
     }
@@ -207,8 +213,7 @@ impl Store {
             requests: counters.requests,
             tokens: counters.tokens,
         };
-        let text =
-            serde_json::to_vec(&saved).map_err(|error| Quota::Io(io::Error::other(error)))?;
+        let text = store::to_bytes(&saved).map_err(|error| Quota::Io(io::Error::other(error)))?;
         std::fs::create_dir_all(&self.folder).map_err(Quota::Io)?;
         let path = self.usage_path();
         let unique = format!(
@@ -238,9 +243,9 @@ impl Store {
             }
             Err(error) => return Err(error),
         };
-        let counters: Counters = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        let counters: Counters = store::from_bytes(&bytes).map_err(io::Error::other)?;
         if counters.version != VERSION {
-            return Err(io::Error::other("usage.json of another version"));
+            return Err(io::Error::other("usage.ktav of another version"));
         }
         Ok(counters)
     }
@@ -513,7 +518,7 @@ mod tests {
     #[test]
     fn a_damaged_usage_file_fails_closed() {
         let dir = tempdir().unwrap();
-        std::fs::write(dir.path().join("usage.json"), b"not json").unwrap();
+        std::fs::write(dir.path().join("usage.ktav"), b"not ktav").unwrap();
         let store = Store::new(dir.path());
         match store.reserve_at(None, JAN2_NOON) {
             Err(Quota::Io(_)) => {}
@@ -525,7 +530,7 @@ mod tests {
     fn a_missing_or_damaged_limits_file_means_no_limit() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path()).unwrap();
-        std::fs::write(dir.path().join("limits.json"), b"garbage").unwrap();
+        std::fs::write(dir.path().join("limits.ktav"), b"garbage").unwrap();
         let store = Store::new(dir.path());
         assert!(store.reserve_at(None, JAN2_NOON).is_ok());
     }
@@ -554,10 +559,18 @@ mod tests {
         }
         // A still later day rolls again.
         assert!(store.reserve_at(None, JAN5_MORNING).is_ok());
-        let text = std::fs::read_to_string(dir.path().join("usage.json")).unwrap();
-        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(saved["requests"], 1);
-        assert_eq!(saved["stamp"], JAN5_MORNING);
+        let text = std::fs::read_to_string(dir.path().join("usage.ktav")).unwrap();
+        let saved: store::Value = store::parse(&text).unwrap();
+        let saved = saved.as_object().unwrap();
+        assert_eq!(
+            saved.get("requests").and_then(store::Value::as_integer),
+            Some("1")
+        );
+        let expected_stamp = JAN5_MORNING.to_string();
+        assert_eq!(
+            saved.get("stamp").and_then(store::Value::as_integer),
+            Some(expected_stamp.as_str())
+        );
     }
 
     #[test]
@@ -587,10 +600,18 @@ mod tests {
             Err(Quota::Exceeded) => {}
             other => panic!("expected Exceeded, got {other:?}"),
         }
-        let text = std::fs::read_to_string(dir.path().join("usage.json")).unwrap();
-        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(saved["tokens"], 100);
-        assert_eq!(saved["stamp"], JAN5_MORNING);
+        let text = std::fs::read_to_string(dir.path().join("usage.ktav")).unwrap();
+        let saved: store::Value = store::parse(&text).unwrap();
+        let saved = saved.as_object().unwrap();
+        assert_eq!(
+            saved.get("tokens").and_then(store::Value::as_integer),
+            Some("100")
+        );
+        let expected_stamp = JAN5_MORNING.to_string();
+        assert_eq!(
+            saved.get("stamp").and_then(store::Value::as_integer),
+            Some(expected_stamp.as_str())
+        );
     }
 
     #[test]
@@ -617,9 +638,16 @@ mod tests {
             .filter(Result::is_ok)
             .count();
         assert_eq!(successes, 4);
-        let text = std::fs::read_to_string(dir.path().join("usage.json")).unwrap();
-        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(saved["requests"], 4);
+        let text = std::fs::read_to_string(dir.path().join("usage.ktav")).unwrap();
+        let saved: store::Value = store::parse(&text).unwrap();
+        assert_eq!(
+            saved
+                .as_object()
+                .unwrap()
+                .get("requests")
+                .and_then(store::Value::as_integer),
+            Some("4")
+        );
     }
 
     #[test]

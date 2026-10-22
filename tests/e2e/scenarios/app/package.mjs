@@ -458,7 +458,7 @@ export function packageScenarios({ exe, verbose, timeoutMs }) {
 
         // Positive 3: exactly one pin file, named by the id hash, naming the fingerprint.
         const trustFolder = join(homeA, 'trust');
-        const pinName = `${createHash('sha256').update(ID).digest('hex')}.json`;
+        const pinName = `${createHash('sha256').update(ID).digest('hex')}.ktav`;
         const pinPath = join(trustFolder, pinName);
         expect('the pin file names the id hash and the fingerprint',
           existsSync(pinPath) && readFileSync(pinPath, 'utf8').includes(fingerprint.a),

@@ -494,6 +494,11 @@ export async function staticServer(directory) {
 export const interesting = lines => lines.filter(line => /FAILED|PROBLEM|fatal|Servo Error|panicked|error/i.test(line));
 
 export const field = (line, key) => Number(new RegExp(`${key}=(\\d+)`).exec(line)?.[1]);
+
+/** The value of the first top-level `key: value` line of a Ktav state file (`undefined` when absent). */
+export const ktavLine = (text, key) => new RegExp(`(?:^|\\n)\\s*"?${key}"?: (.*)`).exec(text)?.[1];
+/** `ktavLine` as an assertion: was the key written with exactly this value. */
+export const assertKtavLine = (text, key, expected) => ktavLine(text, key) === expected;
 const okNames = lines => new Set(lines.map(line => /check (\S+) ok /.exec(line)?.[1]).filter(Boolean));
 export const verdictOf = lines => /ALEF_E2E RESULT (PASS|FAIL)\s*(.*)$/.exec(lines.find(line => line.includes('ALEF_E2E RESULT')) ?? '');
 const missing = (lines, expected) => expected.filter(name => !okNames(lines).has(name));

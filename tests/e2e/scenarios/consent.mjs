@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { prepareSite, startApp, verdictOf } from '../lib.mjs';
+import { prepareSite, scratch, startApp, verdictOf } from '../lib.mjs';
 
 const CONSENT_CHECKS = [
   'consent-an-environment-variable-is-real-a-stand-in-or-denied',
@@ -81,7 +81,7 @@ export function consentScenarios({ drive, exe, verbose }) {
           judge: shellJudge(log, note),
         });
         const saved = existsSync(join(home, 'consent')) ? readdirSync(join(home, 'consent')) : [];
-        if (saved.length !== 1) result.problems.push(`the decisions were not kept in one file: ${JSON.stringify(saved)}`);
+        if (saved.length !== 1 || !saved[0].endsWith('.ktav')) result.problems.push(`the decisions were not kept in one .ktav file: ${JSON.stringify(saved)}`);
         return result;
       } finally {
         rmSync(directory, { recursive: true, force: true });
@@ -187,10 +187,11 @@ export function consentScenarios({ drive, exe, verbose }) {
             if (unconfirmed.start !== 'disabled') problems.push('a risky right allowed without its confirmation lets the application start');
             if (confirmed.start !== 'enabled') problems.push('everything is decided and confirmed, yet the application cannot start');
             const saved = existsSync(join(home, 'consent')) ? readdirSync(join(home, 'consent')) : [];
-            if (saved.length !== 1) return [...problems, `the decisions were not kept in one file: ${JSON.stringify(saved)}`];
-            const kept = JSON.parse(readFileSync(join(home, 'consent', saved[0]), 'utf8')).decisions
-              .map(({ permission, scope, decision }) => `${scope === undefined ? permission : `${permission}:${scope}`}=${decision}`)
-              .sort();
+            if (saved.length !== 1 || !saved[0].endsWith('.ktav')) return [...problems, `the decisions were not kept in one .ktav file: ${JSON.stringify(saved)}`];
+            // No Ktav parser in the runner: the decisions are checked through the CLI, which reads the same store.
+            const listed = cli(['permissions', 'list', join(scratch, 'sites', 'ask')], { ALEF_HOME: home }).out;
+            const kept = listed.split('\n').map(line => /^  (\w+)\t(\S+)/.exec(line)).filter(Boolean)
+              .filter(([, word]) => word !== 'undecided').map(([, word, right]) => `${right}=${word}`).sort();
             if (JSON.stringify(kept) !== JSON.stringify([...ANSWERS].sort())) problems.push(`the store holds ${JSON.stringify(kept)}`);
             return problems;
           },

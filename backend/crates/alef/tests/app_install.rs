@@ -132,7 +132,7 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
         false,
     );
     assert_eq!(code, 0, "install failed; stdout={out:?}, stderr={err:?}");
-    assert!(app_dir.join("app.json").is_file(), "app record missing");
+    assert!(app_dir.join("app.ktav").is_file(), "app record missing");
     assert_eq!(
         fs::read(app_dir.join("1.0.0.alef")).expect("stored package"),
         package_bytes
@@ -259,7 +259,7 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
         "application store remained after uninstall"
     );
     assert!(package.is_file(), "uninstall removed the source package");
-    let trust_pin = home.join("trust").join(format!("{hash}.json"));
+    let trust_pin = home.join("trust").join(format!("{hash}.ktav"));
     assert!(
         trust_pin.is_file(),
         "normal uninstall removed the trust pin"
