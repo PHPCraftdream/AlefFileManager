@@ -245,3 +245,24 @@ Windows: именованный канал с DACL только текущему
 Выданный процесс одноразовый и в пул не возвращается; пустой слот, гонка за слот и ошибка замены дают «нет запасного → холодный запуск» и не создают неограниченное число процессов.
 
 **Проводка подаёт**: реальные `Clock`/`Jitter`, исполнение `Action` (запуск/завершение процессов), события `on_ready`/`on_failed`/`on_exited` от наблюдения за процессами, сигнал давления памяти с тяжестью, вызовы `fill` по событиям и по `next_wake: Option<Duration>`, а также решение о холодном запуске при `Unavailable`. **Пул НЕ делает**: не запускает и не убивает процессы сам, не делает IPC, не привязывает приложение (manifest, доверие, согласие, профиль, окружение), не читает окружение, не держит потоков и таймеров.
+
+## Протокол (alef-broker/src/protocol)
+
+- **Формат кадра:** u32 LE длина + тело; жёсткий максимум 1 МиБ (`MAX_FRAME_LEN`); отказ до выделения памяти при заявленной длине сверх лимита; нулевая длина и обрыв посреди кадра (`Truncated`) — ошибки; после `TooLarge` поток не синхронизирован, соединение закрывается. Инкрементальный `FrameDecoder`; `Limits` (одновременные запросы, очередь, кадров/с) и `TokenBucket` с внедряемым временем.
+- **Сообщения** (JSON-тело, serde tag "type"):
+
+| Сообщение | Поля | Назначение |
+|---|---|---|
+| `ClientMsg::Hello` | `Hello { protocol_version, build, alef_home, alef_app_home }` | рукопожатие: версия, сборка, точные значения или отсутствие store-переменных |
+| `ClientMsg::Launch` | `Launch { request_id, target, args, cwd, env, console }` | запуск: request-id, точные OS-значения, env-изменения, консоль |
+| `ClientMsg::Query` | `Query { request_id }` | запрос состояния после неоднозначности |
+| `BrokerMsg::HelloAck` | `HelloAck { protocol_version, build }` | подтверждение рукопожатия |
+| `BrokerMsg::Reject` | `Reject { reason }` | отказ на уровне соединения: `RejectReason` — 9 вариантов |
+| `BrokerMsg::Accepted` | `Accepted { request_id }` | ack принятия запуска |
+| `BrokerMsg::Declined` | `Declined { request_id, reason }` | отказ до принятия: `NoSpare`, `Busy`, `Unsupported(..)`, `ValidationFailed` |
+| `BrokerMsg::Status` | `Status { request_id, state }` | ответ на Query: `LaunchState` — `Unknown`, `UnknownOutcome`, `Accepted`, `HandedOff`, `Failed` |
+
+- **Точные OS-значения:** `OsBytes` (Unix — байты, Windows — UTF-16), переносится lossless; `Launch` передаёт их как есть; относительные пути протокол не разрешает (брокер разрешает относительно cwd и повторно проверяет); `EnvChange { key, value: Option<..> }` — `None` означает явное удаление переменной.
+- **Аутентификация:** HMAC-SHA256 по токену из защищённого файла (не CLI/env/лог); обоюдный вызов client/server MAC; свежие nonce на соединение (`NonceSource`, `RandomNonce`); сравнение в постоянное время (`ct_eq`). Чистая логика, время внедряется.
+- **Правила неоднозначности:** отказ до принятия → cold; нет ack после `Launch` → `Query` того же request-id; `Unknown` после доказанной невозможности принятия → cold; `UnknownOutcome` → сообщить пользователю, никогда слепой cold-дубль. Повторный `Launch` с тем же request-id идемпотентен (`RequestLog`, ёмкость ≤ `MAX_LOG_ENTRIES`, время внедряется; `query` не различает «не видел» и «истёк» — обе дают `Unknown`, перевозку в `UnknownOutcome` делает транспорт по знанию о рестарте).
+- **Оставлено транспорту (ipc/):** права на pipe/socket (DACL / 0700 + 0600, peer uid/SID, session), peer-проверка, хранение токена, передача консольных потоков (`DuplicateHandle`/SCM_RIGHTS с проверкой), тайм-ауты и backpressure.

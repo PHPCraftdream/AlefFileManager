@@ -489,8 +489,8 @@ export function moduleScenarios({ drive, exe, verbose }) {
             if (saved.length !== 1 || !saved[0].endsWith('.ktav')) local.push(`the decisions were not kept in one .ktav file: ${JSON.stringify(saved)}`);
             else {
               const text = readFileSync(join(homeOf('ai-window'), 'consent', saved[0]), 'utf8');
-              // No Ktav parser in the runner: the entry of the one red right is matched as adjacent lines.
-              if (!/(?:^|\n)\s*permission: ai\.builtin\.exec\n\s*scope: null\n\s*decision: deny(?:\n|$)/.test(text)) local.push(`the store does not hold ai.builtin.exec=deny: ${saved[0]}`);
+              // No Ktav parser in the runner: the entry of the one red right is matched as adjacent lines (a missing scope is not written).
+              if (!/(?:^|\n)\s*permission: ai\.builtin\.exec\n(?:\s*scope: [^\n]*\n)?\s*decision: deny(?:\n|$)/.test(text)) local.push(`the store does not hold ai.builtin.exec=deny: ${saved[0]}`);
             }
             return local;
           },
