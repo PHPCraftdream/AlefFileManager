@@ -524,7 +524,10 @@ mod file_tests {
         let e = entry(dir.path(), "alef", &["--broker"]);
         Autostart::new(agent.clone()).enable(&e).expect("enable");
         let raw = std::fs::read_to_string(agent.path()).expect("file");
-        assert_eq!(agent.format().parse(&raw), Parsed::Entry(e.clone()));
+        assert_eq!(
+            agent.format().parse(&raw).expect("parse"),
+            Parsed::Entry(e.clone())
+        );
         assert_eq!(
             Autostart::new(agent.clone()).status().expect("status"),
             crate::autostart::Status::Enabled(e)

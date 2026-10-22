@@ -163,9 +163,9 @@ mod tests {
 
     const MARKER: &str = "# Owner: alef-runtime-broker (alef-broker autostart)";
 
-    fn entry(exe: &str, args: &[&str]) -> Entry {
+    fn entry(exe: impl AsRef<std::path::Path>, args: &[&str]) -> Entry {
         Entry::new(
-            PathBuf::from(exe),
+            PathBuf::from(exe.as_ref()),
             args.iter().map(OsString::from).collect(),
         )
     }
