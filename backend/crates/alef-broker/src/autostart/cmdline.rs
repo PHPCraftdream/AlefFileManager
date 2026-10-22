@@ -141,7 +141,7 @@ mod tests {
 
     fn round_trip(parts: &[&str]) {
         // An exe that is absolute on every platform (render validates it).
-        let exe = std::env::temp_dir().join(parts[0].replace(['/', '\\'], "_"));
+        let exe = std::env::temp_dir().join(parts[0].replace(['/', '\\', ':'], "_"));
         let entry = Entry::new(exe, parts[1..].iter().map(OsString::from).collect());
         let rendered = render_run_value(&entry).expect("render");
         let parsed = parse_run_value(&rendered).expect("parse");

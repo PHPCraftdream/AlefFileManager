@@ -405,17 +405,23 @@ mod tests {
 
     #[test]
     fn resolve_config_home_xdg_rules() {
+        // Absolute paths of the platform: "/abs" is not absolute on Windows.
+        let abs = std::env::temp_dir().join("abs");
+        let abs_text = abs.to_str().expect("utf-8 temp dir");
+        let home = std::env::temp_dir().join("h");
+        let home_text = home.to_str().expect("utf-8 temp dir");
+        let fallback = home.join(".config");
         assert_eq!(
-            resolve_config_home(Some("/abs"), Some("/h")),
-            Some(PathBuf::from("/abs"))
+            resolve_config_home(Some(abs_text), Some(home_text)),
+            Some(abs.clone())
         );
         assert_eq!(
-            resolve_config_home(Some(""), Some("/h")),
-            Some(PathBuf::from("/h/.config"))
+            resolve_config_home(Some(""), Some(home_text)),
+            Some(fallback.clone())
         );
         assert_eq!(
-            resolve_config_home(Some("rel"), Some("/h")),
-            Some(PathBuf::from("/h/.config"))
+            resolve_config_home(Some("rel"), Some(home_text)),
+            Some(fallback)
         );
         assert_eq!(resolve_config_home(None, None), None);
     }

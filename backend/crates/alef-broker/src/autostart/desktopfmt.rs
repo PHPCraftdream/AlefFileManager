@@ -197,7 +197,9 @@ mod tests {
     #[test]
     fn percent_is_doubled_in_exec() {
         let rendered = render_desktop(MARKER, &entry(abs("a"), &["50%"])).expect("render");
-        assert!(rendered.contains(&format!("Exec=\"{}\" \"50%%\"", abs("a").display())));
+        // The Exec field doubles a backslash of a Windows path.
+        let exe = abs("a").display().to_string().replace('\\', "\\\\");
+        assert!(rendered.contains(&format!("Exec=\"{exe}\" \"50%%\"")));
         assert_eq!(
             parse_desktop(MARKER, &rendered),
             Parsed::Entry(entry(abs("a"), &["50%"]))
