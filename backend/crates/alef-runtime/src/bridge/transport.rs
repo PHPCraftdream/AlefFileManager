@@ -226,6 +226,9 @@ impl MemoryProtocol {
                                 .map_or("-", |(_, value)| value.as_str());
                             (path.clone(), origin.to_owned())
                         });
+                        // The first successful answer of `app.info` is the moment the page
+                        // first learned about the application; the mark prints once.
+                        let is_app_info = path == "call/app.info";
                         let request = TransportRequest {
                             method,
                             path,
@@ -246,6 +249,9 @@ impl MemoryProtocol {
                             .unwrap_or_else(|_| failure(500, "INTERNAL", "internal error"));
                         if let Some((route, origin)) = route {
                             eprintln!("ALEF_CALL {route} {} origin={origin}", reply.status);
+                        }
+                        if is_app_info && reply.status == 200 {
+                            crate::timing::mark("first-info");
                         }
                         reply
                     }

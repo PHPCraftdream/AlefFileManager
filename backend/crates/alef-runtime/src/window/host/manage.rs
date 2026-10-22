@@ -189,6 +189,7 @@ impl App {
         rendering.make_current().map_err(|error| {
             io::Error::other(format!("Cannot activate Servo graphics context: {error:?}"))
         })?;
+        crate::timing::mark("context-ready");
         let servo = match self.windows.first() {
             Some(state) => state.servo.clone(),
             None => {
@@ -205,6 +206,7 @@ impl App {
                         })?)
                         .event_loop_waker(Box::new(self.waker.clone()))
                         .build();
+                crate::timing::mark("servo-built");
                 servo.setup_logging();
                 // Only with an explicit port is the delegate installed: without it the
                 // server is off, no callback can fire, and the reveal gate in `tick` must
@@ -256,6 +258,7 @@ impl App {
             .hidpi_scale_factor(Scale::new(window.scale_factor() as f32))
             .delegate(delegate);
         let webview = webview.user_content_manager(webcrypto).build();
+        crate::timing::mark("webview-built");
         self.ids.bind(webview.id(), window_id);
         webview.show();
         webview.focus();

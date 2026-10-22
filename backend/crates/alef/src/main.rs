@@ -33,7 +33,7 @@ use alef_modules::{
     desktop::args::{parse, Parsed},
     namespace_paths, register_all, AppInfo, Backends, Console, ModuleContext, Termination,
 };
-use alef_runtime::{Bridge, BridgeOptions, Commands, WindowOptions};
+use alef_runtime::{mark, Bridge, BridgeOptions, Commands, WindowOptions};
 use url::Url;
 
 #[path = "../apps/window.rs"]
@@ -119,6 +119,7 @@ fn install_failure(error: alef_launch::install::InstallError) -> Failure {
 }
 
 fn main() -> ExitCode {
+    mark("main");
     // Before any thread exists: the relaunch marker never reaches the applications' children.
     relaunch::runtime::take_marker();
     // The predecessor pid is consumed once and never reaches the applications' children.
@@ -153,19 +154,16 @@ async fn launch_main() -> ExitCode {
 
 #[cfg(feature = "e2e")]
 const HOOKS_NOTICE: &str = "this build carries the end-to-end hooks";
-
 #[cfg(feature = "e2e")]
 fn hooks_notice(mode: Option<&str>) -> Option<&'static str> {
     (mode == Some("1")).then_some(HOOKS_NOTICE)
 }
-
 #[cfg(feature = "e2e")]
 fn warn_end_to_end_build() {
     if let Some(notice) = hooks_notice(std::env::var("ALEF_E2E").ok().as_deref()) {
         eprintln!("{notice}");
     }
 }
-
 #[cfg(all(test, feature = "e2e"))]
 #[test]
 fn the_notice_of_the_hooks_is_given_only_in_an_end_to_end_run() {
@@ -325,6 +323,7 @@ async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
         }
         Command::Run(launch) => launch,
     };
+    mark("args-parsed");
     let mut launch = launch;
     if let alef_launch::install::RunTarget::Id(id) =
         alef_launch::install::run_target(&launch.target, launch.positional)
@@ -628,6 +627,8 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         None => None,
     };
     let asker = Asker::from_environment(grant, no_prompt).map_err(Failure::Usage)?;
+    // The consent window, when it opens, is awaited inside `settle_launch`.
+    mark("settle-begin");
     let settled = pipeline::settle_launch(
         plan,
         &identity,
@@ -638,6 +639,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         dev_url.as_ref(),
     )
     .await?;
+    mark("settle-end");
     let pipeline::SettledLaunch {
         plan,
         assets,
@@ -750,6 +752,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     alef_modules::data::log::install_panic_hook(&context)?;
 
     install_tls()?;
+    mark("tls-installed");
     let allowed_origins = dev_url
         .iter()
         .map(|url| url.origin().ascii_serialization())
@@ -787,11 +790,13 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         },
     )
     .await?;
+    mark("bridge-ready");
     eprintln!(
         "ALEF_READY app={} pid={}",
         plan.manifest.id,
         std::process::id()
     );
+    mark("ready");
     if windowless {
         eprintln!("ALEF_MODE windowless console={}", plan.manifest.console);
     }
