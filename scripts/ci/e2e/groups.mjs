@@ -9,7 +9,7 @@ export function expandGroup(group) {
 }
 
 export const E2E_GROUPS = [
-  'console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,manifest',
+  'console,service,service-signal,arguments,launch-modes,mcp-stdio,startup,startup-timing,manifest',
   'core,bus',
   'window',
   'csp',

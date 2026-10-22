@@ -345,7 +345,7 @@ impl Backend for WindowsRegistry {
 
         let subkey = Self::utf16(&self.subkey)?;
         let name = Self::utf16(super::RUN_VALUE_NAME)?;
-        let mut key = std::ptr::null_mut();
+        let mut key: windows_sys::Win32::System::Registry::HKEY = 0;
         // Invariant: `key` receives a valid open HKEY or the call failed.
         let status = unsafe { RegOpenKeyExW(self.root, subkey.as_ptr(), 0, KEY_READ, &mut key) };
         if status != ERROR_SUCCESS {
@@ -428,7 +428,7 @@ impl Backend for WindowsRegistry {
         let name = Self::utf16(super::RUN_VALUE_NAME)?;
         let mut value: Vec<u16> = raw.encode_utf16().collect();
         value.push(0);
-        let mut key = std::ptr::null_mut();
+        let mut key: windows_sys::Win32::System::Registry::HKEY = 0;
         // Invariant: `key` receives a valid open HKEY or the call failed.
         let status = unsafe {
             RegCreateKeyExW(
@@ -476,7 +476,7 @@ impl Backend for WindowsRegistry {
 
         let subkey = Self::utf16(&self.subkey)?;
         let name = Self::utf16(super::RUN_VALUE_NAME)?;
-        let mut key = std::ptr::null_mut();
+        let mut key: windows_sys::Win32::System::Registry::HKEY = 0;
         // Invariant: `key` receives a valid open HKEY or the call failed.
         let status =
             unsafe { RegOpenKeyExW(self.root, subkey.as_ptr(), 0, KEY_SET_VALUE, &mut key) };
@@ -709,7 +709,7 @@ mod windows_tests {
 
         // Create the key, then exercise write/read/overwrite/remove.
         let subkey_w = wide(&subkey);
-        let mut key = std::ptr::null_mut();
+        let mut key: windows_sys::Win32::System::Registry::HKEY = 0;
         // Invariant: `key` receives a valid open HKEY or the call failed.
         let status = unsafe {
             RegCreateKeyExW(

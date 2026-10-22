@@ -14,7 +14,6 @@ use super::Parsed;
 pub fn render_plist(label: &str, entry: &Entry) -> Result<String, AutostartError> {
     entry.validate()?;
     validate_label(label)?;
-    let exe = xml_escape(&entry.exe.to_string_lossy());
     let mut out = String::with_capacity(512);
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ");

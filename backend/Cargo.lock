@@ -243,6 +243,7 @@ version = "0.1.0"
 dependencies = [
  "alef-core",
  "alef-package",
+ "async-io",
  "bytes",
  "crossbeam-channel",
  "euclid",
@@ -271,6 +272,7 @@ dependencies = [
  "url",
  "windows-sys 0.52.0",
  "winit",
+ "zbus",
 ]
 
 [[package]]

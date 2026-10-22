@@ -136,7 +136,8 @@
     {
       "glob": "tests/e2e/scenarios/startup.mjs",
       "scenarios": [
-        "startup"
+        "startup",
+        "startup-timing"
       ]
     },
     {
