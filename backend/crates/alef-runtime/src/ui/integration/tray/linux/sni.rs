@@ -648,6 +648,8 @@ mod tests {
                 reply,
             })
             .unwrap();
+        // The failed worker answers until the channel closes: close it here.
+        drop(calls);
         super::run_with(no_bus, incoming, events, failed.clone());
         let error = answers.recv().unwrap().err().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
