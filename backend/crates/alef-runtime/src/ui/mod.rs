@@ -48,7 +48,7 @@ pub struct RuntimeHandle {
     host: Arc<HostState>,
 }
 
-/// The window commands of the File Manager (`window.apply`), kept until it moves to the modules.
+/// The legacy window commands (`window.apply`), kept until their callers move to the modules.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) enum WindowAction {

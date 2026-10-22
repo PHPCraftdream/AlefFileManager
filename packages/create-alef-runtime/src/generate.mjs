@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { validateOptions } from './validate.mjs';
 import { iconPng } from './icon.mjs';
 
-// Rsbuild matches the repository's observed version. Vite 6 supports Node 22;
+// Rsbuild is pinned to the exact version the template was verified with. Vite 6 supports Node 22;
 // use its major range rather than inventing an unobserved patch version.
 export const versions = Object.freeze({ API: '^0.1.0', TOOLS: '^0.1.0', RSBUILD: '2.2.9', VITE: '^6.0.0' });
 const templates = fileURLToPath(new URL('../templates/', import.meta.url));

@@ -9,7 +9,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 # EXE overrides the binary; default is the debug build of this checkout.
 if [ -z "${EXE:-}" ]; then
-  exe="$root/backend/target/debug/alef-file-manager"
+  exe="$root/backend/target/debug/alef"
   [ -x "$exe" ] || exe="$exe.exe"
 else
   exe="$EXE"
