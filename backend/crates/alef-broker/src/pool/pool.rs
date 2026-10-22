@@ -6,7 +6,7 @@ use core::time::Duration;
 
 use super::backoff::{capped_delay, Clock, Jitter};
 use super::config::PoolConfig;
-use super::state::{Action, Level, Slot, SlotKind, SlotState, SpareId};
+use super::state::{Action, Slot, SlotKind, SlotState, SpareId};
 
 /// Severity of a memory-pressure event reported by the wiring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,7 +196,7 @@ impl<C: Clock, J: Jitter> Pool<C, J> {
 
     /// When the wiring should call `fill` next; `None` means event-driven only.
     pub fn next_wake(&self) -> Option<Duration> {
-        let mut wake = None;
+        let mut wake: Option<Duration> = None;
         for kind in SlotKind::ALL {
             if !self.enabled(kind) {
                 continue;
