@@ -131,8 +131,7 @@ async fn read_named(source: &Arc<assets::Source>, path: &str) -> io::Result<()> 
         .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))
 }
 
-/// Embedder-supplied policy of the bridge; the default installs no modules, keeps the built-in CSP
-/// and the closed permission policy.
+/// Embedder-supplied policy of the bridge; the default installs no modules and keeps permissions closed.
 #[derive(Default)]
 pub struct BridgeOptions {
     /// Installs the framework modules; `None` serves only the commands of the embedder.
