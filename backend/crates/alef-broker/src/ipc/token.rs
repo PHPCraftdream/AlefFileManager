@@ -211,9 +211,9 @@ mod tests {
         use std::os::unix::fs::symlink;
         let tmp = tempfile::tempdir().unwrap();
         let real = tempfile::tempdir_in(tmp.path()).unwrap();
-        let link = tmp.path().join("link");
-        symlink(real.path(), &link).unwrap();
-        let ep = Endpoint::for_session(&link, "symlink");
+        let ep = Endpoint::for_session(tmp.path(), "symlink");
+        // The directory of the endpoint itself is a symlink.
+        symlink(real.path(), &ep.unix_dir).unwrap();
         assert!(load_or_create_token(&ep).is_err());
     }
 
@@ -221,11 +221,11 @@ mod tests {
     #[test]
     fn token_rejected_in_shared_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let wide = tmp.path().join("wide");
-        fs::create_dir(&wide).unwrap();
+        let ep = Endpoint::for_session(tmp.path(), "shared");
+        // The directory of the endpoint itself is wider than 0700.
+        fs::create_dir(&ep.unix_dir).unwrap();
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&wide, fs::Permissions::from_mode(0o755)).unwrap();
-        let ep = Endpoint::for_session(&wide, "shared");
+        fs::set_permissions(&ep.unix_dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(load_or_create_token(&ep).is_err());
     }
 

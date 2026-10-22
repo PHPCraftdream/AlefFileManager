@@ -82,7 +82,7 @@ impl Client {
         write_frame(&mut conn, &reply).map_err(ConnectError::Io)?;
 
         // 3. server -> client: mac_server
-        let mac_s = frames.read_exact_frame(&mut conn, 32)?;
+        let mac_s = read_exact_handshake(&mut frames, &mut conn, 32)?;
         let mut server_mac = [0u8; 32];
         server_mac.copy_from_slice(&mac_s);
         if !client_verify_server(token, &nonce_c, &nonce_s, &server_mac) {

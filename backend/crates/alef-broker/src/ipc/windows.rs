@@ -65,6 +65,13 @@ pub struct PipeListener {
     handle: Mutex<HANDLE>,
 }
 
+impl std::fmt::Debug for PipeListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The handle is not printed.
+        f.debug_struct("PipeListener").finish_non_exhaustive()
+    }
+}
+
 impl PipeListener {
     /// Create the first pipe instance with a user-only DACL.
     pub fn bind(ep: &Endpoint, user_sid: &str) -> io::Result<PipeListener> {

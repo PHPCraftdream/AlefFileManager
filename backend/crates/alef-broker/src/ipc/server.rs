@@ -463,15 +463,21 @@ mod tests {
                 request_id: format!("r{i}"),
             }));
         }
-        match client.recv() {
-            Ok(BrokerMsg::Reject(r)) => {
-                assert_eq!(r.reason, RejectReason::RateLimited);
+        // The replies to the first queries come before the Reject: read up to it.
+        loop {
+            match client.recv() {
+                Ok(BrokerMsg::Status(_)) => continue,
+                Ok(BrokerMsg::Reject(r)) => {
+                    assert_eq!(r.reason, RejectReason::RateLimited);
+                    break;
+                }
+                Err(ConnectError::Io(e)) => {
+                    // Some platforms deliver the close before the reject frame.
+                    assert_ne!(e.kind(), std::io::ErrorKind::WouldBlock);
+                    break;
+                }
+                other => panic!("unexpected: {other:?}"),
             }
-            Err(ConnectError::Io(e)) => {
-                // Some platforms deliver the close before the reject frame.
-                assert_ne!(e.kind(), std::io::ErrorKind::WouldBlock);
-            }
-            other => panic!("unexpected: {other:?}"),
         }
         server.stop();
         loop_handle.join().unwrap();

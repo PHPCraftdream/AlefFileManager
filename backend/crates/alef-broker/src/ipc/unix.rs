@@ -300,9 +300,9 @@ mod tests {
         use std::os::unix::fs::symlink;
         let tmp = tempfile::tempdir().unwrap();
         let real = tempfile::tempdir_in(tmp.path()).unwrap();
-        let link = tmp.path().join("link");
-        symlink(real.path(), &link).unwrap();
-        let ep = Endpoint::for_session(&link, "sym-dir");
+        let ep = Endpoint::for_session(tmp.path(), "sym-dir");
+        // The directory of the endpoint itself is a symlink.
+        symlink(real.path(), &ep.unix_dir).unwrap();
         assert!(UnixEndpointListener::bind(&ep).is_err());
     }
 
