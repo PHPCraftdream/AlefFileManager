@@ -452,6 +452,38 @@ fn no_prompt_belongs_to_the_launcher_and_the_consent_window_takes_two_files() {
 }
 
 #[test]
+fn permissions_accepts_application_ids_for_each_verb() {
+    let id = "org.example.app";
+    for verb in ["list", "reset"] {
+        let command = parse(&["permissions", verb, id]).unwrap();
+        match (verb, command) {
+            ("list", Command::Permissions(PermissionsCommand::List { app: Some(app) }))
+            | ("reset", Command::Permissions(PermissionsCommand::Reset { app })) => {
+                assert_eq!(app, PathBuf::from(id));
+            }
+            _ => panic!("unexpected permissions command for {verb}"),
+        }
+    }
+    assert_eq!(
+        parse(&[
+            "permissions",
+            "set",
+            id,
+            "clipboard.read",
+            "allow",
+            "--confirm-red"
+        ])
+        .unwrap(),
+        Command::Permissions(PermissionsCommand::Set {
+            app: PathBuf::from(id),
+            right: "clipboard.read".parse().unwrap(),
+            decision: Decision::Allow,
+            confirm_red: true,
+        })
+    );
+}
+
+#[test]
 fn permissions_has_three_verbs_with_strict_arguments() {
     assert_eq!(
         parse(&["permissions", "list"]).unwrap(),
@@ -469,6 +501,7 @@ fn permissions_has_three_verbs_with_strict_arguments() {
             app: PathBuf::from("site"),
             right: Right::scoped("app.env", "HOME"),
             decision: Decision::Substitute,
+            confirm_red: false,
         })
     );
     assert_eq!(
@@ -477,10 +510,37 @@ fn permissions_has_three_verbs_with_strict_arguments() {
             app: PathBuf::from("site")
         })
     );
+    assert_eq!(
+        parse(&[
+            "permissions",
+            "set",
+            "site",
+            "app.env:HOME",
+            "substitute",
+            "--confirm-red"
+        ])
+        .unwrap(),
+        Command::Permissions(PermissionsCommand::Set {
+            app: PathBuf::from("site"),
+            right: Right::scoped("app.env", "HOME"),
+            decision: Decision::Substitute,
+            confirm_red: true,
+        })
+    );
+    assert!(USAGE.contains("--confirm-red"));
     for bad in [
         &["permissions"][..],
         &["permissions", "grant"][..],
         &["permissions", "set", "site", "app.env:HOME"][..],
+        &[
+            "permissions",
+            "set",
+            "site",
+            "app.env:HOME",
+            "substitute",
+            "--confirm-red",
+            "--confirm-red",
+        ][..],
         &["permissions", "set", "site", "not a right", "allow"][..],
         &["permissions", "set", "site", "secrets", "maybe"][..],
         &["permissions", "set"][..],

@@ -108,6 +108,18 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 
 /// Loads the application source at `path`: a directory exactly as today, otherwise a package.
 pub fn load(path: &Path) -> Result<ApplicationSource, LoadFailure> {
+    load_with_runtime_check(path, true)
+}
+
+/// Loads and fully verifies application metadata without requiring this runtime to run it.
+pub fn load_metadata(path: &Path) -> Result<ApplicationSource, LoadFailure> {
+    load_with_runtime_check(path, false)
+}
+
+fn load_with_runtime_check(
+    path: &Path,
+    check_runtime: bool,
+) -> Result<ApplicationSource, LoadFailure> {
     let meta = std::fs::metadata(path).map_err(|error| LoadFailure {
         category: Some("NOT_A_PACKAGE"),
         detail: format!(
@@ -123,7 +135,10 @@ pub fn load(path: &Path) -> Result<ApplicationSource, LoadFailure> {
         });
     }
     if meta.is_file() {
-        return Ok(ApplicationSource::Package(Box::new(prepare(path)?)));
+        return Ok(ApplicationSource::Package(Box::new(prepare(
+            path,
+            check_runtime,
+        )?)));
     }
     Err(not_a_package(path))
 }
@@ -151,12 +166,12 @@ pub fn load_install_in(
     if !meta.is_file() {
         return Err(not_a_package(path));
     }
-    prepare_snapshot(path, true, runtime_store)
+    prepare_snapshot(path, true, runtime_store, true)
         .map(|(prepared, bytes)| (prepared, bytes.expect("retained installation snapshot")))
 }
 
-fn prepare(path: &Path) -> Result<Prepared, LoadFailure> {
-    prepare_snapshot(path, false, Path::new("")).map(|(prepared, _)| prepared)
+fn prepare(path: &Path, check_runtime: bool) -> Result<Prepared, LoadFailure> {
+    prepare_snapshot(path, false, Path::new(""), check_runtime).map(|(prepared, _)| prepared)
 }
 
 /// Freezes one bounded source snapshot; the install mode (used by `alef install` and the updater
@@ -168,6 +183,7 @@ fn prepare_snapshot(
     path: &Path,
     install: bool,
     runtime_store: &Path,
+    check_runtime: bool,
 ) -> Result<(Prepared, Option<Vec<u8>>), LoadFailure> {
     let file = std::fs::File::open(path).map_err(io_failure)?;
     let meta = file.metadata().map_err(io_failure)?;
@@ -230,26 +246,28 @@ fn prepare_snapshot(
             manifest.version
         )));
     }
-    if let Some(requirement) = manifest.runtime.as_deref() {
-        // Install mode (alef install / the updater applier) also accepts an already installed
-        // runtime version; the relaunch after the update then selects it (M7a.4). The run
-        // mode stays strict so the launcher, not this loader, handles the mismatch.
-        let satisfied = runtime_requirement_met(requirement, env!("CARGO_PKG_VERSION"))
-            || (install
-                && crate::runtimes::store::installed_in(runtime_store)
-                    .map(|installed| {
-                        installed
-                            .iter()
-                            .any(|entry| runtime_requirement_met(requirement, &entry.version))
-                    })
-                    .unwrap_or(false));
-        if !satisfied {
-            return Err(LoadFailure {
-                category: Some("RUNTIME_INCOMPATIBLE"),
-                detail: crate::runtimes::command::incompatible_detail(requirement),
-                exit: 2,
-                runtime_requirement: Some(requirement.to_owned()),
-            });
+    if check_runtime {
+        if let Some(requirement) = manifest.runtime.as_deref() {
+            // Install mode (alef install / the updater applier) also accepts an already installed
+            // runtime version; the relaunch after the update then selects it (M7a.4). The run
+            // mode stays strict so the launcher, not this loader, handles the mismatch.
+            let satisfied = runtime_requirement_met(requirement, env!("CARGO_PKG_VERSION"))
+                || (install
+                    && crate::runtimes::store::installed_in(runtime_store)
+                        .map(|installed| {
+                            installed
+                                .iter()
+                                .any(|entry| runtime_requirement_met(requirement, &entry.version))
+                        })
+                        .unwrap_or(false));
+            if !satisfied {
+                return Err(LoadFailure {
+                    category: Some("RUNTIME_INCOMPATIBLE"),
+                    detail: crate::runtimes::command::incompatible_detail(requirement),
+                    exit: 2,
+                    runtime_requirement: Some(requirement.to_owned()),
+                });
+            }
         }
     }
 

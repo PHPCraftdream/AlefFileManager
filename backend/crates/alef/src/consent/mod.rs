@@ -489,6 +489,17 @@ pub fn enforce(permissions: &PermissionSet, decided: &Consent) -> Result<(), Str
 /// How often a running application looks at the decisions of the user for a right taken back.
 pub const WATCH_EVERY: Duration = Duration::from_millis(500);
 
+/// Apply stored decisions to the running permission set; undecided rights revoke access.
+pub(crate) fn narrow_stored(permissions: &PermissionSet, stored: &Consent) -> bool {
+    let mut effective = stored.clone();
+    for right in permissions.rights() {
+        if !stored.decided(&right) {
+            effective.set(right, Decision::Deny);
+        }
+    }
+    permissions.narrow(&effective)
+}
+
 /// Follows the store while the application runs: a decision that takes a right back (to a stand-in,
 /// or away) applies at once, one that gives more waits for the next start (see `PermissionSet::narrow`).
 pub fn watch(
@@ -511,7 +522,7 @@ pub fn watch(
                         .load(&identity)
                         .ok()
                         .flatten()
-                        .map(|stored| permissions.narrow(&stored))
+                        .map(|stored| narrow_stored(&permissions, &stored))
                 }
             }) else {
                 continue;

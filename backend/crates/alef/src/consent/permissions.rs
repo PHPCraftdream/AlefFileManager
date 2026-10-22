@@ -10,7 +10,7 @@ use std::{
 };
 
 use alef_core::security::{
-    consent::{Consent, ConsentStore, Identity, Right, RiskLevel},
+    consent::{ConsentStore, Identity, Right},
     permissions::PermissionSet,
 };
 use alef_core::session::usage;
@@ -27,7 +27,7 @@ use crate::{
 
 /// Who the application is and what its manifest asks for, a folder or a package.
 fn asked_by(app_dir: &Path) -> Result<(Identity, Vec<Right>, Arc<PermissionSet>), String> {
-    match source::load(app_dir) {
+    match source::load_metadata(app_dir) {
         Ok(source::ApplicationSource::Directory { dir }) => {
             let manifest = load_manifest(&dir).map_err(|e| e.message)?;
             let vars = path_vars(&dir, &manifest.id).map_err(|e| e.message)?;
@@ -101,10 +101,23 @@ pub(crate) fn parse_permissions(
                     .ok_or("permissions set: <DECISION> is required")?,
                 "the decision",
             )?;
+            let right = right.parse()?;
+            let decision = decision_named(&decision)?;
+            let confirm_red = match arguments.next() {
+                None => false,
+                Some(flag) if flag == "--confirm-red" => true,
+                Some(extra) => {
+                    return Err(format!(
+                        "permissions set: unexpected argument {}",
+                        extra.to_string_lossy()
+                    ))
+                }
+            };
             PermissionsCommand::Set {
                 app,
-                right: right.parse()?,
-                decision: decision_named(&decision)?,
+                right,
+                decision,
+                confirm_red,
             }
         }
         "reset" => PermissionsCommand::Reset {
@@ -248,38 +261,49 @@ pub fn run_ai(command: &AiCommand) -> Result<String, String> {
 
 /// Does what the command says and reports it as text for the terminal.
 pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<String, String> {
+    run_in(command, store, &crate::consent::runtime_home())
+}
+
+/// Runs permissions against an explicit runtime home for deterministic callers and tests.
+pub fn run_in(
+    command: &PermissionsCommand,
+    store: &dyn ConsentStore,
+    home: &Path,
+) -> Result<String, String> {
+    use crate::apps::AppsIndex;
     let mut out = String::new();
     match command {
         PermissionsCommand::List { app: None } => {
-            let identities = store.identities().map_err(io)?;
-            if identities.is_empty() {
-                out.push_str("no decisions yet\n");
+            for identity in store.identities().map_err(io)? {
+                if store
+                    .load(&identity)
+                    .map_err(io)?
+                    .is_some_and(|consent| consent.decisions().next().is_some())
+                {
+                    let place = identity.signer.as_deref().unwrap_or("-");
+                    let _ = writeln!(out, "{}\t{place}", identity.app_id);
+                }
             }
-            for identity in identities {
-                let place = identity.signer.as_deref().unwrap_or("-");
-                let _ = writeln!(out, "{}\t{place}", identity.app_id);
+            if out.is_empty() {
+                out.push_str("no decisions yet\n");
             }
         }
         PermissionsCommand::List { app: Some(app) } => {
-            let (identity, wanted, permissions) = asked_by(app)?;
-            let consent = store.load(&identity).map_err(io)?;
-            let _ = writeln!(out, "{}", identity.app_id);
-            if wanted.is_empty() {
+            let description = AppsIndex::new(home, store).describe(app)?;
+            let _ = writeln!(out, "{}", description.identity.app_id);
+            if description.rights.is_empty() {
                 out.push_str("  asks for nothing\n");
             }
-            for right in &wanted {
-                let word = match &consent {
-                    Some(consent) if consent.decided(right) => word_of(consent.decision(right)),
-                    _ => "undecided",
-                };
-                let _ = write!(out, "  {word}\t{right}");
-                if right.level() == RiskLevel::Red {
+            for right in description.rights {
+                let word = right.decision.map(word_of).unwrap_or("undecided");
+                let _ = write!(out, "  {word}\t{}", right.right);
+                if right.red {
                     out.push_str("\tRED");
-                    if let Some(risk) = right.risk() {
+                    if let Some(risk) = right.right.risk() {
                         let _ = write!(out, "\t{risk}");
                     }
                 }
-                if let Some(detail) = permissions.describe(right) {
+                if let Some(detail) = right.description {
                     let _ = write!(out, "\t{detail}");
                 }
                 out.push('\n');
@@ -289,30 +313,13 @@ pub fn run(command: &PermissionsCommand, store: &dyn ConsentStore) -> Result<Str
             app,
             right,
             decision,
+            confirm_red,
         } => {
-            let (identity, wanted, _) = asked_by(app)?;
-            if !wanted.contains(right) {
-                return Err(format!(
-                    "{} does not ask for {right}; it asks for: {}",
-                    identity.app_id,
-                    wanted
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            let mut consent = store
-                .load(&identity)
-                .map_err(io)?
-                .unwrap_or_else(Consent::undecided);
-            consent.set(right.clone(), *decision);
-            store.save(&identity, &consent).map_err(io)?;
+            AppsIndex::new(home, store).set(app, right, *decision, *confirm_red)?;
             let _ = writeln!(out, "{right}: {}", word_of(*decision));
         }
         PermissionsCommand::Reset { app } => {
-            let (identity, _, _) = asked_by(app)?;
-            store.forget(&identity).map_err(io)?;
+            let identity = AppsIndex::new(home, store).reset(app)?;
             let _ = writeln!(
                 out,
                 "forgotten: the next start of {} asks again",
@@ -455,6 +462,51 @@ mod tests {
     }
 
     #[test]
+    fn parser_handles_confirm_red_once() {
+        assert!(parse_permissions(
+            ["set", "site", "tray", "allow", "--confirm-red"]
+                .map(OsString::from)
+                .into_iter()
+        )
+        .is_ok());
+        let error = parse_permissions(
+            [
+                "set",
+                "site",
+                "tray",
+                "allow",
+                "--confirm-red",
+                "--confirm-red",
+            ]
+            .map(OsString::from)
+            .into_iter(),
+        )
+        .unwrap_err();
+        assert!(error.contains("unexpected argument --confirm-red"));
+    }
+
+    #[test]
+    fn red_cli_set_requires_confirmation() {
+        let scratch = tempfile::tempdir().unwrap();
+        let store = FileConsentStore::new(scratch.path().join("store"));
+        let folder = app_with_command(scratch.path(), "org.example.red");
+        let denied = PermissionsCommand::Set {
+            app: folder.clone(),
+            right: "cli.exec:sidecar:tool".parse().unwrap(),
+            decision: Decision::Allow,
+            confirm_red: false,
+        };
+        assert!(run(&denied, &store).unwrap_err().contains("--confirm-red"));
+        let confirmed = PermissionsCommand::Set {
+            app: folder,
+            right: "cli.exec:sidecar:tool".parse().unwrap(),
+            decision: Decision::Allow,
+            confirm_red: true,
+        };
+        assert!(run(&confirmed, &store).is_ok());
+    }
+
+    #[test]
     fn the_user_lists_sets_and_forgets_the_decisions_for_an_application() {
         let scratch = tempfile::tempdir().unwrap();
         let store = FileConsentStore::new(scratch.path().join("store"));
@@ -474,6 +526,7 @@ mod tests {
             app: folder.clone(),
             right: right.parse().unwrap(),
             decision,
+            confirm_red: false,
         };
         assert_eq!(
             run(&set("clipboard.read", Decision::Substitute), &store).unwrap(),
@@ -519,6 +572,7 @@ mod tests {
                 app: folder.clone(),
                 right: "tray".parse().unwrap(),
                 decision,
+                confirm_red: false,
             };
             assert_eq!(run(&set, &store).unwrap(), format!("tray: {word}\n"));
             assert!(run(&list, &store)
@@ -556,6 +610,7 @@ mod tests {
             app: folder,
             right: "cli.command:status".parse().unwrap(),
             decision: Decision::Substitute,
+            confirm_red: false,
         };
         run(&set, &store).unwrap();
         assert!(run(&list, &store)
@@ -573,6 +628,7 @@ mod tests {
                 app: folder,
                 right: "secrets".parse().unwrap(),
                 decision: Decision::Allow,
+                confirm_red: false,
             },
             &store,
         )
@@ -596,6 +652,7 @@ mod tests {
                 app: first.clone(),
                 right: "clipboard.read".parse().unwrap(),
                 decision: Decision::Allow,
+                confirm_red: false,
             },
             &store,
         )
@@ -636,6 +693,7 @@ mod tests {
             app: package.clone(),
             right: "clipboard.read".parse().unwrap(),
             decision: Decision::Substitute,
+            confirm_red: false,
         };
         assert_eq!(run(&set, &store).unwrap(), "clipboard.read: substitute\n");
         assert!(run(&list, &store)
