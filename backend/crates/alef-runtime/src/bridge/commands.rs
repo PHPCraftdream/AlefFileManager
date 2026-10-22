@@ -92,8 +92,8 @@ impl Commands {
     }
 
     /// Builds the registry behind `native://call`: every legacy command under its registry name,
-    /// plus `window.apply` of the File Manager (same JSON as the legacy `runtime.window`), which
-    /// stays until the File Manager uses the window module.
+    /// plus `window.apply` (same JSON as the legacy `runtime.window`), which stays until the
+    /// applications that call it use the window module.
     pub(crate) fn to_registry(&self, ui: &RuntimeHandle) -> Result<Registry, AlefError> {
         let mut registry = Registry::default();
         for (name, handler) in &self.handlers {

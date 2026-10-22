@@ -18,7 +18,7 @@
 - CSP приложения: `default-src native:; connect-src native:` — **любой** `fetch`/`WebSocket` наружу из страницы заблокирован. Сетевой API должен быть нативным (или CSP должна задаваться манифестом).
 - Servo 0.6 содержит DOM для `SubtleCrypto`, `WebSocket`, `MediaDevices`, `AudioContext`, но в сборке используется `servo-media-dummy` (GStreamer не подключён): **камера, микрофон, Web Audio, `<audio>/<video>` в браузере не работают**.
 - В дереве зависимостей уже есть `rusqlite`, `arboard` (clipboard), `hyper`, `rustls`, `ring`/`aws-lc-rs`, `fjall` — часть API реализуется без новых тяжёлых зависимостей.
-- Команды приложения регистрировались Rust-кодом (`backend/src`); с M3.6 File Manager идет на встроенном API runtime, `backend/src` удален.
+- Команды приложения регистрировались Rust-кодом (`backend/src`); с M3.6 приложение-пример File Manager идёт на встроенном API runtime, `backend/src` удалён. Само приложение теперь — отдельный репозиторий alef-file-manager.
 
 ## Фаза 0 — фундамент (до любых новых API)
 

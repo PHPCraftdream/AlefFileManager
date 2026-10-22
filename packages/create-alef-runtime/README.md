@@ -1,5 +1,8 @@
 # create-alef-runtime
 
+Template generator for a new application on alef-runtime
+(`npm create alef-runtime` once the package is published).
+
 Private 0.1.0 ESM package, MIT OR Apache-2.0. Node >=22.12.0;
 no dependencies, build step or runtime binary.
 CLI bin: `create-alef-runtime`; checkout: `node packages/create-alef-runtime/bin/create-alef-runtime.mjs`.
@@ -43,7 +46,7 @@ in the message. It writes files only: no installs and no git.
 | Package | Range | Source |
 |---|---|---|
 | `@alef-runtime/*` | `^0.1.0` | caret within this repository |
-| `@rsbuild/core` | `2.2.9` exact | observed in root `package.json` |
+| `@rsbuild/core` | `2.2.9` exact | pinned in `src/generate.mjs`; matched the root `package.json` while the File Manager app (now the separate alef-file-manager repository) lived here |
 | `vite` | `^6.0.0` | major range, Vite 6 supports Node 22; exact patch not observed here |
 
 Bundlers ship as overlays over the same base template: `rsbuild` adds

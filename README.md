@@ -1,121 +1,105 @@
-# AlefFileManager
+# Alef runtime
 
-Самостоятельный проект: встроенный Servo 0.6, Rust/Tokio backend, TypeScript/React, Rsbuild, Tailwind, Oxlint, i18next и Fjall. Frontend — небольшой Hello World с реальным вызовом Rust и сохранением языка (ru/en/he, RTL для иврита).
+Alef — десктопный runtime для приложений на HTML, CSS и JS/TS. Приложение запускается во встроенном Servo 0.6, а нативные возможности (окна, файлы, сеть, меню, трей, процессы, базы данных и другие) получает через типизированный JS API `@alef-runtime/api`. Rust автор приложения не пишет: runtime — готовый бинарник `alef`, он читает манифест `alef.ktav` и ассеты приложения.
 
-## Запуск
+- **Приложение — пакет `.alef`:** zip с манифестом, ассетами и подписью. Runtime ставится отдельно, как JRE; приложение находит нужную версию runtime. Установщик со встроенным runtime — необязательная опция.
+- **Права подтверждает пользователь:** разрешить, подменить (приложение не отличает среду-двойник от настоящей) или отказать. Всё, что не объявлено в манифесте, закрыто.
+- **Три режима одного бинарника:** окно, консоль (stdin/stdout, код выхода) и служба (без окна и консоли).
+- **Платформы:** Windows x64, macOS arm64, macOS x64, Linux x64 (матрица CI).
 
-Проверено на Windows x64: Rust 1.97.0 (MSVC), Node.js 24.12.0, npm 11.13.0. Для native сборки нужны MSVC C++ Build Tools/Windows SDK и зависимости сборки Servo (CMake, Ninja, Python, LLVM). Linux/macOS используют кроссплатформенные API Servo/winit, но здесь не проверены запуском.
+Приложение-пример на этом runtime — [alef-file-manager](https://github.com/PHPCraftdream/alef-file-manager) (отдельный репозиторий; раньше жило здесь, репозиторий назывался AlefFileManager).
+
+## Что в репозитории
+
+| Каталог | Что |
+|---|---|
+| `backend/crates/alef-core` | Ядро без Servo: протокол кадров, сессии документов, таблица ресурсов, реестр команд, права, манифест, коды ошибок |
+| `backend/crates/alef-modules` | Реализации API без Servo: desktop, system, data, net, media, ai и другие модули |
+| `backend/crates/alef-package` | Формат пакета `.alef` на стороне runtime: чтение, подпись, проверка |
+| `backend/crates/alef-runtime` | Servo и winit: протокол `native://`, окна, ввод, UI-диспетчер, мост до модулей |
+| `backend/crates/alef` | Бинарник `alef`: лаунчер, установка и удаление приложений, права, версии runtime |
+| `backend/patches` | Локальные патчи зависимостей: `servo-paint`, `servo-paint-api`, `surfman`, `winit` ([docs/PATCHES.md](docs/PATCHES.md)) |
+| `packages/api` | `@alef-runtime/api` — JS API: async-вызовы, потоки, события, сегментированные подпути ([docs/api/SEGMENTS.md](docs/api/SEGMENTS.md)) |
+| `packages/mcp` | `@alef-runtime/mcp` — MCP-сервер и клиент поверх модулей `http`, `websocket`, `cli` |
+| `packages/tools` | `@alef-runtime/tools` — CLI `alef-runtime`: `keys`, `pack`, `verify`, `check`, `build`, `dev`, `bundle`, `fetch-runtime` |
+| `packages/runtime` | `@alef-runtime/runtime` — мета-пакет: выбирает бинарник платформы из `@alef-runtime/runtime-<платформа>` |
+| `packages/create-alef-runtime` | `npm create alef-runtime` — генератор проекта приложения (шаблоны `rsbuild` и `vite`) |
+| `tests/e2e` | Сценарии на реальном окне и приложения-образцы `tests/e2e/apps/*` |
+| `scripts` | Обёртка `cargo`, планировщик CI, генераторы релиза, проверки качества и цепочки поставки |
+| `experiments` | Спайки, оставшиеся от этапа M0 |
+| `docs` | План, архитектура, этапы, ревью и чекпойнты |
+
+Модули `alef-core` и `alef-modules` не зависят от Servo: их проверка и тесты идут без сборки Servo. Всё, что требует главного потока (окна, меню, трей, глобальные хоткеи), модули выполняют через `UiDispatcher`, остальное — на Tokio.
+
+## Для автора приложения
+
+Пакеты `@alef-runtime/*` и `create-alef-runtime` пока не опубликованы в npm: релиз ещё не выпускался, сухой прогон публикации в CI проходит. До первого релиза команды запускаются из исходников (`node packages/tools/bin/alef-runtime.mjs …`). Рабочий цикл:
+
+```sh
+npm create alef-runtime        # проект приложения из шаблона
+alef-runtime dev               # сервер сборщика и окно runtime
+alef-runtime build             # каталог приложения: манифест, иконка, ресурсы
+alef-runtime pack --key <имя>  # подписанный пакет .alef
+alef run app.alef              # запуск пакета установленным runtime
+alef-runtime bundle app.alef --platform linux-x64   # установщик с runtime внутри
+alef-runtime fetch-runtime --platform win32-x64     # только бинарник runtime нужной платформы
+```
+
+`bundle` без `--runtime` и `fetch-runtime` берут runtime из npm-пакета платформы, проверяют его integrity по записи реестра и кладут в кэш (`$ALEF_RUNTIME_HOME/cache/runtime`, по умолчанию `~/.alef-runtime/cache/runtime`). Подробности — в [packages/tools/README.md](packages/tools/README.md) и [docs/stages/m7-distribution.md](docs/stages/m7-distribution.md).
+
+## Командная строка runtime
+
+```text
+alef run <ПУТЬ|ID> [параметры] [-- <аргументы приложения>]
+alef --app <КАТАЛОГ> [параметры] [-- <аргументы приложения>]
+alef install <ПАКЕТ> [--trust-key <КЛЮЧ>] [--allow-unsigned]
+alef uninstall <ID> [--purge-data]
+alef apps [--json]
+alef permissions list|set|reset …
+alef ai limits|log …
+alef trust <ЗАПРОС> <ОТВЕТ>
+alef runtime list|install|prune …
+```
+
+`run` принимает каталог разработки, файл `.alef` или id установленного приложения. Параметры запуска: `--dev-url` (документ с сервера разработки на 127.0.0.1), `--devtools[=PORT]` (локальная отладка Servo, только для каталога разработки), `--grant allow|substitute|deny`, `--trust-key`, `--allow-unsigned`, `--no-prompt`. Полный текст — `alef --help` и `backend/crates/alef/src/args.rs`.
+
+## Сборка и проверки
+
+Нужны Rust (минимальные версии: `alef-package` 1.88, `alef-core` 1.89, остальные крейты 1.90), Node.js >= 22.12 (CI — 24), зависимости сборки Servo и SpiderMonkey: clang с libclang, CMake, Ninja, Python 3; на Windows — MSVC Build Tools и Windows SDK. Локально проверено на Windows x64 (Rust 1.97.0 MSVC, Node.js 24.12.0, npm 11.13.0).
 
 ```sh
 npm ci
-npm run dev
+npm run check        # Oxlint, лимиты структуры, tsc (packages/api, packages/mcp), Clippy всего workspace
+npm run build        # cargo build всего workspace
+npm run test:rust    # Rust-тесты
+npm run test:e2e     # сценарии на реальном окне (нужен собранный alef)
 ```
 
-`dev` собирает Rust, запускает Rsbuild на `127.0.0.1:3000`, затем открывает native окно. React обновляется через HMR. После изменений Rust перезапустите `dev`. Закрытие окна останавливает принадлежащий launcher процесс Rsbuild; занятый порт — ошибка, не автоматическая замена сервера.
+Cargo запускается через `node scripts/cargo.mjs <команда>` — обёртка задаёт `--manifest-path backend/Cargo.toml` и `--jobs 1`. Тесты JS-пакетов: `test:api`, `test:mcp`, `test:tools`, `test:create`, `test:runtime`; скриптов: `test:ci`, `test:release`, `test:types`, `test:structure`, `test:mutate`.
 
-```sh
-npm run build
-npm start
-npm run check
-npm run test:rust
-```
+`npm run lint:structure` держит в нашем коде (`backend/crates`, `scripts`, `packages`, `tests`, `experiments`) не более 7 элементов в каталоге и не более 1000 строк в файле (`scripts/quality/check-structure.mjs`).
 
-- `build`: TypeScript/Rsbuild production frontend и Rust workspace.
-- `start`: `alef --app frontend/app` на ранее собранном приложении; Rsbuild не нужен.
-- `check`: Oxlint, лимиты структуры, TypeScript и Clippy всего workspace с ошибкой на warnings.
-- `lint:structure`: в нашем коде (`frontend/src`, `frontend/test`, `backend/crates`, `scripts`, `packages`, `tests`, `experiments`) не более 7 элементов в папке и не более 1000 строк в файле (`scripts/quality/check-structure.mjs`, тесты — `npm run test:structure`; обе проверки идут в CI на всех ОС).
-- `test:rust`: Rust-тесты приложения и runtime.
-- `dev:web`: только asset server; обычный браузер не имеет доступа к native bridge.
+## CI
 
-File Manager — обычное приложение Alef: манифест `frontend/app-source/alef.ktav` и иконка `icon.png` (сборка собирает их в каталог приложения `frontend/app`, страницы лежат в его `dist/`), запуск — генерический бинарник `alef` (`npm start`, `npm run dev`). Аргументы приложения передаются после имени скрипта, например:
+- **CI:** планировщик `scripts/ci/plan.mjs` по изменённым файлам выбирает затронутые крейты, JS-пакеты и e2e-сценарии; полная матрица (Windows, macOS arm64, macOS x64, Linux) идёт на main и по расписанию. Подробности — [docs/stages/m0-results/ci.md](docs/stages/m0-results/ci.md).
+- **Supply:** `cargo deny` (advisories, bans, sources), проверка лицензий крейтов и npm-пакетов по одному списку `backend/deny.toml` — только когда набор зависимостей изменился с последней зелёной проверки, MSRV и учёт патчей.
+- **Release:** сухой прогон по `release-check/**` или вручную — сборка профиля `dist` на четырёх платформах, архивы и dry-run публикации npm; выпуск — по тегу.
+- **Mutation:** мутационные проверки по запросу.
 
-```sh
-npm start -- --root ~/Documents
-```
+## Документация
 
-`--root` — каталог, с которого начинается список; он должен лежать в домашнем каталоге (манифест разрешает чтение `$HOME/**`, право спрашивается у пользователя при первом запуске). Язык хранится в `store` приложения (`org.alef.filemanager`, каталог данных пользователя). Старые данные Fjall прежней версии (`AlefFileManager/fjall`) не переносятся: там была одна настройка языка.
-
-## Структура и повторное использование
-
-- `backend/crates/alef-runtime`: независимый crate `alef-runtime`; Servo window host, приватный bridge, typed async command registry, события backend → browser, window API и универсальный async Fjall facade.
-- `frontend/app-source`: манифест `alef.ktav` и иконка File Manager (сборка кладёт их в корень приложения `frontend/app`, страницы — в его `dist/`); Rust-кода у приложения нет.
-- `frontend/src/native/runtime.ts`: универсальные `invoke`, `listen`/`Unlisten`, `nativeWindow` без зависимости от React или команд Alef.
-- `frontend/src/native/api.ts`: язык в `store`, каталог через `fs`, `app.info` — поверх `@alef-runtime/api`; тест — `frontend/test/native-api.test.mjs`.
-- `backend/patches/servo-paint-api`: локальный Servo 0.6 fix активации GL context до загрузки GL функций; версия не изменена.
-- `backend/patches/surfman`: surfman 0.13.0 без `WS_VISIBLE` у служебного окна `SurfmanFalseWindow` (на Windows оно создаётся при первом GL-контексте для загрузки расширений WGL и мигало на экране ~30 мс при каждом запуске); версия не изменена, лицензии сохранены.
-- `backend/patches/winit`: winit 0.30.13 с Windows fixes для packed signed coordinates в `WM_NCLBUTTONDOWN`, чтения maximized state из HWND и drag lifecycle по `WM_ENTERSIZEMOVE`/`WM_EXITSIZEMOVE`. Это устраняет зависший drag guard после maximize/restore; версия не изменена, Apache-2.0 license сохранена. [Win32 LPARAM контракт](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nclbuttondown).
-- `backend/crates/alef-runtime/src/window`: Servo window host (`app`, `state`, `delegate`), синхронный resize (`resize_wait`), ввод (`input/`: wheel, edge hit-testing); `backend/crates/alef-runtime/src/bridge`: приватный protocol bridge и `commands`.
-- `backend/crates/alef-runtime/src/window/platform`: Windows/Linux/macOS реализации icon, wheel policy и native resize capability; общий runtime не содержит платформенных FFI.
-
-Другой binary в Rust workspace может зависеть от `alef-runtime`, зарегистрировать собственные команды через `Commands::register`, вызвать async `Bridge::new`, создать `WindowOptions::new(title, icon_png)` и открыть окно через `run`; после закрытия нужно await `Bridge::shutdown`. Default options: 1200×800 logical pixels, `decorations = true`, `resizable = true`; поля можно переопределить перед `run`. Handler получает serde-аргументы и `RuntimeHandle`, возвращает `Future<Output = io::Result<T>>`; код приложения не реализует transport. `Bridge::handle()` позволяет передавать тот же async handle собственным backend задачам. GUI event loop выполняется на main thread; команды — на Tokio workers. При переносе crate в другой workspace нужно сохранить root Cargo patches для `servo-paint-api` и `winit`, а также настройку TLS provider из native entry point.
-
-`Store::open(path, keyspace)`, `get`, `insert`, `remove`, `flush`, `close` — async. Синхронные Fjall handles приватны; операции выполняются через awaited `tokio::task::spawn_blocking`. `insert/remove` не обещают fsync: для durability нужен `flush`. Уже запущенная blocking операция может завершиться после отмены вызывающего Future. Закрывайте владельцев через async `close` либо lifecycle bridge, чтобы освобождение базы не пришлось на UI thread.
-
-## События и подписки
-
-Rust handler может генерировать типизированные события из Tokio:
-
-```rust
-commands.register("hello", |(): (), context| async move {
-    let payload = serde_json::json!({ "process_id": std::process::id() });
-    context.emit("backend.greeting", &payload).await?;
-    Ok(payload)
-})?;
-```
-
-Browser подписывается до вызова команды:
-
-```typescript
-const unlisten = listen<{ process_id: number }>("backend.greeting", payload => {
-  console.log(payload.process_id);
-});
-await invoke("hello");
-unlisten();
-```
-
-`listen` возвращает идемпотентную отписку; можно передать `{ signal }` для автоматической отписки через `AbortController`. Несколько подписчиков независимы. События отправляются в текущую страницу через Servo JavaScript evaluator и DOM `CustomEvent`; polling, timers, HTTP/WebSocket для событий отсутствуют. Payload сериализуется serde JSON, не интерполируется как пользовательский JS source. Это live broadcast без replay/persistence: событие без активного подписчика не сохраняется. `emit().await` подтверждает dispatch, не завершение асинхронной бизнес-логики browser callback.
-
-UI admission ограничен 64 операциями, включая уже переданные в JS и ожидающие callback. Сериализация события начинается после admission; event JSON ограничен 256 KiB. Permit освобождается после ответа или уничтожения callback. После закрытия окна сохранённые backend handles получают `BrokenPipe`. Namespace `runtime.*` зарезервирован для встроенных команд и событий.
-
-## Window API и custom titlebar
-
-`WindowOptions.decorations = false` скрывает системный заголовок. React `TitleBar` демонстрирует собственные кнопки minimize/maximize/restore/close, drag-зону и double-click maximize. В maximized состоянии кнопка restore показывает два перекрывающихся квадрата. Resize edges обрабатывает native host, а не DOM overlays: 8 logical pixels с учётом DPI, corners имеют приоритет. `resizable = false` отключает native edge hit-testing и OS resize; по умолчанию resize включён.
-
-```typescript
-const stopWatching = await nativeWindow.watch(state => {
-  console.log(state.width, state.height, state.maximized);
-});
-const snapshot = await nativeWindow.getState();
-await nativeWindow.maximize();
-await nativeWindow.restore();
-await nativeWindow.setDecorations(false);
-await nativeWindow.setResizable(false);
-stopWatching();
-```
-
-Также доступны `minimize`, `toggleMaximize`, `close`, `startDrag`, `startResize(edge)`, `setResizable(enabled)`; Rust использует `RuntimeHandle::window(WindowAction)`. Все запросы проходят capability-защищённый bridge и bounded UI queue; OS/winit/Servo операции выполняются только на native main thread, не из Tokio workers. Если ожидающий Future отменён до исполнения, queued запрос пропускается; уже применённая OS операция не откатывается.
-
-Window state содержит revision, title, client size, outer position, scale factor, focus, maximized/minimized/visible, decorations, resizable/fullscreen и capability `supportsDragResize`. Недоступные платформенные значения — `null`, не выдуманные defaults. `watch` сначала подписывается, затем читает snapshot; revision предотвращает перезапись свежего события устаревшим RPC ответом. Native изменения публикуются событиями `runtime.window.state`; промежуточные состояния coalesced, одновременно отправляется не более одного state event. Отправка начинается после готовности JS-контекста страницы, без polling.
-
-`startDrag`/`startResize` вызываются на `pointerdown` при нажатой основной кнопке мыши. Backend проверяет реальный native input state. На macOS winit не поддерживает `drag_resize_window`: capability false, error не скрывается и fake fallback отсутствует. Linux/macOS runtime запуском здесь не проверены. Завершение window command означает применение native запроса; итоговое OS состояние приходит через `watch`, не предполагается по результату setter.
-
-При resize host берёт текущий physical client size из native окна, а не устаревший размер queued события. Servo rendering surface проверяется на точное совпадение с client size; после resize старый frame не отправляется на новую surface до уведомления Servo о готовности frame. Resize cursor удерживается до завершения native drag. Это не обещание нулевой задержки асинхронного Servo layout/render.
-
-Windows maximize использует доступную OS work area, не весь monitor: client origin совпадает с верхней границей work area. Зарезервированная Windows область над ней не является padding приложения; runtime не меняет глобальную work area. Для window/taskbar задаются обе иконки Windows, SMALL и BIG.
-
-Wheel line deltas нормализуются в device pixels до передачи Servo 0.6: reference step — 76 logical pixels при стандартной line policy, с масштабированием по DPI и чтением Windows scroll lines/chars. Disabled scrolling и page scrolling сохраняются; pixel deltas не масштабируются повторно.
-
-Hello World генерирует настоящее `backend.greeting` при вызове Rust; UI показывает количество событий, позволяет отписаться/подписаться, переключить native titlebar и включить/выключить resizing. Синтетического фонового event generator нет.
-
-## Browser/backend transport
-
-`native://invoke/` обрабатывается зарегистрированным внутри Servo `ProtocolHandler`. Fetch/Promise здесь не означает HTTP transport: запрос остаётся внутри процесса, socket/listener не создаётся. Production assets приходят из `native://app/`; в dev HTTP/WebSocket используются только Rsbuild assets/HMR, не командами приложения.
-
-Servo работает с `multiprocess: false`, а `ipc-channel` — с `force-inprocess`: внутренние каналы также остаются в памяти. Схема не регистрируется как системный URL handler. Другому процессу не предоставляется TCP port, named pipe или иной endpoint для подключения к backend. Вызовы дополнительно требуют случайный 256-bit capability текущего bridge; capability не выводится в startup log. Одновременно допускается 32 native команды, JSON request ограничен 256 KiB. Drop protocol future abort-ит принадлежащую ему async task. `AbortSignal` не следует считать rollback команды: уже начатый Fjall I/O может закончиться после отмены ожидания frontend.
-
-Это не защита от debugger/process injection, чтения памяти с соответствующими правами или изменения доверенного frontend на диске. Production CSP запрещает внешние scripts/frames/connect destinations. Доступ к файловым директориям и assets ограничен их заданными корнями.
-
-Windows smoke: production без Rsbuild, native React/Tailwind, переключение Hebrew RTL → English, восстановление English из Fjall после restart; у native executable наблюдались 0 TCP listeners и 0 дочерних процессов. Native dev smoke подтвердил React HMR и тот же приватный Rust bridge.
+| Документ | О чём |
+|---|---|
+| [docs/FRAMEWORK-PLAN.md](docs/FRAMEWORK-PLAN.md) | План: цель, архитектура, раскладка, контракты, каталог модулей, этапы |
+| [docs/API-ROADMAP.md](docs/API-ROADMAP.md) | Исходный каталог JS API и решения |
+| [docs/APP-RUNTIME.md](docs/APP-RUNTIME.md) | Alef как среда исполнения приложений |
+| [docs/TRANSPORT.md](docs/TRANSPORT.md) | Транспорт v2 между страницей и runtime |
+| [docs/BUS-ARCHITECTURE.md](docs/BUS-ARCHITECTURE.md) | Обязательная архитектура главного backend-потока |
+| [docs/PATCHES.md](docs/PATCHES.md) | Локальные патчи зависимостей |
+| [docs/api/SEGMENTS.md](docs/api/SEGMENTS.md) | Сегментированные подпути `@alef-runtime/api` |
+| `docs/stages/` | Этапы M0–M10: цель, объём, «Как сделано», приёмка; `m0-results/` — результаты спайков и CI |
+| [RESIZE-INVESTIGATION.md](RESIZE-INVESTIGATION.md) | Расследование live resize |
+| `docs/reviews/`, `docs/checkpoints/` | Ревью и снимки состояния работы по датам |
 
 ## Лицензия
 

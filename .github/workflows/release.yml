@@ -89,13 +89,14 @@ jobs:
             ~/.cargo/git/db
           key: cargo-registry-${{ matrix.name }}-${{ hashFiles('backend/Cargo.lock') }}
 
+      # The build scripts (webrender shaders) write absolute paths of the checkout into backend/target: the key carries the repository name, or a renamed repository restores output that points at the old directory.
       - name: Cache backend/target
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: backend/target
-          key: cargo-target-${{ matrix.name }}-${{ hashFiles('backend/Cargo.lock') }}
+          key: cargo-target-${{ matrix.name }}-${{ github.event.repository.name }}-${{ hashFiles('backend/Cargo.lock') }}
           restore-keys: |
-            cargo-target-${{ matrix.name }}-
+            cargo-target-${{ matrix.name }}-${{ github.event.repository.name }}-
 
       - uses: mozilla-actions/sccache-action@054db53350805f83040bf3e6e9b8cf5a139aa7c9 # v0.0.7
 

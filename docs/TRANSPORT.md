@@ -56,7 +56,7 @@ kind: 1 = json, 2 = binary, 3 = end, 4 = error(json)
 
 ## Результаты spike (2026-10-05)
 
-Код: `backend/crates/alef-runtime/src/bridge/spike.rs` (маршруты `native://spike/*`, только при `ALEF_TRANSPORT_SPIKE=1`), страница `experiments/transport-spike/`. Запуск:
+Код: `backend/crates/alef-runtime/src/bridge/spike.rs` (маршруты `native://spike/*`, только при `ALEF_TRANSPORT_SPIKE=1`), страница `experiments/transport-spike/`. Из репозитория они удалены (M1.7, [`stages/m1-core.md`](stages/m1-core.md)); команда ниже — запись тогдашнего запуска: `alef-file-manager.exe` — исполняемый файл прежнего приложения, а не нынешний генерический бинарник `alef` (приложение-пример alef-file-manager теперь живёт в отдельном репозитории). Запуск:
 
 ```
 ALEF_TRANSPORT_SPIKE=1 backend/target/release/alef-file-manager.exe --frontend-dir experiments/transport-spike
@@ -87,4 +87,4 @@ Release-сборка, машина сильно загружена постор�
 5. Upload (JS → native) бинарными телами достаточно быстрый — `stream.write(id, chunk)` через unary-вызовы годится.
 6. **Web storage недоступен** из-за opaque origin `native://`. Варианты: собственный `store`/`sqlite` API (уже в плане) и/или патч Servo, дающий `native://app` tuple origin, чтобы заработали `localStorage`/IndexedDB. Решить отдельно.
 
-Дальше: реализация транспорта + каркас `@alef-runtime/api`, затем перевод `runtime.window` и событий на новый транспорт, затем API по фазам из `API-ROADMAP.md`. Spike-маршруты остаются как стенд для регрессионных замеров до готовности транспорта.
+Дальше: реализация транспорта + каркас `@alef-runtime/api`, затем перевод `runtime.window` и событий на новый транспорт, затем API по фазам из `API-ROADMAP.md`. Spike-маршруты оставались как стенд для регрессионных замеров до готовности транспорта; удалены в M1.7 (см. выше).

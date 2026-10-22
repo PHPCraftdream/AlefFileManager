@@ -10,7 +10,7 @@ Alef — десктопный фреймворк: пользователь пи�
 
 1. `npm create alef-runtime` → `npm run dev` → `npm run build` даёт пакет приложения `.alef`, который запускает установленный runtime (`alef run app.alef`) под Windows, macOS и Linux без Rust. Установщик со встроенным runtime (единая сборка) — необязательная опция (§6.3).
 2. Из JS доступны модули этапов M1–M5 (§8) с типами, правами и тестами на всех трёх ОС.
-3. Alef File Manager переписан на `@alef-runtime/api` без собственного Rust-кода — это доказательство, что API достаточно для реального приложения.
+3. Приложение-пример alef-file-manager (отдельный репозиторий) переписано на `@alef-runtime/api` без собственного Rust-кода (сделано в M3) — это доказательство, что API достаточно для реального приложения.
 
 **Не цели MVP:** Node.js внутри runtime, мобильные платформы, печать, обновление Servo с 0.6. Медиа (M6) в MVP не входит, но работа возобновлена: вариант B, M6.1 — спайк на виртуальных устройствах, M6.2 — реальные бэкенды за фичей `media-system`.
 
@@ -47,26 +47,31 @@ Alef — десктопный фреймворк: пользователь пи�
 
 ## 3. Раскладка репозитория (с учётом правила «≤ 7 элементов, ≤ 1000 строк»)
 
+Репозиторий alef-runtime содержит только runtime, его пакеты, тесты и документацию. Приложений в нём нет: образцы для e2e — `tests/e2e/apps/*`, шаблон нового приложения — `npm create alef-runtime`, приложение-пример alef-file-manager живёт в отдельном репозитории.
+
 ```
 backend/
   Cargo.toml            workspace + [patch.crates-io]
-  patches/              servo-paint, servo-paint-api, winit (как сейчас)
+  patches/              servo-paint, servo-paint-api, surfman, winit (как сейчас)
   crates/
     alef-core/          src/{lib.rs, protocol/, session/, security/, registry/, error.rs}
     alef-modules/       src/{lib.rs, desktop/, system/, data/, net/, devices/}
+    alef-package/       пакет .alef: проверка архива, хеши, подпись ed25519
     alef-runtime/       src/{lib.rs, bridge/, window/, ui/, dispatch/}   ← бывший backend/runtime
     alef/               src/main.rs  — генерический бинарник runtime
 packages/
   api/                  @alef-runtime/api
+  mcp/                  @alef-runtime/mcp
   tools/                @alef-runtime/tools: dev, build, bundle
+  runtime/              @alef-runtime/runtime: бинарник runtime платформы
   create-alef-runtime/      шаблон проекта
-apps/
-  file-manager/         Alef File Manager как обычное JS-приложение + alef.ktav
+scripts/                CI, выпуск, проверки качества и поставки, генерация типов
 tests/
-  e2e/                  страницы-сценарии + раннер (заменит experiments/transport-spike)
+  e2e/                  страницы-сценарии, раннер и приложения-образцы apps/* (заменил experiments/transport-spike, удалён в M1.7)
+docs/                   планы, этапы, архитектура
 ```
 
-`backend/src` (команды File Manager на Rust) исчезает после миграции в M3. Группировка модулей одинакова в Rust и JS: `desktop`, `system`, `data`, `net`, `devices`.
+`backend/src` (Rust-команды приложения-примера File Manager) исчез при миграции в M3; само приложение теперь — отдельный репозиторий alef-file-manager. Группировка модулей одинакова в Rust и JS: `desktop`, `system`, `data`, `net`, `devices`.
 
 ## 4. Контракт модуля (Rust)
 
@@ -311,7 +316,7 @@ permissions: {
 - **Пакет `.alef`** — zip: `alef.ktav` в корне, ассеты, `icon.png`, `META-INF/` (список хешей файлов и подпись ed25519 разработчика). Ассеты читаются из архива без распаковки на диск (источник ассетов моста — каталог или архив; каталог остаётся для `dev`).
 - **Совместимость.** Манифест задаёт `runtime: ^X.Y`; лаунчер запускает подходящую установленную версию или сообщает, что поставить; `runtime.hello` проверяет протокол и API. Несколько версий рядом — потому что до 1.0 minor может ломать API.
 - **Запуск и установка.** `alef run app.alef -- <аргументы>` (и двойной клик по `.alef`) — запуск на месте. `alef install app.alef` (или согласие при первом запуске) копирует пакет в каталог приложений и создаёт идентичность приложения при общем бинарнике: Windows — ярлык с AppUserModelID; macOS — тонкая обёртка `.app` (`Info.plist`: id, имя, значок, описания TCC), запускающая `alef run`; Linux — `.desktop`. Ассоциации файлов, deep links и автозапуск регистрируются как `alef run <пакет> ...`.
-- **Единая сборка** (необязательная): `alef-runtime bundle` кладёт runtime рядом с пакетом и собирает обычный установщик; приложение ставится одним файлом и не зависит от общего runtime.
+- **Единая сборка** (необязательная): `alef-runtime bundle` кладёт runtime рядом с пакетом и собирает обычный установщик; приложение ставится одним файлом и не зависит от общего runtime. Без `--runtime` `bundle` (как и `alef-runtime fetch-runtime`) берёт runtime нужной платформы из npm-пакета `@alef-runtime/runtime-<platform>`.
 - **Режимы** — окно, консоль, служба (§2): определяются манифестом. Службы ОС (Windows Service, systemd, launchd) регистрирует установка или автозапуск (M5); сам runtime в режиме службы не требует консоли и корректно завершается по сигналам.
 
 Подробности — `stages/m7-distribution.md`.
@@ -386,7 +391,7 @@ permissions: {
 | M1 | `stages/m1-core.md` | crates, транспорт v2, сессии и ресурсы, реестр с правами, `alef.ktav`, ts-rs, `@alef-runtime/api` core, бинарник `alef` | M0 |
 | M2 | `stages/m2-desktop.md` | `app`, `path`, `window` (§6.2), `dialog`, `shell`, `clipboard`, `os`, `screen`, `notification` | M1 |
 | M2b | `stages/m2b-consent.md` | подтверждение и подмена прав (§6.4): исход «подменить», хранилище решений, окно согласия, `alef permissions` | M2 |
-| M3 | `stages/m3-data.md` | `fs` (с виртуализацией), `store`, `sqlite`, `crypto`/`secrets`; перевод File Manager, удаление `backend/src` | M2b |
+| M3 | `stages/m3-data.md` | `fs` (с виртуализацией), `store`, `sqlite`, `crypto`/`secrets`; перевод приложения-примера File Manager (теперь отдельный репозиторий alef-file-manager), удаление `backend/src` | M2b |
 | M4 | `stages/m4-net-cli.md` | `http` (клиент и сервер), `socket`, `websocket` (клиент и сервер), `cli` (командная строка ОС, объявленные команды), режимы `app`: консоль и служба | M3, M0.5 |
 | M4b | `stages/m4b-mcp.md` | серверы и MCP: `@alef-runtime/mcp` (сервер и клиент), безопасность локальных серверов | M4 |
 | M5 | `stages/m5-integration.md` | `menu`, `tray`, `shortcut`, автозапуск, deep links | M2 |
@@ -433,7 +438,7 @@ permissions: {
 ## 11. Риски
 
 - **Сборка Servo** — часы с нуля; CI-кэш и sccache обязательны; патчи upstream (servo-paint, winit) нужно поддерживать при обновлениях.
-- **Совместимость веба в Servo 0.6** — части web API нет или они неполные; заранее проверять на реальном File Manager и шаблоне.
+- **Совместимость веба в Servo 0.6** — части web API нет или они неполные; заранее проверять на приложениях-образцах e2e (`tests/e2e/apps/*`), шаблоне и приложении-примере alef-file-manager (отдельный репозиторий).
 - **Мультиоконность и GL** — подтверждается в M0.
 - **Безопасность** — API доступен только документам приложения (origin/токен), не удалённому контенту; scopes канонизируются (symlink, `..`).
 - **Размер приложения** — Servo-бинарник ~118 MB (release); медиа может добавить ещё 100+ MB.

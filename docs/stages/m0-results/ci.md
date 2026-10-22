@@ -1,15 +1,17 @@
 # M0.4 — CI: кроссплатформенная сборка (M0.4a: workflow написан, не запускался)
 
+> Приложение File Manager (frontend, его сборка и пакет `.alef`) вынесено из этого репозитория в отдельный PHPCraftdream/alef-file-manager; репозиторий, называвшийся AlefFileManager, теперь alef-runtime и содержит только runtime. Шаги CI про сборку frontend, пакет File Manager и их артефакты убраны; записи ниже о них описывают CI до выноса и помечены.
+
 ## Сделано
 
-- `.github/workflows/ci.yml`: матрица `windows-latest` (x64), `macos-14` (arm64), `macos-15-intel` (x64), `ubuntu-24.04` (x64), `fail-fast: false`; артефакты — бинарник (все ОС) и `frontend/dist` (отдельно, из Linux-джоба); Linux e2e под `xvfb-run`.
-- Typecheck выполняется ровно один раз: полный `npm run build` (tsc + rsbuild + cargo) — только на Linux; на остальных ОС — `npm run build:rust`.
+- `.github/workflows/ci.yml`: матрица `windows-latest` (x64), `macos-14` (arm64), `macos-15-intel` (x64), `ubuntu-24.04` (x64), `fail-fast: false`; артефакт — бинарник (все ОС); Linux e2e под `xvfb-run`. Отдельный артефакт фронтенда из Linux-джоба (`frontend/dist`) был до выноса приложения File Manager в alef-file-manager; теперь его нет.
+- Typecheck выполняется ровно один раз: на Linux — шаг «Build (typecheck + Rust)» (`npm run typecheck`, то есть `tsc --noEmit` по `packages/api` и `packages/mcp`, затем `cargo build --workspace --features alef/e2e`); на macOS и Windows — только сборка Rust (шаги «Build (Rust)» и «Build (Rust; ANGLE)»). До выноса приложения File Manager в alef-file-manager Linux выполнял полный `npm run build` (tsc + rsbuild + cargo), остальные ОС — `npm run build:rust`; теперь `npm run build` — это `cargo build` всего workspace.
 
 ## Дизайн workflow
 
-- Шаги: checkout → Node 24 с `cache: npm` (lockfile в репозитории есть) → Python 3 (`setup-python`) → Rust stable (`dtolnay/rust-toolchain@stable`; MSRV 1.88 = `backend/Cargo.toml` `rust-version`, cargo проверяет сам) → кэши (`actions/cache`: cargo registry и `backend/target`, ключи `hashFiles('backend/Cargo.lock')`) → sccache → зависимости сборки по ОС → `npm ci` → `npm run lint` + `npm run lint:structure` (все ОС) → `npm run test:rust` (все ОС) → сборка (Linux: `npm run build`; прочие: `npm run build:rust`) → Linux e2e → артефакты (`upload-artifact@v4`, `if-no-files-found: error`).
-- sccache: `mozilla-actions/sccache-action@v0.0.7`, `SCCACHE_GHA_ENABLED`, `RUSTC_WRAPPER: sccache`; `scripts/cargo.mjs` и `scripts/app/dev.mjs` наследуют окружение (spawnSync), т.е. sccache действует и через npm-скрипты.
-- e2e smoke (Linux): `ALEF_TRANSPORT_SPIKE=1 LIBGL_ALWAYS_SOFTWARE=1 timeout 180 xvfb-run -a … --frontend-dir experiments/transport-spike` — фронтенд-дист не нужен. Проверки: код выхода 0; в логе нет `panicked at`; последняя строка `spike report: {"phase":"main"` парсится как JSON, в нём нет верхнеуровневого `error` и есть непустой `results.echo`. Успешный и ошибочный отчёты страницы различаются именно этими полями (`experiments/transport-spike/spike.js:144-146`; успех содержит `results.echo`, заполненный на шаге 5); строку печатает `backend/crates/alef-runtime/src/bridge/mod.rs:266`.
+- Шаги: checkout → Node 24 с `cache: npm` (lockfile в репозитории есть) → Python 3 (`setup-python`) → Rust stable (`dtolnay/rust-toolchain@stable`; MSRV 1.88 = `backend/Cargo.toml` `rust-version`, cargo проверяет сам) → кэши (`actions/cache`: cargo registry и `backend/target`, ключи `hashFiles('backend/Cargo.lock')`) → sccache → зависимости сборки по ОС → `npm ci` → `npm run lint` + `npm run lint:structure` (все ОС) → `npm run test:rust` (все ОС) → сборка (Linux: `npm run typecheck` и `cargo build`; macOS: `cargo build`; Windows: `cargo build` с ANGLE; сборки frontend в шагах нет — приложение File Manager теперь в alef-file-manager; до выноса: Linux — `npm run build`, прочие — `npm run build:rust`) → Linux e2e → артефакты (`upload-artifact@v4`, `if-no-files-found: error`).
+- sccache: `mozilla-actions/sccache-action@v0.0.7`, `SCCACHE_GHA_ENABLED`, `RUSTC_WRAPPER: sccache`; `scripts/cargo.mjs` наследует окружение (spawnSync), т.е. sccache действует и через npm-скрипты (`scripts/app/dev.mjs`, который делал то же, удалён вместе с приложением File Manager — оно теперь в alef-file-manager).
+- e2e smoke (Linux, M0.4a; позже `experiments/transport-spike` удалён, а Linux-шаг запускает `tests/e2e/run.mjs`, см. «e2e на macOS и Linux»): `ALEF_TRANSPORT_SPIKE=1 LIBGL_ALWAYS_SOFTWARE=1 timeout 180 xvfb-run -a … --frontend-dir experiments/transport-spike` — фронтенд-дист не нужен (в этом репозитории его больше нет). Проверки: код выхода 0; в логе нет `panicked at`; последняя строка `spike report: {"phase":"main"` парсится как JSON, в нём нет верхнеуровневого `error` и есть непустой `results.echo`. Успешный и ошибочный отчёты страницы различаются именно этими полями (`experiments/transport-spike/spike.js:144-146`; успех содержит `results.echo`, заполненный на шаге 5); строку печатает `backend/crates/alef-runtime/src/bridge/mod.rs:266`.
 - `timeout-minutes: 300`.
 
 ## Зависимости сборки (обоснование по крейтам из `backend/Cargo.lock`)
@@ -57,7 +59,7 @@
 
 | Файл | Почему может сломать | Фикс |
 |---|---|---|
-| `scripts/cargo.mjs`, `scripts/app/dev.mjs` | жёсткий `--jobs 1` — холодная сборка длительная; влияние на время НЕ измерено, риск упереться в 300 мин | env-переменная (раздел ниже) |
+| `scripts/cargo.mjs` (и `scripts/app/dev.mjs` — удалён вместе с приложением File Manager, оно теперь в alef-file-manager) | жёсткий `--jobs 1` — холодная сборка длительная; влияние на время НЕ измерено, риск упереться в 300 мин | env-переменная (раздел ниже) |
 | `backend/target` в actions/cache | debug-дерево Servo — десятки ГБ; лимит кэша GitHub 10 ГБ на репозиторий, кэш будет вытесняться | основной механизм — sccache; target-кэш сузить/убрать при необходимости |
 | сбой скачивания mozjs-архива | фолбэк-сборка SpiderMonkey: Windows — MozTools (на раннере нет); Linux/macOS — make+python (ставим в шаге зависимостей) | для Windows — MozillaBuild + `MOZTOOLS_PATH` как запасной план |
 | libclang для bindgen | Windows: LLVM (choco/образ); macOS: Xcode CLT; Linux: `libclang-dev` | при проблемах задать `LIBCLANG_PATH` |
@@ -69,7 +71,7 @@
 
 ## Предложение: override `--jobs 1` (scripts вне скоупа)
 
-`scripts/cargo.mjs:8` передаёт `--jobs 1` явно; CLI-флаг приоритетнее `CARGO_BUILD_JOBS`. Предложение (по строке на скрипт):
+`scripts/cargo.mjs:8` передаёт `--jobs 1` явно; CLI-флаг приоритетнее `CARGO_BUILD_JOBS`. Предложение (раньше — по строке на два скрипта, `scripts/cargo.mjs` и `scripts/app/dev.mjs`; второго в этом репозитории больше нет):
 
 ```js
 const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
@@ -80,7 +82,7 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 ## Что не проверено
 
-- Workflow не запускался: нужен пуш в `PHPCraftdream/AlefFileManager` — только с явного разрешения владельца.
+- Workflow не запускался: нужен пуш в `PHPCraftdream/alef-runtime` (тогда репозиторий назывался AlefFileManager) — только с явного разрешения владельца.
 - Время холодной/тёплой сборки по ОС; состав предустановленного ПО в образах раннеров; лимит кэша против `backend/target`; e2e на ubuntu (софтверный EGL); поведение на реальной Wayland-сессии.
 - Компиляция `window/platform/{linux,macos}.rs` и патчей на не-Windows ОС — инференс по cfg-структуре, не сборка.
 - Версии actions — мажорные теги, не SHA-пины (закреплены позже, см. дополнение ниже).
@@ -89,11 +91,11 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 1. Первый запуск через `workflow_dispatch`; скорректировать шаги зависимостей по факту.
 2. Решить по `ALEF_CARGO_JOBS` (правка scripts — вне скоупа M0.4a).
-3. Проверить размер кэша `backend/target`, оба артефакта (бинарник + `alef-frontend-app`).
+3. Проверить размер кэша `backend/target` и артефакты (тогда два — бинарник и фронтенд; артефакт фронтенда убран вместе с приложением File Manager, оно теперь в alef-file-manager).
 
 ## Команды и результаты
 
-- Валидация YAML: парсер подмножества YAML на Node без зависимостей (скрипт передан в `node` через stdin, в репозиторий не попадал). Результат: разбор до EOF без синтаксических ошибок; семантика PASS — 4 цели матрицы, `fail-fast: false`, у каждого из 20 шагов `uses`/`run`, typecheck только на Linux, оба артефакта, `${{ }}` сбалансированы.
+- Валидация YAML: парсер подмножества YAML на Node без зависимостей (скрипт передан в `node` через stdin, в репозиторий не попадал). Результат: разбор до EOF без синтаксических ошибок; семантика PASS — 4 цели матрицы, `fail-fast: false`, у каждого из 20 шагов `uses`/`run`, typecheck только на Linux, оба артефакта (бинарник и фронтенд; артефакт фронтенда затем убран, см. заметку в начале), `${{ }}` сбалансированы.
 - Логика assert'а smoke проверена локально на образцах: успех (включая вложенный `results.abort.error`) — PASS; верхнеуровневый `error` — корректный FAIL; отсутствие `results.echo` — корректный FAIL; `panicked at` в логе — корректный FAIL.
 - `node scripts/check-structure.mjs` — PASS.
 - Размеры файлов (`wc -l`): ci.yml = 190, ci.md = 106.
@@ -119,7 +121,7 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 - **Компилятор закреплён** (`toolchain: 1.99.0` в ci.yml) вместо плавающего `stable`; то же значение использовали зелёные запуски на 2026-10-11.
 - **Нижняя граница компилятора проверяется** (`supply.yml`, задание `msrv`): `alef-core` собирается на 1.88.0, `alef-modules` — на 1.90.0. `rust-version = "1.88"` у `alef-modules`, `alef-runtime` и `alef` было неверным: `fjall` и `lsm-tree` требуют 1.90 (по `cargo metadata`), поэтому значение поправлено на 1.90. Для `alef-runtime` и `alef` нижняя граница определяется Servo и отдельно не проверяется; они собираются закреплённым компилятором в ci.yml.
 - **Аудит зависимостей** (`supply.yml`, `cargo-deny@0.19.9`, `backend/deny.toml`): уязвимости, запреты, источники (`check advisories bans sources`, на каждом пуше: новые уведомления появляются без правок с нашей стороны). Известных уязвимостей нет; восемь уведомлений «не поддерживается» (`bincode`, `proc-macro-error`, `ttf-parser`, шесть `unic-*`) — транзитивные зависимости Servo, внесены в `ignore` с причиной. Повторяющиеся версии крейтов — предупреждение, не отказ (под Servo это норма).
-- **Лицензии зависимостей** (`supply.yml`, задание `licenses`) проверяются только для набора зависимостей, который ещё не прошёл проверку. Политика одна на Rust и npm: список `allow` раздела `[licenses]` в `backend/deny.toml` — разрешающие лицензии и MPL-2.0 (Servo; в npm — `lightningcss` и его бинарные варианты, только dev); `A OR B` проходит по разрешённой стороне, `A AND B` — только если разрешены обе, `X WITH e` — если разрешена пара или сама `X`. Крейты проверяет `cargo deny check licenses --locked`, npm-пакеты из `package-lock.json` — `scripts/supply/check-js-licenses.mjs` (тесты рядом; пакет без лицензии или с нечитаемым выражением — отказ). «С прошлого прогона» понимается как «с последней зелёной проверки», а не как разница `before`/`after` пуша: ключ кэша Actions — хеш `backend/Cargo.lock`, всех `Cargo.toml` графа (`backend/Cargo.toml`, `backend/crates/*`, `backend/patches/*`), `backend/deny.toml`, `package-lock.json`, скрипта проверки с тестами и версия `cargo-deny`; запись кладётся только после успешной проверки, поэтому упавшая проверка повторяется на следующем пуше, хотя зависимости в нём не менялись. При совпадении ключа задание только проверяет наличие записи и пропускает остальные шаги. Ветка видит записи своего ref и главной ветки, но не чужих веток: после влития ветки с новыми зависимостями первый прогон на `main` проверит набор ещё раз; запись, которую никто не читал 7 дней, удаляется, и проверка просто выполнится снова. Принудительный повтор — любая правка входов или удаление записи в Actions → Caches.
+- **Лицензии зависимостей** (`supply.yml`, задание `licenses`) проверяются только для набора зависимостей, который ещё не прошёл проверку. Политика одна на Rust и npm: список `allow` раздела `[licenses]` в `backend/deny.toml` — разрешающие лицензии и MPL-2.0 (Servo; в npm — `lightningcss` и его бинарные варианты, только dev: зависимость сборки приложения File Manager, которое теперь в alef-file-manager; в `package-lock.json` этого репозитория её больше нет); `A OR B` проходит по разрешённой стороне, `A AND B` — только если разрешены обе, `X WITH e` — если разрешена пара или сама `X`. Крейты проверяет `cargo deny check licenses --locked`, npm-пакеты из `package-lock.json` — `scripts/supply/check-js-licenses.mjs` (тесты рядом; пакет без лицензии или с нечитаемым выражением — отказ). «С прошлого прогона» понимается как «с последней зелёной проверки», а не как разница `before`/`after` пуша: ключ кэша Actions — хеш `backend/Cargo.lock`, всех `Cargo.toml` графа (`backend/Cargo.toml`, `backend/crates/*`, `backend/patches/*`), `backend/deny.toml`, `package-lock.json`, скрипта проверки с тестами и версия `cargo-deny`; запись кладётся только после успешной проверки, поэтому упавшая проверка повторяется на следующем пуше, хотя зависимости в нём не менялись. При совпадении ключа задание только проверяет наличие записи и пропускает остальные шаги. Ветка видит записи своего ref и главной ветки, но не чужих веток: после влития ветки с новыми зависимостями первый прогон на `main` проверит набор ещё раз; запись, которую никто не читал 7 дней, удаляется, и проверка просто выполнится снова. Принудительный повтор — любая правка входов или удаление записи в Actions → Caches.
 - **Копии крейтов в `backend/patches`** сверяются с опубликованными (`docs/PATCHES.md`, `scripts/supply/check-patches.mjs`, задание `patches`).
 - **Мёртвая переменная `ALEF_CARGO_JOBS` убрана** из ci.yml; предложение о `--jobs` выше остаётся предложением.
 - **e2e на Windows**: первый запуск всего набора (52 сценария) показал 8 PASS и 44 отказа при создании оконного контекста на раннере без GPU (`Cannot create Servo graphics context: RequiredExtensionUnavailable`, WGL). Обязательным остался шаг с восемью сценариями без окна (`--only`); полный набор на программном контексте на этом раннере не работает (см. «Как сделано (#107)»).
@@ -128,7 +130,7 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 ## Дополнение: изоляция тестовых хуков (R-018)
 
-Дизайн: обычные сборки оставляют `e2e` и `spike-origin` выключенными. В CI Rust-сборки для e2e явно используют `node scripts/cargo.mjs build --locked --workspace --features alef/e2e`; на Linux перед ними остаётся `npm run build:frontend`. Отдельный Linux-шаг собирает `node scripts/cargo.mjs build --locked -p alef --release` без features и передаёт `backend/target/release/alef` сканеру `scripts/supply/check-no-hooks.mjs` (маркеры в UTF8 и UTF16LE). Тесты сканера добавлены в блок Generated TypeScript types; поставка, загрузка артефактов и остальные настройки не менялись.
+Дизайн: обычные сборки оставляют `e2e` и `spike-origin` выключенными. В CI Rust-сборки для e2e явно используют `node scripts/cargo.mjs build --locked --workspace --features alef/e2e`; на Linux перед ними идёт `npm run typecheck` (тогда — `npm run build:frontend`, сборка frontend приложения File Manager; приложение теперь в alef-file-manager). Отдельный Linux-шаг собирает `node scripts/cargo.mjs build --locked -p alef --release` без features и передаёт `backend/target/release/alef` сканеру `scripts/supply/check-no-hooks.mjs` (маркеры в UTF8 и UTF16LE). Тесты сканера добавлены в блок Generated TypeScript types; поставка, загрузка артефактов и остальные настройки не менялись.
 
 Наблюдаемые результаты локальной проверки на Windows:
 
@@ -156,11 +158,11 @@ const jobs = process.env.ALEF_CARGO_JOBS ?? '1';
 
 Входные данные. Изменённые файлы считаются как `git diff --name-only <before> <after>`; если база неизвестна (нет sha, diff упал или пуст) — консервативно берётся полный прогон. Вручную список файлов можно передать через `--files` (для отладки).
 
-Правила. Один файл данных — `scripts/ci/affected.json`: `full_triggers` (`.github/**`, `scripts/ci/**`, `scripts/cargo.mjs`, манифесты и локи, `rust-toolchain*`, `.oxlintrc.json`), `platform_sensitive` (system/desktop, ui/bridge/window, relaunch/consent, любые пути с `*windows*`/`*unix*`/`*macos*`, `tests/e2e/**` — такой путь поднимает прогон на все 4 ОС без полного прогона) и правила сопоставления путей сценариям e2e. Правило консервативное: путь, который не знает ни одно правило (не docs/backend/packages/frontend/scripts/tests и не корневые конфиги), расширяет план до полного.
+Правила. Один файл данных — `scripts/ci/affected.json`: `full_triggers` (`.github/**`, `scripts/ci/**`, `scripts/cargo.mjs`, манифесты и локи, `rust-toolchain*`, `.oxlintrc.json`), `platform_sensitive` (system/desktop, ui/bridge/window, relaunch/consent, любые пути с `*windows*`/`*unix*`/`*macos*`, `tests/e2e/**` — такой путь поднимает прогон на все 4 ОС без полного прогона) и правила сопоставления путей сценариям e2e. Правило консервативное: путь, который не знает ни одно правило (не docs/backend/packages/scripts/tests и не корневые конфиги), расширяет план до полного.
 
 Проводка в ci.yml (готова, описание соответствует реальному файлу).
 
-Джоб `plan` (ubuntu-24.04, checkout с `fetch-depth: 0`) запускает `node scripts/ci/plan.mjs` с флагами `--event`, `--ref`, `--before` (`github.event.before || pull_request.base.sha`), `--after github.sha`, `--full` (`inputs.full == true`: вход boolean, сравнение со строкой всегда ложно), `--crates`, `--e2e`; сообщение коммита передаётся через переменную окружения `COMMIT_MESSAGE` (`github.event.head_commit.message`). Все выходы планировщика опубликованы как выходы джоба: `full`, `os` (JSON-массив раннеров), `crates`, `crates_all`, `js`, `js_all`, `e2e`, `docs_only`, `reason`; строка `reason: …` видна в логе шага.
+Джоб `plan` (ubuntu-24.04, checkout с `fetch-depth: 0`) запускает `node scripts/ci/plan.mjs` с флагами `--event`, `--ref`, `--before` (`github.event.before || pull_request.base.sha`), `--after github.sha`, `--full` (`inputs.full == true`: вход boolean, сравнение со строкой всегда ложно), `--crates`, `--e2e`; сообщение коммита передаётся через переменную окружения `COMMIT_MESSAGE` (`github.event.head_commit.message`). Все выходы планировщика опубликованы как выходы джоба: `full`, `os` (JSON-массив раннеров), `matrix`, `crates`, `crates_all`, `js`, `js_all`, `e2e`, `docs_only`, `reason`; строка `reason: …` видна в логе шага.
 
 События и входы. `push`, `pull_request`, `workflow_dispatch`, `schedule` — `cron: '37 2 * * *'` (ежедневно, полный прогон). Входы dispatch: `full` (boolean), `crates` (строка — список крейтов через запятую, переопределяет план), `e2e` (строка — список сценариев через запятую, переопределяет план; `none` выключает e2e). Overrides применяются только к неполному плану. Примеры:
 
@@ -174,7 +176,7 @@ Concurrency: `group: ci-${{ github.ref }}`, `cancel-in-progress` — тольк�
 - lint/structure, mutation-harness (`npm run test:mutate`) и проверка сгенерированных типов выполняются всегда; docs-only прогон — это они и есть: сборок, тестов и e2e нет;
 - cargo test: при `crates_all == 'true'` — прежний `npm run test:rust` (--workspace), иначе цикл `node scripts/cargo.mjs test --locked -p <crate> --no-fail-fast` по списку `crates`;
 - desktop-шаги (`-p alef-modules`) — только когда крейт alef-modules в плане (`crates_all == 'true'` или `contains(crates, 'alef-modules')`);
-- JS-шаги — когда пакет в списке `js` (или `js == 'all'`); `test:api` покрывает и frontend/test, поэтому включается и для `frontend`;
+- JS-шаги — когда пакет в списке `js` (или `js == 'all'`); `test:api` покрывает и `tests/e2e/*.test.mjs` (раскладка фикстур e2e, `tests/e2e/assets.test.mjs`), поэтому включается и для тега `tests` (его планировщик ставит при изменении файла под `tests/`); раньше этот шаг покрывал `frontend/test` и включался для тега `frontend` — приложение File Manager теперь в alef-file-manager;
 - e2e: Linux — `--only <список>` при неполном плане, без `--only` при `all`, пропуск при `none`; каждая Windows-группа пересекает свой фиксированный список сценариев со списком плана и молча пропускается, если пересечение пусто; при `all` командные строки в точности прежние;
 - шаги сборки, пререквизиты (msvc/choco/brew/apt) и выгрузка артефактов включаются, когда есть Rust-работа (`crates_all == 'true'` или `crates != ''`) или e2e (`e2e != 'none'`) — сборка кормит e2e и выполняется и тогда, когда Rust-тесты не выбраны.
 
@@ -192,6 +194,8 @@ Concurrency: `group: ci-${{ github.ref }}`, `cancel-in-progress` — тольк�
 6. Сбой на `main`, не пойманный сегментированным прогоном, чинится немедленно, а затронутый путь добавляется в `scripts/ci/affected.json` (`platform_sensitive` или правила сценариев).
 
 ## Замер CI (2026-10)
+
+Имена шагов в таблицах и ответах — как в замеренных запусках, до выноса приложения File Manager в alef-file-manager: «Build (typecheck + frontend + Rust)» на Linux, «Build (Rust, без frontend)» на macOS и Windows (на ветке `angle-win` — «…; ANGLE»). Сейчас эти шаги называются «Build (typecheck + Rust)», «Build (Rust)» и «Build (Rust; ANGLE)»; frontend в них не собирается.
 
 ### Linux-x64 (CI, `main`)
 
@@ -275,11 +279,13 @@ Concurrency: `group: ci-${{ github.ref }}`, `cancel-in-progress` — тольк�
 
 ### Использованные запросы gh api (без токенов)
 
+Репозиторий тогда назывался AlefFileManager; в командах подставлено нынешнее имя.
+
 ```
-gh api "repos/PHPCraftdream/AlefFileManager/actions/runs?branch=main&status=success&per_page=15" --jq '.workflow_runs[] | select(.name=="CI")'
-gh api "repos/PHPCraftdream/AlefFileManager/actions/runs?branch=angle-win&per_page=20" --jq '.workflow_runs[] | select(.name=="CI")'
-gh api "repos/PHPCraftdream/AlefFileManager/actions/runs?branch=main&per_page=15" --jq '.workflow_runs[] | select(.name=="Supply")'
-gh api "repos/PHPCraftdream/AlefFileManager/actions/runs/<id>/jobs?per_page=100" --jq '.jobs[] | {name, conclusion, created_at, started_at, completed_at, steps: [.steps[] | {name, sec: ((.completed_at|sub("\\.[0-9]+Z$";"Z")|fromdate) - ((.started_at|sub("\\.[0-9]+Z$";"Z")|fromdate)))}]}'
+gh api "repos/PHPCraftdream/alef-runtime/actions/runs?branch=main&status=success&per_page=15" --jq '.workflow_runs[] | select(.name=="CI")'
+gh api "repos/PHPCraftdream/alef-runtime/actions/runs?branch=angle-win&per_page=20" --jq '.workflow_runs[] | select(.name=="CI")'
+gh api "repos/PHPCraftdream/alef-runtime/actions/runs?branch=main&per_page=15" --jq '.workflow_runs[] | select(.name=="Supply")'
+gh api "repos/PHPCraftdream/alef-runtime/actions/runs/<id>/jobs?per_page=100" --jq '.jobs[] | {name, conclusion, created_at, started_at, completed_at, steps: [.steps[] | {name, sec: ((.completed_at|sub("\\.[0-9]+Z$";"Z")|fromdate) - ((.started_at|sub("\\.[0-9]+Z$";"Z")|fromdate)))}]}'
 ```
 
 Всего израсходовано 9 запросов `gh api`; логи не скачивались, запуски не запускались и не отменялись. Пар длин «>20 c» в таблицах нет: показаны все шаги с шаговым временем.
@@ -324,8 +330,8 @@ gh api "repos/PHPCraftdream/AlefFileManager/actions/runs/<id>/jobs?per_page=100"
 
 Что запускается:
 - macOS (оба раннера таблицы платформ, `macos-14` arm64 и `macos-15-intel`): новый шаг `e2e (alef on Servo, macOS, canonical groups)` — `node scripts/ci/e2e/os.mjs --plan "<план>" --exe backend/target/debug/alef --timeout-s 150`. Условие — `runner.os == 'macOS' && needs.plan.outputs.e2e != 'none'`, выбор сценариев — тот же выход планировщика, что у Windows/Linux; quiet-режим — дефолт вне Linux (`tests/e2e/lib.mjs`). Оба раннера включены: джоб arm64 — самый быстрый (11–13 мин работы), x64 — 25–41 мин; e2e добавляет минуты (Linux-полный e2e — 1.3–1.5 мин), а покрытие должно быть на обеих архитектурах таблицы.
-- Группы: те же 12 канонических групп, что у Windows-шагов, включая итоговую `origin,webcrypto-undeclared,webcrypto-substitute,package,fm-package,updater`; список вынесен в `scripts/ci/e2e/groups.mjs`, шаги Windows и macOS-шаг потребляют его один и тот же список (тест закрепляет равенство), и группы теперь покрывают каждый сценарий `run.mjs` (тест закрепляет полноту и отсутствие дублей). Хелпер `scripts/ci/e2e/os.mjs` запускает каждую группу отдельным процессом раннера: провал группы не скрывает остальные (#117), сводка `group <группа>: PASS/FAIL`, код выхода 1 при любом провале.
-- Linux: шаг `headless X11` уже запускал ВСЕ сценарии плана одним раннером — покрытие ⊇ Windows-групп, ничего добавлять не потребовалось; при полном плане Linux дополнительно к группам исполняет `origin`, `webcrypto-undeclared`, `webcrypto-substitute`, `package`, `updater`. Сценария, который Windows запускает, а Linux нет, нет; `package`, `fm-package` и `updater` входят в итоговую группу и идут на всех ОС, при этом `fm-package` сам пропускается с ясной причиной там, где `frontend/app` не собран (сборка фронта в CI — только Linux). Шагу добавлен `timeout-minutes: 30` — та же граница, что у одной Windows-группы.
+- Группы: те же 12 канонических групп, что у Windows-шагов, включая итоговую `origin,webcrypto-undeclared,webcrypto-substitute,package,updater` (тогда в ней был ещё сценарий `fm-package`; он удалён вместе с приложением File Manager, которое теперь в alef-file-manager); список вынесен в `scripts/ci/e2e/groups.mjs`, шаги Windows и macOS-шаг потребляют его один и тот же список (тест закрепляет равенство), и группы теперь покрывают каждый сценарий `run.mjs` (тест закрепляет полноту и отсутствие дублей). Хелпер `scripts/ci/e2e/os.mjs` запускает каждую группу отдельным процессом раннера: провал группы не скрывает остальные (#117), сводка `group <группа>: PASS/FAIL`, код выхода 1 при любом провале.
+- Linux: шаг `headless X11` уже запускал ВСЕ сценарии плана одним раннером — покрытие ⊇ Windows-групп, ничего добавлять не потребовалось; при полном плане Linux дополнительно к группам исполняет `origin`, `webcrypto-undeclared`, `webcrypto-substitute`, `package`, `updater`. Сценария, который Windows запускает, а Linux нет, нет; `package` и `updater` входят в итоговую группу и идут на всех ОС. Тогда в ней был и `fm-package` (упаковка собранного File Manager и запуск пакета): он сам пропускался с ясной причиной там, где `frontend/app` не собран (сборка фронта в CI — только Linux); сценарий и сборка фронта удалены вместе с приложением, которое теперь в alef-file-manager. Шагу добавлен `timeout-minutes: 30` — та же граница, что у одной Windows-группы.
 
 Таймауты: сценарные — те же 150 с, что у Windows; групповой дедлайн = (число выбранных сценариев × 150 с) + 2 мин запаса; просроченная группа получает FAIL и не останавливает остальные; шаг macOS — 180 мин (сумма дедлайнов).
 
