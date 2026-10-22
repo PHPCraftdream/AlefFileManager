@@ -14,7 +14,8 @@
   emit `package.json` with `dev`/`build` scripts, the `alef-runtime`
   object (`devUrl http://127.0.0.1:3000`, `outDir dist`),
   `@alef-runtime/* ^0.1.0`, `@rsbuild/core` 2.2.9 exact (observed in the
-  repository root) and `vite ^6.0.0`.
+  repository root, where the File Manager app, now alef-file-manager,
+  then lived; the pin now lives in `src/generate.mjs`) and `vite ^6.0.0`.
 - Validation refusals with reasons: existing non-empty target,
   invalid ids, directory names and display names.
 - Template page calls `app.info()` and demonstrates substituted

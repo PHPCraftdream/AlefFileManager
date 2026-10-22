@@ -1,6 +1,8 @@
 # Live resize: проблема и попытки исправления
 
-> Пути ниже указаны до реструктуризации и могут быть устаревшими. Текущее расположение (`backend/crates/alef-runtime/src/`): `host.rs` → `window/{mod,app,state,delegate}.rs`; `resize_wait.rs` → `window/resize_wait.rs`; `window_frame.rs` → `window/input/frame.rs`; `wheel.rs` → `window/input/wheel.rs`; `platform/` → `window/platform/`; `bridge.rs`/`commands.rs` → `bridge/mod.rs`/`bridge/commands.rs`; `frontend/src/runtime.ts` → `frontend/src/native/runtime.ts`. Упоминания `backend/runtime` и `backend/crates/alef-runtime/src/host.rs` в тексте читать с учётом этой карты.
+> Пути ниже указаны до реструктуризации и могут быть устаревшими. Текущее расположение (`backend/crates/alef-runtime/src/`): `host.rs` → `window/{mod,app,state,delegate}.rs` (`State::synchronize_viewport` и `State::redraw` — в `window/state/mod.rs`); `resize_wait.rs` → `window/state/resize_wait.rs`; `window_frame.rs` → `window/input/frame.rs`; `wheel.rs` → `window/input/wheel.rs`; `platform/` → `window/platform/`; `ui.rs` → `ui/mod.rs`; `bridge.rs`/`commands.rs` → `bridge/mod.rs`/`bridge/commands.rs`. Упоминания `backend/runtime` и `backend/crates/alef-runtime/src/host.rs` в тексте читать с учётом этой карты.
+>
+> Расследование касается runtime (встроенный Servo, winit, presentation). Когда оно велось, в этом репозитории жило приложение File Manager с React frontend; теперь это приложение-пример alef-file-manager (отдельный репозиторий), а здесь только runtime. Упоминания frontend (`frontend/src/runtime.ts`, `frontend/src/App.tsx`), custom titlebar, кнопок окна и UI-состояния ниже относятся к этому приложению; этих файлов в данном репозитории больше нет. API окна для приложений — `nativeWindow` в `packages/api/src/desktop/window.ts`.
 
 ## Статус
 
@@ -31,7 +33,7 @@
 - `backend/crates/alef-runtime/src/window_frame.rs` выполняет native edge/corner hit-testing.
 - `backend/crates/alef-runtime/src/platform/` содержит платформенные реализации.
 - `backend/patches/servo-paint-api/rendering_context.rs` предоставляет `WindowRenderingContext`, resize graphics surface и presentation.
-- React frontend показывает custom titlebar и состояние окна; DOM resize overlays удалены. Изменение размеров выполняет OS/winit, а не React.
+- Приложение (тогда React frontend File Manager в этом репозитории, теперь alef-file-manager) показывает custom titlebar и состояние окна; DOM resize overlays удалены. Изменение размеров выполняет OS/winit, а не React.
 
 ## Что уже было изменено
 
@@ -65,7 +67,7 @@
 
 ### 3. Native edges вместо DOM overlays
 
-Файлы: `host.rs`, `window_frame.rs`, `ui.rs`, `frontend/src/runtime.ts`, `frontend/src/App.tsx`.
+Файлы: `host.rs`, `window_frame.rs`, `ui.rs`, а также `frontend/src/runtime.ts` и `frontend/src/App.tsx` (frontend File Manager; теперь в alef-file-manager).
 
 - Hit-testing выполняется в native host: 8 logical pixels с DPI scaling; corners имеют приоритет.
 - При нажатии на edge вызывается OS `drag_resize_window`, соответствующий mouse down не передаётся в DOM.
@@ -87,7 +89,7 @@ Browser-кнопка в свежем native процессе переключа�
 - после вызова проверяется совпадение `rendering.size()` и native client size;
 - синхронизация выполняется также перед redraw.
 
-На размерах 1231×800, 1273×800 и 1327×800 native geometry до/после capture совпадала, а frontend показывал соответствующий размер. Это доказывает согласование установившегося состояния, но не атомарное изменение кадра во время drag.
+На размерах 1231×800, 1273×800 и 1327×800 native geometry до/после capture совпадала, а frontend приложения (File Manager, теперь alef-file-manager) показывал соответствующий размер. Это доказывает согласование установившегося состояния, но не атомарное изменение кадра во время drag.
 
 ### 5. Ожидание уведомления о новом кадре
 
@@ -115,7 +117,7 @@ Browser-кнопка в свежем native процессе переключа�
 
 Проверено:
 
-- Последний выполненный Rust test run: 3 теста приложения и 11 runtime tests прошли; Clippy и frontend checks прошли.
+- Последний выполненный Rust test run: 3 теста приложения и 11 runtime tests прошли; Clippy и frontend checks (frontend File Manager, теперь в alef-file-manager) прошли.
 - Отдельный winit regression test signed packed coordinates прошёл.
 - Production native приложение запускается, команды custom titlebar работают.
 - В свежем процессе maximize давал native/client UI состояние 1604×998; restore возвращал предыдущие 1327×800.
@@ -186,7 +188,7 @@ Resolved Servo 0.6.0, `servo-paint/painter.rs::resize_rendering_context`:
 
 ### Как проверить
 
-1. Запустить приложение с `ALEF_RESIZE_TRACE=1`.
+1. Запустить любое приложение на runtime (например, приложение-пример alef-file-manager из отдельного репозитория) с `ALEF_RESIZE_TRACE=1`.
 2. Тянуть края и углы окна. Ожидается: во время перетаскивания не представляется ни один кадр с несовпадающими размерами (каждая trace-строка показывает разрешённое ожидание либо явный timeout), белая область не растёт, содержимое и рамка движутся вместе.
 3. Проверить maximize → restore.
 
