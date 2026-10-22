@@ -268,7 +268,7 @@ test('a_changed_package_json_of_one_js_package_runs_that_package_and_its_depende
 
 test('a_changed_e2e_scenario_file_maps_to_the_smoke_set', () => {
   const p = plan(['tests/e2e/scenarios/consent.mjs']);
-  assert.equal(p.e2e, 'ask,cancel,consent,core,csp,decisions,manifest,narrowing,permissions');
+  assert.equal(p.e2e, 'apps-ui,ask,cancel,consent,core,csp,decisions,manifest,narrowing,permissions');
   assert.deepEqual(p.os, data.runners_all);
 });
 

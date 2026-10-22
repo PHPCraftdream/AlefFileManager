@@ -279,7 +279,7 @@ mod tests {
     fn fixture(root: &Path) -> PathBuf {
         let app = root.join("fixture-app");
         fs::create_dir_all(&app).unwrap();
-        fs::write(app.join("alef.ktav"), "id: org.example.window-test\nname: Window test\nversion:: 1.0.0\nwindows: [\n    {\n        label: main\n        url: /index.html\n        width: 800\n        height: 600\n    }\n]\nexternal: {\n    connect: []\n    load: {\n        scripts: []\n        styles: []\n        images: []\n        fonts: []\n        media: []\n        frames: []\n    }\n}\npermissions: {\n    cli: {\n        exec: [ sidecar:tool ]\n    }\n    clipboard: {\n        read: true\n    }\n}\n").unwrap();
+        fs::write(app.join("alef.ktav"), "id: org.example.window-test\nname: Window test\nversion:: 1.0.0\nwindows: [\n    {\n        label: main\n        url: /index.html\n        width: 800\n        height: 600\n    }\n]\nexternal: {\n    connect: []\n    load: {\n        scripts: []\n        styles: []\n        images: []\n        fonts: []\n        media: []\n        frames: []\n    }\n}\npermissions: {\n    fs: {\n        read: []\n        write: []\n    }\n    cli: {\n        exec: [ sidecar:tool ]\n    }\n    net: {\n        http: []\n        socket: []\n    }\n    shell: {\n        openExternal: []\n    }\n    clipboard: {\n        read: true\n    }\n    shortcut: {\n        global: false\n    }\n    secrets: false\n    app: {\n        env: []\n    }\n}\n").unwrap();
         app
     }
     #[test]

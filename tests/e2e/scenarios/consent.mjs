@@ -341,11 +341,29 @@ external: {
     }
 }
 permissions: {
+    fs: {
+        read: []
+        write: []
+    }
     cli: {
         exec: [ sidecar:tool ]
     }
+    net: {
+        http: []
+        socket: []
+    }
+    shell: {
+        openExternal: []
+    }
     clipboard: {
         read: true
+    }
+    shortcut: {
+        global: false
+    }
+    secrets: false
+    app: {
+        env: []
     }
     ${right}
 }
