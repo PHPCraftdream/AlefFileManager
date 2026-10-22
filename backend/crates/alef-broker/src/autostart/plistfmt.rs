@@ -24,7 +24,9 @@ pub fn render_plist(label: &str, entry: &Entry) -> Result<String, AutostartError
     out.push_str(&xml_escape(label));
     out.push_str("</string>\n");
     out.push_str("\t<key>ProgramArguments</key>\n\t<array>\n");
-    for arg in std::iter::once(&entry.exe).chain(entry.args.iter()) {
+    for arg in
+        std::iter::once(entry.exe.as_os_str()).chain(entry.args.iter().map(|a| a.as_os_str()))
+    {
         out.push_str("\t\t<string>");
         out.push_str(&xml_escape(&arg.to_string_lossy()));
         out.push_str("</string>\n");
