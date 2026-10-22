@@ -104,7 +104,14 @@ export async function runScenario(body) {
     for (const record of scope.records) {
       try {
         if (!record.exit) record.stop();
-        if (!(await record.waitForClosed(5000))) problems.push(`runtime log pipe did not close within 5000ms: ${record.stuckReport()}`);
+        if (!(await record.waitForClosed(5000))) {
+          // A slow graceful exit after the polite stop is not what the scenario tests (the signal
+          // scenarios do): end the process for good and fail only if even that does not close the pipe.
+          const report = record.stuckReport();
+          record.hardStop();
+          if (await record.waitForClosed(5000)) console.log(`    NOTE: the runtime needed a hard stop after 5000ms: ${report}`);
+          else problems.push(`runtime log pipe did not close within 5000ms of a hard stop: ${report}`);
+        }
       } catch (error) {
         problems.push(`could not close runtime log pipe: ${error?.message ?? error}`);
       }
@@ -370,7 +377,7 @@ export function startApp({ exe, args, env = {}, verbose = false, input, interact
     }
   };
   const processRecord = {
-    stderrLines, expectedBusStalls, stop: () => child.kill(), stuckReport,
+    stderrLines, expectedBusStalls, stop: () => child.kill(), hardStop: () => child.kill('SIGKILL'), stuckReport,
     waitForClosed: ms => new Promise(resolvePromise => {
       let done = false;
       const timer = setTimeout(() => { done = true; resolvePromise(false); }, ms);

@@ -176,21 +176,21 @@
   },
   {
     "name": "a package accepts a development url",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "if self.dev_url.is_some() {",
     "to": "if false {",
     "package": "alef"
   },
   {
     "name": "a directory accepts a trust key",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "if self.trust_key.is_some() {",
     "to": "if false {",
     "package": "alef"
   },
   {
     "name": "a directory accepts the unsigned flag",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "if self.allow_unsigned {",
     "to": "if false {",
     "package": "alef"

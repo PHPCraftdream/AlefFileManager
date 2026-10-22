@@ -47,6 +47,7 @@
     ".oxlintrc.json"
   ],
   "platform_sensitive": [
+    "backend/crates/alef-broker/**",
     "backend/crates/alef-modules/src/system/**",
     "backend/crates/alef-modules/src/desktop/**",
     "backend/crates/alef-runtime/src/ui/**",
@@ -338,7 +339,7 @@
       ]
     },
     {
-      "glob": "backend/crates/alef/src/args.rs",
+      "glob": "backend/crates/alef/src/cli/args.rs",
       "scenarios": [
         "cli",
         "cli-commands",

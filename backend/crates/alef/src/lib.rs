@@ -4,6 +4,7 @@
 pub mod application;
 #[path = "../apps/mod.rs"]
 pub mod apps;
+#[path = "cli/args.rs"]
 pub mod args;
 pub mod consent;
 pub use consent::permissions;
