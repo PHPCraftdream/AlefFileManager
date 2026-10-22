@@ -129,7 +129,7 @@ fn parse_dict(raw: &str, our_label: &str) -> Outcome {
         c.ws();
         match c.tag().as_deref() {
             Some("key") => {
-                let Some(key) = c.text().and_then(|t| xml_unescape(&t)) else {
+                let Some(key) = c.text() else {
                     return Outcome::Damaged;
                 };
                 c.ws();
@@ -148,7 +148,7 @@ fn parse_dict(raw: &str, our_label: &str) -> Outcome {
                         if next.as_deref() != Some("string") {
                             return Outcome::Damaged;
                         }
-                        let Some(text) = c.text().and_then(|t| xml_unescape(&t)) else {
+                        let Some(text) = c.text() else {
                             return Outcome::Damaged;
                         };
                         label = Some(text);
@@ -165,7 +165,7 @@ fn parse_dict(raw: &str, our_label: &str) -> Outcome {
                             c.ws();
                             match c.tag().as_deref() {
                                 Some("string") => {
-                                    let Some(text) = c.text().and_then(|t| xml_unescape(&t)) else {
+                                    let Some(text) = c.text() else {
                                         return Outcome::Damaged;
                                     };
                                     args.push(text);
@@ -310,8 +310,7 @@ mod tests {
 
     #[test]
     fn all_five_entities_are_escaped() {
-        let rendered =
-            render_plist(LABEL, &entry(abs("a"), &["&", "<", ">", "\"", "'"])).expect("render");
+        let rendered = render_plist(LABEL, &entry(abs("a"), &["&<>\"'"])).expect("render");
         assert!(rendered.contains("&amp;&lt;&gt;&quot;&apos;"));
     }
 

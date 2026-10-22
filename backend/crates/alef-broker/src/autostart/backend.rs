@@ -627,6 +627,7 @@ mod file_tests {
     fn xdg_damaged_record_blocks_enable_and_disable() {
         let dir = tempfile::tempdir().expect("tempdir");
         let xdg = XdgAutostart::with_root(dir.path());
+        std::fs::create_dir_all(xdg.path().parent().expect("parent")).expect("mkdir");
         std::fs::write(xdg.path(), "\u{0} garbage \u{1}").expect("write");
         assert_eq!(
             Autostart::new(xdg.clone()).status().expect("status"),
