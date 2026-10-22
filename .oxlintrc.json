@@ -1,12 +1,12 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "react", "jsx-a11y", "oxc"],
+  "plugins": ["typescript", "oxc"],
   "categories": {
     "correctness": "error",
     "suspicious": "warn"
   },
   "env": { "browser": true, "node": true },
-  "ignorePatterns": ["node_modules", "frontend/dist", "backend/target", "backend/patches"],
+  "ignorePatterns": ["node_modules", "backend/target", "backend/patches"],
   "overrides": [
     {
       "files": ["packages/api/**"],
@@ -15,8 +15,6 @@
   ],
   "rules": {
     "eslint/no-undef": "error",
-    "eslint/no-unused-vars": "error",
-    "react/rules-of-hooks": "error",
-    "react/react-in-jsx-scope": "off"
+    "eslint/no-unused-vars": "error"
   }
 }

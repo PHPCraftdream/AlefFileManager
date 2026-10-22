@@ -46,7 +46,7 @@ pub(super) fn build_menu(window: &Window) -> Result<(Menu, isize), Box<dyn std::
 }
 
 pub(super) fn build_tray(menu: Menu) -> Result<TrayIcon, Box<dyn std::error::Error>> {
-    const ICON_PNG: &[u8] = include_bytes!("../../../../../../frontend/public/logo-32x32.png");
+    const ICON_PNG: &[u8] = include_bytes!("../../../../../assets/logo-32x32.png");
     let icon_rgba = image::load_from_memory(ICON_PNG)?.to_rgba8();
     let (width, height) = icon_rgba.dimensions();
     let icon = tray_icon::Icon::from_rgba(icon_rgba.into_raw(), width, height)?;

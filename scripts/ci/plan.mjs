@@ -89,7 +89,7 @@ export function affectedJs(files, packages, packageDeps, full) {
     }
   }
   const result = new Set(direct);
-  if (files.some(f => matchGlob(f, 'frontend/**'))) result.add('frontend');
+  if (files.some(f => matchGlob(f, 'tests/**'))) result.add('tests');
   if (files.some(f => matchGlob(f, 'scripts/**'))) result.add('scripts');
   return [...result].sort();
 }
@@ -123,7 +123,7 @@ export function e2eFor(files, rules, smoke, full, docsOnly) {
 }
 
 const KNOWN_PATHS = [
-  'docs/**', '*.md', 'backend/**', 'packages/**', 'frontend/**', 'scripts/**', 'tests/**',
+  'docs/**', '*.md', 'backend/**', 'packages/**', 'scripts/**', 'tests/**',
   'package.json', 'package-lock.json', 'rust-toolchain*', '.oxlintrc.json',
 ];
 
@@ -135,7 +135,7 @@ export function computePlan(input) {
   const {
     event, ref, files, filesKnown, message, manualFull,
     runnersAll, runnersLinux, fullTriggers, platformSensitive,
-    e2eRules, e2eSmoke, allCrates, crateGraph, packages, packageAppGlobs = [],
+    e2eRules, e2eSmoke, allCrates, crateGraph, packages,
   } = input;
 
   const docsOnly = filesKnown && isDocsOnly(files);
@@ -157,7 +157,7 @@ export function computePlan(input) {
   const plan = {
     full, os: runnersAll, crates: 'all', js: ['all'], e2e: 'all',
     lint: true, structure: true, fmt: true, reason,
-    crates_all: true, js_all: true, docs_only: false, package_app: true,
+    crates_all: true, js_all: true, docs_only: false,
   };
   if (full) return plan;
 
@@ -169,7 +169,6 @@ export function computePlan(input) {
     plan.js = [];
     plan.js_all = false;
     plan.e2e = 'none';
-    plan.package_app = false;
     // A SEGMENTS.md change must rerun the guard test that documents the segmentation edges.
     const segDocs = files.some(f => matchGlob(f, 'docs/api/**'));
     if (segDocs) {
@@ -191,8 +190,6 @@ export function computePlan(input) {
 
   const e2e = e2eFor(files, e2eRules, e2eSmoke, false, false);
   plan.e2e = e2e;
-
-  plan.package_app = packageAppGlobs.some(glob => files.some(f => matchGlob(f, glob)));
 
   if (sensitiveFile) {
     plan.os = runnersAll;
@@ -240,7 +237,7 @@ export function dispatchOnlyPlan(data) {
   return {
     full: false, os: data.runners_linux, crates: [], js: [], e2e: 'none',
     lint: true, structure: true, fmt: true, reason: 'dispatch with overrides (no diff base)',
-    crates_all: false, js_all: false, docs_only: false, package_app: false,
+    crates_all: false, js_all: false, docs_only: false,
   };
 }
 
@@ -263,7 +260,6 @@ function writeOutputs(plan, data) {
     `js_all=${plan.js_all}`,
     `reason=${plan.reason}`,
     `docs_only=${plan.docs_only}`,
-    `package_app=${plan.package_app}`,
   ];
   appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');
 }
@@ -272,7 +268,7 @@ function writeOutputs(plan, data) {
 function fullFallback(reason, data) {
   return {
     full: true, os: data.runners_all, crates: 'all', js: ['all'], e2e: 'all',
-    lint: true, structure: true, fmt: true, reason, crates_all: true, js_all: true, docs_only: false, package_app: true,
+    lint: true, structure: true, fmt: true, reason, crates_all: true, js_all: true, docs_only: false,
   };
 }
 
@@ -410,7 +406,6 @@ function main() {
       runnersAll: data.runners_all, runnersLinux: data.runners_linux,
       fullTriggers: data.full_triggers, platformSensitive: data.platform_sensitive,
       e2eRules: data.e2e_rules, e2eSmoke: data.e2e_smoke,
-      packageAppGlobs: data.package_app ?? [],
       allCrates, crateGraph, packages,
     });
   } catch (error) {

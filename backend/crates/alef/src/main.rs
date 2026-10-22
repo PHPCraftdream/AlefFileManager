@@ -42,7 +42,7 @@ mod consent_window;
 surfman::declare_surfman!();
 
 /// The default window icon (the Alef logo) unless the application ships `icon.png`.
-const DEFAULT_ICON: &[u8] = include_bytes!("../../../../frontend/public/logo-32x32.png");
+const DEFAULT_ICON: &[u8] = include_bytes!("../../../assets/logo-32x32.png");
 
 /// Exit codes: 2 — the command line or the manifest is unusable, 3 — the user has not given the
 /// rights the application asks for, 1 — the runtime failed.

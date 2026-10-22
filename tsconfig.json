@@ -8,7 +8,6 @@
     ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
     "isolatedModules": true,
@@ -56,9 +55,7 @@
     "noUnusedParameters": true
   },
   "include": [
-    "frontend/src",
     "packages/api/src",
-    "packages/mcp/src",
-    "rsbuild.config.ts"
+    "packages/mcp/src"
   ]
 }

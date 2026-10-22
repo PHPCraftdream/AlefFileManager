@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
-import { here, prepareSite, scratch, staticServer } from '../../tests/e2e/lib.mjs';
+import { here, prepareSite, scratch, staticServer } from './lib.mjs';
 
 test('every fixture manifest keeps browser files exclusively in dist', () => {
   let count = 0;

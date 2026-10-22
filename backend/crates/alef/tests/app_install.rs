@@ -111,7 +111,7 @@ fn signed_package_install_is_listed_idempotent_and_uninstallable_without_touchin
         .replace("id: org.example.app", &format!("id: {id}"))
         .replace("name: Example", "name: Install CI");
     let content = b"<!doctype html><title>install fixture</title>";
-    let icon = include_bytes!("../../../../frontend/public/logo-32x32.png");
+    let icon = include_bytes!("../../../assets/logo-32x32.png");
     let (package_bytes, fingerprint) = support::signed_package(&[
         ("alef.ktav", manifest.as_bytes()),
         ("dist/index.html", content),
