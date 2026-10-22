@@ -1,43 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use super::super::menu::model::{Owner, Plan};
 use alef_core::registry::window::tray::{self, TrayCall};
-use image::{ImageFormat, ImageReader, Limits};
 use muda::MenuId;
 use serde_json::Value;
 use std::{
-    io::{self, Cursor},
+    io,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-pub(crate) struct Icon {
-    pub rgba: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-}
+pub(crate) use crate::ui::integration::tray_pure::{decode, Icon};
 fn invalid(message: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
-}
-pub(crate) fn decode(png: &[u8]) -> io::Result<Icon> {
-    if png.is_empty() || png.len() > tray::ICON_BYTES_LIMIT {
-        return Err(invalid("tray PNG must be 1..256 KiB"));
-    }
-    let mut limits = Limits::default();
-    limits.max_image_width = Some(tray::ICON_SIDE_LIMIT);
-    limits.max_image_height = Some(tray::ICON_SIDE_LIMIT);
-    limits.max_alloc = Some(tray::ICON_DECODED_LIMIT);
-    let mut reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
-    reader.limits(limits);
-    let image = reader.decode().map_err(invalid)?.into_rgba8();
-    let (width, height) = image.dimensions();
-    if width == 0 || height == 0 || width > tray::ICON_SIDE_LIMIT || height > tray::ICON_SIDE_LIMIT
-    {
-        return Err(invalid("tray PNG dimensions must be 1..256"));
-    }
-    Ok(Icon {
-        rgba: image.into_raw(),
-        width,
-        height,
-    })
 }
 pub(crate) fn identity(call: &TrayCall, window: u64) -> (Owner, &str) {
     let (owner, token) = match call {

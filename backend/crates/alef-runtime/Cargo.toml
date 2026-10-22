@@ -39,6 +39,12 @@ crossbeam-channel = "=0.5.17"
 muda = "=0.19.3"
 tray-icon = "=0.24.2"
 
+# Linux tray: StatusNotifierItem + DBusMenu over D-Bus (no GTK); the same zbus as
+# alef-modules, and async-io to drive its futures on the tray worker thread.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io"] }
+async-io = "=2.6.0"
+
 # Opt-in backend selection leaves default Windows builds on WGL.
 [target.'cfg(windows)'.dependencies]
 mozangle = { version = "=0.5.1", optional = true }
