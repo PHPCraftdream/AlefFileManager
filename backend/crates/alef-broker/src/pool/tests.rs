@@ -47,6 +47,19 @@ fn pool_no_breaker() -> Pool<FakeClock, ConstJitter> {
     )
 }
 
+/// Only the windowed slot is on: the other kind would show up in every `fill`.
+fn windowed_only(max_consecutive_failures: u32) -> Pool<FakeClock, ConstJitter> {
+    Pool::new(
+        PoolConfig {
+            windowless: false,
+            max_consecutive_failures,
+            ..cfg()
+        },
+        FakeClock(Duration::ZERO),
+        ConstJitter(0.0),
+    )
+}
+
 fn t(ms: u64) -> Duration {
     Duration::from_millis(ms)
 }
@@ -234,7 +247,7 @@ fn two_kinds_are_independent() {
 
 #[test]
 fn failed_replacement_backs_off_and_grows_to_cap() {
-    let mut p = pool_no_breaker();
+    let mut p = windowed_only(u32::MAX);
     let mut current = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
     let mut now = t(0);
     // Consecutive failures double the delay: 250, 500, 1000, 2000, 4000 ms.
@@ -274,7 +287,7 @@ fn success_resets_backoff() {
 
 #[test]
 fn circuit_breaker_pauses_after_consecutive_failures() {
-    let mut p = pool();
+    let mut p = windowed_only(PoolConfig::default().max_consecutive_failures);
     let mut current = p.take(SlotKind::Windowed, t(0)).one_spawn_id();
     let mut now = t(0);
     // Three ordinary failures keep the exponential schedule.

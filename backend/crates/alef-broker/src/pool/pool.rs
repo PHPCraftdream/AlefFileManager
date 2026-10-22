@@ -64,6 +64,9 @@ impl<C: Clock, J: Jitter> Pool<C, J> {
     /// Fill the pool up to its target state: spawn for empty slots and for
     /// slots whose backoff has elapsed. Never more than one spawn per kind.
     pub fn fill(&mut self, now: Duration) -> Vec<Action> {
+        if self.closed {
+            return Vec::new();
+        }
         let mut actions = Vec::new();
         for kind in SlotKind::ALL {
             if !self.enabled(kind) || self.slots[kind.index()].disabled {
