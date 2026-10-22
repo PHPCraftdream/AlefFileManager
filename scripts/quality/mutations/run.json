@@ -1,7 +1,7 @@
 [
   {
     "name": "the run verb is not recognised",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "|first| first.to_str() == Some(\"run\")",
     "to": "|first| first.to_str() == Some(\"run!\")",
     "package": "alef",
@@ -11,7 +11,7 @@
   },
   {
     "name": "the positional target after run is empty",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "target = Some(PathBuf::from(argument));\n            }\n            _ if",
     "to": "target = Some(PathBuf::new());\n            }\n            _ if",
     "package": "alef",
@@ -21,7 +21,7 @@
   },
   {
     "name": "a second positional target after run is accepted",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "Some(text) if after_run && !text.starts_with('-') => {\n                if target.is_some() {",
     "to": "Some(text) if after_run && !text.starts_with('-') => {\n                if false {",
     "package": "alef",
@@ -31,7 +31,7 @@
   },
   {
     "name": "arguments that are not URLs become application arguments",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "&& Url::parse(text).is_ok() =>",
     "to": "&& Url::parse(text).is_err() =>",
     "package": "alef",
@@ -41,7 +41,7 @@
   },
   {
     "name": "a duplicate trust key is accepted",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "Some(\"--trust-key\") if trust_key.is_some() => {",
     "to": "Some(\"--trust-key\") if false => {",
     "package": "alef",
@@ -51,7 +51,7 @@
   },
   {
     "name": "a duplicate unsigned flag is accepted",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "Some(\"--allow-unsigned\") if allow_unsigned => {",
     "to": "Some(\"--allow-unsigned\") if false => {",
     "package": "alef",
@@ -61,7 +61,7 @@
   },
   {
     "name": "the trust key value is empty",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "trust_key = Some(text_of(\n                    value(&mut arguments, \"--trust-key\")?,\n                    \"--trust-key\",\n                )?);",
     "to": "let _ = text_of(value(&mut arguments, \"--trust-key\")?, \"--trust-key\")?; trust_key = Some(String::new());",
     "package": "alef",
@@ -71,7 +71,7 @@
   },
   {
     "name": "the unsigned flag is ignored",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "Some(\"--allow-unsigned\") => allow_unsigned = true,",
     "to": "Some(\"--allow-unsigned\") => allow_unsigned = false,",
     "package": "alef",
@@ -81,7 +81,7 @@
   },
   {
     "name": "a launch without a target is accepted",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "let target = target.ok_or_else(|| \"--app <PATH> is required\".to_owned())?;",
     "to": "let target = target.unwrap_or_default();",
     "package": "alef",
@@ -91,7 +91,7 @@
   },
   {
     "name": "the trust request and answer are swapped",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "None => Ok(Command::Trust {\n                request: PathBuf::from(request),\n                answer: PathBuf::from(answer),",
     "to": "None => Ok(Command::Trust {\n                request: PathBuf::from(answer),\n                answer: PathBuf::from(request),",
     "package": "alef",
@@ -101,7 +101,7 @@
   },
   {
     "name": "the trust subcommand accepts a third argument",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "Some(extra) => Err(format!(\n                \"trust: unexpected argument {}\",\n                extra.to_string_lossy()\n            )),",
     "to": "Some(_) => Ok(Command::Help),",
     "package": "alef",
@@ -111,7 +111,7 @@
   },
   {
     "name": "the first application argument after the separator is lost",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "app_args.extend(arguments.by_ref());",
     "to": "app_args.extend(arguments.by_ref().skip(1));",
     "package": "alef",
@@ -121,7 +121,7 @@
   },
   {
     "name": "trust flags are accepted after a URL",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "| \"--trust-key\" | \"--allow-unsigned\"),",
     "to": "| \"--trust-key!\" | \"--allow-unsigned!\"),",
     "package": "alef",
@@ -131,7 +131,7 @@
   },
   {
     "name": "a duplicate application target option is accepted",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "Some(\"--app\") if target.is_some() => return Err(\"--app is given twice\".to_owned()),",
     "to": "Some(\"--app\") if false => return Err(\"--app is given twice\".to_owned()),",
     "package": "alef",
@@ -141,7 +141,7 @@
   },
   {
     "name": "the trust verb is not recognised",
-    "file": "backend/crates/alef/src/args.rs",
+    "file": "backend/crates/alef/src/cli/args.rs",
     "from": "|first| first.to_str() == Some(\"trust\")",
     "to": "|first| first.to_str() == Some(\"trust!\")",
     "package": "alef",
@@ -151,7 +151,7 @@
   },
   {
     "name": "a load failure with exit code two is treated as a runtime failure",
-    "file": "backend/crates/alef/src/main.rs",
+    "file": "backend/crates/alef/src/cli/failure.rs",
     "from": "2 => Self::Usage(failure.to_string()),",
     "to": "2 => Self::Runtime(failure.to_string()),",
     "package": "alef",
@@ -161,7 +161,7 @@
   },
   {
     "name": "a load failure with exit code three is treated as a runtime failure",
-    "file": "backend/crates/alef/src/main.rs",
+    "file": "backend/crates/alef/src/cli/failure.rs",
     "from": "3 => Self::Declined(failure.to_string()),",
     "to": "3 => Self::Runtime(failure.to_string()),",
     "package": "alef",
@@ -171,7 +171,7 @@
   },
   {
     "name": "a bad trust key is treated as a refusal",
-    "file": "backend/crates/alef/src/main.rs",
+    "file": "backend/crates/alef/src/cli/failure.rs",
     "from": "Self::Usage(format!(\"INVALID_ARGUMENT: {message}\"))",
     "to": "Self::Declined(format!(\"INVALID_ARGUMENT: {message}\"))",
     "package": "alef",
@@ -181,7 +181,7 @@
   },
   {
     "name": "a trust refusal is treated as a runtime failure",
-    "file": "backend/crates/alef/src/main.rs",
+    "file": "backend/crates/alef/src/cli/failure.rs",
     "from": "TrustFailure::Refused(message) => Self::Declined(message),",
     "to": "TrustFailure::Refused(message) => Self::Runtime(message),",
     "package": "alef",
