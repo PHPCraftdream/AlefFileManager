@@ -191,7 +191,7 @@ pub fn connect_with_timeout(path: &Path, timeout: Duration) -> io::Result<UnixSt
         }
         let deadline = Instant::now() + timeout;
         loop {
-            let mut wait_ms = deadline
+            let wait_ms = deadline
                 .saturating_duration_since(Instant::now())
                 .as_millis()
                 .min(i32::MAX as u128) as i32;

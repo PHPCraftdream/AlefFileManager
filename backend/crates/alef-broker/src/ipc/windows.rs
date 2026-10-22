@@ -169,7 +169,7 @@ fn create_instance(name_wide: &[u16], user_sid: &str, first: bool) -> io::Result
     };
     // Invariant: sd was allocated by the SDDL conversion; LocalFree frees it.
     unsafe {
-        LocalFree(sd as HANDLE);
+        LocalFree(sd);
     }
     if handle == INVALID_HANDLE_VALUE {
         let err = io::Error::last_os_error();
@@ -521,7 +521,8 @@ fn token_user_sid(process: HANDLE) -> io::Result<String> {
         }
         // Layout: TOKEN_USER { SID_AND_ATTRIBUTES { Sid, Attributes } };
         // PSID is *mut c_void in windows-sys 0.52 (Win32::Foundation).
-        let sid: PSID = (buffer.as_mut_ptr() as *const usize).read() as PSID;
+        // Invariant: the buffer holds a TOKEN_USER the API filled; its first word is the SID pointer.
+        let sid: PSID = unsafe { (buffer.as_ptr() as *const usize).read_unaligned() } as PSID;
         let mut sid_str: PWSTR = std::ptr::null_mut();
         // Invariant: sid points into the buffer just returned by the API.
         if unsafe { ConvertSidToStringSidW(sid, &mut sid_str) } == 0 {

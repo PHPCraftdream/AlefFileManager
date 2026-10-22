@@ -111,7 +111,7 @@ pub trait ReplyTo {
 }
 
 /// Write one framed message body to a stream.
-pub fn write_frame(w: &mut dyn Write, body: &[u8]) -> io::Result<()> {
+pub fn write_frame<W: Write + ?Sized>(w: &mut W, body: &[u8]) -> io::Result<()> {
     let bytes = encode_frame(body).map_err(io::Error::other)?;
     w.write_all(&bytes)
 }
