@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Where the windows were. A window whose definition says `restore: true` opens where it was when
 //! the application last ran. What the system reports of such a window is noted as it changes and
-//! written to a small JSON file at most a second after the first change, when a window closes and
+//! written to a small Ktav file at most a second after the first change, when a window closes and
 //! when the application ends.
 use std::{
     collections::{BTreeMap, HashSet},
@@ -15,6 +15,7 @@ use alef_core::{
         geometry::{self, Remembered},
         MonitorInfo, WindowInfo,
     },
+    security::permissions::store,
     security::window::WindowDef,
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +52,7 @@ impl Restore {
     /// Reads the file; one that is missing, damaged or of another version is as good as none.
     pub(in crate::window) fn load(path: PathBuf) -> Self {
         let windows = match fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<Saved>(&bytes) {
+            Ok(bytes) => match store::from_bytes::<Saved>(&bytes) {
                 Ok(saved) if saved.version == VERSION => saved
                     .windows
                     .into_iter()
@@ -162,12 +163,12 @@ impl Restore {
             version: VERSION,
             windows: self.windows.clone(),
         };
-        let text = serde_json::to_vec_pretty(&saved).map_err(io::Error::other)?;
+        let bytes = store::to_bytes(&saved)?;
         if let Some(folder) = self.path.parent() {
             fs::create_dir_all(folder)?;
         }
-        let partial = self.path.with_extension("json.part");
-        fs::write(&partial, text)?;
+        let partial = self.path.with_extension("ktav.part");
+        fs::write(&partial, bytes)?;
         fs::rename(&partial, &self.path)
     }
 }
@@ -226,7 +227,7 @@ mod tests {
 
     fn store() -> (tempfile::TempDir, PathBuf) {
         let folder = tempfile::tempdir().unwrap();
-        let path = folder.path().join("state").join("windows.json");
+        let path = folder.path().join("state").join("windows.ktav");
         (folder, path)
     }
 
@@ -340,26 +341,98 @@ mod tests {
     }
 
     #[test]
+    fn saved_and_remembered_round_trip_through_ktav() {
+        let remembered = Remembered {
+            x: Some(3.0),
+            y: None,
+            width: 800.0,
+            height: 600.0,
+            maximized: false,
+        };
+        let remembered_bytes = store::to_bytes(&remembered).unwrap();
+        let back: Remembered = store::from_bytes(&remembered_bytes).unwrap();
+        assert_eq!(back.x, Some(3.0));
+        assert_eq!(
+            back.y, None,
+            "a place the system does not tell stays untold"
+        );
+
+        let saved = Saved {
+            version: VERSION,
+            windows: BTreeMap::from([("app.main".to_owned(), remembered)]),
+        };
+        let saved_bytes = store::to_bytes(&saved).unwrap();
+        let text = std::str::from_utf8(&saved_bytes).unwrap();
+        let value = store::parse(text).unwrap();
+        let object = value.as_object().expect("an object");
+        assert_eq!(
+            object.get("version").and_then(|v| v.as_integer()),
+            Some("1"),
+            "the version is written as an integer"
+        );
+        let windows = object
+            .get("windows")
+            .and_then(|v| v.as_object())
+            .expect("the windows map");
+        let entry = windows.get("app.main").expect("a key with a dot survives");
+        assert_eq!(
+            entry.as_object().unwrap().get("y"),
+            Some(&store::Value::Null),
+            "Option::None is written as null"
+        );
+
+        let back: Saved = store::from_bytes(&saved_bytes).unwrap();
+        assert_eq!(back.version, VERSION);
+        assert_eq!(back.windows.get("app.main"), Some(&remembered));
+    }
+
+    #[test]
+    fn a_key_with_a_dot_is_written_quoted_and_reads_back_whole() {
+        let (_folder, path) = store();
+        let mut store = Restore::load(path.clone());
+        store.track("app.main");
+        store.observe(&info("app.main", Some(30.0), 500.0, false), Instant::now());
+        store.flush();
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("\"app.main\""),
+            "a dot in a key is quoted, not read as nesting: {written}"
+        );
+        let second = Restore::load(path);
+        assert!(second.apply(&definition("app.main"), &display()).is_some());
+    }
+
+    #[test]
+    fn a_duplicated_key_is_refused() {
+        let text = "version: 1\nwindows: {\n    main: {\n        x: 1.0\n        y: 2.0\n        width: 800.0\n        height: 600.0\n        maximized: false\n    }\n    main: {\n        x: 3.0\n        y: 4.0\n        width: 500.0\n        height: 400.0\n        maximized: true\n    }\n}";
+        assert!(store::parse(text).is_err(), "ktav refuses a repeated key");
+        assert!(store::from_bytes::<Saved>(text.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn an_unknown_field_is_ignored() {
+        let text = "version: 1\nnote: written by hand\nwindows: {}";
+        let saved: Saved = store::from_bytes(text.as_bytes()).unwrap();
+        assert_eq!(saved.version, 1);
+        assert!(saved.windows.is_empty());
+    }
+
+    #[test]
     fn a_file_that_is_missing_damaged_old_or_absurd_is_as_good_as_none() {
         let (_folder, path) = store();
         assert!(Restore::load(path.clone()).windows.is_empty());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         for text in [
-            "not json".to_owned(),
-            r#"{"version": 7, "windows": {}}"#.to_owned(),
-            r#"{"version": 1}"#.to_owned(),
+            "not a document {".to_owned(),
+            "version: 7\nwindows: {}".to_owned(),
+            "version: 1".to_owned(),
         ] {
             fs::write(&path, text).unwrap();
             assert!(Restore::load(path.clone()).windows.is_empty());
         }
         fs::write(
             &path,
-            r#"{"version": 1, "windows": {
-                "good": {"x": 1.0, "y": 2.0, "width": 800.0, "height": 600.0, "maximized": false},
-                "zero": {"x": 1.0, "y": 2.0, "width": 0.0, "height": 600.0, "maximized": false},
-                "huge": {"x": 1.0, "y": 2.0, "width": 8000000.0, "height": 600.0, "maximized": false},
-                "far": {"x": 1e300, "y": 2.0, "width": 800.0, "height": 600.0, "maximized": false}
-            }}"#,
+            "version: 1\nwindows: {\n    good: {\n        x: 1.0\n        y: 2.0\n        width: 800.0\n        height: 600.0\n        maximized: false\n    }\n    zero: {\n        x: 1.0\n        y: 2.0\n        width: 0.0\n        height: 600.0\n        maximized: false\n    }\n    huge: {\n        x: 1.0\n        y: 2.0\n        width: 8000000.0\n        height: 600.0\n        maximized: false\n    }\n    far: {\n        x: 1e300\n        y: 2.0\n        width: 800.0\n        height: 600.0\n        maximized: false\n    }\n}",
         )
         .unwrap();
         let loaded = Restore::load(path);

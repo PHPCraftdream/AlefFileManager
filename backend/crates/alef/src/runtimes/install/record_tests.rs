@@ -5,6 +5,7 @@ mod tests {
     use super::super::{
         list_records, read_record, valid_id, AppListing, AppRecord, InstallError, RECORD_LIMIT,
     };
+    use alef_core::security::permissions::store;
     use sha2::Digest;
     use std::{
         path::{Path, PathBuf},
@@ -51,8 +52,8 @@ mod tests {
         let dir = root.join(&hash);
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(
-            dir.join("app.json"),
-            serde_json::to_vec(&record(id, version)).unwrap(),
+            dir.join("app.ktav"),
+            store::to_bytes(&record(id, version)).unwrap(),
         )
         .unwrap();
         std::fs::write(dir.join(format!("{version}.alef")), b"package").unwrap();
@@ -71,31 +72,32 @@ mod tests {
         let hash = format!("{:x}", sha2::Sha256::digest(good.id.as_bytes()));
         let dir = root.join(&hash);
         std::fs::create_dir(&dir).unwrap();
-        std::fs::write(dir.join("app.json"), serde_json::to_vec(&good).unwrap()).unwrap();
+        std::fs::write(dir.join("app.ktav"), store::to_bytes(&good).unwrap()).unwrap();
         std::fs::write(dir.join(&good.package), b"package").unwrap();
         assert_eq!(read_record(&dir, &hash).unwrap(), good);
-        let original = serde_json::to_value(&good).unwrap();
-        let mut unknown = original.as_object().unwrap().clone();
-        unknown.insert("unknown".into(), serde_json::json!(1));
-        let unknown = serde_json::Value::Object(unknown);
-        std::fs::write(dir.join("app.json"), serde_json::to_vec(&unknown).unwrap()).unwrap();
+        let original = String::from_utf8(store::to_bytes(&good).unwrap()).unwrap();
+        // An unknown field must be refused (deny_unknown_fields).
+        let unknown = format!("unknown: 1\n{original}");
+        std::fs::write(dir.join("app.ktav"), unknown).unwrap();
         assert_eq!(read_record(&dir, &hash).unwrap_err().category, "APP_RECORD");
-        let serialized = serde_json::to_string(&good).unwrap();
-        let id_value = serde_json::to_value(&good.id).unwrap();
-        let id_field = format!("\"id\":{id_value}");
-        assert!(serialized.contains(&id_field));
-        let duplicate_id = format!("\"id\":{id_value},\"id\":{id_value}");
-        let duplicate = serialized.replacen(&id_field, &duplicate_id, 1);
-        std::fs::write(dir.join("app.json"), duplicate).unwrap();
+        let serialized = original;
+        // A duplicate key must be refused.
+        let id_line = serialized
+            .lines()
+            .find(|line| line.starts_with("id:"))
+            .expect("id line")
+            .to_owned();
+        let duplicate = serialized.replacen(&id_line, &format!("{id_line}\n{id_line}"), 1);
+        std::fs::write(dir.join("app.ktav"), duplicate).unwrap();
         assert_eq!(read_record(&dir, &hash).unwrap_err().category, "APP_RECORD");
-        std::fs::write(dir.join("app.json"), vec![b' '; RECORD_LIMIT as usize + 1]).unwrap();
+        std::fs::write(dir.join("app.ktav"), vec![b' '; RECORD_LIMIT as usize + 1]).unwrap();
         assert!(read_record(&dir, &hash)
             .unwrap_err()
             .detail
             .contains("size limit"));
         std::fs::write(
-            dir.join("app.json"),
-            serde_json::to_vec(&record("wrong.id", "1.0.0")).unwrap(),
+            dir.join("app.ktav"),
+            store::to_bytes(&record("wrong.id", "1.0.0")).unwrap(),
         )
         .unwrap();
         assert_eq!(read_record(&dir, &hash).unwrap_err().category, "APP_RECORD");
@@ -104,8 +106,8 @@ mod tests {
             "APP_RECORD"
         );
         std::fs::write(
-            dir.join("app.json"),
-            serde_json::to_vec(&record("org.example.app", "01.0.0")).unwrap(),
+            dir.join("app.ktav"),
+            store::to_bytes(&record("org.example.app", "01.0.0")).unwrap(),
         )
         .unwrap();
         assert_eq!(read_record(&dir, &hash).unwrap_err().category, "APP_RECORD");
@@ -120,7 +122,7 @@ mod tests {
         let damaged_hash = format!("{:x}", sha2::Sha256::digest(damaged_id.as_bytes()));
         let damaged = root.join(&damaged_hash);
         std::fs::create_dir(&damaged).unwrap();
-        std::fs::write(damaged.join("app.json"), b"broken").unwrap();
+        std::fs::write(damaged.join("app.ktav"), b"broken").unwrap();
         std::fs::write(root.join(".ignored"), b"ignore").unwrap();
         put(&root, "org.example.z", "1.0.0");
         put(&root, "org.example.a", "1.0.0");

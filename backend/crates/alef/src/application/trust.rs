@@ -33,7 +33,7 @@ pub fn trust_folder() -> PathBuf {
 /// The record path for one exact id: the file name is the SHA-256 of the id bytes,
 /// so the id itself never becomes a path component.
 pub fn pin_path(folder: &Path, app_id: &str) -> PathBuf {
-    folder.join(format!("{:x}.json", Sha256::digest(app_id.as_bytes())))
+    folder.join(format!("{:x}.ktav", Sha256::digest(app_id.as_bytes())))
 }
 
 /// One immutable pin: the key accepted for one exact application id.
@@ -103,12 +103,13 @@ pub fn load(folder: &Path, app_id: &str) -> io::Result<Option<Pin>> {
         ));
     }
     let bytes = std::fs::read(&path)?;
-    let pin: Pin = serde_json::from_slice(&bytes).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("the trust record is damaged: {error}"),
-        )
-    })?;
+    let pin: Pin =
+        alef_core::security::permissions::store::from_bytes(&bytes).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the trust record is damaged: {error}"),
+            )
+        })?;
     if pin.version != RECORD_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -156,7 +157,8 @@ pub fn pin(folder: &Path, app_id: &str, public_key: &str) -> io::Result<Pin> {
         public_key: public_key.to_owned(),
         fingerprint,
     };
-    let bytes = serde_json::to_vec(&record).map_err(io::Error::other)?;
+    let bytes =
+        alef_core::security::permissions::store::to_bytes(&record).map_err(io::Error::other)?;
     std::fs::create_dir_all(folder)?;
     #[cfg(unix)]
     {
@@ -466,7 +468,7 @@ mod tests {
 
     fn record_json(app_id: &str, public_key: &str, fingerprint: &str) -> Vec<u8> {
         format!(
-            r#"{{"version":1,"app_id":"{app_id}","public_key":"{public_key}","fingerprint":"{fingerprint}"}}"#
+            "version: 1\napp_id: {app_id}\npublic_key: {public_key}\nfingerprint: {fingerprint}\n"
         )
         .into_bytes()
     }
@@ -482,7 +484,9 @@ mod tests {
         assert_eq!(record.fingerprint, fingerprint_of(&key('a')).unwrap());
         let path = pin_path(folder.path(), ID);
         assert!(path.exists());
-        let stored: Pin = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let stored: Pin =
+            alef_core::security::permissions::store::from_bytes(&std::fs::read(&path).unwrap())
+                .unwrap();
         assert_eq!(stored, record);
         assert_eq!(
             load(folder.path(), ID).unwrap(),
@@ -596,15 +600,19 @@ mod tests {
         let error = pin(folder.path(), ID, &key('b')).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
         assert!(error.to_string().contains("another key"));
-        let stored: Pin =
-            serde_json::from_slice(&std::fs::read(pin_path(folder.path(), ID)).unwrap()).unwrap();
+        let stored: Pin = alef_core::security::permissions::store::from_bytes(
+            &std::fs::read(pin_path(folder.path(), ID)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(stored, first);
         // Two threads race for the first pin with different keys: exactly one wins, the other
         // reloads the winner's record and is refused; the record is never replaced.
         let raced = tempfile::tempdir().unwrap();
         let [one, other] = race(raced.path(), 'a', 'b');
-        let stored: Pin =
-            serde_json::from_slice(&std::fs::read(pin_path(raced.path(), ID)).unwrap()).unwrap();
+        let stored: Pin = alef_core::security::permissions::store::from_bytes(
+            &std::fs::read(pin_path(raced.path(), ID)).unwrap(),
+        )
+        .unwrap();
         let (winner, loser) = match (one, other) {
             (Ok(pinned), Err(error)) => {
                 assert_eq!(stored.public_key, key('a'));
@@ -680,7 +688,7 @@ mod tests {
     fn the_pin_file_name_is_the_digest_of_the_exact_id_and_ids_are_isolated() {
         let folder = Path::new("unused");
         for id in [ID, "other.id", "App.id", "app.id"] {
-            let expected = folder.join(format!("{:x}.json", Sha256::digest(id.as_bytes())));
+            let expected = folder.join(format!("{:x}.ktav", Sha256::digest(id.as_bytes())));
             assert_eq!(pin_path(folder, id), expected);
         }
         assert_ne!(pin_path(folder, "App.id"), pin_path(folder, "app.id"));
@@ -868,7 +876,7 @@ mod tests {
             &mut recorder(&questions, true),
         )
         .unwrap_err();
-        assert!(failure.to_string().starts_with("SIGNATURE_REQUIRED: "),);
+        assert!(failure.to_string().starts_with("SIGNATURE_REQUIRED: "));
         assert_eq!(failure.exit(), 3);
     }
 

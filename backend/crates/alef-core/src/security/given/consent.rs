@@ -10,6 +10,7 @@ use std::{
     str::FromStr,
 };
 
+use crate::security::permissions::store;
 use serde::{Deserialize, Serialize};
 
 /// What a red right does, in words for the consent window.
@@ -295,7 +296,7 @@ pub trait ConsentStore: Send + Sync {
     fn identities(&self) -> io::Result<Vec<Identity>>;
 }
 
-/// A store of one JSON file per identity in a folder.
+/// A store of one Ktav file per identity in a folder.
 #[derive(Debug, Clone)]
 pub struct FileConsentStore {
     folder: PathBuf,
@@ -337,7 +338,7 @@ impl FileConsentStore {
     }
 
     fn path(&self, identity: &Identity) -> PathBuf {
-        self.folder.join(format!("{}.json", identity.key()))
+        self.folder.join(format!("{}.ktav", identity.key()))
     }
 
     fn read(path: &Path) -> io::Result<Option<(Identity, Consent)>> {
@@ -347,7 +348,7 @@ impl FileConsentStore {
             Err(error) => return Err(error),
         };
         // A file that is damaged or of another version is as good as no decisions: the user is asked again.
-        let Ok(saved) = serde_json::from_slice::<Saved>(&bytes) else {
+        let Ok(saved) = store::from_bytes::<Saved>(&bytes) else {
             return Ok(None);
         };
         if saved.version != VERSION {
@@ -392,10 +393,10 @@ impl ConsentStore for FileConsentStore {
                 })
                 .collect(),
         };
-        let text = serde_json::to_vec_pretty(&saved).map_err(io::Error::other)?;
+        let text = store::to_bytes(&saved).map_err(io::Error::other)?;
         fs::create_dir_all(&self.folder)?;
         let path = self.path(identity);
-        let partial = path.with_extension("json.part");
+        let partial = path.with_extension("ktav.part");
         fs::write(&partial, text)?;
         fs::rename(&partial, &path)
     }
@@ -418,7 +419,7 @@ impl ConsentStore for FileConsentStore {
             let path = entry?.path();
             if path
                 .extension()
-                .is_some_and(|extension| extension == "json")
+                .is_some_and(|extension| extension == "ktav")
             {
                 if let Some((identity, _)) = Self::read(&path)? {
                     found.push(identity);
@@ -602,20 +603,20 @@ mod tests {
         let mut consent = Consent::undecided();
         consent.set(Right::plain("secrets"), Decision::Allow);
         store.save(&mine, &consent).unwrap();
-        let path = folder.path().join("org.example.app@folder.json");
+        let path = folder.path().join("org.example.app@folder.ktav");
         assert!(path.exists());
-        fs::write(&path, "not json").unwrap();
+        fs::write(&path, "not ktav").unwrap();
         assert_eq!(store.load(&mine).unwrap(), None);
         fs::write(
             &path,
-            r#"{"version": 9, "app_id": "org.example.app", "decisions": []}"#,
+            "version: 9\napp_id: org.example.app\ndecisions: []\n",
         )
         .unwrap();
         assert_eq!(store.load(&mine).unwrap(), None);
         // A file that was put under another identity's name does not speak for that identity.
         fs::write(
             &path,
-            r#"{"version": 1, "app_id": "org.example.evil", "decisions": [{"permission": "secrets", "decision": "allow"}]}"#,
+            "version: 1\napp_id: org.example.evil\ndecisions: [\n    {\n        permission: secrets\n        decision: allow\n    }\n]\n",
         )
         .unwrap();
         assert_eq!(store.load(&mine).unwrap(), None);
@@ -766,7 +767,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [".._evil_app@a_b.json"],
+            [".._evil_app@a_b.ktav"],
             "nothing is written outside the folder"
         );
         assert_eq!(store.load(&odd).unwrap().map(|_| ()), Some(()));

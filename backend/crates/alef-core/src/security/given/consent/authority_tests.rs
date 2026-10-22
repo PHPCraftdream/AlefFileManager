@@ -54,7 +54,7 @@ fn package_keys_match_authority_tokens_and_fixed_vectors() {
         assert_eq!(mine.key(), expected);
         assert_eq!(Some(mine.key()), authority.package_token(&mine.app_id));
         assert_eq!(
-            serde_json::from_str::<Identity>(&serde_json::to_string(&mine).unwrap()).unwrap(),
+            store::from_bytes::<Identity>(&store::to_bytes(&mine).unwrap()).unwrap(),
             mine
         );
     }
@@ -69,7 +69,7 @@ fn package_keys_match_authority_tokens_and_fixed_vectors() {
 }
 
 #[test]
-fn package_decisions_are_isolated_on_disk_without_changing_json_identity() {
+fn package_decisions_are_isolated_on_disk_without_changing_ktav_identity() {
     let folder = tempfile::tempdir().unwrap();
     let store = FileConsentStore::new(folder.path());
     let identities = [
@@ -86,11 +86,22 @@ fn package_decisions_are_isolated_on_disk_without_changing_json_identity() {
         assert_eq!(store.load(mine).unwrap(), None);
         store.save(mine, &consent).unwrap();
         assert_eq!(store.load(mine).unwrap(), Some(consent.clone()));
-        let saved: serde_json::Value =
-            serde_json::from_slice(&fs::read(store.path(mine)).unwrap()).unwrap();
-        assert_eq!(saved["version"], 1);
-        assert_eq!(saved["app_id"], mine.app_id);
-        assert_eq!(saved["signer"].as_str(), mine.signer.as_deref());
+        let saved =
+            store::parse(std::str::from_utf8(&fs::read(store.path(mine)).unwrap()).unwrap())
+                .unwrap();
+        let saved = saved.as_object().unwrap();
+        assert_eq!(
+            saved.get("version").and_then(store::Value::as_integer),
+            Some("1")
+        );
+        assert_eq!(
+            saved.get("app_id").and_then(store::Value::as_str),
+            Some(mine.app_id.as_str())
+        );
+        assert_eq!(
+            saved.get("signer").and_then(store::Value::as_str),
+            mine.signer.as_deref()
+        );
         assert_eq!(store.identities().unwrap().len(), index + 1);
     }
     store.forget(&identities[1]).unwrap();

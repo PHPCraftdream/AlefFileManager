@@ -21,8 +21,8 @@ fn write_record(home: &Path, id: &str, version: &str, package: &str) -> PathBuf 
         installed_time: 0,
     };
     std::fs::write(
-        app_dir.join("app.json"),
-        serde_json::to_vec(&record).expect("record json"),
+        app_dir.join("app.ktav"),
+        alef_core::security::permissions::store::to_bytes(&record).expect("record ktav"),
     )
     .expect("write record");
     app_dir
@@ -52,12 +52,12 @@ fn a_damaged_record_is_a_clear_error_and_leaves_the_store_in_place() {
     let home = tempfile::tempdir().expect("tempdir");
     let app_dir = home.path().join("apps").join(hash_of("org.example.app"));
     std::fs::create_dir_all(&app_dir).expect("app directory");
-    std::fs::write(app_dir.join("app.json"), b"{not json").expect("damaged record");
+    std::fs::write(app_dir.join("app.ktav"), b"{not json").expect("damaged record");
     let error = resolve_installed_in(home.path(), "org.example.app").expect_err("damaged");
     assert_eq!(error.category, "APP_RECORD");
     assert_eq!(error.exit, 1);
     assert_eq!(
-        std::fs::read(app_dir.join("app.json")).expect("record unchanged"),
+        std::fs::read(app_dir.join("app.ktav")).expect("record unchanged"),
         b"{not json"
     );
 }
@@ -235,7 +235,7 @@ fn a_record_that_changed_or_vanished_during_an_attempt_is_detected() {
     assert!(record_changed(home.path(), "org.example.app", &before));
     // A vanished record is a change too: the attempt must be retried.
     let before = record_bytes(home.path(), "org.example.app");
-    let _ = std::fs::remove_file(app_dir.join("app.json"));
+    let _ = std::fs::remove_file(app_dir.join("app.ktav"));
     assert!(record_changed(home.path(), "org.example.app", &before));
 }
 

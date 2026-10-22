@@ -230,7 +230,7 @@ pub fn uninstall_in(
             collect_path(&shadow, &mut targets)?;
             let consent_file = home
                 .join("consent")
-                .join(format!("{}.json", identity.key()));
+                .join(format!("{}.ktav", identity.key()));
             collect_path(&consent_file, &mut targets)?;
         }
         let pin_path = trust::pin_path(&home.join("trust"), id);
