@@ -399,6 +399,7 @@ permissions: {
 | M7 | `stages/m7-distribution.md` | M7a runtime и лаунчер (установщики, версии рядом), M7b пакеты `.alef` (подпись, `alef install`, `@alef-runtime/tools`, `updater`), M7c единая сборка (опция) | M3, M2b, M0.4 |
 | M9 | [stages/m9-ai.md](stages/m9-ai.md) | Безопасный мост недоверенного приложения к пользовательским AI-ролям Rush; M9.2: манифест `permissions.ai`, `ai.roles`/`ai.chat`/`ai.tools.*`, сегмент `api/ai`, заглушечный `AiProvider` (реализация без транспорта); остаются согласие-UI, квоты, журнал, OS-изоляция, транспорт Rush (#165–#167) | M3, M2b, M4, M7a.1; интеграция Rush; BlockingExecutor (TARGET) |
 | M10 | [stages/m10-platform.md](stages/m10-platform.md) | Платформа: `log` (журнал приложения в файл и отчёты о сбоях, M10.1) и `devtools` (отладка страницы Servo только при разработке: флаг `--devtools`, подтверждение каждого подключения, M10.2) | M2b, M3, M7a |
+| M11 | [stages/m11-warm-start.md](stages/m11-warm-start.md) | Прогрев запуска: брокер, два типа одноразовых запасных процессов, поздняя привязка и холодный резервный запуск | M1, M5, M7, M10 |
 
 ## 9. Тестирование
 

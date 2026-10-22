@@ -97,7 +97,7 @@ Cargo запускается через `node scripts/cargo.mjs <команда>
 | [docs/BUS-ARCHITECTURE.md](docs/BUS-ARCHITECTURE.md) | Обязательная архитектура главного backend-потока |
 | [docs/PATCHES.md](docs/PATCHES.md) | Локальные патчи зависимостей |
 | [docs/api/SEGMENTS.md](docs/api/SEGMENTS.md) | Сегментированные подпути `@alef-runtime/api` |
-| `docs/stages/` | Этапы M0–M10: цель, объём, «Как сделано», приёмка; `m0-results/` — результаты спайков и CI |
+| `docs/stages/` | Этапы M0–M11: [M11 — прогрев запуска](docs/stages/m11-warm-start.md); цель, объём, «Как сделано», приёмка; `m0-results/` — результаты спайков и CI |
 | [RESIZE-INVESTIGATION.md](RESIZE-INVESTIGATION.md) | Расследование live resize |
 | `docs/reviews/`, `docs/checkpoints/` | Ревью и снимки состояния работы по датам |
 
