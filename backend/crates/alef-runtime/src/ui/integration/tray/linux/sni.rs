@@ -556,7 +556,7 @@ mod tests {
 
     fn text<'a>(map: &'a HashMap<String, OwnedValue>, key: &str) -> &'a str {
         map.get(key)
-            .and_then(|value| value.downcast_ref::<str>().ok())
+            .and_then(|value| value.downcast_ref::<&str>().ok())
             .unwrap_or_default()
     }
 
@@ -635,12 +635,12 @@ mod tests {
         fn no_bus() -> Result<zbus::connection::Connection, zbus::Error> {
             Err(zbus::Error::Failure("no bus".into()))
         }
-        let (calls, incoming) = crossbeam_channel::bounded::<super::Call>(1);
+        let (calls, incoming) = crossbeam_channel::bounded::<crate::ui::integration::tray::Call>(1);
         let (events, _events) = crossbeam_channel::bounded::<super::Event>(16);
         let (reply, answers) = crossbeam_channel::bounded::<std::io::Result<()>>(1);
         let failed = Arc::new(AtomicBool::new(false));
         calls
-            .send(super::Call {
+            .send(crate::ui::integration::tray::Call {
                 command: super::Command::SetIcon {
                     path: "/StatusNotifierItem/x".into(),
                     pixmap: (1, 1, vec![0, 0, 0, 0]),

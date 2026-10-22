@@ -181,7 +181,6 @@ impl TrayMenu {
 mod tests {
     use super::*;
     use alef_core::registry::window::menu::{MenuItem, MenuKind, MenuRole};
-    use std::io::Write;
 
     fn item(id: &str, label: &str) -> MenuItem {
         MenuItem {
