@@ -52,7 +52,7 @@ Alef — десктопный фреймворк: пользователь пи�
 ```
 backend/
   Cargo.toml            workspace + [patch.crates-io]
-  patches/              servo-paint, servo-paint-api, winit (как сейчас)
+  patches/              servo-paint, servo-paint-api, surfman, winit (как сейчас)
   crates/
     alef-core/          src/{lib.rs, protocol/, session/, security/, registry/, error.rs}
     alef-modules/       src/{lib.rs, desktop/, system/, data/, net/, devices/}
@@ -67,7 +67,7 @@ packages/
   create-alef-runtime/      шаблон проекта
 scripts/                CI, выпуск, проверки качества и поставки, генерация типов
 tests/
-  e2e/                  страницы-сценарии, раннер и приложения-образцы apps/* (заменит experiments/transport-spike)
+  e2e/                  страницы-сценарии, раннер и приложения-образцы apps/* (заменил experiments/transport-spike, удалён в M1.7)
 docs/                   планы, этапы, архитектура
 ```
 
