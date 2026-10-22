@@ -1,10 +1,10 @@
-# M3 — Данные и перевод File Manager
+# M3 — Данные и перевод приложения-примера
 
 Обзор: `../FRAMEWORK-PLAN.md`. Зависит от M2 (гранты диалогов, `path`).
 
 ## Цель
 
-Модули `fs`, `store`, `sqlite`, `crypto` (+ `secrets`). Доказательство достаточности API: Alef File Manager переводится с собственных Rust-команд (`directory.list`, `preferences.get/set`) на `fs` и `store`, `backend/src` удаляется.
+Модули `fs`, `store`, `sqlite`, `crypto` (+ `secrets`). Доказательство достаточности API: приложение-пример alef-file-manager (отдельный репозиторий PHPCraftdream/alef-file-manager; на момент этапа лежало в этом репозитории) переводится с собственных Rust-команд (`directory.list`, `preferences.get/set`) на `fs` и `store`, его собственный `backend/src` удаляется.
 
 ## Модули
 
@@ -98,15 +98,17 @@ sqlite.open(path, { readonly?, create? }): Promise<Database>    // путь в s
 - **Модуль `crypto` (M3.5).** Дает приложениям то, что страница сама не может: `random(length)` (до 1 MiB), `digest`/`hmac`/`hmacVerify` (sha-1, sha-256, sha-384, sha-512; проверка тега за постоянное время), `hkdf`, `pbkdf2` (до 10 млн итераций), `argon2id` (по умолчанию 19 MiB, 2 прохода, 1 дорожка — совет OWASP; до 1 GiB памяти), `scrypt` (по умолчанию N = 2^17, r = 8, p = 1; память `128·N·r` до 1 GiB), `seal`/`open` (AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305: результат — nonce в 12 байт, шифртекст и тег в 16 байт; nonce новый каждый раз; изменение любой части, другой ключ или другой `aad` — `INVALID_ARGUMENT` «не прошло проверку») и `ed25519Generate`/`Sign`/`Verify` (закрытый ключ — зерно в 32 байта). RSA, ECDSA, ECDH и X25519 не даны: их даст WebCrypto, когда будет включен. Данные идут телом вызова, ключи, соли и теги — base64 в аргументах, ответ — байты; выводимый ключ или хеш — от 1 до 1024 байт. Права не нужны: модуль ничего не трогает в машине. Тяжелые хеши паролей (`pbkdf2`, `argon2id`, `scrypt`) идут не более двух разом, остальные ждут очереди. Реализация — `ring` (в дереве) и `argon2`, `scrypt` (новые зависимости); проверено опубликованными векторами (RFC 4231, 5869, 7914, 8032, GCM) и OpenSSL из Node в e2e (сценарий `crypto`: runner считает ожидаемое, страница сравнивает; что страница запечатала, runner открывает сам).
 - **Модуль `secrets` (M3.5).** Пароли, токены и ключи в хранилище ОС: Windows Credential Manager, macOS Keychain, Secret Service на Linux. Реализация — `keyring-core` и его хранилища `windows-native-keyring-store`, `apple-native-keyring-store`, `zbus-secret-service-keyring-store` (чистый Rust: libdbus не нужен). Команды: `secrets.get(service, account)` (байты или `null`) и `getText`, `set(service, account, secret)`, `delete` (было ли что удалять). **Право.** `permissions.secrets: true` в манифесте и согласие пользователя: без права все команды — `PERMISSION_DENIED`; решение «подменить» дает документу хранилище-подставку в памяти процесса (в хранилище ОС и на диск ничего не попадает, к концу запуска оно исчезает: секреты открытым текстом на диск мы не пишем). **Пространство имен.** Служба в хранилище ОС — `alef/<id приложения>/<service>`, учетная запись — `account` как есть: приложение не видит секретов другого (id с `/` при регистрации модуля — ошибка). `service` и `account` — от 1 до 128 байт без управляющих символов; секрет — от 1 до 1024 байт (предел Credential Manager с запасом), телом вызова, не в аргументах. На Windows служба и учетная запись склеиваются в одно имя через `U+001F` (иначе `("a.b", "c")` и `("a", "b.c")` были бы одним секретом). **Отказ хранилища.** На Linux нет сеанса с Secret Service или он заперт — `NOT_AVAILABLE`; хранилище открывается при первом обращении и заново после неудачи. **Проверка.** Rust-тесты и e2e держат секреты в памяти (`ALEF_E2E=1`: хранилища машины не трогаем); настоящее хранилище проверяет `cargo test -p alef-modules --test data -- --ignored secrets` при `ALEF_TEST_DESKTOP=1` на чистых раннерах CI (на Linux — внутри `dbus-run-session` с `gnome-keyring-daemon`).
 
-## Перевод File Manager
+## Перевод приложения-примера
+
+Приложение-пример alef-file-manager (id `org.alef.filemanager`) теперь живёт в отдельном репозитории PHPCraftdream/alef-file-manager. Ниже — запись о работе, которая велась, когда оно лежало в этом репозитории: `frontend/`, `npm start`, `npm run dev`, `frontend/test` и `tests/e2e/boot-file-manager.mjs` здесь больше нет.
 
 Сделано (M3.6):
 
 1. Список каталога: `nativeApi.listDirectory` → `fs.readDir`; корень — `--root` из `app.args()` или `path.home()`; ограничение корнем — scope `fs.read: [ $HOME/** ]` в манифесте (прежний корень по `--root` вне дома теперь не открыть: право выдает пользователь на этапе согласия). Интерфейс список пока не вызывает.
 2. Настройки языка: `preferences.get/set` → `store.get/set('language')` с `flush`; неизвестное или чужое значение читается как русский. **Миграция данных Fjall не делается:** там одна настройка языка, и путь данных другой (`$APPDATA` приложения `org.alef.filemanager`, а не `AlefFileManager/fjall`); старая папка не трогается.
 3. Приветствие `hello` → `app.info` (имя, версия, версия runtime в строке «личность»); событие `backend.greeting` и его демо в странице (счетчик, переключатель подписки) удалены: поток событий остается в состоянии окна (`nativeWindow.watch`).
-4. Приложение — собранный каталог `frontend/app`: корневые `alef.ktav` и `icon.png` явно копируются из `frontend/app-source` хуком сборки, браузерные файлы Rsbuild пишет в `frontend/app/dist`. `frontend/public` содержит только публичные веб-ресурсы, не манифест. Запуск: `alef --app frontend/app` (`npm start`) и `alef --app frontend/app-source --dev-url http://127.0.0.1:3000/` (`npm run dev`, без требования дискового `dist`). Окно без рамки 1200 × 800, `external` закрыт.
-5. `backend/src` удален, `backend/Cargo.toml` — виртуальный workspace; CI собирает и выкладывает бинарник `alef`. Проверки: `frontend/test/native-api.test.mjs` (язык, `info`, список) и `tests/e2e/boot-file-manager.mjs` (запуск `alef` на копии приложения под своим id: `app.info`, `store.get`, поток событий, `window.apply`).
+4. Приложение — собранный каталог `frontend/app`: корневые `alef.ktav` и `icon.png` явно копируются из `frontend/app-source` хуком сборки, браузерные файлы Rsbuild пишет в `frontend/app/dist`. `frontend/public` содержит только публичные веб-ресурсы, не манифест. Запуск (на момент этапа; теперь приложение собирается и запускается в alef-file-manager): `alef --app frontend/app` (`npm start`) и `alef --app frontend/app-source --dev-url http://127.0.0.1:3000/` (`npm run dev`, без требования дискового `dist`). Окно без рамки 1200 × 800, `external` закрыт.
+5. `backend/src` приложения удалён, `backend/Cargo.toml` — виртуальный workspace; CI собирает и выкладывает бинарник `alef`. Проверки: `frontend/test/native-api.test.mjs` (язык, `info`, список) и `tests/e2e/boot-file-manager.mjs` (запуск `alef` на копии приложения под своим id: `app.info`, `store.get`, поток событий, `window.apply`).
 
 ## Структура кода
 
@@ -126,11 +128,11 @@ packages/api/src/data/   fs.ts, store.ts, sqlite.ts, crypto.ts, secrets.ts
 | `store` переживает перезапуск | e2e |
 | `sqlite`: схема, транзакция с откатом, prepared, iterate 100k строк без роста памяти | e2e |
 | WebCrypto: таблица поддерживаемых алгоритмов Servo; подмена по праву `webcrypto`; argon2/secrets работают | e2e `webcrypto`, `webcrypto-substitute`, `webcrypto-undeclared` |
-| File Manager на `fs`/`store` работает как раньше; `backend/src` удалён | ручная + e2e смоук |
+| Приложение-пример alef-file-manager (тогда в этом репозитории) на `fs`/`store` работает как раньше; его `backend/src` удалён | ручная + e2e смоук |
 
 ## Итоги (M3.7)
 
-**Что готово.** Модули `fs` (файлы, дескрипторы, потоки, `watch`, подмена), `store`, `sqlite`, `crypto`, `secrets`; File Manager идет на встроенном API, `backend/src` удален. CI на четырех раннерах (windows-x64, macos-x64, macos-arm64, linux-x64) зеленый на каждом шаге этапа; настоящее хранилище ключей проверено на всех трех ОС (Credential Manager, Keychain, Secret Service под `gnome-keyring`).
+**Что готово.** Модули `fs` (файлы, дескрипторы, потоки, `watch`, подмена), `store`, `sqlite`, `crypto`, `secrets`; приложение-пример alef-file-manager (тогда в этом репозитории) идёт на встроенном API, его `backend/src` удалён. CI на четырех раннерах (windows-x64, macos-x64, macos-arm64, linux-x64) зеленый на каждом шаге этапа; настоящее хранилище ключей проверено на всех трех ОС (Credential Manager, Keychain, Secret Service под `gnome-keyring`).
 
 | Строка приёмки | Итог |
 |---|---|
@@ -141,7 +143,7 @@ packages/api/src/data/   fs.ts, store.ts, sqlite.ts, crypto.ts, secrets.ts
 | `store` переживает перезапуск | e2e `store` (два процесса подряд) |
 | `sqlite`: схема, транзакция с откатом, prepared, `iterate` на 100k строк | e2e `sqlite`, `sqlite-substitute`; рост памяти **не измерялся** (то же окно кредита) |
 | WebCrypto: таблица под `--verbose` (реальные алгоритмы Servo 0.6); право `webcrypto` и подмена; argon2/secrets работают | e2e `webcrypto`, `webcrypto-substitute`, `webcrypto-undeclared`, `crypto` (OpenSSL из Node как оракул), `secrets`, `secrets-substitute`, `secrets-denied`; настоящее хранилище — `cargo test ... -- --ignored` на раннерах CI |
-| File Manager на `fs`/`store`; `backend/src` удален | `frontend/test`, `tests/e2e/boot-file-manager.mjs` (смоук: `app.info`, `store.get`, события, окно) |
+| Приложение-пример alef-file-manager на `fs`/`store`; его `backend/src` удалён | тогда `frontend/test` и `tests/e2e/boot-file-manager.mjs` (смоук: `app.info`, `store.get`, события, окно); в этом репозитории их больше нет, приложение теперь в alef-file-manager |
 
 **Мутации** (гейт этапа: каждая правка кода должна ронять тест; эквивалентные — оставлены в списке и объяснены):
 
@@ -152,7 +154,7 @@ packages/api/src/data/   fs.ts, store.ts, sqlite.ts, crypto.ts, secrets.ts
 | `sqlite` | 43 из 43, плюс одна, что могла повесить прогон, отдельно | 18 из 18 |
 | `crypto` | 69 из 71 (две эквивалентны: нижние границы Argon2id, ноль проходов и хеш в 3 байта, отклоняет сама библиотека); еще четыре убраны: две вместе с мертвой проверкой HKDF, две про границу стоимости scrypt (ее держит проверка памяти) | 32 из 32 |
 | `secrets` | 28 из 28 (кроме `SystemSecrets`: он проверяется только настоящим хранилищем на CI) | 14 из 14 |
-| страница File Manager (`api.ts`) | — | 21 из 21 |
+| страница приложения-примера alef-file-manager (`api.ts`; тогда в этом репозитории) | — | 21 из 21 |
 
 **Что нашли проверки** (все исправлено в этапе):
 - `sqlite`: закрытие базы зависало, пока поток строк ждал кредит, которого страница не дает (поток соединения не завершался, `close` и конец документа ждали вечно); прежний тест проходил в 24 запусках из 25, потому что `close` успевал раньше, чем строки заполняли окно. Теперь тест ждет заполнения окна и падает без исправления всегда.
@@ -162,7 +164,7 @@ packages/api/src/data/   fs.ts, store.ts, sqlite.ts, crypto.ts, secrets.ts
 - Страницы приложений не имеют WebCrypto вовсе (`isSecureContext` ложь, `crypto` не определен: feature `webcrypto` Servo выключена, origin — `native://app`); поэтому модуль `crypto` дает все, что нужно, из Rust. Включение — отдельная задача (https-origin приложения).
   - (#143) WebCrypto включён позже, право `webcrypto` и подмена — см. «Как сделано (#143, WebCrypto)».
 
-**Решения по открытым вопросам.** Хранилище Linux для `secrets` — Secret Service (`zbus`, без libdbus); без сеанса со службой — `NOT_AVAILABLE`, подставка в памяти. Миграция данных Fjall прежнего File Manager не делается (одна настройка языка, другой путь данных).
+**Решения по открытым вопросам.** Хранилище Linux для `secrets` — Secret Service (`zbus`, без libdbus); без сеанса со службой — `NOT_AVAILABLE`, подставка в памяти. Миграция данных Fjall прежней версии приложения-примера alef-file-manager не делается (одна настройка языка, другой путь данных).
 
 ## Риски
 
