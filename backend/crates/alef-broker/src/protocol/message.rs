@@ -191,26 +191,22 @@ pub enum ClientMsg {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
 pub struct Reject {
     pub reason: RejectReason,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
 pub struct Accepted {
     pub request_id: RequestId,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
 pub struct Declined {
     pub request_id: RequestId,
     pub reason: DeclineReason,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
 pub struct Status {
     pub request_id: RequestId,
     pub state: LaunchState,
