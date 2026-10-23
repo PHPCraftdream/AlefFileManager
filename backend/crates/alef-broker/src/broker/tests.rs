@@ -568,20 +568,30 @@ fn output_relay_and_exited() {
 
     // Bookkeeping settled by the next pump; Query from a NEW connection
     // resolves the finished launch.
-    h.broker.pump();
+    // The finisher of the relay settles the log right after the Exited frame left: ask again
+    // (a real wait, no fixed pause) until the log says so.
     let mut probe = connect(&h.ep);
-    probe
-        .send(&ClientMsg::Query(Query {
-            request_id: "r1".into(),
-        }))
-        .unwrap();
-    assert!(matches!(
-        recv_broker(&mut probe),
-        BrokerMsg::Status(Status {
-            state: LaunchState::HandedOff,
-            ..
-        })
-    ));
+    let mut settled = false;
+    for _ in 0..200 {
+        h.broker.pump();
+        probe
+            .send(&ClientMsg::Query(Query {
+                request_id: "r1".into(),
+            }))
+            .unwrap();
+        if matches!(
+            recv_broker(&mut probe),
+            BrokerMsg::Status(Status {
+                state: LaunchState::HandedOff,
+                ..
+            })
+        ) {
+            settled = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(settled, "the log never settled to HandedOff");
     h.stop();
 }
 

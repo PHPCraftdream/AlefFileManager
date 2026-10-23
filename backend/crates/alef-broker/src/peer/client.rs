@@ -165,14 +165,22 @@ fn relay(
                 }
                 // Frames for other requests or undecodable bodies are not
                 // part of this launch's relay contract: fail closed.
-                _ => return Outcome::Ambiguous,
+                other => {
+                    if cfg!(test) {
+                        eprintln!("relay: an unexpected frame ends the relay: {other:?}");
+                    }
+                    return Outcome::Ambiguous;
+                }
             },
             Err(e) if is_timeout(&e) => {
                 // RELAY_IDLE_TIMEOUT elapsed: the process may still run; the
                 // query cannot tell (the broker already acked), so report.
                 return Outcome::Ambiguous;
             }
-            Err(_) => {
+            Err(e) => {
+                if cfg!(test) {
+                    eprintln!("relay: the read failed: {e:?}");
+                }
                 return resolve(endpoint, None, request_id);
             }
         }
