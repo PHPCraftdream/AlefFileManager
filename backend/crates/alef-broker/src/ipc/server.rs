@@ -195,17 +195,40 @@ impl Server {
 /// torn down anyway).
 pub struct SharedReply {
     conn: Arc<Mutex<Box<dyn Conn>>>,
+    /// Writers waiting for the lock: the reading loop lets them in after each read slice (a mutex
+    /// is not fair, a reader that locks again at once starves a writer for seconds on Linux).
+    waiting: Arc<AtomicUsize>,
 }
 
 impl SharedReply {
     pub fn new(conn: Box<dyn Conn>) -> SharedReply {
         SharedReply {
             conn: Arc::new(Mutex::new(conn)),
+            waiting: Arc::new(AtomicUsize::new(0)),
         }
     }
 
+    /// The lock of a writer: announces itself so the reader steps aside.
     fn lock(&self) -> std::sync::MutexGuard<'_, Box<dyn Conn>> {
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let guard = self.conn.lock().unwrap_or_else(|p| p.into_inner());
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
+        guard
+    }
+
+    /// The lock of the reading loop (one read slice at a time).
+    fn lock_read(&self) -> std::sync::MutexGuard<'_, Box<dyn Conn>> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Lets the waiting writers take the lock before the reader locks it again.
+    fn let_writers_in(&self) {
+        for _ in 0..500 {
+            if self.waiting.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 }
 
@@ -221,6 +244,7 @@ impl ReplyTo for SharedReply {
     fn detach(&mut self) -> io::Result<Box<dyn ConnWriter + Send>> {
         Ok(Box::new(SharedReply {
             conn: Arc::clone(&self.conn),
+            waiting: Arc::clone(&self.waiting),
         }))
     }
 }
@@ -342,7 +366,7 @@ fn serve_conn(
             return Ok(());
         }
         let body = {
-            let mut guard = reply.lock();
+            let mut guard = reply.lock_read();
             match frames.read_frame(&mut *guard) {
                 Ok(body) => {
                     last_activity = Instant::now();
@@ -352,6 +376,7 @@ fn serve_conn(
                 // can relay, then read again.
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                     drop(guard);
+                    reply.let_writers_in();
                     if last_activity.elapsed() > IDLE_TIMEOUT {
                         return Err(io::Error::new(
                             ErrorKind::TimedOut,

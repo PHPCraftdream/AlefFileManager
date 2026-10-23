@@ -321,9 +321,14 @@ fn connect(ep: &Endpoint) -> Client {
 }
 
 /// Fake spare: the usual handshake, then SpareToBroker::Hello → Ack.
-fn connect_spare(ep: &Endpoint, kind: WireKind, pid: u32) -> Client {
+fn connect_spare(ep: &Endpoint, kind: WireKind, id: SpareId, pid: u32) -> Client {
     let mut c = connect(ep);
-    c.send_raw(&encode_spare_to_broker(&SpareToBroker::Hello(SpareHello { kind, pid })).unwrap())
+    let hello = SpareHello {
+        kind,
+        pid,
+        spare_id: id.0,
+    };
+    c.send_raw(&encode_spare_to_broker(&SpareToBroker::Hello(hello)).unwrap())
         .unwrap();
     match recv_spare(&mut c) {
         BrokerToSpare::Ack(_) => {}
@@ -394,7 +399,7 @@ fn grant_and_same_type_replacement_in_one_take() {
     let ids = wait_ids(&h.rx, 2); // windowed + windowless initial fill
     let win = ids[0]; // SlotKind::ALL order: Windowed first
 
-    let mut spare = connect_spare(&h.ep, WireKind::Windowed, spawner.proc_of(win).pid);
+    let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
     spare_ready(&mut spare);
 
     let mut client = connect(&h.ep);
@@ -503,7 +508,12 @@ fn spare_dies_before_grant_then_slot_recovers() {
     h.clock.advance(Duration::from_secs(30));
     h.broker.pump();
     let replacement = h.rx_recv_filtered(|id| *id != win_id);
-    let mut spare = connect_spare(&h.ep, WireKind::Windowed, spawner.proc_of(replacement).pid);
+    let mut spare = connect_spare(
+        &h.ep,
+        WireKind::Windowed,
+        replacement,
+        spawner.proc_of(replacement).pid,
+    );
     spare_ready(&mut spare);
     client.send(&ClientMsg::Launch(launch("r2"))).unwrap();
     assert!(matches!(recv_broker(&mut client), BrokerMsg::Accepted(_)));
@@ -516,7 +526,7 @@ fn output_relay_and_exited() {
     h.broker.pump();
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
-    let mut spare = connect_spare(&h.ep, WireKind::Windowed, spawner.proc_of(win).pid);
+    let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
     spare_ready(&mut spare);
 
     let mut client = connect(&h.ep);
@@ -582,7 +592,7 @@ fn shutdown_keeps_granted_app_untouched() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let other = ids[1];
-    let mut spare = connect_spare(&h.ep, WireKind::Windowed, spawner.proc_of(win).pid);
+    let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
     spare_ready(&mut spare);
 
     let mut client = connect(&h.ep);
@@ -630,7 +640,7 @@ fn query_after_client_disconnect() {
     h.broker.pump();
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
-    let mut spare = connect_spare(&h.ep, WireKind::Windowed, spawner.proc_of(win).pid);
+    let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
     spare_ready(&mut spare);
 
     let mut client = connect(&h.ep);
@@ -673,7 +683,7 @@ fn admin_status_fields() {
     h.broker.pump();
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
-    let mut spare = connect_spare(&h.ep, WireKind::Windowed, spawner.proc_of(win).pid);
+    let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
     spare_ready(&mut spare);
 
     let mut admin = connect(&h.ep);

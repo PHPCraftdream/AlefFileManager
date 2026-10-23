@@ -315,7 +315,7 @@ fn try_launch_handled_with_relayed_output_and_exit_code() {
     let proc2 = Arc::clone(&proc);
     let (ready_tx, ready_rx) = mpsc::channel();
     let spare_thread = std::thread::spawn(move || {
-        let mut spare = Spare::connect(&ep, WireKind::Windowed, 42).expect("spare connect");
+        let mut spare = Spare::connect(&ep, WireKind::Windowed, win.0).expect("spare connect");
         assert_eq!(spare.kind, WireKind::Windowed);
         spare.ready().expect("ready");
         ready_tx.send(()).expect("ready signal");
@@ -392,12 +392,7 @@ fn spare_connect_ready_receives_assign() {
     let ids = h.wait_ids(2);
     let win = ids[0];
 
-    let mut spare = Spare::connect(
-        &h.ep,
-        WireKind::Windowed,
-        u64::from(h.spawner.proc_of(win).pid),
-    )
-    .expect("spare connect");
+    let mut spare = Spare::connect(&h.ep, WireKind::Windowed, win.0).expect("spare connect");
     spare.ready().expect("ready");
 
     // Drive the broker from a plain client connection (raw Launch).
@@ -435,12 +430,7 @@ fn spare_decline_leads_to_client_declined() {
     let ids = h.wait_ids(2);
     let win = ids[0];
 
-    let mut spare = Spare::connect(
-        &h.ep,
-        WireKind::Windowed,
-        u64::from(h.spawner.proc_of(win).pid),
-    )
-    .expect("spare connect");
+    let mut spare = Spare::connect(&h.ep, WireKind::Windowed, win.0).expect("spare connect");
     spare.decline("warm-up failed").expect("decline");
     // Wait until the broker retired the spare (slot backoff, process gone).
     wait_until(|| h.broker.admin_status().running == 1);

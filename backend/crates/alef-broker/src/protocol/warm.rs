@@ -65,6 +65,8 @@ pub enum SlotKind {
 pub struct SpareHello {
     pub kind: SlotKind,
     pub pid: u32,
+    /// The id the broker gave at the spawn (`--spare-id`): the broker finds its record by it.
+    pub spare_id: u64,
 }
 
 /// Broker→spare on connect.
@@ -271,6 +273,7 @@ mod tests {
             SpareToBroker::Hello(SpareHello {
                 kind: SlotKind::Windowed,
                 pid: 4242,
+                spare_id: 7,
             }),
             SpareToBroker::Ready(Ready),
             SpareToBroker::Declined(SpareDeclined {
@@ -335,6 +338,7 @@ mod tests {
             &encode_spare_to_broker(&SpareToBroker::Hello(SpareHello {
                 kind: SlotKind::Windowed,
                 pid: 1,
+                spare_id: 1,
             }))
             .unwrap(),
         )

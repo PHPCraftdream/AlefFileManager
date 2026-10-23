@@ -68,6 +68,7 @@ impl Spare {
         let hello = SpareToBroker::Hello(SpareHello {
             kind,
             pid: std::process::id(),
+            spare_id,
         });
         let body = encode_spare_to_broker(&hello).map_err(io::Error::other)?;
         client.send_raw(&body)?;

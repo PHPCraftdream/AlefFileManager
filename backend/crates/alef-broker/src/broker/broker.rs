@@ -406,11 +406,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
         match msg {
             SpareToBroker::Hello(hello) => {
                 let kind = from_wire_kind(hello.kind);
-                let id = inner
-                    .spares
-                    .iter()
-                    .find(|(_, r)| r.kind == kind && r.pid == hello.pid)
-                    .map(|(id, _)| *id);
+                let id = Some(SpareId(hello.spare_id))
+                    .filter(|id| inner.spares.get(id).is_some_and(|r| r.kind == kind));
                 let Some(id) = id else {
                     // Unknown spare (already granted/killed): tell it to exit.
                     if let Ok(body) = encode_broker_to_spare(&BrokerToSpare::Shutdown(Shutdown)) {
