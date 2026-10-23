@@ -34,7 +34,7 @@ use std::{ffi::OsString, path::PathBuf, time::Duration};
 use url::Url;
 
 /// Everything the one launch pipeline needs after the source is loaded and the plan derived.
-struct Run {
+pub(crate) struct Run {
     process_args: Vec<OsString>,
     dev_url: Option<Url>,
     devtools_port: Option<u16>,
