@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Command dispatch: the subcommands that answer and exit, then the run path.
-use super::app_run::{run_directory, run_package};
+use super::app_run::{self, run_directory, run_package, ResolvedRun};
 use super::failure::{install_failure, Failure};
 use super::DEFAULT_ICON;
 use alef_launch::{

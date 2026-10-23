@@ -87,7 +87,8 @@ pub(crate) fn session_base() -> PathBuf {
                 return path.join("alef");
             }
         }
-        PathBuf::from(format!("/tmp/alef-{}", libc::getuid()))
+        // Invariant: getuid has no preconditions and cannot fail.
+        PathBuf::from(format!("/tmp/alef-{}", unsafe { libc::getuid() }))
     }
     #[cfg(windows)]
     {

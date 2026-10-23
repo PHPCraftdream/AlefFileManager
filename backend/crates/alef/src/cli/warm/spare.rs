@@ -25,7 +25,7 @@ use alef_launch::consent::Asker;
 use alef_runtime::{run_warm, WarmAssignment, WarmPrepare};
 
 use super::endpoint::endpoint_from_arg;
-use super::env;
+use super::env::{self, EnvSource as _};
 use crate::cli::app_run::{self, AppFinish, PreparedApp, ResolvedRun};
 use crate::cli::dispatch::resolve_run;
 use crate::cli::failure::Failure;
@@ -113,7 +113,10 @@ fn assign_outcome(
 }
 
 fn quiet_exit() -> Box<dyn Error + Send> {
-    io::Error::new(ErrorKind::ConnectionAborted, "the spare exits").into()
+    Box::new(io::Error::new(
+        ErrorKind::ConnectionAborted,
+        "the spare exits",
+    ))
 }
 
 /// The worker-thread task of [`run_warm`]: connect, wait, then run the whole

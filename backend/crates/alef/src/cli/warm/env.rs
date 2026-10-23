@@ -127,7 +127,7 @@ mod tests {
         }
     }
 
-    fn source(vars: &[(&str, &str)]) -> impl EnvSource + '_ {
+    fn source(vars: &[(&str, &str)]) -> impl EnvSource {
         struct S(Vec<(OsString, OsString)>);
         impl EnvSource for S {
             fn vars(&self) -> Vec<(OsString, OsString)> {
