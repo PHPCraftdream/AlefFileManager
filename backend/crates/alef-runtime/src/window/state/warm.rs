@@ -218,7 +218,7 @@ impl ApplicationHandler<Wake> for WarmApp {
             Some(Err(error)) => {
                 // The assignment failed or was refused: the spare served its purpose and the
                 // client starts cold. The window is never shown.
-                self.error = Some(error.into());
+                self.error = Some(std::io::Error::other(error.to_string()).into());
                 event_loop.exit();
             }
         }
