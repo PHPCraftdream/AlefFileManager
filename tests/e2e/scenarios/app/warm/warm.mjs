@@ -103,8 +103,8 @@ export function warmScenarios({ exe, verbose, timeoutMs }) {
       const appHome = join(envTemp, 'app-home');
       mkdirSync(home, { recursive: true });
       mkdirSync(appHome, { recursive: true });
-      // Short base: the socket path must fit the ~100 byte Unix limit; mkdtemp keeps it tiny.
-      const runtimeDir = process.platform === 'win32' ? undefined : mkdtempSync(join(tmpdir(), 'alef-warm-'));
+      // Short base: the socket path must fit the ~100 byte Unix limit; $TMPDIR is long on macOS, /tmp is not.
+      const runtimeDir = process.platform === 'win32' ? undefined : mkdtempSync(join('/tmp', 'alef-warm-'));
       const fragment = warmEnvironment({ home, appHome, runtimeDir });
       const env = { ...process.env, ...fragment };
       let brokerPid = null;
@@ -193,7 +193,12 @@ export function warmScenarios({ exe, verbose, timeoutMs }) {
           const run = await runCli(['warm', 'start']);
           const ok = run.code === 0 && run.all.some(line => line.includes('started'));
           console.log(`    ${ok ? 'ok  ' : 'FAIL'} warm start: exit ${run.code}, said ${run.all.join(' | ').slice(0, 120)}`);
-          if (!ok) problems.push(`warm start: exit ${run.code}, output ${run.all.join(' | ').slice(0, 200)}`);
+          if (!ok) {
+            problems.push(`warm start: exit ${run.code}, output ${run.all.join(' | ').slice(0, 200)}`);
+            // The detached broker has no stderr: show what a foreground one says (diagnostics only).
+            const probe = await runCli(['broker', '--no-tray'], { deadlineMs: 8000 });
+            console.log([`    broker in the foreground (exit ${probe.code}):`, ...probe.all.map(line => `      | ${line}`)].join('\n'));
+          }
           const running = await pollStatus(state => state.broker.running === true && slotState(state, 'windowed') === 'ready', 'the broker and a ready windowed slot', 60000);
           if (running.ok) brokerPid = running.status.broker.pid;
           console.log(`    ${running.ok ? 'ok  ' : 'FAIL'} windowed slot ready (pid ${brokerPid}): ${JSON.stringify(running.status?.broker?.slots ?? null)}`);

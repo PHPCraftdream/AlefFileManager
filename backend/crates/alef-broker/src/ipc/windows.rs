@@ -49,9 +49,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_SHARE_NONE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES,
+    PIPE_WAIT,
 };
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
@@ -303,7 +303,6 @@ fn create_instance(name_wide: &[u16], user_sid: &str, first: bool) -> io::Result
 /// concurrent reads and writes never serialize (see module docs).
 pub struct PipeConn {
     handle: HANDLE,
-    server_side: bool, // Drop: server disconnects the pipe, client just closes
     read_event: HANDLE,
     write_event: HANDLE,
     read_timeout: Option<Duration>,
@@ -311,9 +310,9 @@ pub struct PipeConn {
 }
 
 impl PipeConn {
-    /// Wrap a connected pipe handle. `server_side` selects Drop semantics
-    /// (server: `DisconnectNamedPipe` + `CloseHandle`; client: `CloseHandle`).
-    pub fn new(handle: HANDLE, server_side: bool) -> io::Result<PipeConn> {
+    /// Wrap a connected pipe handle. Both sides just `CloseHandle` on drop: `DisconnectNamedPipe`
+    /// would discard a reply the peer has not read yet. `_server_side` only documents the caller.
+    pub fn new(handle: HANDLE, _server_side: bool) -> io::Result<PipeConn> {
         let read_event = new_event()?;
         let write_event = match new_event() {
             Ok(e) => e,
@@ -326,7 +325,6 @@ impl PipeConn {
         };
         Ok(PipeConn {
             handle,
-            server_side,
             read_event,
             write_event,
             read_timeout: None,
@@ -336,18 +334,10 @@ impl PipeConn {
 
     fn close(&mut self) {
         if self.handle != INVALID_HANDLE_VALUE {
-            if self.server_side {
-                // Invariant: connected server-side instance we own; unblocks
-                // the peer's pending reads with a broken pipe.
-                unsafe {
-                    DisconnectNamedPipe(self.handle);
-                    CloseHandle(self.handle);
-                }
-            } else {
-                // Invariant: client handle we own.
-                unsafe {
-                    CloseHandle(self.handle);
-                }
+            // Invariant: connected pipe handle we own. Closing (without a disconnect) keeps what
+            // this side wrote readable for the peer, whose reads then end with a broken pipe.
+            unsafe {
+                CloseHandle(self.handle);
             }
             self.handle = INVALID_HANDLE_VALUE;
         }
