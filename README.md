@@ -64,6 +64,8 @@ alef warm status|start|stop|enable|disable [--json]
 
 `run` принимает каталог разработки, файл `.alef` или id установленного приложения. Параметры запуска: `--dev-url` (документ с сервера разработки на 127.0.0.1), `--devtools[=PORT]` (локальная отладка Servo, только для каталога разработки), `--grant allow|substitute|deny`, `--trust-key`, `--allow-unsigned`, `--no-prompt`. Полный текст — `alef --help` и `backend/crates/alef/src/cli/args.rs`. `ALEF_TIMING=1` печатает в stderr метки фаз холодного запуска (`ALEF_TIMING <имя> <мс от старта>`); список вех — [docs/stages/m11-warm-start.md](docs/stages/m11-warm-start.md).
 
+**Прогрев запуска** по умолчанию выключен; включается `alef warm enable` (автозапуск брокера + старт) или `alef warm start`, выключается `alef warm stop` (останавливает брокера и свободные запасные процессы, автозапуск не снимает) и `alef warm disable` (снимает запись автозапуска). Аварийное отключение на один запуск — `ALEF_WARM=0`, отладка — `ALEF_WARM_DEBUG=1`. Подробности — [docs/stages/m11-warm-start.md](docs/stages/m11-warm-start.md).
+
 ## Сборка и проверки
 
 Нужны Rust (минимальные версии: `alef-package` 1.88, `alef-core` 1.89, остальные крейты 1.90), Node.js >= 22.12 (CI — 24), зависимости сборки Servo и SpiderMonkey: clang с libclang, CMake, Ninja, Python 3; на Windows — MSVC Build Tools и Windows SDK. Локально проверено на Windows x64 (Rust 1.97.0 MSVC, Node.js 24.12.0, npm 11.13.0).

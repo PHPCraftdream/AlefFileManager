@@ -220,7 +220,26 @@
       "scenarios": [
         "window",
         "instance",
-        "restore"
+        "restore",
+        "warm"
+      ]
+    },
+    {
+      "glob": "tests/e2e/scenarios/app/warm/**",
+      "scenarios": [
+        "warm"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef/src/cli/warm/**",
+      "scenarios": [
+        "warm"
+      ]
+    },
+    {
+      "glob": "backend/crates/alef-broker/**",
+      "scenarios": [
+        "warm"
       ]
     },
     {

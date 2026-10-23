@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // End-to-end runner: starts the generic `alef` runtime on scenario applications (tests/e2e/apps) and
 // judges what the pages report through `e2e.report` and what the runtime and local servers saw.
-//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,context-menu,consent,origin,narrowing,ask,cancel,decisions,apps-ui,fs,fs-substitute,sqlite,sqlite-substitute,store,log,crypto,webcrypto-undeclared,webcrypto-substitute,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,startup-timing,autostart,deeplink,package,devflow,devtools,updater,bus,ai,ai-threat,media]
+//   node tests/e2e/run.mjs [--exe <alef binary>] [--only core,induced,permissions,csp,dev,manifest,app,console,service,service-signal,launch-modes,quit,relaunch,instance,restore,system,window,desktop,menu,tray,shortcut,shortcut-denied,shortcut-substitute,context-menu,consent,origin,narrowing,ask,cancel,decisions,apps-ui,fs,fs-substitute,sqlite,sqlite-substitute,store,log,crypto,webcrypto-undeclared,webcrypto-substitute,webcrypto,secrets,secrets-substitute,secrets-denied,http,http-substitute,socket,socket-substitute,websocket,websocket-substitute,serve,serve-substitute,cli,cli-substitute,cli-commands,mcp,mcp-stdio,arguments,startup,startup-timing,warm,autostart,deeplink,package,devflow,devtools,updater,bus,ai,ai-threat,media]
 //                          [--timeout-s 150] [--verbose]
 // Build beforehand: node scripts/cargo.mjs build -p alef --features e2e
 // This runner does not build the runtime.
@@ -18,11 +18,12 @@ import { netScenarios } from './scenarios/net.mjs';
 import { manifestCases } from './scenarios/manifests.mjs';
 import { moduleScenarios } from './scenarios/app/modules.mjs';
 import { appIntegrationScenarios } from './scenarios/app/app-integration.mjs';
-import { launchModesScenarios } from './scenarios/app/launch-modes.mjs';
+import { launchModesScenarios, mediaScenarios } from './scenarios/app/launch-modes.mjs';
 import { packageScenarios } from './scenarios/app/package.mjs';
 import { devflowScenarios, devtoolsScenarios } from './scenarios/app/devflow.mjs';
 import { updaterScenarios } from './scenarios/app/updater.mjs';
 import { startupScenarios, busScenarios, startupTimingScenarios } from './scenarios/startup.mjs';
+import { warmScenarios } from './scenarios/app/warm/warm.mjs';
 
 const args = process.argv.slice(2);
 const option = name => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
@@ -82,6 +83,7 @@ const INDUCED = ['binary-echo-16MiB', 'lib-binary-roundtrip-4MiB'];
 const scenarios = {
   ...moduleScenarios({ drive, exe, verbose }),
   ...launchModesScenarios({ exe, verbose, timeoutMs }),
+  ...mediaScenarios({ drive }),
   ...appIntegrationScenarios({ exe, verbose, timeoutMs }),
   ...packageScenarios({ exe, verbose, timeoutMs }),
   ...devflowScenarios({ exe, verbose, timeoutMs }),
@@ -95,6 +97,7 @@ const scenarios = {
   ...netScenarios({ drive }),
   ...startupScenarios({ exe }),
   ...startupTimingScenarios({ exe, verbose, timeoutMs }),
+  ...warmScenarios({ exe, verbose, timeoutMs }),
   // The interception must refuse an unlisted external request before the network: the page
   // fetches the counting server and the judge independently asserts zero hits arrived.
   async core() {
