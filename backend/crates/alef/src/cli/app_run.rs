@@ -99,7 +99,7 @@ impl Run {
 
 /// Everything the end of a launch needs after the event loop exited. The bridge is
 /// `Some` on the cold path (shutdown after the loop); the warm spare's bridge moves
-/// into the event loop (`run_warm`), so there it is `None`.
+/// into the event loop (`run_warm`) and is put here once the loop hands it back.
 pub(crate) struct AppFinish {
     pub(crate) bridge: Option<Bridge>,
     pub(crate) console: Option<Console>,
@@ -542,7 +542,6 @@ pub(crate) async fn finish_app(
         handle,
         process_args,
     } = finish;
-    // The warm spare's bridge lives inside the event loop already.
     if let Some(mut bridge) = bridge {
         bridge.shutdown().await?;
     }

@@ -442,8 +442,10 @@ pub struct WarmPrepare {
 /// application is known (the most expensive part of the cold start after the document load, see
 /// the M11 notes). The assignment runs on a worker thread; when it arrives, the same event loop
 /// continues as a usual application whose first window adopts the prepared one. The quiet mode of
-/// end-to-end runs (`ALEF_E2E_QUIET`) is read from the environment, as in `run`.
-pub fn run_warm(prepare: WarmPrepare) -> Result<(), Box<dyn std::error::Error>> {
+/// end-to-end runs (`ALEF_E2E_QUIET`) is read from the environment, as in `run`. The bridge of the
+/// assigned application is handed back after the loop (`None` when nothing was assigned), so the
+/// caller shuts it down as the cold path does.
+pub fn run_warm(prepare: WarmPrepare) -> Result<Option<Bridge>, Box<dyn std::error::Error>> {
     state::resize_wait::set_resize_trace(
         std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"),
     );
@@ -464,5 +466,5 @@ pub fn run_warm(prepare: WarmPrepare) -> Result<(), Box<dyn std::error::Error>> 
             return Err(error.into());
         }
     }
-    Ok(())
+    Ok(warm.bridge.take())
 }

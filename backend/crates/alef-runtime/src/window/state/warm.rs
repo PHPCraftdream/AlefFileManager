@@ -21,6 +21,7 @@ use winit::window::{Window, WindowId};
 use crate::ui::integration::menu::Menus;
 use crate::ui::Wake;
 use crate::window::{app_from, App, WarmAssignment, WarmPrepare};
+use crate::Bridge;
 
 /// What the assignment returns to the spare: the application, or why it refused (the client then
 /// starts cold). Moves from the worker thread to the event loop: every field must be `Send`.
@@ -118,6 +119,9 @@ pub(in crate::window) struct WarmApp {
     quiet: bool,
     prepared: Option<PreparedWindow>,
     pub(in crate::window) app: Option<App>,
+    /// The bridge of the assigned application: its origin site and channels live as long as the
+    /// loop does (dropped at the end of the assignment, the page would be served by no one).
+    pub(in crate::window) bridge: Option<Bridge>,
     pub(in crate::window) error: Option<Box<dyn Error>>,
     spawned: bool,
 }
@@ -138,6 +142,7 @@ pub(in crate::window) fn warm_app(
         quiet,
         prepared: None,
         app: None,
+        bridge: None,
         error: None,
         spawned: false,
     }
@@ -208,6 +213,7 @@ impl ApplicationHandler<Wake> for WarmApp {
                         ApplicationHandler::resumed(&mut app, event_loop);
                         ApplicationHandler::user_event(&mut app, event_loop, event);
                         self.app = Some(app);
+                        self.bridge = Some(bridge);
                     }
                     Err(error) => {
                         self.error = Some(error);

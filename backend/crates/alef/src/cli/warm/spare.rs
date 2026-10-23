@@ -79,7 +79,11 @@ pub(crate) async fn run_spare(
     // shutdown, the signal task) uses its handle.
     let _worker_runtime = runtime_slot.lock().expect("spare runtime").take();
     match outcome {
-        Some(SpareOutcome::App(finish)) => app_run::finish_app(finish, loop_result).await,
+        Some(SpareOutcome::App(mut finish)) => {
+            // The loop hands the bridge back: it is shut down as on the cold path.
+            let result = loop_result.map(|bridge| finish.bridge = bridge);
+            app_run::finish_app(finish, result).await
+        }
         Some(SpareOutcome::Exit(code)) => Ok(code),
         // Declined or shut down before anything ran: a quiet exit.
         None => Ok(0),
@@ -229,8 +233,8 @@ fn run_assigned(
         ..
     } = prepared;
     *shared.lock().expect("spare outcome") = Some(SpareOutcome::App(AppFinish {
-        // The bridge moves into the event loop with the assignment; the
-        // finish on the main thread shuts nothing down.
+        // The bridge moves into the event loop with the assignment and comes back
+        // from `run_warm` for the finish.
         bridge: None,
         console,
         signal_task,

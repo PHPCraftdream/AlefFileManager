@@ -62,8 +62,9 @@ export function modeTable(cold, warm) {
 const header = ['mode', 'n', 'p50', 'p95', 'min', 'max'];
 
 function table(rows) {
-  const width = column => Math.max(...[header[column], ...rows.map(row => String(row[column]))].map(cell => cell.length));
-  const line = row => `| ${header.map((_, column) => String(row[column]).padEnd(width(column))).join(' | ')} |`;
+  const cell = (row, column) => String(typeof row[column] === 'number' ? Number(row[column].toFixed(1)) : row[column]);
+  const width = column => Math.max(...[header[column], ...rows.map(row => cell(row, header[column]))].map(text => text.length));
+  const line = row => `| ${header.map((name, column) => cell(row, name).padEnd(width(column))).join(' | ')} |`;
   return [line(header), `| ${header.map((_, column) => '-'.repeat(width(column))).join(' | ')} |`, ...rows.map(line)].join('\n');
 }
 
@@ -362,8 +363,12 @@ export function warmScenarios({ exe, verbose, timeoutMs }) {
         }
       } finally {
         await stopBroker();
-        if (runtimeDir !== undefined) rmSync(runtimeDir, { recursive: true, force: true });
-        rmSync(envTemp, { recursive: true, force: true });
+        // A just-stopped process may still hold its files for a moment (Windows): retry, never fail on it.
+        for (const directory of [runtimeDir, envTemp]) {
+          if (directory === undefined) continue;
+          try { rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); }
+          catch (error) { console.log(`    cleanup of ${directory} left files: ${error?.code ?? error}`); }
+        }
       }
       return { problems, lines };
     },

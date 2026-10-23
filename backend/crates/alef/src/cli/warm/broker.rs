@@ -78,6 +78,8 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
         println!("already running");
         return Ok(0);
     }
+    #[cfg(unix)]
+    let socket_path = ep.unix_socket.clone();
     let (token, _) =
         load_or_create_token(&ep).map_err(|e| Failure::Runtime(format!("broker token: {e}")))?;
     let server = Arc::new(
@@ -211,5 +213,9 @@ pub(crate) fn run_broker(no_tray: bool) -> Result<u8, Failure> {
     let _ = worker.join();
     let _ = server_thread.join();
     drop(server);
+    // A connection thread that outlives the stop keeps the listener (and its unlink on drop)
+    // alive past the end of the process: the socket file goes here, by name.
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&socket_path);
     Ok(0)
 }
