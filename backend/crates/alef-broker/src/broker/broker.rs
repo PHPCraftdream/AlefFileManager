@@ -184,9 +184,10 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
         // deadline BEFORE `Started`: the client (and any duplicate writers)
         // was never answered — decline now.
         let mut lost: Vec<(RequestId, SpareId, bool)> = Vec::new(); // bool = timed out
+        let assign_timeout = inner.assign_timeout;
         for (rid, p) in inner.pending.iter_mut() {
             let dead = matches!(p.process.try_wait(), Ok(Some(_)));
-            let late = now.saturating_sub(p.since) > inner.assign_timeout;
+            let late = now.saturating_sub(p.since) > assign_timeout;
             if dead || late {
                 lost.push((rid.clone(), p.spare_id, late));
             }
@@ -240,7 +241,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
         let now_ms = now.as_millis() as u64;
         // Pending launches were granted but never accepted: kill the spare
         // and decline every waiting client (including duplicates).
-        for (rid, mut p) in inner.pending.drain() {
+        let waiting: Vec<_> = inner.pending.drain().collect();
+        for (rid, mut p) in waiting {
             p.process.kill();
             let _ = inner
                 .log
@@ -622,7 +624,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
                     inner.slot_view[rec.kind.index()] = "backoff".into();
                 }
                 inner.spare_conns.remove(&conn_id);
-                let _ = inner.pool.on_failed(id, inner.pool.clock().now());
+                let failed_at = inner.pool.clock().now();
+                let _ = inner.pool.on_failed(id, failed_at);
                 let _ = declined;
             }
         }
