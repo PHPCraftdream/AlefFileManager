@@ -110,6 +110,13 @@ pub struct PipeListener {
     stop_event: HANDLE,
 }
 
+impl std::fmt::Debug for PipeListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The handles are not printed.
+        f.debug_struct("PipeListener").finish_non_exhaustive()
+    }
+}
+
 impl PipeListener {
     /// Create the first pipe instance with a user-only DACL.
     pub fn bind(ep: &Endpoint, user_sid: &str) -> io::Result<PipeListener> {
@@ -797,7 +804,7 @@ mod tests {
         });
         let handle = open_client(&ep.windows_pipe_wide(), Duration::from_secs(5), None)
             .expect("client open");
-        let client = PipeConn::new(handle, false).expect("client conn");
+        let mut client = PipeConn::new(handle, false).expect("client conn");
         client
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
