@@ -200,7 +200,7 @@ fn platform_connect(ep: &Endpoint) -> Result<Box<dyn Conn>, ConnectError> {
             ErrorKind::PermissionDenied => ConnectError::AuthFailed,
             _ => ConnectError::Io(e),
         })?;
-        let conn = crate::ipc::windows::PipeConn::new(handle).map_err(ConnectError::Io)?;
+        let conn = crate::ipc::windows::PipeConn::new(handle, false).map_err(ConnectError::Io)?;
         Ok(Box::new(conn))
     }
 }
