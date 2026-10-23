@@ -48,6 +48,7 @@
   ],
   "platform_sensitive": [
     "backend/crates/alef-broker/**",
+    "backend/crates/alef/src/cli/warm/**",
     "backend/crates/alef-modules/src/system/**",
     "backend/crates/alef-modules/src/desktop/**",
     "backend/crates/alef-runtime/src/ui/**",
