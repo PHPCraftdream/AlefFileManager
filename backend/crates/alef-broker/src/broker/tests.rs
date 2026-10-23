@@ -542,6 +542,12 @@ fn spare_dies_before_grant_then_slot_recovers() {
     );
     spare_ready(&mut spare);
     client.send(&ClientMsg::Launch(launch("r2"))).unwrap();
+    // Accepted comes only after the spare took the assignment and said Started.
+    match recv_spare(&mut spare) {
+        BrokerToSpare::Assign(a) => assert_eq!(a.launch.request_id, "r2"),
+        other => panic!("expected Assign, got {other:?}"),
+    }
+    spare_started(&mut spare);
     assert!(matches!(recv_broker(&mut client), BrokerMsg::Accepted(_)));
     h.stop();
 }
@@ -809,13 +815,15 @@ fn spare_declines_after_assign_client_gets_declined() {
     let mut admin = connect(&h.ep);
     match admin_call(&mut admin, WarmAdminMsg::Status(AdminStatus)) {
         WarmAdminReply::StatusReply(s) => {
-            assert_eq!(s.running, 1);
+            // The untouched windowless spare and the replacement of the windowed slot.
+            assert_eq!(s.running, 2);
             let windowed = s
                 .slots
                 .iter()
                 .find(|e| e.kind == WireKind::Windowed)
                 .expect("windowed slot");
-            assert_eq!(windowed.state, "backoff");
+            // The slot belongs to the replacement that the grant started.
+            assert_eq!(windowed.state, "initializing");
         }
         other => panic!("expected StatusReply, got {other:?}"),
     }

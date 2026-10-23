@@ -202,8 +202,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
             } else {
                 DeclineReason::NoSpare
             };
+            // The slot already belongs to the replacement that `take` started: its view stays.
             let _ = inner.pool.on_exited(id, now);
-            inner.slot_view[REQUEST_KIND.index()] = "backoff".into();
             inner.log.decide(
                 &rid,
                 Decision::Declined(reason.clone()),
@@ -605,8 +605,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
                         }
                     }
                     inner.spare_conns.remove(&conn_id);
+                    // The slot already belongs to the replacement that `take` started: its view stays.
                     let _ = inner.pool.on_failed(id, now);
-                    inner.slot_view[REQUEST_KIND.index()] = "backoff".into();
                     inner.log.decide(
                         &rid,
                         Decision::Declined(DeclineReason::ValidationFailed),
