@@ -8,7 +8,7 @@ import os from 'node:os';
 import { join } from 'node:path';
 
 import { ktavLine, prepareSite, root, scratch, startApp, verdictOf } from '../../lib.mjs';
-import { mediaScenarios } from './media.mjs';
+import { mediaScenarios } from './launch-modes.mjs';
 
 const APP_CHECKS = [
   'app-info-matches-the-manifest', 'app-args-are-parsed-by-the-manifest-schema',

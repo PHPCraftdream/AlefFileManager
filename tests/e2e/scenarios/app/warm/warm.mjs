@@ -326,7 +326,7 @@ export function warmScenarios({ exe, verbose, timeoutMs }) {
             const ms = await measure({ ALEF_WARM: '0' });
             if (ms !== null) cold.push(ms);
           }
-          const start = await runCli(['warm', 'start']);
+          await runCli(['warm', 'start']);
           const readySlot = await pollStatus(state => state.broker.running === true && slotState(state, 'windowed') === 'ready', 'the broker for the warm timings', 60000);
           if (readySlot.ok) brokerPid = readySlot.status.broker.pid;
           const warm = [];

@@ -18,7 +18,7 @@ import { netScenarios } from './scenarios/net.mjs';
 import { manifestCases } from './scenarios/manifests.mjs';
 import { moduleScenarios } from './scenarios/app/modules.mjs';
 import { appIntegrationScenarios } from './scenarios/app/app-integration.mjs';
-import { launchModesScenarios, mediaScenarios } from './scenarios/app/launch-modes.mjs';
+import { launchModesScenarios } from './scenarios/app/launch-modes.mjs';
 import { packageScenarios } from './scenarios/app/package.mjs';
 import { devflowScenarios, devtoolsScenarios } from './scenarios/app/devflow.mjs';
 import { updaterScenarios } from './scenarios/app/updater.mjs';
@@ -83,7 +83,6 @@ const INDUCED = ['binary-echo-16MiB', 'lib-binary-roundtrip-4MiB'];
 const scenarios = {
   ...moduleScenarios({ drive, exe, verbose }),
   ...launchModesScenarios({ exe, verbose, timeoutMs }),
-  ...mediaScenarios({ drive }),
   ...appIntegrationScenarios({ exe, verbose, timeoutMs }),
   ...packageScenarios({ exe, verbose, timeoutMs }),
   ...devflowScenarios({ exe, verbose, timeoutMs }),
