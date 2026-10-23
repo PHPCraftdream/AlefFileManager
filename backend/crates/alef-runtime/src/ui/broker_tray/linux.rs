@@ -23,6 +23,7 @@ use zbus::{
 };
 
 const ITEM_PATH: &str = "/org/alef/broker/StatusNotifierItem";
+const MENU_PATH: &str = "/org/alef/broker/StatusNotifierItem/menu";
 const POLL: Duration = Duration::from_secs(2);
 const CLICKS: usize = 64;
 
@@ -284,9 +285,7 @@ async fn watcher_alive(conn: &Connection) -> bool {
 async fn unexport(conn: &Connection) {
     let server: &ObjectServer = conn.object_server();
     let _ = server.remove::<ItemIface, _>(ITEM_PATH).await;
-    let _ = server
-        .remove::<MenuIface, _>(concat!(ITEM_PATH, "/menu"))
-        .await;
+    let _ = server.remove::<MenuIface, _>(MENU_PATH).await;
 }
 
 pub(crate) fn run(prepared: Prepared, shutdown: Arc<Shutdown>) -> io::Result<()> {
