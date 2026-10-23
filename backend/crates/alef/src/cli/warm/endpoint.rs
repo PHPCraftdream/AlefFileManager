@@ -160,7 +160,15 @@ mod tests {
         assert_ne!(absent, set);
         assert!(absent.contains("ALEF_HOME=absent"));
         assert!(!set.contains("/home/u/.alef"));
+        // The bytes of a Unix value, the UTF-16 units of a Windows one: hex either way.
+        #[cfg(unix)]
         assert!(set.contains("ALEF_HOME=2f686f6d652f752f2e616c6566"));
+        #[cfg(windows)]
+        assert!(set.contains(&format!(
+            "ALEF_HOME={}",
+            hex(&os_bytes(OsStr::new("/home/u/.alef")))
+        )));
+        assert!(!set.contains("ALEF_HOME=absent"));
         assert_ne!(
             identity_for("1.2.3", None, None),
             identity_for("1.2.4", None, None)
