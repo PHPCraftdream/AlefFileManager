@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use crate::ipc::endpoint::Endpoint;
 use crate::ipc::{
-    write_frame, Conn, FrameReader, Listener, PeerIdentity, ReplyTo, HANDSHAKE_CLIENT_REPLY_LEN,
+    write_frame, Conn, ConnWriter, FrameReader, Listener, PeerIdentity, ReplyTo,
+    HANDSHAKE_CLIENT_REPLY_LEN,
 };
 use crate::protocol::auth::Token;
 use crate::protocol::auth::{server_finish_mac, server_verify_client, NonceSource, RandomNonce};
@@ -33,11 +34,30 @@ pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Idle timeout between frames on an established connection.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Time slice of one blocking read on a SHARED connection: detached writers
+/// (spare `Output`/`Exited` relay) need the connection lock between reads,
+/// so the loop releases it at least this often. Total idleness is still
+/// bounded by [`IDLE_TIMEOUT`], tracked manually across slices.
+pub const SHARED_READ_SLICE: Duration = Duration::from_millis(50);
+
 /// What a broker does with an authenticated, compatible client message.
 pub trait Handler: Send + Sync {
     /// Answer via `conn.send(..)`; the transport closes the connection when
     /// this returns, so handlers must not block indefinitely.
     fn on_message(&self, conn: &mut dyn ReplyTo, msg: ClientMsg);
+
+    /// A post-handshake frame body that is NOT a valid `ClientMsg` — used by
+    /// spare (`SpareToBroker`) and admin (`WarmAdminMsg`) connections, which
+    /// share the same handshake but speak extra frame kinds. `conn_id`
+    /// identifies the connection for the broker's bookkeeping. Returning
+    /// `Err` closes the connection with `BadRequest` (default behaviour).
+    fn on_raw_frame(&self, conn: &mut dyn ReplyTo, conn_id: u64, body: &[u8]) -> io::Result<()> {
+        let _ = (conn, conn_id, body);
+        Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "frame is not a client message",
+        ))
+    }
 }
 
 /// Identity the broker expects from the client's `Hello`. `None` on `bind`
@@ -167,6 +187,52 @@ impl Server {
     }
 }
 
+/// A connection shared between the serve loop and detached writers via
+/// `Arc<Mutex<..>>`: all I/O (reads and writes) goes through the one lock, so
+/// frames never interleave. Poisoned locks are tolerated (the connection is
+/// torn down anyway).
+pub struct SharedReply {
+    conn: Arc<Mutex<Box<dyn Conn>>>,
+}
+
+impl SharedReply {
+    pub fn new(conn: Box<dyn Conn>) -> SharedReply {
+        SharedReply {
+            conn: Arc::new(Mutex::new(conn)),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Box<dyn Conn>> {
+        self.conn.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+impl ReplyTo for SharedReply {
+    fn send(&mut self, msg: &BrokerMsg) -> io::Result<()> {
+        ReplyTo::send(&mut *self.lock(), msg)
+    }
+
+    fn send_raw(&mut self, body: &[u8]) -> io::Result<()> {
+        write_frame(&mut *self.lock(), body)
+    }
+
+    fn detach(&mut self) -> io::Result<Box<dyn ConnWriter + Send>> {
+        Ok(Box::new(SharedReply {
+            conn: Arc::clone(&self.conn),
+        }))
+    }
+}
+
+impl ConnWriter for SharedReply {
+    fn send(&mut self, msg: &BrokerMsg) -> io::Result<()> {
+        ReplyTo::send(self as &mut dyn ReplyTo, msg)
+    }
+
+    fn send_raw(&mut self, body: &[u8]) -> io::Result<()> {
+        write_frame(&mut *self.lock(), body)
+    }
+}
+
 fn serve_conn(
     mut conn: Box<dyn Conn>,
     token: &Token,
@@ -254,32 +320,67 @@ fn serve_conn(
         }),
     )?;
 
+    // From here the connection is shared: the broker relays spare
+    // Output/Exited frames from other threads, so the loop's reads and every
+    // write go through the one lock in `SharedReply`. Reads are time-sliced
+    // (SHARED_READ_SLICE, WouldBlock → retry) so detached writers get the
+    // lock; total idleness is bounded by IDLE_TIMEOUT, tracked manually.
+    conn.set_read_timeout(Some(SHARED_READ_SLICE))?;
+    let mut reply = SharedReply::new(conn);
+
     // Message loop: limits per real elapsed milliseconds, fail-closed closes.
+    let conn_id = next_conn_id();
     let limits = Limits::default();
     let mut bucket = TokenBucket::new(limits.frames_per_second, limits.frames_per_second);
     let start = Instant::now();
+    let mut last_activity = Instant::now();
     loop {
         if stopping.load(Ordering::SeqCst) {
-            let _ = reject(&mut conn, RejectReason::ShuttingDown);
+            let _ = reject(&mut reply, RejectReason::ShuttingDown);
             return Ok(());
         }
-        let body = frames.read_frame(&mut conn)?;
+        let body = {
+            let mut guard = reply.lock();
+            match frames.read_frame(&mut *guard) {
+                Ok(body) => {
+                    last_activity = Instant::now();
+                    body
+                }
+                // Read slice elapsed: release the lock so detached writers
+                // can relay, then read again.
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    drop(guard);
+                    if last_activity.elapsed() > IDLE_TIMEOUT {
+                        return Err(io::Error::new(
+                            ErrorKind::TimedOut,
+                            "idle timeout on shared connection",
+                        ));
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        };
         let now_ms = start.elapsed().as_millis() as u64;
         if !bucket.allow(now_ms) {
             // Rate limited: the stream is still synchronized, but fail-closed
             // keeps the budget simple and per docs rejects at the connection.
-            let _ = reject(&mut conn, RejectReason::RateLimited);
+            let _ = reject(&mut reply, RejectReason::RateLimited);
             return Ok(());
         }
         match decode_client_msg(&body) {
             Ok(ClientMsg::Hello(_)) => {
-                let _ = reject(&mut conn, RejectReason::IncompatibleProtocol);
+                let _ = reject(&mut reply, RejectReason::IncompatibleProtocol);
                 return Err(io::Error::new(ErrorKind::InvalidData, "duplicate Hello"));
             }
-            Ok(msg) => handler.on_message(&mut conn, msg),
+            Ok(msg) => handler.on_message(&mut reply, msg),
+            // Not a ClientMsg: spare/admin frames go to the raw hook; its
+            // error closes the connection with BadRequest (fail-closed).
             Err(_) => {
-                let _ = reject(&mut conn, RejectReason::BadRequest);
-                return Err(io::Error::new(ErrorKind::InvalidData, "undecodable frame"));
+                if handler.on_raw_frame(&mut reply, conn_id, &body).is_err() {
+                    let _ = reject(&mut reply, RejectReason::BadRequest);
+                    return Err(io::Error::new(ErrorKind::InvalidData, "undecodable frame"));
+                }
             }
         }
     }
@@ -303,6 +404,13 @@ fn reject(conn: &mut dyn ReplyTo, reason: RejectReason) -> io::Result<()> {
     use crate::protocol::message::{BrokerMsg, Reject};
     ReplyTo::send(conn, &BrokerMsg::Reject(Reject { reason }))
 }
+/// Monotonic per-server connection id for `Handler::on_raw_frame`.
+fn next_conn_id() -> u64 {
+    use std::sync::atomic::AtomicU64;
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::SeqCst)
+}
+
 /// Own OS identity; a peer must present exactly this.
 pub fn own_identity() -> io::Result<PeerIdentity> {
     #[cfg(unix)]
