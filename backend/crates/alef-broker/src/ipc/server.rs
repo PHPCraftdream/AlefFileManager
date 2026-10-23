@@ -324,6 +324,22 @@ mod tests {
     use crate::protocol::auth::Token;
     use crate::protocol::message::{BrokerMsg, LaunchState, Query, Status};
 
+    use std::sync::mpsc::channel;
+    use std::thread::JoinHandle;
+
+    /// Join `handle` with a 30 s deadline; panic with `what` on overrun so a
+    /// transport hang fails the test instead of blocking CI forever.
+    fn join_bounded<T: Send + 'static>(what: &'static str, handle: JoinHandle<T>) -> T {
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(handle.join().expect("worker thread panicked"));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(v) => v,
+            Err(_) => panic!("test deadline exceeded: {what}"),
+        }
+    }
+
     struct EchoHandler;
     impl Handler for EchoHandler {
         fn on_message(&self, conn: &mut dyn ReplyTo, msg: ClientMsg) {
@@ -406,7 +422,7 @@ mod tests {
         }
 
         server.stop();
-        loop_handle.join().unwrap();
+        join_bounded("accept loop", loop_handle);
         server.join();
     }
 
@@ -418,7 +434,7 @@ mod tests {
         let err = Client::connect_with_hello(&ep, &test_token(3), hello("b")).unwrap_err();
         assert!(matches!(err, ConnectError::AuthFailed), "{err}");
         server.stop();
-        loop_handle.join().unwrap();
+        join_bounded("accept loop", loop_handle);
     }
 
     #[test]
@@ -447,7 +463,7 @@ mod tests {
             "expected Incompatible, got {err}"
         );
         server.stop();
-        loop_handle.join().unwrap();
+        join_bounded("accept loop", loop_handle);
     }
 
     #[test]
@@ -480,7 +496,7 @@ mod tests {
             }
         }
         server.stop();
-        loop_handle.join().unwrap();
+        join_bounded("accept loop", loop_handle);
     }
 
     #[cfg(unix)]
@@ -531,7 +547,7 @@ mod tests {
         };
         assert!(reached_eof, "server must close after TooLarge");
         server.stop();
-        loop_handle.join().unwrap();
+        join_bounded("too_large_frame_closes_connection", loop_handle);
     }
 
     #[test]
@@ -544,7 +560,7 @@ mod tests {
         let ep = Endpoint::for_session(tmp.path(), "stop-unblocks");
         let (server, loop_handle) = start_server(&ep, test_token(7), None);
         server.stop();
-        loop_handle.join().unwrap();
+        join_bounded("accept loop", loop_handle);
         server.join();
     }
 }
