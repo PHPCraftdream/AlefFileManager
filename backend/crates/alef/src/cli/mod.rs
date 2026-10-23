@@ -4,6 +4,7 @@ pub(crate) mod app_run;
 pub(crate) mod dispatch;
 pub(crate) mod failure;
 pub(crate) mod signals;
+pub(crate) mod warm;
 
 /// The default window icon (the Alef logo) unless the application ships `icon.png`.
 pub(crate) const DEFAULT_ICON: &[u8] = include_bytes!("../../../../assets/logo-32x32.png");

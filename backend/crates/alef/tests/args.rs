@@ -3,7 +3,9 @@
 use std::{ffi::OsString, path::PathBuf};
 
 use alef_core::security::consent::{Decision, Right};
-use alef_launch::args::{parse_args, AiCommand, Command, Launch, PermissionsCommand, USAGE};
+use alef_launch::args::{
+    parse_args, AiCommand, Command, Launch, PermissionsCommand, SpareKind, WarmCommand, USAGE,
+};
 use url::Url;
 
 fn parse(arguments: &[&str]) -> Result<Command, String> {
@@ -652,4 +654,121 @@ fn after_run_the_internal_command_names_are_targets_not_subcommands() {
             answer: _
         })
     ));
+}
+
+#[test]
+fn broker_takes_only_the_no_tray_flag() {
+    assert!(matches!(
+        parse(&["broker"]),
+        Ok(Command::Broker { no_tray: false })
+    ));
+    assert!(matches!(
+        parse(&["broker", "--no-tray"]),
+        Ok(Command::Broker { no_tray: true })
+    ));
+    for bad in [
+        vec!["broker", "--json"],
+        vec!["broker", "extra"],
+        vec!["broker", "--no-tray", "--no-tray"],
+    ] {
+        assert!(parse(&bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn warm_spare_is_strict_but_not_advertised() {
+    assert!(matches!(
+        parse(&[
+            "warm-spare",
+            "--kind",
+            "windowed",
+            "--spare-id",
+            "7",
+            r"\.\pipe\alef-broker-broker-0123456789abcdef"
+        ]),
+        Ok(Command::WarmSpare {
+            kind: SpareKind::Windowed,
+            spare_id: 7,
+            endpoint: _
+        })
+    ));
+    assert!(matches!(
+        parse(&[
+            "warm-spare",
+            "--kind",
+            "windowless",
+            "--spare-id",
+            "0",
+            "/tmp/alef-1000/broker-x/broker.sock"
+        ]),
+        Ok(Command::WarmSpare {
+            kind: SpareKind::Windowless,
+            spare_id: 0,
+            endpoint: _
+        })
+    ));
+    for bad in [
+        vec!["warm-spare"],
+        vec!["warm-spare", "--kind", "windowed"],
+        vec!["warm-spare", "--kind", "windowed", "--spare-id", "1"],
+        vec!["warm-spare", "--kind", "quiet", "--spare-id", "1", "ep"],
+        vec!["warm-spare", "--kind", "windowed", "--spare-id", "x", "ep"],
+        vec![
+            "warm-spare",
+            "--kind",
+            "windowed",
+            "--spare-id",
+            "1",
+            "ep",
+            "x",
+        ],
+        vec![
+            "warm-spare",
+            "--kind",
+            "windowed",
+            "--kind",
+            "windowless",
+            "ep",
+        ],
+        vec!["warm-spare", "--spare-id", "1", "--spare-id", "2", "ep"],
+        vec!["warm-spare", "--quiet", "ep"],
+    ] {
+        assert!(parse(&bad).is_err(), "{bad:?}");
+    }
+    assert!(!USAGE.contains("warm-spare"));
+}
+
+#[test]
+fn warm_takes_one_verb_and_the_json_flag() {
+    for (word, expected) in [
+        ("status", WarmCommand::Status),
+        ("start", WarmCommand::Start),
+        ("stop", WarmCommand::Stop),
+        ("enable", WarmCommand::Enable),
+        ("disable", WarmCommand::Disable),
+    ] {
+        assert!(matches!(
+            parse(&["warm", word]),
+            Ok(Command::Warm {
+                command,
+                json: false
+            }) if command == expected
+        ));
+        assert!(matches!(
+            parse(&["warm", word, "--json"]),
+            Ok(Command::Warm {
+                command,
+                json: true
+            }) if command == expected
+        ));
+    }
+    for bad in [
+        vec!["warm"],
+        vec!["warm", "restart"],
+        vec!["warm", "status", "--json", "--json"],
+        vec!["warm", "status", "extra"],
+        vec!["warm", "status", "--unknown"],
+    ] {
+        assert!(parse(&bad).is_err(), "{bad:?}");
+    }
 }

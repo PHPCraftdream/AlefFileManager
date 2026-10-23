@@ -22,6 +22,8 @@ alef runtime prune [--keep <VERSION>]... [--dry-run]\n\
 alef install <PACKAGE> [--trust-key <KEY>] [--allow-unsigned]\n\
 alef uninstall <ID> [--purge-data]\n\
 alef apps [--json|--ui]\n\
+alef broker [--no-tray]\n\
+alef warm status|start|stop|enable|disable [--json]\n\
 `run` and `--app` are the same launch: a directory runs as a development application,\n\
 a file is an Alef package; when the argument is neither an existing file nor a directory,\n\
 it is the id of an application installed by `alef install` (`alef apps` lists them);\n\
@@ -142,8 +144,43 @@ pub enum RuntimeCommand {
     },
 }
 
+/// The kind of a warm spare process (`alef warm-spare --kind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpareKind {
+    /// Hidden window and GL context.
+    Windowed,
+    /// Hidden WebView; the slot is disabled in this version.
+    Windowless,
+}
+
+/// `alef warm ...`: control of the warm-start broker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmCommand {
+    Status,
+    Start,
+    Stop,
+    Enable,
+    Disable,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
+    /// `alef broker`: the constant per-user process with the tray, the IPC server and
+    /// the pool of spare processes.
+    Broker {
+        no_tray: bool,
+    },
+    /// `alef warm-spare`: internal, spawned only by the broker; not in `--help`.
+    WarmSpare {
+        kind: SpareKind,
+        spare_id: u64,
+        endpoint: OsString,
+    },
+    /// `alef warm ...`: status, start/stop of the broker, autostart on/off.
+    Warm {
+        command: WarmCommand,
+        json: bool,
+    },
     Run(Launch),
     Permissions(PermissionsCommand),
     Ai(AiCommand),
@@ -209,6 +246,97 @@ fn text_of(argument: OsString, what: &str) -> Result<String, String> {
     argument
         .into_string()
         .map_err(|_| format!("{what} is not valid text"))
+}
+
+/// Strict parser for `alef broker`: at most `--no-tray`; anything else is a usage error.
+fn parse_broker(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+    let mut no_tray = false;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--no-tray") if !no_tray => no_tray = true,
+            Some("--no-tray") => return Err("--no-tray is given twice".into()),
+            _ => {
+                return Err(format!(
+                    "broker: unknown argument {}",
+                    arg.to_string_lossy()
+                ))
+            }
+        }
+    }
+    Ok(Command::Broker { no_tray })
+}
+
+/// Strict parser for the internal `alef warm-spare`; never advertised in `--help`.
+fn parse_warm_spare(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+    let mut kind: Option<SpareKind> = None;
+    let mut spare_id: Option<u64> = None;
+    let mut endpoint: Option<OsString> = None;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--kind") if kind.is_none() => {
+                let word = text_of(value(&mut args, "--kind")?, "kind")?;
+                kind = Some(match word.as_str() {
+                    "windowed" => SpareKind::Windowed,
+                    "windowless" => SpareKind::Windowless,
+                    other => return Err(format!("--kind must be windowed or windowless: {other}")),
+                });
+            }
+            Some("--kind") => return Err("--kind is given twice".into()),
+            Some("--spare-id") if spare_id.is_none() => {
+                let word = text_of(value(&mut args, "--spare-id")?, "spare id")?;
+                spare_id = Some(
+                    word.parse::<u64>()
+                        .map_err(|_| "--spare-id must be a non-negative integer".to_owned())?,
+                );
+            }
+            Some("--spare-id") => return Err("--spare-id is given twice".into()),
+            Some(text) if text.starts_with('-') => {
+                return Err(format!(
+                    "warm-spare: unknown argument {}",
+                    arg.to_string_lossy()
+                ))
+            }
+            _ if endpoint.is_none() => endpoint = Some(arg),
+            _ => return Err("warm-spare: unexpected argument".into()),
+        }
+    }
+    let kind = kind.ok_or("warm-spare: --kind is required")?;
+    let spare_id = spare_id.ok_or("warm-spare: --spare-id is required")?;
+    let endpoint = endpoint.ok_or("warm-spare: the broker entry point is required")?;
+    Ok(Command::WarmSpare {
+        kind,
+        spare_id,
+        endpoint,
+    })
+}
+
+/// Strict parser for `alef warm <VERB> [--json]`.
+fn parse_warm(mut args: impl Iterator<Item = OsString>) -> Result<Command, String> {
+    let verb = args
+        .next()
+        .and_then(|s| s.into_string().ok())
+        .ok_or("warm: a command is required: status, start, stop, enable or disable")?;
+    let command = match verb.as_str() {
+        "status" => WarmCommand::Status,
+        "start" => WarmCommand::Start,
+        "stop" => WarmCommand::Stop,
+        "enable" => WarmCommand::Enable,
+        "disable" => WarmCommand::Disable,
+        other => {
+            return Err(format!(
+                "unknown warm command {other:?}: status, start, stop, enable or disable"
+            ))
+        }
+    };
+    let mut json = false;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--json") if !json => json = true,
+            Some("--json") => return Err("--json is given twice".into()),
+            _ => return Err(format!("warm: unknown argument {}", arg.to_string_lossy())),
+        }
+    }
+    Ok(Command::Warm { command, json })
 }
 
 /// Strict parser for the install-management commands; malformed forms are usage errors.
@@ -315,6 +443,27 @@ pub fn parse_args(arguments: impl IntoIterator<Item = OsString>) -> Result<Comma
     {
         arguments.next();
         return crate::consent::permissions::parse_ai(arguments);
+    }
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("broker"))
+    {
+        arguments.next();
+        return parse_broker(arguments).map_err(|e| format!("INVALID_ARGUMENT: {e}"));
+    }
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("warm-spare"))
+    {
+        arguments.next();
+        return parse_warm_spare(arguments).map_err(|e| format!("INVALID_ARGUMENT: {e}"));
+    }
+    if arguments
+        .peek()
+        .is_some_and(|first| first.to_str() == Some("warm"))
+    {
+        arguments.next();
+        return parse_warm(arguments).map_err(|e| format!("INVALID_ARGUMENT: {e}"));
     }
     let mut after_run = false;
     if arguments

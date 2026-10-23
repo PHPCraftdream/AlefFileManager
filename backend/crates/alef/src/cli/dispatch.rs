@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Command dispatch: the subcommands that answer and exit, then the run path.
-use super::app_run::{run_directory, run_package};
+use super::app_run::{self, run_directory, run_package, ResolvedRun};
 use super::failure::{install_failure, Failure};
 use super::DEFAULT_ICON;
 use alef_launch::{
@@ -55,7 +55,7 @@ pub(crate) fn install_tls() -> Result<(), Failure> {
 /// Runs the application; the result is the exit code the application asked for.
 pub(crate) async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     let process_args = arguments.clone();
-    let launch = match parse_args(arguments).map_err(Failure::Usage)? {
+    match parse_args(arguments).map_err(Failure::Usage)? {
         Command::Help => {
             println!("{USAGE}");
             return Ok(0);
@@ -121,10 +121,56 @@ pub(crate) async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
                 .map_err(Failure::Runtime)?;
             return Ok(0);
         }
-        Command::Run(launch) => launch,
-    };
-    mark("args-parsed");
-    let mut launch = launch;
+        Command::Broker { no_tray } => {
+            return super::warm::broker::run_broker(no_tray);
+        }
+        Command::WarmSpare {
+            kind,
+            spare_id,
+            endpoint,
+        } => {
+            return super::warm::spare::run_spare(kind, spare_id, endpoint).await;
+        }
+        Command::Warm { command, json } => {
+            return super::warm::control::warm_command(command, json);
+        }
+        Command::Run(launch) => {
+            mark("args-parsed");
+            // The warm attempt comes before the cold path and never changes it: a proven
+            // decline falls through to the unchanged cold run below.
+            if let Some(code) = super::warm::try_run_warm(&process_args, &launch)? {
+                return Ok(code);
+            }
+            return run_cold(process_args, launch).await;
+        }
+    }
+}
+
+/// The cold run path, unchanged by the warm attempt that may have preceded it.
+async fn run_cold(
+    process_args: Vec<OsString>,
+    launch: alef_launch::args::Launch,
+) -> Result<u8, Failure> {
+    match resolve_run(process_args, launch).await? {
+        ResolvedRun::Exit(code) => Ok(code),
+        ResolvedRun::Run(run) => {
+            let prepared = match app_run::prepare_app(run).await? {
+                Ok(prepared) => prepared,
+                Err(code) => return Ok(code),
+            };
+            let (result, finish) = app_run::cold_loop(prepared);
+            app_run::finish_app(finish, result).await
+        }
+    }
+}
+
+/// Resolves the launch target into the shared pipeline input, or an exit a relaunch
+/// decision already produced. Exactly the order the cold path always had. Also the
+/// entry of the warm spare: it re-resolves the client's argv in its own process.
+pub(crate) async fn resolve_run(
+    process_args: Vec<OsString>,
+    launch: alef_launch::args::Launch,
+) -> Result<ResolvedRun, Failure> {
     if let alef_launch::install::RunTarget::Id(id) =
         alef_launch::install::run_target(&launch.target, launch.positional)
     {
@@ -132,20 +178,25 @@ pub(crate) async fn launch(arguments: Vec<OsString>) -> Result<u8, Failure> {
     }
     #[cfg(feature = "e2e")]
     if alef_launch::install::print_run_target_hook(&launch.target) {
-        return Ok(0);
+        return Ok(ResolvedRun::Exit(0));
     }
     let loaded = match source::load(&launch.target) {
         Ok(loaded) => loaded,
-        Err(failure) => return load_failure_exit(failure, &process_args).await,
+        Err(failure) => {
+            return match load_failure_exit(failure, &process_args).await {
+                Ok(code) => Ok(ResolvedRun::Exit(code)),
+                Err(failure) => Err(failure),
+            };
+        }
     };
     match loaded {
         ApplicationSource::Directory { dir } => {
             launch.check(false).map_err(Failure::Usage)?;
-            run_directory(process_args, launch, dir).await
+            app_run::run_directory(process_args, launch, dir).await
         }
         ApplicationSource::Package(prepared) => {
             launch.check(true).map_err(Failure::Usage)?;
-            run_package(process_args, launch, prepared).await
+            app_run::run_package(process_args, launch, prepared).await
         }
     }
 }
@@ -193,7 +244,7 @@ async fn run_installed(
     id: &str,
     launch: alef_launch::args::Launch,
     process_args: Vec<OsString>,
-) -> Result<u8, Failure> {
+) -> Result<ResolvedRun, Failure> {
     let mut resolved = None;
     let loaded = alef_launch::install::run_id(id, &mut |path| {
         resolved = Some(path.to_owned());
@@ -203,7 +254,7 @@ async fn run_installed(
     if let Some(path) = resolved {
         #[cfg(feature = "e2e")]
         if alef_launch::install::print_run_target_hook(&path) {
-            return Ok(0);
+            return Ok(ResolvedRun::Exit(0));
         }
         #[cfg(not(feature = "e2e"))]
         drop(path);
@@ -214,17 +265,20 @@ async fn run_installed(
             return Err(install_failure(error));
         }
         Err(alef_launch::install::RunLaunchFailure::Load(failure)) => {
-            return load_failure_exit(failure, &process_args).await;
+            return match load_failure_exit(failure, &process_args).await {
+                Ok(code) => Ok(ResolvedRun::Exit(code)),
+                Err(failure) => Err(failure),
+            };
         }
     };
     match loaded {
         ApplicationSource::Directory { dir } => {
             launch.check(false).map_err(Failure::Usage)?;
-            run_directory(process_args, launch, dir).await
+            app_run::run_directory(process_args, launch, dir).await
         }
         ApplicationSource::Package(prepared) => {
             launch.check(true).map_err(Failure::Usage)?;
-            run_package(process_args, launch, prepared).await
+            app_run::run_package(process_args, launch, prepared).await
         }
     }
 }
