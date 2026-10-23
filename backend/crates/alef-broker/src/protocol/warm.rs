@@ -89,6 +89,13 @@ pub struct Shutdown;
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct Ready;
 
+/// Spare→broker after `Assign`, exactly once: every check passed (package,
+/// trust, consent, launch mode), the spare now begins IRREVERSIBLE actions
+/// (Bridge, window handoff). The broker answers the client `Accepted` only
+/// after this.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub struct Started;
+
 /// Spare→broker instead of `Ready`: the spare refuses the assignment before
 /// any irreversible action; the broker converts it to `Declined` for the
 /// client.
@@ -144,6 +151,7 @@ pub enum WarmRelayMsg {
 pub enum SpareToBroker {
     Hello(SpareHello),
     Ready(Ready),
+    Started(Started),
     Declined(SpareDeclined),
 }
 
@@ -276,6 +284,7 @@ mod tests {
                 spare_id: 7,
             }),
             SpareToBroker::Ready(Ready),
+            SpareToBroker::Started(Started),
             SpareToBroker::Declined(SpareDeclined {
                 reason: "no window".into(),
             }),
@@ -344,5 +353,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v["type"], serde_json::Value::String("hello".into()));
+        let v: serde_json::Value = serde_json::from_slice(
+            &encode_spare_to_broker(&SpareToBroker::Started(Started)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["type"], serde_json::Value::String("started".into()));
     }
 }

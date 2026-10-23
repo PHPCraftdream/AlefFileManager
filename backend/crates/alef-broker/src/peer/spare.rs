@@ -114,6 +114,14 @@ impl Spare {
         ))
     }
 
+    /// The assignment passed every check: irreversible actions (Bridge,
+    /// window handoff) may begin. Call order: connect → ready →
+    /// wait_assignment → (checks, possible `decline`) → started →
+    /// irreversible work.
+    pub fn started(&mut self) -> io::Result<()> {
+        self.send_spare(&SpareToBroker::Started(crate::protocol::warm::Started))
+    }
+
     /// Wait for the one `Assign`, `Shutdown`, or the explicit timeout. The
     /// read timeout is set for the duration of the call and left in place.
     pub fn wait_assignment(&mut self, timeout: Duration) -> Result<Assignment, WaitError> {

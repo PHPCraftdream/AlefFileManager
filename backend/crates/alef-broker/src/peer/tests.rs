@@ -323,6 +323,7 @@ fn try_launch_handled_with_relayed_output_and_exit_code() {
             Ok(Assignment::Launch(l)) => assert_eq!(l.request_id, "r1"),
             other => panic!("expected assignment, got {other:?}"),
         }
+        spare.started().expect("started");
         proc2.out.push(b"hello out");
         proc2.err.push(b"err!");
         proc2.exit_with(7);
@@ -404,6 +405,13 @@ fn spare_connect_ready_receives_assign() {
     client
         .send(&crate::protocol::message::ClientMsg::Launch(launch("r1")))
         .unwrap();
+    // The spare takes the assignment first; the client is answered only
+    // after the spare reports Started.
+    match spare.wait_assignment(DEADLINE) {
+        Ok(Assignment::Launch(l)) => assert_eq!(l.request_id, "r1"),
+        other => panic!("expected Assign, got {other:?}"),
+    }
+    spare.started().expect("started");
     let deadline = Instant::now() + DEADLINE;
     loop {
         assert!(Instant::now() < deadline, "no ack");
@@ -412,10 +420,6 @@ fn spare_connect_ready_receives_assign() {
             crate::protocol::message::BrokerMsg::HelloAck(_) => continue,
             other => panic!("expected Accepted, got {other:?}"),
         }
-    }
-    match spare.wait_assignment(DEADLINE) {
-        Ok(Assignment::Launch(l)) => assert_eq!(l.request_id, "r1"),
-        other => panic!("expected Assign, got {other:?}"),
     }
     h.stop();
 }
@@ -460,5 +464,110 @@ fn spare_decline_leads_to_client_declined() {
     ));
     // Admin snapshot agrees: only the untouched windowless spare remains.
     assert_eq!(h.broker.admin_status().running, 1);
+    h.stop();
+}
+
+/// A spare that refuses AFTER the Assign (post-assignment checks failed):
+/// the client gets a PROVEN `Cold(ValidationFailed)`, not `Handled`.
+#[test]
+fn decline_after_assign_is_cold_not_handled() {
+    let h = harness("peer-decline-after-assign", pool_cfg());
+    h.broker.pump();
+    let ids = h.wait_ids(2);
+    let win = ids[0];
+
+    // The spare: connect → ready → Assign → decline.
+    let ep = h.ep.clone();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let spare_thread = std::thread::spawn(move || {
+        let mut spare = Spare::connect(&ep, WireKind::Windowed, win.0).expect("spare connect");
+        spare.ready().expect("ready");
+        ready_tx.send(()).expect("ready signal");
+        match spare.wait_assignment(DEADLINE) {
+            Ok(Assignment::Launch(_)) => {}
+            other => panic!("expected assignment, got {other:?}"),
+        }
+        spare.decline("no window").expect("decline");
+    });
+
+    // Wait until the broker has actually processed the spare's Ready.
+    ready_rx
+        .recv_timeout(DEADLINE)
+        .expect("spare readiness signal");
+    wait_until(|| {
+        h.broker
+            .admin_status()
+            .slots
+            .iter()
+            .any(|s| s.kind == WireKind::Windowed && s.state == "ready")
+    });
+
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    let outcome = try_launch(&h.ep, &launch("r1"), &mut stdout, &mut stderr);
+    spare_thread.join().expect("spare thread");
+    assert_eq!(outcome, Outcome::Cold(ColdReason::ValidationFailed));
+    h.stop();
+}
+
+/// The spare dies between the Assign and `Started`: the client's launch is
+/// PROVEN dead (`Cold(NoSpare)`) via the broker's pending-launch pump.
+#[test]
+fn spare_dies_after_assign_is_cold_no_spare() {
+    let h = harness("peer-dies-after-assign", pool_cfg());
+    h.broker.pump();
+    let ids = h.wait_ids(2);
+    let win = ids[0];
+    let proc = h.spawner.proc_of(win);
+
+    // The spare: connect → ready → Assign, then report the assignment.
+    let ep = h.ep.clone();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (assigned_tx, assigned_rx) = mpsc::channel();
+    let spare_thread = std::thread::spawn(move || {
+        let mut spare = Spare::connect(&ep, WireKind::Windowed, win.0).expect("spare connect");
+        spare.ready().expect("ready");
+        ready_tx.send(()).expect("ready signal");
+        match spare.wait_assignment(DEADLINE) {
+            Ok(Assignment::Launch(_)) => assigned_tx.send(()).expect("assigned signal"),
+            other => panic!("expected assignment, got {other:?}"),
+        }
+        // Drop the spare (its control connection); the pending launch keeps
+        // its detached client writers.
+    });
+
+    ready_rx
+        .recv_timeout(DEADLINE)
+        .expect("spare readiness signal");
+    wait_until(|| {
+        h.broker
+            .admin_status()
+            .slots
+            .iter()
+            .any(|s| s.kind == WireKind::Windowed && s.state == "ready")
+    });
+
+    // try_launch blocks in wait_ack on its own thread.
+    let ep2 = h.ep.clone();
+    let req = launch("r1");
+    let (res_tx, res_rx) = mpsc::channel();
+    let launch_thread = std::thread::spawn(move || {
+        let mut stdout: Vec<u8> = Vec::new();
+        let mut stderr: Vec<u8> = Vec::new();
+        let outcome = try_launch(&ep2, &req, &mut stdout, &mut stderr);
+        res_tx.send(outcome).expect("outcome channel");
+    });
+
+    // Only kill the process once the grant is certain (the spare saw Assign).
+    assigned_rx
+        .recv_timeout(DEADLINE)
+        .expect("assignment signal");
+    proc.exit_with(1);
+    h.broker.pump(); // pending-launch death → Declined{NoSpare}
+
+    let outcome = res_rx.recv_timeout(DEADLINE).expect("try_launch outcome");
+    spare_thread.join().expect("spare thread");
+    launch_thread.join().expect("launch thread");
+    assert_eq!(outcome, Outcome::Cold(ColdReason::NoSpare));
     h.stop();
 }
