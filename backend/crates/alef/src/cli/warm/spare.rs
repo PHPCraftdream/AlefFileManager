@@ -77,8 +77,8 @@ pub(crate) async fn run_spare(
     let outcome = shared.lock().expect("spare outcome").take();
     // The worker's runtime must live to the end: the finish (bridge
     // shutdown, the signal task) uses its handle.
-    let _worker_runtime = runtime_slot.lock().expect("spare runtime").take();
-    match outcome {
+    let worker_runtime = runtime_slot.lock().expect("spare runtime").take();
+    let result = match outcome {
         Some(SpareOutcome::App(mut finish)) => {
             // The loop hands the bridge back: it is shut down as on the cold path.
             let result = loop_result.map(|bridge| finish.bridge = bridge);
@@ -87,7 +87,13 @@ pub(crate) async fn run_spare(
         Some(SpareOutcome::Exit(code)) => Ok(code),
         // Declined or shut down before anything ran: a quiet exit.
         None => Ok(0),
+    };
+    // A runtime must not be dropped inside async code (tokio panics): a plain thread drops it,
+    // unjoined (its blocking tasks must not hold the exit).
+    if let Some(runtime) = worker_runtime {
+        std::thread::spawn(move || drop(runtime));
     }
+    result
 }
 
 /// Why the assignment did not become an application.
