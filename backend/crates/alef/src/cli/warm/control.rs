@@ -72,9 +72,9 @@ fn status_json(broker: Option<&AdminStatusReply>, autostart: &str) -> String {
             "pid": reply.pid,
             "version": reply.version,
             "granted_total": reply.granted_total,
-            "running": reply.running,
+            "running_apps": reply.running,
             "slots": reply.slots.iter().map(|slot| serde_json::json!({
-                "kind": format!("{:?}", slot.kind),
+                "kind": format!("{:?}", slot.kind).to_lowercase(),
                 "state": slot.state,
             })).collect::<Vec<_>>(),
         }),
