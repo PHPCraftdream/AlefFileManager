@@ -108,10 +108,28 @@ impl Client {
         Ok(Client { conn, frames })
     }
 
+    /// Set the read timeout for subsequent receives (explicit per-call
+    /// timeouts for peer libraries; the connect-time default is
+    /// [`CLIENT_TIMEOUT`]).
+    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
+        self.conn.set_read_timeout(timeout)
+    }
+
     /// Send one client message (framed, with the write timeout).
     pub fn send(&mut self, msg: &ClientMsg) -> io::Result<()> {
         let body = encode_client_msg(msg).map_err(io::Error::other)?;
         write_frame(&mut *self.conn, &body)
+    }
+
+    /// Send a raw frame body (spare/admin frames that are not `ClientMsg`).
+    pub fn send_raw(&mut self, body: &[u8]) -> io::Result<()> {
+        write_frame(&mut *self.conn, body)
+    }
+
+    /// Receive a raw frame body (spare/admin frames that are not
+    /// `BrokerMsg`).
+    pub fn recv_raw(&mut self) -> io::Result<Vec<u8>> {
+        self.frames.read_frame(&mut *self.conn)
     }
 
     /// Receive one broker message (framed, with the read timeout). Frames

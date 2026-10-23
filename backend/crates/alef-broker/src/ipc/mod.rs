@@ -36,7 +36,7 @@ use crate::protocol::message::{encode_broker_msg, BrokerMsg};
 
 pub use client::Client;
 pub use endpoint::{Endpoint, EndpointError};
-pub use server::{ExpectedIdentity, Handler, Server};
+pub use server::{ExpectedIdentity, Handler, Server, SharedReply};
 pub use token::load_or_create_token;
 
 /// A bidirectional byte stream to (or from) a broker peer, with timeouts and
@@ -108,6 +108,38 @@ pub trait Listener: Send + Sync {
 /// Sending side used by the broker's [`Handler`] to answer a message.
 pub trait ReplyTo {
     fn send(&mut self, msg: &BrokerMsg) -> io::Result<()>;
+
+    /// Write a raw frame body (no `BrokerMsg` encoding); used for replies
+    /// that are not `BrokerMsg` (spare `BrokerToSpare`, admin
+    /// `WarmAdminReply`, relay `WarmRelayMsg`).
+    fn send_raw(&mut self, body: &[u8]) -> io::Result<()> {
+        let _ = body;
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "this connection cannot send raw frames",
+        ))
+    }
+
+    /// A thread-safe writer to the SAME connection, usable from other threads
+    /// (and after `on_message` returns) to emit further frames, e.g. relayed
+    /// spare `Output`/`Exited`. Writes are serialized with the connection
+    /// thread's I/O, so frames never interleave mid-frame; a writer holding
+    /// the connection during a blocking write may stall the loop's reads
+    /// (backpressure is intentional).
+    fn detach(&mut self) -> io::Result<Box<dyn ConnWriter + Send>> {
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "this connection cannot be detached",
+        ))
+    }
+}
+
+/// Writer handle returned by [`ReplyTo::detach`].
+pub trait ConnWriter: Send {
+    fn send(&mut self, msg: &BrokerMsg) -> io::Result<()>;
+
+    /// Write a raw frame body (see [`ReplyTo::send_raw`]).
+    fn send_raw(&mut self, body: &[u8]) -> io::Result<()>;
 }
 
 /// Write one framed message body to a stream.
@@ -135,6 +167,10 @@ impl<C: Conn + ?Sized> ReplyTo for C {
     fn send(&mut self, msg: &BrokerMsg) -> io::Result<()> {
         let body = encode_broker_msg(msg).map_err(io::Error::other)?;
         write_frame(self, &body)
+    }
+
+    fn send_raw(&mut self, body: &[u8]) -> io::Result<()> {
+        write_frame(self, body)
     }
 }
 /// Incremental frame reader over a [`Conn`].
