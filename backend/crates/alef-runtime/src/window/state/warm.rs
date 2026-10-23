@@ -117,7 +117,7 @@ pub(in crate::window) struct WarmApp {
     menus: Menus,
     quiet: bool,
     prepared: Option<PreparedWindow>,
-    app: Option<App>,
+    pub(in crate::window) app: Option<App>,
     pub(in crate::window) error: Option<Box<dyn Error>>,
     spawned: bool,
 }
@@ -162,7 +162,7 @@ impl ApplicationHandler<Wake> for WarmApp {
             match prepare_hidden(event_loop, self.quiet) {
                 Ok(prepared) => self.prepared = Some(prepared),
                 Err(error) => {
-                    self.error = Some(error.into());
+                    self.error = Some(std::io::Error::other(error.to_string()).into());
                     event_loop.exit();
                     return;
                 }
@@ -195,10 +195,13 @@ impl ApplicationHandler<Wake> for WarmApp {
             None => {}
             Some(Ok(assignment)) => {
                 crate::timing::mark("assigned");
-                let WarmAssignment { bridge, options } = assignment;
+                let WarmAssignment {
+                    mut bridge,
+                    options,
+                } = assignment;
                 let prepared = self.prepared.take();
                 let menus = std::mem::take(&mut self.menus);
-                match app_from(bridge, options, menus, self.proxy.clone(), prepared) {
+                match app_from(&mut bridge, options, menus, self.proxy.clone(), prepared) {
                     Ok(mut app) => {
                         // The application opens its windows now; the first one adopts the window
                         // and context prepared before the assignment.

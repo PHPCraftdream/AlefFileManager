@@ -143,7 +143,7 @@ impl App {
         let area = target
             .and_then(|index| infos.get(index))
             .map(|info| info.work_area);
-        let (window, rendering) = if state::warm::adopts(&self.prepared, first) {
+        let (window, rendering) = if crate::window::state::warm::adopts(&self.prepared, first) {
             // The warm spare made this window before the application was known: what `open` would
             // have put into the attributes becomes setters on the ready window (the M11 notes,
             // "Параметры окна после создания"). The window stays hidden until its page has
@@ -376,8 +376,12 @@ impl App {
         area: Option<Rect>,
         start_maximized: bool,
     ) -> Rc<Window> {
-        let changes =
-            state::warm::reconfiguration(definition, placement, start_maximized, self.quiet);
+        let changes = crate::window::state::warm::reconfiguration(
+            definition,
+            placement,
+            start_maximized,
+            self.quiet,
+        );
         window.set_title(title);
         // `None` means the system answers later with `Resized`; the viewport follows the real size
         // in `synchronize_viewport` before anything is shown.
