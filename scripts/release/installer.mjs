@@ -69,7 +69,7 @@ InstallDir "$LOCALAPPDATA\\alef\\runtimes\\${v}"
 !include "Sections.nsh"
 \${StrStr}
 \${UnStrRep}
-\${GetOptions}
+!insertmacro GetOptions
 
 Var WARM
 
@@ -115,7 +115,7 @@ SectionEnd
 Section /o "Держать запасные процессы для быстрого запуска приложений (запуск при входе в систему)" SEC_WARM
   ; RequestExecutionLevel user (HKCU install): this Exec runs in the installing user's
   ; context, never as SYSTEM.
-  ExecWait "$\"$LOCALAPPDATA\\alef\\runtimes\\${v}\\alef.exe$\" warm enable"
+  ExecWait "$\\"$LOCALAPPDATA\\alef\\runtimes\\${v}\\alef.exe$\\" warm enable"
 SectionEnd
 
 ; Silent mode: /S plus /WARM=1 selects the optional warm section in .onInit;
@@ -134,8 +134,8 @@ FunctionEnd
 Section "un.Uninstall"
   ; Best effort: stop and disable the warm broker before removing the binary;
   ; ExecWait return values are not checked, errors are ignored.
-  ExecWait "$\"$INSTDIR\\alef.exe$\" warm stop"
-  ExecWait "$\"$INSTDIR\\alef.exe$\" warm disable"
+  ExecWait "$\\"$INSTDIR\\alef.exe$\\" warm stop"
+  ExecWait "$\\"$INSTDIR\\alef.exe$\\" warm disable"
   Delete "$INSTDIR\\alef.exe"
   Delete "$INSTDIR\\uninstall.exe"
   RMDir "$INSTDIR"
