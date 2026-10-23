@@ -173,8 +173,10 @@ impl Zeroize for [u8] {
 mod tests {
     use super::*;
 
+    /// The session identity is the unique temporary folder: on Windows the token lives in the
+    /// profile of the user, not in `dir`, so a fixed name would be shared by the parallel tests.
     fn temp_endpoint(dir: &std::path::Path) -> Endpoint {
-        Endpoint::for_session(dir, "token-tests")
+        Endpoint::for_session(dir, &dir.display().to_string())
     }
 
     #[test]

@@ -795,7 +795,7 @@ mod tests {
         let sid = current_user_sid().unwrap();
         let listener = PipeListener::bind(&ep, &sid).unwrap();
         // Echo server: read (with timeout) and write back.
-        let server = bounded("echo server", move || {
+        let server = thread::spawn(move || {
             let mut conn = listener.accept().expect("accept");
             conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut buf = [0u8; 64];
@@ -827,7 +827,7 @@ mod tests {
                     assert!(n > 0);
                     got += n;
                 }
-                assert_eq!(&b, b"PONG");
+                assert_eq!(&b, b"PING");
                 let _ = tx.send(());
             });
             s.spawn(move || {
@@ -840,7 +840,7 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(10))
             .expect("echo round-trip deadline");
         assert!(start.elapsed() < Duration::from_secs(10));
-        bounded("join echo server", move || server);
+        join_bounded("echo server", server);
         drop(client);
     }
 }
