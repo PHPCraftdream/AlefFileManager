@@ -338,10 +338,27 @@ fn connect_spare(ep: &Endpoint, kind: WireKind, id: SpareId, pid: u32) -> Client
     c
 }
 
-fn spare_ready(spare: &mut Client) {
+/// How many pool slots the broker reports as ready right now (a fresh admin connection).
+fn ready_slots(h: &Harness) -> usize {
+    let mut admin = connect(&h.ep);
+    match admin_call(&mut admin, WarmAdminMsg::Status(AdminStatus)) {
+        WarmAdminReply::StatusReply(s) => s.slots.iter().filter(|e| e.state == "ready").count(),
+        other => panic!("expected StatusReply, got {other:?}"),
+    }
+}
+
+/// Send Ready and wait until the broker has processed it: the spare and the client talk on
+/// different connections, so without this a Launch can overtake the Ready and find no spare.
+fn spare_ready(h: &Harness, spare: &mut Client) {
+    let before = ready_slots(h);
     spare
         .send_raw(&encode_spare_to_broker(&SpareToBroker::Ready(Ready)).unwrap())
         .unwrap();
+    let deadline = Instant::now() + DEADLINE;
+    while ready_slots(h) <= before {
+        assert!(Instant::now() < deadline, "the broker did not take Ready");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The acceptance point: all spare-side checks passed, irreversible work begins.
@@ -425,7 +442,7 @@ fn grant_and_same_type_replacement_in_one_take() {
     let win = ids[0]; // SlotKind::ALL order: Windowed first
 
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -540,7 +557,7 @@ fn spare_dies_before_grant_then_slot_recovers() {
         replacement,
         spawner.proc_of(replacement).pid,
     );
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
     client.send(&ClientMsg::Launch(launch("r2"))).unwrap();
     // Accepted comes only after the spare took the assignment and said Started.
     match recv_spare(&mut spare) {
@@ -559,7 +576,7 @@ fn output_relay_and_exited() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -636,7 +653,7 @@ fn shutdown_keeps_granted_app_untouched() {
     let win = ids[0];
     let other = ids[1];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -685,7 +702,7 @@ fn query_after_client_disconnect() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -729,7 +746,7 @@ fn admin_status_fields() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut admin = connect(&h.ep);
     match admin_call(&mut admin, WarmAdminMsg::Status(AdminStatus)) {
@@ -788,7 +805,7 @@ fn spare_declines_after_assign_client_gets_declined() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -854,7 +871,7 @@ fn spare_dies_after_assign_declines_no_spare() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -882,7 +899,7 @@ fn assign_timeout_declines_and_kills() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -911,7 +928,7 @@ fn duplicate_launch_during_pending_shares_outcome() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut a = connect(&h.ep);
     a.send(&ClientMsg::Launch(launch("r1"))).unwrap();
@@ -955,7 +972,7 @@ fn query_during_pending_reports_accepted() {
     let ids = wait_ids(&h.rx, 2);
     let win = ids[0];
     let mut spare = connect_spare(&h.ep, WireKind::Windowed, win, spawner.proc_of(win).pid);
-    spare_ready(&mut spare);
+    spare_ready(&h, &mut spare);
 
     let mut client = connect(&h.ep);
     client.send(&ClientMsg::Launch(launch("r1"))).unwrap();

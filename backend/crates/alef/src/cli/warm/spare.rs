@@ -176,6 +176,12 @@ fn run_assigned(
             ))
         }
     };
+    // The client's context exactly, before anything reads it: the cwd and
+    // the full environment (absent variables are removed).
+    env::set_cwd(launch.cwd.as_ref()).map_err(AssignFailure::Decline)?;
+    let current = env::ProcessEnv.vars();
+    env::apply(&current, &launch.env, &mut env::ProcessEnvTarget)
+        .map_err(AssignFailure::Decline)?;
     // An interactive permission prompt cannot happen here: no window exists
     // on this thread. The client runs cold and asks in its own process.
     if matches!(
@@ -187,12 +193,6 @@ fn run_assigned(
             "an interactive permission decision may be required".to_owned(),
         ));
     }
-    // The client's context exactly, before anything reads it: the cwd and
-    // the full environment (absent variables are removed).
-    env::set_cwd(launch.cwd.as_ref()).map_err(AssignFailure::Decline)?;
-    let current = env::ProcessEnv.vars();
-    env::apply(&current, &launch.env, &mut env::ProcessEnvTarget)
-        .map_err(AssignFailure::Decline)?;
     // This thread's runtime outlives the assignment: the finish on the main
     // thread uses its handle (Bridge and the signal task).
     let runtime = Arc::new(

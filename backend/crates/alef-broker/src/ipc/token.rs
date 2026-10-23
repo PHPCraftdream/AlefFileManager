@@ -119,6 +119,12 @@ fn read_existing(path: &std::path::Path) -> io::Result<Token> {
 /// Unix: ensure the broker directory exists and passes the 0700/uid checks.
 #[cfg(unix)]
 fn unix_prepare_dir(dir: &std::path::Path) -> io::Result<()> {
+    // The base above the endpoint directory may not exist yet (the first start of a session).
+    if let Some(base) = dir.parent() {
+        std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700)
+            .recursive(true)
+            .create(base)?;
+    }
     // Created 0700 from the start (a plain create_dir would follow the umask).
     match std::os::unix::fs::DirBuilderExt::mode(&mut fs::DirBuilder::new(), 0o700).create(dir) {
         Ok(()) => {}

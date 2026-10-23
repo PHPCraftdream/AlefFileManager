@@ -74,7 +74,7 @@ export function warmSummaryMarkdown(os, mode, values) {
 }
 
 const ALEF_READY = 'ALEF_READY';
-const WARM_PROBE = 'WARM-PROBE info-ok';
+const WARM_PROBE = 'ALEF_E2E WARM-PROBE info-ok';
 /** Marks only the warm spare path can print (a pure cold client never prints `assigned`). */
 const SPARE_MARK = 'ALEF_TIMING assigned';
 const CLIENT_MARK_BEGIN = 'ALEF_TIMING warm-client-begin';
