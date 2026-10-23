@@ -71,8 +71,6 @@ InstallDir "$LOCALAPPDATA\\alef\\runtimes\\${v}"
 \${UnStrRep}
 !insertmacro GetOptions
 
-Var WARM
-
 Section "Install"
   SetOutPath "$INSTDIR"
   File /oname=alef.exe bin\\alef.exe
