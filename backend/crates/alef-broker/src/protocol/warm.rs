@@ -321,13 +321,15 @@ mod tests {
 
     #[test]
     fn bodies_are_tagged_json() {
-        let v: serde_json::Value =
-            serde_json::from_slice(&encode_warm_relay_msg(&WarmRelayMsg::Exited(Exited {
+        let v: serde_json::Value = serde_json::from_slice(
+            &encode_warm_relay_msg(&WarmRelayMsg::Exited(Exited {
                 request_id: "r".into(),
                 code: 1,
                 signal: None,
-            })))
-            .unwrap();
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(v["type"], serde_json::Value::String("exited".into()));
         let v: serde_json::Value = serde_json::from_slice(
             &encode_spare_to_broker(&SpareToBroker::Hello(SpareHello {

@@ -273,7 +273,7 @@ fn harness(name: &str, cfg: PoolConfig) -> Harness {
     // The file token: peers (Spare, try_launch) load exactly this.
     let (token, created) = load_or_create_token(&ep).expect("token file");
     assert!(created);
-    let loop_handle = std::thread::spawn(move || s2.run(token, None, b2));
+    let loop_handle = std::thread::spawn(move || s2.run(token.into(), None, b2));
     Harness {
         _tmp: tmp,
         ep,
@@ -392,8 +392,12 @@ fn spare_connect_ready_receives_assign() {
     let ids = h.wait_ids(2);
     let win = ids[0];
 
-    let mut spare = Spare::connect(&h.ep, WireKind::Windowed, h.spawner.proc_of(win).pid)
-        .expect("spare connect");
+    let mut spare = Spare::connect(
+        &h.ep,
+        WireKind::Windowed,
+        u64::from(h.spawner.proc_of(win).pid),
+    )
+    .expect("spare connect");
     spare.ready().expect("ready");
 
     // Drive the broker from a plain client connection (raw Launch).
@@ -431,8 +435,12 @@ fn spare_decline_leads_to_client_declined() {
     let ids = h.wait_ids(2);
     let win = ids[0];
 
-    let mut spare = Spare::connect(&h.ep, WireKind::Windowed, h.spawner.proc_of(win).pid)
-        .expect("spare connect");
+    let mut spare = Spare::connect(
+        &h.ep,
+        WireKind::Windowed,
+        u64::from(h.spawner.proc_of(win).pid),
+    )
+    .expect("spare connect");
     spare.decline("warm-up failed").expect("decline");
     // Wait until the broker retired the spare (slot backoff, process gone).
     wait_until(|| h.broker.admin_status().running == 1);
