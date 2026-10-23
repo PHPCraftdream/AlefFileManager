@@ -100,7 +100,12 @@ fn assign_outcome(
     shared: &OutcomeSlot,
 ) -> Result<WarmAssignment, Box<dyn Error + Send>> {
     match result {
-        Ok(assignment) => Ok(assignment),
+        // Every refusal (the package, the trust, the consent) is behind us: from here the
+        // launch is the broker's to accept, the client is told so only now.
+        Ok(assignment) => match spare.started() {
+            Ok(()) => Ok(assignment),
+            Err(_) => Err(quiet_exit()),
+        },
         Err(AssignFailure::Decline(reason)) => {
             let _ = spare.decline(&reason);
             Err(quiet_exit())
