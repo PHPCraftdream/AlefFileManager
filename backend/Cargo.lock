@@ -118,12 +118,14 @@ dependencies = [
 name = "alef"
 version = "0.1.0"
 dependencies = [
+ "alef-broker",
  "alef-core",
  "alef-modules",
  "alef-package",
  "alef-runtime",
  "base64 0.22.1",
  "crc32fast",
+ "crossbeam-channel",
  "dirs",
  "ed25519-dalek 2.2.0",
  "libc",

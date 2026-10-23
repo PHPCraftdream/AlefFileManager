@@ -53,12 +53,79 @@ struct Run {
     installed: Option<alef_modules::net::updater::InstalledApp>,
 }
 
+/// A resolved launch, or an exit the relaunch decision already produced.
+pub(crate) enum ResolvedRun {
+    Run(Run),
+    Exit(u8),
+}
+
+impl Run {
+    /// Why the windowed warm spare refuses this launch before any
+    /// irreversible action (docs, «Безопасная поздняя привязка»); the client
+    /// then runs the unchanged cold path.
+    pub(crate) fn warm_decline_reason(&self) -> Option<String> {
+        if self.devtools_port.is_some() {
+            return Some("--devtools cannot be warmed".to_owned());
+        }
+        if self.dev_url.is_some() {
+            return Some("--dev-url cannot be warmed".to_owned());
+        }
+        if self.launch_window {
+            return Some("--launch-mode window cannot be warmed".to_owned());
+        }
+        if self.plan.manifest.console {
+            return Some("console applications are not warmed".to_owned());
+        }
+        if self.plan.windowless() {
+            return Some("windowless applications are not warmed".to_owned());
+        }
+        // A package whose trust is not decided yet would open the trust
+        // window — impossible in the spare; the client asks on its own.
+        if let Some((signer, _, inputs)) = &self.trust {
+            let noninteractive = inputs.trust_key.is_some() || inputs.allow_unsigned;
+            if !noninteractive {
+                let pinned = trust::load(&trust::trust_folder(), &self.plan.manifest.id)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if !pinned || signer.is_none() {
+                    return Some("an interactive trust decision may be required".to_owned());
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Everything the end of a launch needs after the event loop exited. The bridge is
+/// `Some` on the cold path (shutdown after the loop); the warm spare's bridge moves
+/// into the event loop (`run_warm`), so there it is `None`.
+pub(crate) struct AppFinish {
+    pub(crate) bridge: Option<Bridge>,
+    pub(crate) console: Option<Console>,
+    pub(crate) signal_task: tokio::task::JoinHandle<()>,
+    pub(crate) handle: alef_runtime::RuntimeHandle,
+    pub(crate) process_args: Vec<OsString>,
+}
+
+/// The prepared application: everything is built, only the event loop is missing.
+pub(crate) struct PreparedApp {
+    pub(crate) bridge: Bridge,
+    pub(crate) options: WindowOptions,
+    pub(crate) windowless: bool,
+    pub(crate) launch_state: alef_modules::LaunchState,
+    pub(crate) console: Option<Console>,
+    pub(crate) signal_task: tokio::task::JoinHandle<()>,
+    pub(crate) handle: alef_runtime::RuntimeHandle,
+    pub(crate) process_args: Vec<OsString>,
+}
+
 /// The directory source: development, exactly as before packages existed.
 pub(crate) async fn run_directory(
     process_args: Vec<OsString>,
     launch: Launch,
     dir: PathBuf,
-) -> Result<u8, Failure> {
+) -> Result<ResolvedRun, Failure> {
     let Launch {
         dev_url,
         devtools_port,
@@ -74,14 +141,16 @@ pub(crate) async fn run_directory(
             requirement,
             env!("CARGO_PKG_VERSION"),
         ) {
-            return relaunch_directory(requirement, &process_args).await;
+            return relaunch_directory(requirement, &process_args)
+                .await
+                .map(ResolvedRun::Exit);
         }
     }
     let vars = path_vars(&dir, &manifest.id)?;
     let plan = make_plan(&dir, manifest, &vars)?;
     let identity = identity_of(&dir, &plan.manifest.id)?;
     let icon = std::fs::read(dir.join("icon.png")).unwrap_or_else(|_| DEFAULT_ICON.to_vec());
-    run_app(Run {
+    Ok(ResolvedRun::Run(Run {
         process_args,
         dev_url,
         // `--devtools` rides in `process_args` verbatim for relaunches; the parsed port
@@ -98,8 +167,7 @@ pub(crate) async fn run_directory(
         icon,
         trust: None,
         installed: None,
-    })
-    .await
+    }))
 }
 
 /// The package source: verified before anything is trusted or decided.
@@ -107,7 +175,7 @@ pub(crate) async fn run_package(
     process_args: Vec<OsString>,
     launch: Launch,
     prepared: Box<Prepared>,
-) -> Result<u8, Failure> {
+) -> Result<ResolvedRun, Failure> {
     let Launch {
         dev_url,
         app_args,
@@ -155,7 +223,7 @@ pub(crate) async fn run_package(
         &authority,
     );
     let plan = make_package_plan(package, &selected_root, manifest, &vars)?;
-    run_app(Run {
+    Ok(ResolvedRun::Run(Run {
         process_args,
         dev_url,
         // Refused for packages by `check` before this point.
@@ -178,12 +246,13 @@ pub(crate) async fn run_package(
             },
         )),
         installed,
-    })
-    .await
+    }))
 }
 
-/// The pipeline both sources share; the result is the exit code the application asked for.
-async fn run_app(run: Run) -> Result<u8, Failure> {
+/// The pipeline both sources share: everything from the resolved launch up to, but not
+/// including, the event loop. The cold path then runs the loop in [`cold_loop`]; the warm
+/// spare hands `bridge` and `options` to [`alef_runtime::run_warm`] instead.
+pub(crate) async fn prepare_app(run: Run) -> Result<Result<PreparedApp, u8>, Failure> {
     let Run {
         process_args,
         dev_url,
@@ -226,7 +295,7 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
         Parsed::Run(args) => args,
         Parsed::Help(text) | Parsed::Version(text) => {
             println!("{text}");
-            return Ok(0);
+            return Ok(Err(0));
         }
     };
     let trust_asker = match &trust {
@@ -410,24 +479,73 @@ async fn run_app(run: Run) -> Result<u8, Failure> {
     let handle = bridge.handle();
     // A signal asks the application to end as `app.quit` does; a second one ends it.
     let signal_task = tokio::spawn(end_on_signals(termination, handle.clone()));
+    let options = WindowOptions {
+        windows: plan.manifest.windows.clone(),
+        profile_dir: Some(servo_profile),
+        devtools_port,
+        app_id: plan.manifest.id.clone(),
+        ..WindowOptions::new(plan.manifest.name.clone(), icon).remembering_windows_in(window_state)
+    };
+    Ok(Ok(PreparedApp {
+        bridge,
+        options,
+        windowless,
+        launch_state,
+        console,
+        signal_task,
+        handle,
+        process_args,
+    }))
+}
+
+/// The cold event loop: the last step of the pipeline, exactly as before the warm split.
+pub(crate) fn cold_loop(app: PreparedApp) -> (Result<(), Box<dyn std::error::Error>>, AppFinish) {
+    let PreparedApp {
+        mut bridge,
+        options,
+        windowless,
+        launch_state,
+        console,
+        signal_task,
+        handle,
+        process_args,
+    } = app;
     let result = if windowless {
         // No window: the entry document runs in a hidden WebView.
         launch_state.load_started();
         alef_runtime::run_headless(&mut bridge)
     } else {
-        alef_runtime::run(
-            &mut bridge,
-            WindowOptions {
-                windows: plan.manifest.windows.clone(),
-                profile_dir: Some(servo_profile),
-                devtools_port,
-                app_id: plan.manifest.id.clone(),
-                ..WindowOptions::new(plan.manifest.name.clone(), icon)
-                    .remembering_windows_in(window_state)
-            },
-        )
+        alef_runtime::run(&mut bridge, options)
     };
-    bridge.shutdown().await?;
+    (
+        result,
+        AppFinish {
+            bridge: Some(bridge),
+            console,
+            signal_task,
+            handle,
+            process_args,
+        },
+    )
+}
+
+/// The end of the pipeline, after the event loop exited: the same order as before the
+/// warm split — bridge shutdown, console drain, signals, relaunch, exit code.
+pub(crate) async fn finish_app(
+    finish: AppFinish,
+    result: Result<(), Box<dyn std::error::Error>>,
+) -> Result<u8, Failure> {
+    let AppFinish {
+        bridge,
+        console,
+        signal_task,
+        handle,
+        process_args,
+    } = finish;
+    // The warm spare's bridge lives inside the event loop already.
+    if let Some(mut bridge) = bridge {
+        bridge.shutdown().await?;
+    }
     if let Some(console) = &console {
         // What the page wrote to stdout and stderr leaves before the process does.
         console.drain().await;
