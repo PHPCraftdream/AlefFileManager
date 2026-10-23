@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use alef_core::{
-    registry::window::{geometry, UiCall, WindowCall, WindowOp},
+    registry::window::{geometry, Rect, UiCall, WindowCall, WindowOp},
     security::window::{WindowDef, WindowPosition},
 };
 use euclid::Scale;
@@ -36,6 +36,31 @@ fn not_found(message: String) -> io::Error {
 
 fn to_json<T: serde::Serialize>(value: &T) -> io::Result<Value> {
     serde_json::to_value(value).map_err(io::Error::other)
+}
+
+/// Centres the outer frame of a ready window in the work area of its target display.
+fn centre(
+    window: &Window,
+    asked: bool,
+    area: Option<Rect>,
+    displays: &Displays,
+    target: Option<usize>,
+) {
+    if !asked {
+        return;
+    }
+    let Some(area) = area else {
+        return;
+    };
+    let (scale, outer) = (window.scale_factor(), window.outer_size());
+    let at = geometry::center(
+        &area,
+        f64::from(outer.width) / scale,
+        f64::from(outer.height) / scale,
+    );
+    if let Some(position) = displays.physical_position(at, target) {
+        window.set_outer_position(position);
+    }
 }
 
 impl App {
@@ -115,81 +140,96 @@ impl App {
             .title
             .clone()
             .unwrap_or_else(|| self.title.clone());
-        let mut attributes = Window::default_attributes()
-            .with_title(&title)
-            .with_inner_size(physical_size(
-                (placement.width, placement.height),
-                displays.scale(target),
-            ))
-            .with_decorations(definition.decorations.unwrap_or(true))
-            .with_resizable(definition.resizable.unwrap_or(true))
-            // Shown by `State::try_reveal` once there is a first picture; until then the window
-            // would be an unpainted rectangle.
-            .with_visible(false)
-            // In quiet mode maximizing is only what the document is told (see `state::Pretended`).
-            .with_maximized(start_maximized && !self.quiet);
-        // X11 and Windows place the outer frame here; macOS places the content rect, so it is
-        // positioned after creation by the outer frame instead (set and get agree).
-        #[cfg(not(target_os = "macos"))]
-        if let Some(position) = placement
-            .position
-            .and_then(|point| displays.physical_position(point, target))
-        {
-            attributes = attributes.with_position(position);
-        }
-        if let Some((width, height)) = placement.min_size {
-            attributes = attributes.with_min_inner_size(LogicalSize::new(width, height));
-        }
-        if let Some((width, height)) = placement.max_size {
-            attributes = attributes.with_max_inner_size(LogicalSize::new(width, height));
-        }
-        let icon = self
-            .icon
-            .clone()
-            .ok_or_else(|| io::Error::other("The window icon is not loaded"))?;
-        let attributes = platform::apply_window_icon(attributes, icon);
-        let window = Rc::new(
-            event_loop
-                .create_window(attributes)
-                .map_err(io::Error::other)?,
-        );
-        // The outer frame (title bar, borders) is known only now: on macOS set and get must use
-        // the same frame (the outer one), while `with_position` targets the content rect there.
-        #[cfg(target_os = "macos")]
-        if let Some(position) = placement
-            .position
-            .and_then(|point| displays.physical_position(point, target))
-        {
-            window.set_outer_position(position);
-        }
-        // Centre by the outer frame as well.
-        if matches!(definition.position, WindowPosition::Center) {
-            let area = target
-                .and_then(|index| infos.get(index))
-                .map(|info| info.work_area);
-            if let Some(area) = area {
-                let (scale, outer) = (window.scale_factor(), window.outer_size());
-                let at = geometry::center(
-                    &area,
-                    f64::from(outer.width) / scale,
-                    f64::from(outer.height) / scale,
-                );
-                if let Some(position) = displays.physical_position(at, target) {
-                    window.set_outer_position(position);
+        let area = target
+            .and_then(|index| infos.get(index))
+            .map(|info| info.work_area);
+        let (window, rendering) = if crate::window::state::warm::adopts(&self.prepared, first) {
+            // The warm spare made this window before the application was known: what `open` would
+            // have put into the attributes becomes setters on the ready window (the M11 notes,
+            // "Параметры окна после создания"). The window stays hidden until its page has
+            // something to show (`State::try_reveal`).
+            let prepared = self.prepared.take().expect("the prepared window is there");
+            let rendering = prepared.rendering.clone();
+            let window = self.adopt_prepared(
+                prepared.window,
+                &title,
+                definition,
+                &placement,
+                &displays,
+                target,
+                area,
+                start_maximized,
+            );
+            (window, rendering)
+        } else {
+            let mut attributes = Window::default_attributes()
+                .with_title(&title)
+                .with_inner_size(physical_size(
+                    (placement.width, placement.height),
+                    displays.scale(target),
+                ))
+                .with_decorations(definition.decorations.unwrap_or(true))
+                .with_resizable(definition.resizable.unwrap_or(true))
+                // Shown by `State::try_reveal` once there is a first picture; until then the window
+                // would be an unpainted rectangle.
+                .with_visible(false)
+                // In quiet mode maximizing is only what the document is told (see `state::Pretended`).
+                .with_maximized(start_maximized && !self.quiet);
+            // X11 and Windows place the outer frame here; macOS places the content rect, so it is
+            // positioned after creation by the outer frame instead (set and get agree).
+            #[cfg(not(target_os = "macos"))]
+            if let Some(position) = placement
+                .position
+                .and_then(|point| displays.physical_position(point, target))
+            {
+                attributes = attributes.with_position(position);
+            }
+            if let Some((width, height)) = placement.min_size {
+                attributes = attributes.with_min_inner_size(LogicalSize::new(width, height));
+            }
+            if let Some((width, height)) = placement.max_size {
+                attributes = attributes.with_max_inner_size(LogicalSize::new(width, height));
+            }
+            let icon = self
+                .icon
+                .clone()
+                .ok_or_else(|| io::Error::other("The window icon is not loaded"))?;
+            let attributes = platform::apply_window_icon(attributes, icon);
+            let window = Rc::new(
+                event_loop
+                    .create_window(attributes)
+                    .map_err(io::Error::other)?,
+            );
+            // The outer frame (title bar, borders) is known only now: on macOS set and get must use
+            // the same frame (the outer one), while `with_position` targets the content rect there.
+            #[cfg(target_os = "macos")]
+            if let Some(position) = placement
+                .position
+                .and_then(|point| displays.physical_position(point, target))
+            {
+                window.set_outer_position(position);
+            }
+            // Centre by the outer frame as well.
+            centre(
+                &window,
+                matches!(definition.position, WindowPosition::Center),
+                area,
+                &displays,
+                target,
+            );
+            window.set_ime_allowed(true);
+            if first {
+                if let Some(theme) = window.theme() {
+                    self.handle.set_theme(theme);
                 }
             }
-        }
-        window.set_ime_allowed(true);
-        if first {
-            if let Some(theme) = window.theme() {
-                self.handle.set_theme(theme);
-            }
-        }
-        let rendering = crate::window::state::rendering::new(event_loop, &window, self.quiet)?;
-        rendering.make_current().map_err(|error| {
-            io::Error::other(format!("Cannot activate Servo graphics context: {error:?}"))
-        })?;
-        crate::timing::mark("context-ready");
+            let rendering = crate::window::state::rendering::new(event_loop, &window, self.quiet)?;
+            rendering.make_current().map_err(|error| {
+                io::Error::other(format!("Cannot activate Servo graphics context: {error:?}"))
+            })?;
+            crate::timing::mark("context-ready");
+            (window, rendering)
+        };
         let servo = match self.windows.first() {
             Some(state) => state.servo.clone(),
             None => {
@@ -319,6 +359,60 @@ impl App {
         });
         self.started = true;
         Ok(window_id)
+    }
+
+    /// Makes the ready window of the warm spare the first window of the application: title, size,
+    /// resizability, decorations, limits, icon, position, centring and the restored state become
+    /// setters (the M11 notes, "Параметры окна после создания"). The window is not shown here: it
+    /// stays hidden until its own page has something to show.
+    fn adopt_prepared(
+        &self,
+        window: Rc<Window>,
+        title: &str,
+        definition: &WindowDef,
+        placement: &geometry::Placement,
+        displays: &Displays,
+        target: Option<usize>,
+        area: Option<Rect>,
+        start_maximized: bool,
+    ) -> Rc<Window> {
+        let changes = crate::window::state::warm::reconfiguration(
+            definition,
+            placement,
+            start_maximized,
+            self.quiet,
+        );
+        window.set_title(title);
+        // `None` means the system answers later with `Resized`; the viewport follows the real size
+        // in `synchronize_viewport` before anything is shown.
+        let _ = window.request_inner_size(changes.size);
+        window.set_resizable(changes.resizable);
+        window.set_decorations(changes.decorations);
+        window.set_min_inner_size(changes.min_size);
+        window.set_max_inner_size(changes.max_size);
+        window.set_maximized(changes.maximized);
+        // After creation the outer frame is the unit of placement on every platform (set and get
+        // agree on it).
+        if let Some(position) = placement
+            .position
+            .and_then(|point| displays.physical_position(point, target))
+        {
+            window.set_outer_position(position);
+        }
+        centre(
+            &window,
+            matches!(definition.position, WindowPosition::Center),
+            area,
+            displays,
+            target,
+        );
+        window.set_ime_allowed(true);
+        // macOS and Wayland ignore the icon, as the patched winit documents.
+        window.set_window_icon(self.icon.clone());
+        if let Some(theme) = window.theme() {
+            self.handle.set_theme(theme);
+        }
+        window
     }
 
     /// Index of the window `label` names, or of the window of the calling document.

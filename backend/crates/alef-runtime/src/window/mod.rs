@@ -121,6 +121,9 @@ struct App {
     trays: crate::ui::integration::tray::Trays,
     menus: crate::ui::integration::menu::Menus,
     restore: Option<state::restore::Restore>,
+    /// A window and GL context the warm spare made before the application was known; the first
+    /// window adopts them (see `state::warm`).
+    prepared: Option<state::warm::PreparedWindow>,
     devtools_port: Option<u16>,
     bridge_devtools: Option<std::rc::Rc<crate::ui::devtools::DevtoolsDelegate>>,
     servo_started: bool,
@@ -319,21 +322,11 @@ fn feature_off_never_enables_quiet_windows() {
     assert!(!quiet_enabled());
 }
 
-pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn std::error::Error>> {
-    if options.windows.is_empty() {
-        return Err(
-            io::Error::new(io::ErrorKind::InvalidInput, "There is no window to open").into(),
-        );
-    }
-    state::resize_wait::set_resize_trace(
-        std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"),
-    );
-    let quiet = quiet_enabled();
-    #[cfg(feature = "e2e")]
-    if quiet {
-        eprintln!("ALEF_E2E quiet: the windows of this run are never shown");
-    }
-    let menus = crate::ui::integration::menu::Menus::default();
+/// The event loop of a windowed run, with the message hook of the platform menus attached. The
+/// menus are given before the loop is built, so their accelerators stay shared with the hook.
+fn event_loop(
+    menus: &crate::ui::integration::menu::Menus,
+) -> Result<EventLoop<Wake>, Box<dyn std::error::Error>> {
     let mut builder = EventLoop::<Wake>::with_user_event();
     #[cfg(target_os = "windows")]
     {
@@ -357,10 +350,21 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
             unsafe { TranslateAcceleratorW(msg.hwnd, snapshot.haccel, msg) != 0 }
         });
     }
-    let event_loop = builder.build()?;
+    Ok(builder.build()?)
+}
+
+/// The application of a windowed run: everything the bridge carries and the options ask for. Used
+/// by the cold `run` and, once the assignment arrives, by the warm spare.
+pub(in crate::window) fn app_from(
+    bridge: &mut Bridge,
+    options: WindowOptions,
+    menus: crate::ui::integration::menu::Menus,
+    proxy: winit::event_loop::EventLoopProxy<Wake>,
+    prepared: Option<state::warm::PreparedWindow>,
+) -> Result<App, Box<dyn std::error::Error>> {
     let handle = bridge.handle();
-    handle.attach(event_loop.create_proxy());
-    let mut app = App {
+    handle.attach(proxy.clone());
+    Ok(App {
         url: bridge.entry_url.clone(),
         title: options.title,
         icon_png: options.icon_png,
@@ -368,13 +372,10 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         icon: None,
         definitions: options.windows,
         registry: RefCell::new(Some(bridge.take_registry()?)),
-        waker: Waker(
-            event_loop.create_proxy(),
-            state::resize_wait::new_generation(),
-        ),
+        waker: Waker(proxy, state::resize_wait::new_generation()),
         windows: Vec::new(),
         started: false,
-        quiet,
+        quiet: quiet_enabled(),
         next_close: 0,
         error: None,
         handle,
@@ -387,16 +388,81 @@ pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn st
         trays: crate::ui::integration::tray::Trays::default(),
         menus,
         restore: options.state_file.map(state::restore::Restore::load),
+        prepared,
         devtools_port: options.devtools_port,
         // Window mode builds its own delegate in `host::manage`; headless keeps one locally.
         bridge_devtools: None,
         servo_started: false,
         profile_dir: options.profile_dir,
         webcrypto_substitute: bridge.webcrypto_substitute(),
-    };
+    })
+}
+
+pub fn run(bridge: &mut Bridge, options: WindowOptions) -> Result<(), Box<dyn std::error::Error>> {
+    if options.windows.is_empty() {
+        return Err(
+            io::Error::new(io::ErrorKind::InvalidInput, "There is no window to open").into(),
+        );
+    }
+    state::resize_wait::set_resize_trace(
+        std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"),
+    );
+    #[cfg(feature = "e2e")]
+    if quiet_enabled() {
+        eprintln!("ALEF_E2E quiet: the windows of this run are never shown");
+    }
+    let menus = crate::ui::integration::menu::Menus::default();
+    let event_loop = event_loop(&menus)?;
+    let mut app = app_from(bridge, options, menus, event_loop.create_proxy(), None)?;
     event_loop.run_app(&mut app)?;
     if let Some(error) = app.error {
         return Err(error.into());
+    }
+    Ok(())
+}
+
+/// The application a warm spare is assigned to: what `run` would have been given.
+pub struct WarmAssignment {
+    pub bridge: Bridge,
+    pub options: WindowOptions,
+}
+
+/// The recipe of a windowed warm spare: a function that waits for the assignment on a worker
+/// thread and there runs the whole launch path of the application (the checks, the consent, the
+/// environment and working directory of the client, `Bridge::with_options`). It must not touch
+/// windows or the event loop: those live on the main thread. The result moves between threads, so
+/// every field of [`WarmAssignment`] must be `Send`. An error or a refusal ends the spare without
+/// ever showing a window: the client starts cold.
+pub struct WarmPrepare {
+    pub assignment:
+        Box<dyn FnOnce() -> Result<WarmAssignment, Box<dyn std::error::Error + Send>> + Send>,
+}
+
+/// The windowed warm spare: the event loop, a hidden window and a GL context exist before the
+/// application is known (the most expensive part of the cold start after the document load, see
+/// the M11 notes). The assignment runs on a worker thread; when it arrives, the same event loop
+/// continues as a usual application whose first window adopts the prepared one. The quiet mode of
+/// end-to-end runs (`ALEF_E2E_QUIET`) is read from the environment, as in `run`.
+pub fn run_warm(prepare: WarmPrepare) -> Result<(), Box<dyn std::error::Error>> {
+    state::resize_wait::set_resize_trace(
+        std::env::var("ALEF_RESIZE_TRACE").is_ok_and(|v| v == "1"),
+    );
+    let quiet = quiet_enabled();
+    #[cfg(feature = "e2e")]
+    if quiet {
+        eprintln!("ALEF_E2E quiet: the windows of this run are never shown");
+    }
+    let menus = crate::ui::integration::menu::Menus::default();
+    let event_loop = event_loop(&menus)?;
+    let mut warm = state::warm::warm_app(prepare, menus, quiet, &event_loop);
+    event_loop.run_app(&mut warm)?;
+    if let Some(error) = warm.error {
+        return Err(error);
+    }
+    if let Some(app) = warm.app {
+        if let Some(error) = app.error {
+            return Err(error.into());
+        }
     }
     Ok(())
 }

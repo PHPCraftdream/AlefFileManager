@@ -18,7 +18,7 @@ pub mod timing {
 }
 pub use timing::mark;
 pub use ui::RuntimeHandle;
-pub use window::{run, WindowOptions};
+pub use window::{run, run_warm, WarmAssignment, WarmPrepare, WindowOptions};
 
 // Broker tray: an independent notification-area icon for the windowless
 // `alef broker` process (no windows, no Servo, no document Owner).
