@@ -9,10 +9,15 @@
 //! `SpareToBroker` (spare role) or `WarmAdminMsg` (admin role). Spare and
 //! admin connections are distinguished by their frame bodies; the transport's
 //! per-connection id (`conn_id`) correlates a spare's `SpareHello` with its
-//! later `Ready`/`Declined` frames, which carry no identity of their own.
-//! Replies that are not `BrokerMsg` (spare `BrokerToSpare`, admin
+//! later `Ready`/`Started`/`Declined` frames, which carry no identity of their
+//! own. Replies that are not `BrokerMsg` (spare `BrokerToSpare`, admin
 //! `WarmAdminReply`, relay `WarmRelayMsg`) are written as raw frames via
 //! `ReplyTo::send_raw` / `ConnWriter::send_raw`.
+//!
+//! Acceptance point: a granted launch stays PENDING (see [`super::pending`])
+//! — the client is answered `Accepted` only after the spare reports
+//! `SpareToBroker::Started`; a decline, the spare's death or the assign
+//! timeout before that answer `Declined` instead.
 //!
 //! Driving: the pool is pure, so the owner (tray/CLI wiring, or tests with a
 //! fake clock) calls [`Broker::pump`] — it polls owned spares for exit,
@@ -37,10 +42,11 @@ use crate::protocol::message::{
 use crate::protocol::warm::{
     decode_spare_to_broker, decode_warm_admin_msg, encode_broker_to_spare, encode_warm_admin_reply,
     encode_warm_relay_msg, AdminAck, AdminStatusReply, Assign, BrokerToSpare, Exited, Output,
-    Shutdown, SlotStateEntry, SpareAck, SpareToBroker, WarmAdminMsg, WarmAdminReply,
+    Shutdown, SlotStateEntry, SpareAck, SpareToBroker, Started, WarmAdminMsg, WarmAdminReply,
     MAX_OUTPUT_CHUNK,
 };
 
+use super::pending::{PendingLaunch, ASSIGN_TIMEOUT};
 use super::spawner::{from_wire_kind, wire_kind, SpareId, SpareProcess, Spawner};
 
 /// Every first-version client launches a windowed app (doc: «безоконный слот
@@ -79,6 +85,11 @@ struct Inner<S: Spawner, C: Clock, J: Jitter> {
     /// Granted launches with live relay threads (their finisher owns the
     /// process; the broker only counts them).
     log: RequestLog,
+    /// Granted but not yet accepted launches (the spare has `Assign`, the
+    /// client has no answer yet).
+    pending: HashMap<RequestId, PendingLaunch>,
+    /// How long a pending launch may wait for the spare's `Started`.
+    assign_timeout: Duration,
     /// Broker's own store identity captured at construction (exact values or
     /// absence); a client's `Launch.env` must not disagree with it. (The
     /// `Hello` handshake checks the same identity at connection time.)
@@ -121,6 +132,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
                 spawner: Arc::new(spawner),
                 spares: HashMap::new(),
                 spare_conns: HashMap::new(),
+                pending: HashMap::new(),
+                assign_timeout: ASSIGN_TIMEOUT,
                 live_launches: 0,
                 log: RequestLog::new(1024, 3_600_000),
                 own_alef_home,
@@ -167,6 +180,44 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
             inner.slot_view[kind.index()] = "backoff".into();
         }
 
+        // Pending launches whose spare died or went silent past the assign
+        // deadline BEFORE `Started`: the client (and any duplicate writers)
+        // was never answered — decline now.
+        let mut lost: Vec<(RequestId, SpareId, bool)> = Vec::new(); // bool = timed out
+        for (rid, p) in inner.pending.iter_mut() {
+            let dead = matches!(p.process.try_wait(), Ok(Some(_)));
+            let late = now.saturating_sub(p.since) > inner.assign_timeout;
+            if dead || late {
+                lost.push((rid.clone(), p.spare_id, late));
+            }
+        }
+        for (rid, id, late) in lost {
+            let Some(mut p) = inner.pending.remove(&rid) else {
+                continue;
+            };
+            p.process.kill(); // no-op if already dead
+            let reason = if late {
+                DeclineReason::ValidationFailed
+            } else {
+                DeclineReason::NoSpare
+            };
+            let _ = inner.pool.on_exited(id, now);
+            inner.slot_view[REQUEST_KIND.index()] = "backoff".into();
+            inner.log.decide(
+                &rid,
+                Decision::Declined(reason.clone()),
+                now.as_millis() as u64,
+            );
+            let msg = BrokerMsg::Declined(Declined {
+                request_id: rid,
+                reason,
+            });
+            let _ = p.writer.send(&msg);
+            for mut w in p.extra.drain(..) {
+                let _ = w.send(&msg);
+            }
+        }
+
         // Granted launches whose process exited (their finisher thread relayed
         // `Exited` to the client and reports here for bookkeeping).
         while let Ok((rid, _code, _signal)) = inner.finished_rx.try_recv() {
@@ -185,6 +236,24 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
     pub fn shutdown(&self) {
         let mut inner = self.lock();
         inner.shutting_down = true;
+        let now = inner.pool.clock().now();
+        let now_ms = now.as_millis() as u64;
+        // Pending launches were granted but never accepted: kill the spare
+        // and decline every waiting client (including duplicates).
+        for (rid, mut p) in inner.pending.drain() {
+            p.process.kill();
+            let _ = inner
+                .log
+                .decide(&rid, Decision::Declined(DeclineReason::Busy), now_ms);
+            let msg = BrokerMsg::Declined(Declined {
+                request_id: p.rid.clone(),
+                reason: DeclineReason::Busy,
+            });
+            let _ = p.writer.send(&msg);
+            for mut w in p.extra.drain(..) {
+                let _ = w.send(&msg);
+            }
+        }
         let actions = inner.pool.shutdown();
         inner.execute(&actions);
         let ids: Vec<SpareId> = inner.spares.keys().copied().collect();
@@ -200,6 +269,11 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
             inner.spare_conns.remove(&cid);
         }
         inner.slot_view = ["empty".into(), "empty".into()];
+    }
+
+    /// Test hook: shrink the pending-launch deadline.
+    pub fn set_assign_timeout(&self, d: Duration) {
+        self.lock().assign_timeout = d;
     }
 
     /// Read-only admin snapshot (slot states from the broker's bookkeeping).
@@ -233,8 +307,15 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Handler for Br
             ClientMsg::Query(q) => {
                 let state = {
                     let mut inner = self.lock();
-                    let now_ms = inner.pool.clock().now().as_millis() as u64;
-                    inner.log.query(&q.request_id, now_ms)
+                    // A pending launch may still be accepted at any moment:
+                    // report Accepted so the client does not run the cold
+                    // path while the spare completes its pre-start checks.
+                    if inner.pending.contains_key(&q.request_id) {
+                        LaunchState::Accepted
+                    } else {
+                        let now_ms = inner.pool.clock().now().as_millis() as u64;
+                        inner.log.query(&q.request_id, now_ms)
+                    }
                 };
                 let _ = ReplyTo::send(
                     conn,
@@ -273,6 +354,15 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
         let mut inner = self.lock();
         let now = inner.pool.clock().now();
         let now_ms = now.as_millis() as u64;
+
+        // Duplicate Launch while a spare holds this request: attach another
+        // writer to share the outcome — no answer now, no second spawn.
+        if let Some(pending) = inner.pending.get_mut(&rid) {
+            if let Ok(w) = conn.detach() {
+                pending.extra.push(w);
+            }
+            return;
+        }
 
         // Idempotency BEFORE any irreversible action (RequestLog contract):
         // a repeated Launch replays the recorded decision, never takes a
@@ -341,7 +431,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
         };
 
         // 3. Bind the granted spare to this connection: Assign over the
-        //    spare's control writer, detach the client writer for relay.
+        //    spare's control writer, detach the client writers for the final
+        //    answer and the future relay. The launch stays PENDING.
         let bound = match spare_id {
             Some(id) => bind_grant(&mut inner, conn, id, &launch),
             None => None,
@@ -349,19 +440,28 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
 
         match bound {
             Some((id, writer, writer_out, writer_err)) => {
+                // The spare leaves the pool's bookkeeping entirely: its
+                // process moves into the pending entry; acceptance is decided
+                // by the spare's `Started` (or its absence).
                 let registered = inner
                     .spares
                     .remove(&id)
                     .and_then(|mut rec| rec.process.take());
                 match registered {
                     Some(process) => {
-                        start_relay(&inner, rid.clone(), process, writer, writer_out, writer_err);
-                        inner.granted_total += 1;
-                        inner.live_launches += 1;
-                        inner.slot_view[REQUEST_KIND.index()] = "initializing".into();
-                        inner.log.decide(&rid, Decision::Accepted, now_ms);
-                        let _ =
-                            ReplyTo::send(conn, &BrokerMsg::Accepted(Accepted { request_id: rid }));
+                        inner.pending.insert(
+                            rid.clone(),
+                            PendingLaunch {
+                                rid: rid.clone(),
+                                spare_id: id,
+                                process,
+                                writer,
+                                writer_out,
+                                writer_err,
+                                extra: Vec::new(),
+                                since: now,
+                            },
+                        );
                     }
                     None => {
                         // Unreachable in practice (a registered spare always
@@ -440,21 +540,89 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
                     }
                 }
             }
+            SpareToBroker::Started(_) => {
+                // The acceptance point: every spare-side check passed and the
+                // spare begins irreversible actions. Answer the client (and
+                // every duplicate) `Accepted`, start the relay, account the
+                // launch. A `Started` from a spare with no pending entry is
+                // stale — ignore it.
+                let Some(&id) = inner.spare_conns.get(&conn_id) else {
+                    return;
+                };
+                let pending_rid = inner
+                    .pending
+                    .iter()
+                    .find(|(_, p)| p.spare_id == id)
+                    .map(|(rid, _)| rid.clone());
+                let Some(rid) = pending_rid else {
+                    return;
+                };
+                let Some(mut p) = inner.pending.remove(&rid) else {
+                    return;
+                };
+                let now_ms = inner.pool.clock().now().as_millis() as u64;
+                inner.log.decide(&rid, Decision::Accepted, now_ms);
+                let accepted = BrokerMsg::Accepted(Accepted {
+                    request_id: rid.clone(),
+                });
+                let _ = p.writer.send(&accepted);
+                for mut w in p.extra.drain(..) {
+                    let _ = w.send(&accepted);
+                }
+                inner.granted_total += 1;
+                inner.live_launches += 1;
+                inner.slot_view[REQUEST_KIND.index()] = "initializing".into();
+                start_relay(&inner, rid, p.process, p.writer, p.writer_out, p.writer_err);
+            }
             SpareToBroker::Declined(declined) => {
-                // The spare refuses before any irreversible action: retire it.
-                // Assign is bound in the same call as the grant, so a spare
-                // Declined never refers to a launch we already acked.
-                if let Some(&id) = inner.spare_conns.get(&conn_id) {
+                let Some(&id) = inner.spare_conns.get(&conn_id) else {
+                    return;
+                };
+                // Decline AFTER the grant: the spare was assigned a pending
+                // launch. Kill the spare, decline the client — the launch is
+                // proven dead, the cold path is safe.
+                let pending_rid = inner
+                    .pending
+                    .iter()
+                    .find(|(_, p)| p.spare_id == id)
+                    .map(|(rid, _)| rid.clone());
+                if let Some(rid) = pending_rid {
                     let now = inner.pool.clock().now();
-                    if let Some(mut rec) = inner.spares.remove(&id) {
-                        if let Some(p) = rec.process.as_mut() {
-                            p.kill();
+                    let now_ms = now.as_millis() as u64;
+                    if let Some(mut p) = inner.pending.remove(&rid) {
+                        p.process.kill();
+                        // The spare's reason is free text; the wire's
+                        // `DeclineReason` has no free-text field.
+                        let msg = BrokerMsg::Declined(Declined {
+                            request_id: rid.clone(),
+                            reason: DeclineReason::ValidationFailed,
+                        });
+                        let _ = p.writer.send(&msg);
+                        for mut w in p.extra.drain(..) {
+                            let _ = w.send(&msg);
                         }
-                        inner.slot_view[rec.kind.index()] = "backoff".into();
                     }
                     inner.spare_conns.remove(&conn_id);
                     let _ = inner.pool.on_failed(id, now);
+                    inner.slot_view[REQUEST_KIND.index()] = "backoff".into();
+                    inner.log.decide(
+                        &rid,
+                        Decision::Declined(DeclineReason::ValidationFailed),
+                        now_ms,
+                    );
+                    return;
                 }
+                // The spare refuses before any irreversible action: retire it.
+                // Assign is bound in the same call as the grant, so a spare
+                // Declined never refers to a launch we already acked.
+                if let Some(mut rec) = inner.spares.remove(&id) {
+                    if let Some(p) = rec.process.as_mut() {
+                        p.kill();
+                    }
+                    inner.slot_view[rec.kind.index()] = "backoff".into();
+                }
+                inner.spare_conns.remove(&conn_id);
+                let _ = inner.pool.on_failed(id, inner.pool.clock().now());
                 let _ = declined;
             }
         }
@@ -474,8 +642,10 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
     }
 }
 
-/// Send `Assign` to a Ready spare's control writer and detach two relay
-/// writers from the client connection. `None` = not deliverable.
+/// Send `Assign` to a Ready spare's control writer and detach three client
+/// writers (final answer + both relay streams). The launch is now PENDING:
+/// the client is answered only when the spare reports `Started`. `None` =
+/// not deliverable.
 fn bind_grant<S: Spawner, C: Clock, J: Jitter>(
     inner: &mut Inner<S, C, J>,
     conn: &mut dyn ReplyTo,
