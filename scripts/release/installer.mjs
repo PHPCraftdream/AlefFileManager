@@ -65,8 +65,11 @@ OutFile "alef-runtime-${v}-setup.exe"
 InstallDir "$LOCALAPPDATA\\alef\\runtimes\\${v}"
 
 !include "StrFunc.nsh"
+!include "FileFunc.nsh"
+!include "Sections.nsh"
 \${StrStr}
 \${UnStrRep}
+!insertmacro GetOptions
 
 Section "Install"
   SetOutPath "$INSTDIR"
@@ -105,7 +108,32 @@ path_done:
   SendMessage 0xFFFF 0x001A 0 "STR:Environment"
 SectionEnd
 
+; Optional, unchecked by default: keep spare runtime processes (broker autostart at login)
+; for faster application launch.
+Section /o "Держать запасные процессы для быстрого запуска приложений (запуск при входе в систему)" SEC_WARM
+  ; RequestExecutionLevel user (HKCU install): this Exec runs in the installing user's
+  ; context, never as SYSTEM.
+  ExecWait "$\\"$LOCALAPPDATA\\alef\\runtimes\\${v}\\alef.exe$\\" warm enable"
+SectionEnd
+
+; Silent mode: /S plus /WARM=1 selects the optional warm section in .onInit;
+; without /WARM=1 nothing is enabled. The interactive installer exposes the
+; same choice as an unchecked components-page checkbox (there is no MUI here,
+; hence no finish-page checkbox).
+Function .onInit
+  ClearErrors
+  \${GetOptions} $CMDLINE "/WARM=" $R0
+  IfErrors warm_done 0
+  StrCmp $R0 "1" 0 warm_done
+    SectionSetFlags \${SEC_WARM} \${SF_SELECTED}
+warm_done:
+FunctionEnd
+
 Section "un.Uninstall"
+  ; Best effort: stop and disable the warm broker before removing the binary;
+  ; ExecWait return values are not checked, errors are ignored.
+  ExecWait "$\\"$INSTDIR\\alef.exe$\\" warm stop"
+  ExecWait "$\\"$INSTDIR\\alef.exe$\\" warm disable"
   Delete "$INSTDIR\\alef.exe"
   Delete "$INSTDIR\\uninstall.exe"
   RMDir "$INSTDIR"
@@ -208,6 +236,24 @@ fi
 if command -v update-desktop-database >/dev/null 2>&1; then
 \tupdate-desktop-database /usr/share/applications || true
 fi
+# Optional warm start (broker autostart). ALEF_WARM=1 forces it on for non-interactive
+# installs; otherwise the debconf question decides. User autostart cannot be written as
+# root without a user: run as SUDO_USER when available, otherwise only print a hint.
+warm=0
+if [ "$ALEF_WARM" = "1" ]; then
+	warm=1
+elif [ -e /usr/share/debconf/confmodule ]; then
+	. /usr/share/debconf/confmodule
+	db_get alef-runtime/warm || true
+	[ "$RET" = "true" ] && warm=1
+fi
+if [ "$warm" = "1" ]; then
+	if [ -n "$SUDO_USER" ] && command -v su >/dev/null 2>&1; then
+		su -s /bin/sh "$SUDO_USER" -c '/opt/alef-runtime/<v>/alef warm enable' || true
+	else
+		echo "alef-runtime: run 'alef warm enable' as your user to enable warm start (user autostart cannot be written as root without a user)."
+	fi
+fi
 `;
 
 const COMMON_POSTINST = `#!/bin/sh
@@ -225,6 +271,10 @@ set -e
 if command -v update-alternatives >/dev/null 2>&1; then
 \tupdate-alternatives --remove alef /opt/alef-runtime/<v>/alef || true
 fi
+# Best effort: stop the warm broker of this version before it is removed.
+if [ -x /opt/alef-runtime/<v>/alef ] && [ -n "$SUDO_USER" ] && command -v su >/dev/null 2>&1; then
+	su -s /bin/sh "$SUDO_USER" -c '/opt/alef-runtime/<v>/alef warm stop' || true
+fi
 `;
 
 const POSTRM = `#!/bin/sh
@@ -234,6 +284,31 @@ if command -v update-mime-database >/dev/null 2>&1; then
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
 \tupdate-desktop-database /usr/share/applications || true
+fi
+`;
+
+// debconf template for the optional warm start (broker autostart) question.
+const TEMPLATES = `Template: alef-runtime/warm
+Type: boolean
+Default: false
+_Description: Keep spare runtime processes for faster application launch (autostart at login)?
+`;
+
+// Versioned-package-only postrm; the common deb keeps the plain POSTRM because it does
+// not own the runtime. The versioned binary is already gone in postrm; /usr/bin/alef
+// belongs to another installed version when present.
+const RUNTIME_POSTRM = `#!/bin/sh
+set -e
+if command -v update-mime-database >/dev/null 2>&1; then
+\tupdate-mime-database /usr/share/mime || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+\tupdate-desktop-database /usr/share/applications || true
+fi
+# Best effort: stop and disable warm start in the invoking user's session; errors ignored.
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+	[ -x /usr/bin/alef ] && [ -n "$SUDO_USER" ] && command -v su >/dev/null 2>&1 && su -s /bin/sh "$SUDO_USER" -c '/usr/bin/alef warm stop' || true
+	[ -x /usr/bin/alef ] && [ -n "$SUDO_USER" ] && command -v su >/dev/null 2>&1 && su -s /bin/sh "$SUDO_USER" -c '/usr/bin/alef warm disable' || true
 fi
 `;
 
@@ -262,11 +337,15 @@ function requireDebPackageName(name) {
 }
 
 // Shared .deb layout: ar with debian-binary, gzipped control tar, gzipped data tar.
-function buildRuntimeDeb({ control, controlScripts, data }) {
-  const controlTar = writeGzip(writeTar([
+function buildRuntimeDeb({ control, controlScripts, data, templates }) {
+  const controlEntries = [
     { name: './control', data: Buffer.from(control, 'utf8'), mode: 0o644 },
     ...controlScripts.map(script => ({ name: './' + script.name, data: Buffer.from(script.data, 'utf8'), mode: 0o755 })),
-  ]));
+  ];
+  if (templates !== undefined) {
+    controlEntries.push({ name: './templates', data: Buffer.from(templates, 'utf8'), mode: 0o644 });
+  }
+  const controlTar = writeGzip(writeTar(controlEntries));
   const dataTar = writeGzip(writeTar(data));
   return writeAr([
     { name: 'debian-binary', data: Buffer.from('2.0\n', 'utf8') },
@@ -281,6 +360,7 @@ function buildLinux({ version, runtime, maintainer }) {
   const postinst = maintainerScript(POSTINST, v);
   const prerm = maintainerScript(PRERM, v);
   const postrm = maintainerScript(POSTRM, v);
+  const runtimePostrm = maintainerScript(RUNTIME_POSTRM, v);
   const pkg = requireDebPackageName(`alef-runtime-${v}`);
   const commonPostinst = maintainerScript(COMMON_POSTINST, v);
   const commonControl = renderDebControl({
@@ -306,12 +386,19 @@ function buildLinux({ version, runtime, maintainer }) {
     Depends: 'alef-runtime-common',
     Maintainer: maintainer ?? DEFAULT_MAINTAINER,
     Description: `Alef runtime ${v}: runs Alef web applications (.alef packages).`,
-    'Installed-Size': String(Math.ceil((bytes.length + postinst.length + prerm.length) / 1024)),
+    'Installed-Size': String(Math.ceil((bytes.length + postinst.length + prerm.length + TEMPLATES.length + runtimePostrm.length) / 1024)),
   });
   // /usr/bin/alef is intentionally NOT shipped: update-alternatives owns it.
+  // The main package postinstall does NOT enable warm start: an upgrade must not
+  // silently enable it.
   const deb = buildRuntimeDeb({
     control,
-    controlScripts: [{ name: 'postinst', data: postinst }, { name: 'prerm', data: prerm }],
+    controlScripts: [
+      { name: 'postinst', data: postinst },
+      { name: 'prerm', data: prerm },
+      { name: 'postrm', data: runtimePostrm },
+    ],
+    templates: TEMPLATES,
     data: [
       { name: './opt/alef-runtime/' + v, type: '5', mode: 0o755 },
       { name: './opt/alef-runtime/' + v + '/alef', data: bytes, mode: 0o755 },
@@ -344,16 +431,22 @@ function renderDistributionXml(version) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="1">
     <title>Alef Runtime ${v}</title>
-    <options customize="never" require-scripts="false"/>
+    <options customize="always" require-scripts="false"/>
     <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <pkg-ref id="org.alef.runtime"/>
+    <pkg-ref id="org.alef.runtime.warm"/>
     <choices-outline>
         <line choice="org.alef.runtime"/>
+        <line choice="org.alef.runtime.warm"/>
     </choices-outline>
     <choice id="org.alef.runtime" visible="true" title="Alef Runtime ${v}">
         <pkg-ref id="org.alef.runtime"/>
     </choice>
+    <choice id="org.alef.runtime.warm" visible="true" selected="no" title="Keep spare processes for faster app launch (start at login)">
+        <pkg-ref id="org.alef.runtime.warm"/>
+    </choice>
     <pkg-ref id="org.alef.runtime" version="${v}" onConclusion="none">alef-runtime-${v}-core.pkg</pkg-ref>
+    <pkg-ref id="org.alef.runtime.warm" version="${v}" onConclusion="none">alef-runtime-${v}-warm.pkg</pkg-ref>
 </installer-gui-script>
 `;
 }
@@ -394,6 +487,10 @@ pb "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string org.alef.package"
 pb "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Alef application package"
 pb "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Viewer"
 pkgbuild --root payload --scripts scripts --identifier org.alef.runtime --version ${v} --install-location / "alef-runtime-${v}-core.pkg"
+# Scripts-only component for the optional warm start (broker autostart at login).
+# nopayload needs no --root. The MAIN package postinstall does not enable warm start:
+# an upgrade must not silently enable it.
+pkgbuild --nopayload --scripts warm-scripts --identifier org.alef.runtime.warm --version ${v} "alef-runtime-${v}-warm.pkg"
 productbuild --distribution Distribution.xml --package-path . "alef-runtime-${v}.pkg"
 `;
 }
@@ -406,6 +503,18 @@ function buildDarwin({ version, runtime }) {
     { path: 'applet/applet.applescript', data: Buffer.from(APPLESCRIPT, 'utf8'), mode: 0o644 },
     { path: 'scripts/preinstall', data: Buffer.from('#!/bin/sh\nmkdir -p /Library/Alef/runtime /usr/local/bin\nexit 0\n', 'utf8'), mode: 0o755 },
     { path: 'scripts/postinstall', data: Buffer.from(`#!/bin/sh\nln -sfn "/Library/Alef/runtime/${v}/alef" /usr/local/bin/alef\nexit 0\n`, 'utf8'), mode: 0o755 },
+    // Scripts-only component (--nopayload) for the optional warm start. The main
+    // package postinstall above intentionally does NOT enable warm start: an upgrade
+    // must not silently enable it.
+    { path: 'warm-scripts/preinstall', data: Buffer.from('#!/bin/sh\nexit 0\n', 'utf8'), mode: 0o755 },
+    { path: 'warm-scripts/postinstall', data: Buffer.from(`#!/bin/sh
+# Best effort: enable broker autostart in the console user's session.
+console_user="$(/usr/bin/stat -f%Su /dev/console)" || exit 0
+[ -n "$console_user" ] || exit 0
+uid="$(/usr/bin/id -u "$console_user")" || exit 0
+/bin/launchctl asuser "$uid" /usr/bin/sudo -u "$console_user" /usr/local/bin/alef warm enable || true
+exit 0
+`, 'utf8'), mode: 0o755 },
     { path: 'Distribution.xml', data: Buffer.from(renderDistributionXml(v), 'utf8'), mode: 0o644 },
     { path: 'build-pkg.sh', data: Buffer.from(buildPkgScript(v), 'utf8'), mode: 0o755 },
   ];
