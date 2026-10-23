@@ -23,8 +23,11 @@ use crate::protocol::warm::{decode_warm_relay_msg, OutputStream, WarmRelayMsg};
 
 use super::own_hello;
 
-/// Wait for the `Accepted`/`Declined` ack after `Launch`.
-pub const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+/// Wait for the `Accepted`/`Declined` ack after `Launch`. The broker answers
+/// only after the spare reports `Started`, which includes the full pre-start
+/// path (package check, trust, consent window); the old 5 s would time out a
+/// consent dialog.
+pub const ACK_TIMEOUT: Duration = Duration::from_secs(600);
 /// Wait for a `Status` answer to a `Query`.
 pub const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Maximum silence between relay frames while the spare runs. Reset on every

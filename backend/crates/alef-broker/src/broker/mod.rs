@@ -5,6 +5,7 @@
 //! relays spare output/exit to the client and answers queries/admin.
 
 mod broker;
+mod pending;
 mod spawner;
 #[cfg(test)]
 mod tests;
