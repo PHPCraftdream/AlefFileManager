@@ -56,7 +56,7 @@ use windows_sys::Win32::System::Pipes::{
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, OpenProcess, OpenProcessToken, ResetEvent, SetEvent,
-    WaitForMultipleObjects, WaitForSingleObject, INFINITE,
+    WaitForMultipleObjects, WaitForSingleObject, INFINITE, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
@@ -279,7 +279,7 @@ fn create_instance(name_wide: &[u16], user_sid: &str, first: bool) -> io::Result
     };
     // Invariant: sd was allocated by the SDDL conversion; LocalFree frees it.
     unsafe {
-        LocalFree(sd as HANDLE);
+        LocalFree(sd);
     }
     if handle == INVALID_HANDLE_VALUE {
         let err = win_err();
@@ -416,7 +416,7 @@ impl PipeConn {
             self.handle,
             self.read_event,
             self.read_timeout,
-            |h, p, n, o| ReadFile(h, p, n, std::ptr::null_mut(), o),
+            |h, p, n, o| unsafe { ReadFile(h, p, n, std::ptr::null_mut(), o) },
             buf.as_mut_ptr(),
             buf.len() as u32,
         ) {
@@ -445,7 +445,7 @@ impl PipeConn {
             self.handle,
             self.write_event,
             self.write_timeout,
-            |h, p, n, o| WriteFile(h, p, n, std::ptr::null_mut(), o),
+            |h, p, n, o| unsafe { WriteFile(h, p, n, std::ptr::null_mut(), o) },
             buf.as_ptr() as *mut u8,
             buf.len() as u32,
         ) {
@@ -661,7 +661,8 @@ fn token_user_sid(process: HANDLE) -> io::Result<String> {
         }
         // Layout: TOKEN_USER { SID_AND_ATTRIBUTES { Sid, Attributes } };
         // PSID is *mut c_void in windows-sys 0.52 (Win32::Foundation).
-        let sid: PSID = (buffer.as_mut_ptr() as *const usize).read() as PSID;
+        // Invariant: the buffer holds a TOKEN_USER the API filled; its first word is the SID pointer.
+        let sid: PSID = unsafe { (buffer.as_ptr() as *const usize).read_unaligned() } as PSID;
         let mut sid_str: PWSTR = std::ptr::null_mut();
         // Invariant: sid points into the buffer just returned by the API.
         if unsafe { ConvertSidToStringSidW(sid, &mut sid_str) } == 0 {
