@@ -130,34 +130,39 @@ impl Spawner for ProcessSpawner {
         }
 
         let child = cmd.spawn()?;
-        Ok(Box::new(StdSpareProcess { child }))
+        Ok(Box::new(StdSpareProcess {
+            child: std::sync::Mutex::new(child),
+        }))
     }
 }
 
 /// [`SpareProcess`] over a real `std::process::Child`.
 struct StdSpareProcess {
-    child: Child,
+    child: std::sync::Mutex<Child>,
 }
 
 impl SpareProcess for StdSpareProcess {
     fn pid(&self) -> u32 {
-        self.child.id()
+        self.child.lock().expect("child lock").id()
     }
 
     fn kill(&self) {
-        let _ = self.child.kill();
+        let _ = self.child.lock().expect("child lock").kill();
     }
 
     fn try_wait(&mut self) -> io::Result<Option<ExitInfo>> {
-        Ok(self.child.try_wait()?.map(|status| exit_info(&status)))
+        let child = self.child.get_mut().expect("child lock");
+        Ok(child.try_wait()?.map(|status| exit_info(&status)))
     }
 
     fn stdout(&mut self) -> Option<Box<dyn io::Read + Send>> {
-        self.child.stdout.take().map(|s| Box::new(s) as _)
+        let child = self.child.get_mut().expect("child lock");
+        child.stdout.take().map(|s| Box::new(s) as _)
     }
 
     fn stderr(&mut self) -> Option<Box<dyn io::Read + Send>> {
-        self.child.stderr.take().map(|s| Box::new(s) as _)
+        let child = self.child.get_mut().expect("child lock");
+        child.stderr.take().map(|s| Box::new(s) as _)
     }
 }
 

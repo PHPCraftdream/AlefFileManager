@@ -10,6 +10,8 @@
 //! [`Handler`]; the transport owns no launch logic.
 
 use std::io::{self, ErrorKind};
+
+use crate::protocol::message::BrokerMsg;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;

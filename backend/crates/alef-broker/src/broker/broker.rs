@@ -232,7 +232,7 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Handler for Br
             ClientMsg::Launch(launch) => self.handle_launch(conn, launch),
             ClientMsg::Query(q) => {
                 let state = {
-                    let inner = self.lock();
+                    let mut inner = self.lock();
                     let now_ms = inner.pool.clock().now().as_millis() as u64;
                     inner.log.query(&q.request_id, now_ms)
                 };
@@ -437,7 +437,8 @@ impl<S: Spawner + Send + Sync, C: Clock + Send, J: Jitter + Send> Broker<S, C, J
                         inner.pool.on_ready(id, now);
                         if let Some(rec) = inner.spares.get_mut(&id) {
                             rec.ready = true;
-                            inner.slot_view[rec.kind.index()] = "ready".into();
+                            let index = rec.kind.index();
+                            inner.slot_view[index] = "ready".into();
                         }
                     }
                 }
@@ -516,7 +517,7 @@ fn start_relay<S: Spawner, C: Clock, J: Jitter>(
     inner: &Inner<S, C, J>,
     rid: RequestId,
     mut process: Box<dyn SpareProcess>,
-    writer: Box<dyn ConnWriter + Send>,
+    mut writer: Box<dyn ConnWriter + Send>,
     writer_out: Box<dyn ConnWriter + Send>,
     writer_err: Box<dyn ConnWriter + Send>,
 ) {
@@ -604,7 +605,8 @@ fn relay_stream(
                     bytes: buf[..n].to_vec(),
                 };
                 match encode_warm_relay_msg(&crate::protocol::warm::WarmRelayMsg::Output(msg))
-                    .and_then(|body| w.send_raw(&body).map_err(io::Error::other))
+                    .map_err(io::Error::other)
+                    .and_then(|body| w.send_raw(&body))
                 {
                     Ok(()) => {}
                     Err(_) => break, // client gone: stop relaying
